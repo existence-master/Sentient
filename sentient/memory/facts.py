@@ -924,7 +924,7 @@ class FactMemory:
         ``on_erase``) the lines of USER.md and MEMORY.md that say it. Its own previous wording goes with it."""
         await self.ensure_schema()
         row = await self.store.fetchone(
-            "SELECT id, content, previous_content, source_ref FROM facts WHERE id = ?", (fid,)
+            "SELECT id, content, previous_content, source_ref, state, superseded_by FROM facts WHERE id = ?", (fid,)
         )
         if row is None:
             return False
@@ -939,6 +939,11 @@ class FactMemory:
         )
         if not await self.forget(fid, notify=notify):
             return False
+        if row["state"] == "superseded" and row["superseded_by"] is not None:
+            await self.store.execute(
+                "UPDATE facts SET previous_content = NULL WHERE id = ? AND previous_content = ?",
+                (row["superseded_by"], row["content"]),
+            )
         rows = [row, *copies]
         texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
         refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
@@ -1218,7 +1223,9 @@ class FactMemory:
             raise KeyError(fid)
         if row["scope"] != target:
             await self.store.execute(
-                "UPDATE facts SET scope = ?, updated_at = ? WHERE id = ?", (target, now_iso(), fid)
+                "UPDATE facts SET scope = ?, updated_at = CASE WHEN state = 'superseded' THEN updated_at ELSE ? END"
+                " WHERE id = ?",
+                (target, now_iso(), fid),
             )
             self.publish("UPDATE", fid, row["content"], scope=target, previous_scope=row["scope"], reason="moved")
         fact = await self.get_fact(fid)

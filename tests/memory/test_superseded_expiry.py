@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from sentient.store.db import now_iso
 from tests.memory.helpers import add_fact
 
@@ -106,3 +108,52 @@ async def test_expiring_a_superseded_memory_cascades(app):
     insights = {r["id"]: json.loads(r["evidence"]) for r in await store.fetchall("SELECT id, evidence FROM user_insights")}
     assert gone["id"] not in insights and [e["ref"] for e in insights[kept["id"]]] == [str(new)]
     assert await mem.get_fact(new) is not None
+
+
+@pytest.mark.parametrize("expiry", ["retention", "explicit"])
+@pytest.mark.parametrize("preserve_unrelated", [False, True])
+async def test_expiry_clears_only_the_matching_previous_content(app, expiry, preserve_unrelated):
+    """Expired history must not remain on its successor or erase an unrelated prior version."""
+    mem, store = app.memory, app.store
+    old_text = "Maya lives in Pune"
+    old, new = await _superseded_pair(
+        app, old_text, "Maya lives in Bengaluru", age_days=181 if expiry == "retention" else 10
+    )
+    if preserve_unrelated:
+        await store.execute("UPDATE facts SET previous_content = 'another earlier version' WHERE id = ?", (new,))
+    if expiry == "explicit":
+        await store.execute("UPDATE facts SET expires_at = '2000-01-01T00:00:00+00:00' WHERE id = ?", (old,))
+
+    assert await mem.purge_expired() == 1
+
+    assert await mem.get_fact(old) is None
+    current = await mem.get_fact(new)
+    assert current["content"] == "Maya lives in Bengaluru" and current["state"] == "current"
+    assert current["previous_content"] == ("another earlier version" if preserve_unrelated else None)
+
+
+async def test_moving_superseded_memory_preserves_retention_age(app):
+    """Moving overdue history to another scope must not restart its retention period."""
+    mem = app.memory
+    old, _ = await _superseded_pair(app, "Maya prefers tea", "Maya prefers coffee", age_days=181)
+    superseded_at = (await mem.get_fact(old))["updated_at"]
+
+    moved = await mem.set_scope(old, "work")
+
+    assert moved["scope"] == "work" and moved["updated_at"] == superseded_at
+    assert await mem.purge_expired() == 1
+    assert await mem.get_fact(old) is None
+
+
+@pytest.mark.parametrize("state", ["current", "disputed"])
+async def test_moving_other_memory_states_still_updates_timestamp(app, state):
+    """The timestamp preservation exception must be limited to superseded history."""
+    mem = app.memory
+    fid = await add_fact(mem, "Maya uses a standing desk")
+    await mem.set_state(fid, state)
+    before = _ago(181)
+    await app.store.execute("UPDATE facts SET updated_at = ? WHERE id = ?", (before, fid))
+
+    moved = await mem.set_scope(fid, "work")
+
+    assert moved["updated_at"] != before and moved["state"] == state
