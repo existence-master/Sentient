@@ -131,6 +131,8 @@ async def test_one_off_tasks_have_no_checklist_and_bad_answers_are_refused(make_
     # turning a one-off task into a routine fills its checklist in
     task = await app.tasks.update(once, {"schedule": {"type": "recurring", "frequency": "interval", "interval_minutes": 60}})
     assert task["setup"]["source"]["target"] == PAGE and task["setup"]["confirmed_at"] is None  # from its plan
+    task = await app.tasks.update(once, {"schedule": {"type": "once", "run_at": None}})
+    assert task["setup"] is None  # no longer a routine: no checklist
 
 
 def test_prefill_guesses_the_source_from_the_trigger_a_folder_or_the_plan(make_app):
@@ -151,6 +153,10 @@ def test_prefill_guesses_the_source_from_the_trigger_a_folder_or_the_plan(make_a
     assert checklist.guess_source(triggered, reg) == {"kind": "app", "target": "gmail", "label": "Gmail"}
     folder = {"original_prompt": r"every evening tidy C:\Users\maya\Downloads please", "plan": []}
     assert checklist.guess_source(folder, reg)["target"] == r"C:\Users\maya\Downloads"
+    # a file it writes isn't there before the first run: the folder it goes in is what must exist
+    output = {"original_prompt": r"every friday save a digest to C:\Users\maya\Documents\digest.txt", "plan": []}
+    assert checklist.guess_source(output, reg)["target"] == r"C:\Users\maya\Documents"
+    assert checklist.guess_source({"original_prompt": "tidy ~/notes/today.md", "plan": []}, reg)["target"] == "~/notes"
     planned = {"plan": [{"tool": "web", "description": "search"}, {"tool": "gmail", "description": "read new mail"}]}
     assert checklist.guess_source(planned, reg)["target"] == "gmail"
     assert checklist.guess_source({"plan": [{"tool": "web", "description": "search the news"}]}, reg)["kind"] == "none"
@@ -432,6 +438,25 @@ async def test_probe_page_says_why_a_page_is_missing(monkeypatch):
     assert await real_probe_page("https://studio.example/gone") == (
         "the page studio.example/gone answered with an error (404)")
     assert await real_probe_page("https://studio.example/down") == "the page studio.example/down couldn't be reached"
+
+
+@respx.mock
+async def test_probe_page_checks_every_address_it_is_sent_on_to(monkeypatch):
+    def check(url):
+        if "127.0.0.1" in url:
+            raise web.IntegrationError("Fetching addresses on this computer isn't allowed.")
+        return url
+
+    monkeypatch.setattr(web, "_check_url", check)
+    respx.get("https://studio.example/moved").respond(301, headers={"Location": "/events"})
+    respx.get("https://studio.example/events").respond(200)
+    sneaky = respx.get("http://127.0.0.1:8080/admin").respond(200)
+    respx.get("https://studio.example/sneaky").respond(302, headers={"Location": "http://127.0.0.1:8080/admin"})
+    respx.get("https://studio.example/loop").respond(302, headers={"Location": "/loop"})
+    assert await real_probe_page("https://studio.example/moved") is None
+    assert await real_probe_page("https://studio.example/sneaky") is None  # not judged, and never requested
+    assert not sneaky.called
+    assert await real_probe_page("https://studio.example/loop") == "the page studio.example/loop sends visitors around in circles"
 
 
 async def test_probe_page_leaves_addresses_sentient_never_opens_alone():

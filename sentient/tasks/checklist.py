@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -35,6 +35,7 @@ DEFAULT_IF_MISSING = "notify"
 MAX_OUTPUT = 300
 MAX_TARGET = 500
 PROBE_TIMEOUT_S = 15.0
+MAX_REDIRECTS = 5
 # plugins a run always has: never "the source"
 _HELPERS = frozenset({"memory", "time", "files", "skills", "task_questions", "task_notepad", "tasks"})
 # built-in look-ups with nothing to connect: a step using one isn't a source the checklist can check
@@ -113,6 +114,10 @@ def guess_source(task: dict, registry: Any) -> dict:
         if _is_app(registry, source):
             return _app_source(registry, source)
     if (path := _first_path(task.get("original_prompt"), task.get("description"))) is not None:
+        cut = max(path.rfind("/"), path.rfind("\\"))
+        if PureWindowsPath(path).suffix and cut > 2:
+            # a file it may write ("save it to ...\digest.txt") isn't there before the first run: its folder is
+            path = path[:cut]
         return {"kind": "folder", "target": path, "label": path}
     for step in plan:
         pid = str(step.get("tool") or "")
@@ -243,15 +248,25 @@ async def probe_page(url: str) -> str | None:
     from sentient.integrations.plugins import web
 
     label = _page_label(url)
+    target = url
     try:
-        target = await asyncio.to_thread(web._check_url, url)
-    except IntegrationError as exc:
-        if "find the website" in str(exc):
-            return f"the website for {label} couldn't be found"
-        return None  # not an address Sentient opens: nothing to judge here
-    try:
-        async with http_client(timeout=PROBE_TIMEOUT_S) as http, http.stream("GET", target) as response:
-            status = response.status_code
+        async with http_client(timeout=PROBE_TIMEOUT_S) as http:
+            for _ in range(MAX_REDIRECTS + 1):
+                # every address, the first and each one it is sent on to, passes the rules for reading a page
+                try:
+                    target = await asyncio.to_thread(web._check_url, target)
+                except IntegrationError as exc:
+                    if "find the website" in str(exc):
+                        return f"the website for {label} couldn't be found"
+                    return None  # not an address Sentient opens: nothing to judge here
+                async with http.stream("GET", target, follow_redirects=False) as response:
+                    status = response.status_code
+                    location = response.headers.get("location") if response.is_redirect else None
+                if not location:
+                    break
+                target = str(response.url.join(location))
+            else:
+                return f"the page {label} sends visitors around in circles"
     except httpx.HTTPError:
         return f"the page {label} couldn't be reached"
     if status >= 400:

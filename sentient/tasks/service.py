@@ -689,6 +689,8 @@ class TaskService(Service):
         if not checklist.applies(merged):
             if "setup" in data and data["setup"] is not None:
                 raise ValueError("Only recurring and triggered tasks have a setup checklist.")
+            if task.get("setup") is not None:
+                changes["setup"] = None  # no longer a routine: no checklist
             return
         current = task.get("setup") if isinstance(task.get("setup"), dict) else None
         setup = current or checklist.prefill(merged, self.app.registry)

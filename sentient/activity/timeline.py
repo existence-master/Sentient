@@ -602,6 +602,7 @@ class Timeline:
             select="SELECT r.created_at AS _at, ('run:' || r.id) AS _key, r.id, r.task_id, r.status, r.trigger_data,"
                    " r.result, r.error, r.retry_of, r.pending_question, r.started_at, r.finished_at, t.name,"
                    " COALESCE(r.dry_run, 0) AS dry_run,"
+                   " (SELECT p.status FROM task_runs p WHERE p.id = r.retry_of) AS retried_status,"
                    " t.task_type, t.schedule, t.original_context, t.source AS task_source"
                    " FROM task_runs r JOIN tasks t ON t.id = r.task_id",
             where=where, params=params, ts="r.created_at", key="('run:' || r.id)",
@@ -642,6 +643,8 @@ class Timeline:
         trigger_data = _loads(row["trigger_data"])
         if tried:
             why = "You chose Try it first, so it only noted what it would send, change or run"
+        elif row["retry_of"] and row["retried_status"] == "skipped":
+            why = "It tried again because what it reads wasn't there last time"  # its own retry (#161)
         elif row["retry_of"]:
             why = "You chose Retry"
         elif isinstance(trigger_data, dict) and "script_result" in trigger_data:
