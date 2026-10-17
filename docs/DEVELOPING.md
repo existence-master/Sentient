@@ -222,10 +222,21 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 ## Checks, branches and releases
 
 - Every pull request runs [CI](../.github/workflows/ci.yaml): ruff, the engine tests on Linux and Windows, the
-  desktop typecheck and build, and a secret scan. It needs no secrets, so it runs the same on forks.
+  desktop typecheck and build, and a secret scan, plus the [changelog check](../.github/workflows/changelog.yaml).
+  They need no secrets, so they run the same on forks.
+- **Changelog entries are files, not edits to CHANGELOG.md.** A pull request that changes what people get adds
+  `changes/<issue or PR number>.<type>.md` (type `added`, `changed`, `deprecated`, `removed`, `fixed` or
+  `security`; details in [changes/README.md](../changes/README.md)). The "Changelog entry" job fails when a pull
+  request changes `sentient/`, `desktop/src/` or `packaging/` without one, and its summary says which file to add.
+  Pull requests with the `no changelog` label and Dependabot's are skipped; adding or removing the label runs the
+  check again by itself.
 - `main` is the only long-lived branch. Contributors fork, branch from `main` and open pull requests back to it;
   maintainers squash-merge after one approval and green checks. See [CONTRIBUTING.md](../CONTRIBUTING.md).
-- Releases are tags on `main`. Pushing a tag such as `v3.0.0-alpha.1` runs the
+- Releases are tags on `main`. First turn the entries into the version's changelog section with
+  [towncrier](https://towncrier.readthedocs.io/) (a dev dependency): `python packaging/release_changelog.py
+  3.0.0-alpha.1 --draft` shows it, and without `--draft` it writes CHANGELOG.md, links the version and deletes the
+  entries. Entries written into CHANGELOG.md by hand before towncrier sit under the same headings and are kept, after
+  the new ones. Commit that, then tag. Pushing a tag such as `v3.0.0-alpha.1` runs the
   [release workflow](../.github/workflows/release.yaml), which builds the Windows, macOS and Linux installers and
   attaches them to a draft GitHub release for a maintainer to review and publish.
 - Sentient v2 lives on the `v2` branch and the `v2-final` tag. It is not developed any more.

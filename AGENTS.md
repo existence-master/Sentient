@@ -55,8 +55,10 @@ Sentient v2 (the old cloud web app) is on the `v2` branch only. Do not port new 
 3. Add or update tests. Tests never touch the network or a real model: use the scripted `FakeProvider` from
    `tests/conftest.py` and `respx` for HTTP.
 4. Run the checks for what you touched, then the full suite before you open a pull request.
-5. Update `docs/API.md` for contract changes, an ADR for decision changes, and `CHANGELOG.md` for user-visible
-   changes.
+5. Update `docs/API.md` for contract changes and add an ADR for decision changes. For user-visible changes add a
+   changelog entry, `changes/<issue or PR number>.<type>.md` (types and style in
+   [changes/README.md](changes/README.md)); never edit `CHANGELOG.md` directly, it is built from these at release
+   time. CI's "Changelog entry" check asks for one when `sentient/`, `desktop/src/` or `packaging/` changes.
 
 ## Commands
 

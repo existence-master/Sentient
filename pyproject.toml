@@ -85,6 +85,8 @@ dev = [
     "pytest-xdist>=3.8.0",
     # packaging: freezes the engine for the installer (packaging/build_engine.py)
     "pyinstaller>=6.22.3",
+    # changelog: one file per change in changes/, joined into CHANGELOG.md at release time
+    "towncrier>=26.9.0",
 ]
 
 [project.scripts]
@@ -100,6 +102,51 @@ packages = ["sentient"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# Changelog entries: one file per change in changes/ (see changes/README.md). At release time
+# `python packaging/release_changelog.py <version>` turns them into a version section of CHANGELOG.md.
+[tool.towncrier]
+name = "Sentient"
+directory = "changes"
+filename = "CHANGELOG.md"
+template = "changes/template.md"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [{version}] - {project_date}"
+issue_format = "#{issue}"
+orphan_prefix = "+"
+wrap = false
+ignore = ["README.md", "template.md", ".gitkeep"]
+
+# Keep a Changelog headings, in its order
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "security"
+name = "Security"
+showcontent = true
 
 [tool.ruff]
 line-length = 100
