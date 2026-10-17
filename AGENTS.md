@@ -73,3 +73,19 @@ cd desktop && npm run package                         # installer for this OS
 ```
 
 CI runs the same checks on every pull request, on Linux and Windows, with no secrets.
+
+## Working as an agent
+
+The full working rules, with commands, are in [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md). In short:
+
+- **One issue, one pull request.** Claim the issue first (`/assign` or a comment) so nobody duplicates the work.
+- **Test it for real before it merges.** A real engine from your checkout with its own empty `SENTIENT_HOME`, a
+  random `SENTIENT_GATEWAY_TOKEN` and a free port; the local `ollama_chat/qwen3:8b` wherever the model matters;
+  screenshots from `desktop/scripts/smoke.mjs` for UI changes, which you look at yourself.
+- **Share the computer politely.** Take the Ollama lock (`.ollama.lock` in the main checkout) before any real model
+  call and `desktop/.build.lock` before building. Use your own port and only talk to engines you started.
+- **Stay out of the person's things.** Test homes have their own keychain namespace: never set
+  `SENTIENT_KEYCHAIN_NAMESPACE=default` unless asked. Keep seeded tasks paused and channel deliveries off. Never
+  connect to a debugging port you didn't start, and never touch real accounts or a browser you didn't launch.
+- **Show the evidence.** The PR's "Real test" section says what you ran, on which model, and what happened, with
+  screenshots or traces attached to the PR.
