@@ -451,7 +451,7 @@ released.
   skip. Nothing catches up while Stop everything is on; it happens when you resume.
 
 ### Changed
-- Database changes are now numbered files in `sentient/store/migrations/`, and the schema version is the highest of them, so two changes can no longer silently take the same version. The database moves to version 13, so the first start after updating takes a snapshot first, as with any database update. (#424) (#424)
+- Database changes are now numbered files in `sentient/store/migrations/`, and the schema version is the highest of them, so two changes can no longer silently take the same version. The database moves to version 13, so the first start after updating takes a snapshot first, as with any database update. (#424)
 - **Incognito chats leave nothing behind:** when an incognito chat is deleted, the long results it saved
   while reading pages or files go with it. Files you asked it to write and tasks it created stay.
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.

@@ -81,3 +81,14 @@ def test_towncrier_renders_fragments_in_the_changelog_style(tmp_path):
     # the draft builds a copy: the changelog and the entries are untouched
     assert (tmp_path / "CHANGELOG.md").read_text(encoding="utf-8") == CHANGELOG
     assert (tmp_path / "changes" / "12.fixed.md").exists()
+
+
+def test_an_entry_that_already_names_its_issue_is_not_named_twice():
+    text = (
+        "# Changelog\n\n## [1.0.0] - 2026-10-17\n\n### Changed\n- Numbered migrations. (#424) (#424)\n"
+        "- Kept as is. (#153)\n\n[Unreleased]: https://example.org/compare/v0...main\n"
+    )
+    out = release.fold_release(text, "1.0.0")
+    assert "(#424) (#424)" not in out
+    assert "Numbered migrations. (#424)" in out
+    assert "Kept as is. (#153)" in out
