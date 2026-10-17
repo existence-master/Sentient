@@ -155,8 +155,8 @@ MCP_CATALOG = (
         "description": "The official MCP fetch server for reading web pages as model context.",
         "documentation_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
         "transport": "stdio",
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-fetch"],
+        "command": "uvx",
+        "args": ["mcp-server-fetch"],
         "required_values": [],
         "enabled": False,
     },
@@ -506,10 +506,18 @@ class MCPManager:
 
     async def _relaunch(self, name: str, stored: dict) -> ServerConn:
         old = self.servers.pop(name, None)
+        usage_count = old.usage_count if old is not None else 0
         if old is not None:
             self._cancel_sign_in(old)
             await self._shutdown(old)
-        return self._launch(name, stored)
+        row = await self.app.store.fetchone(
+            "SELECT usage_count FROM mcp_server_metrics WHERE server = ?", (name,)
+        )
+        if row is not None:
+            usage_count = max(usage_count, int(row["usage_count"] or 0))
+        conn = self._launch(name, stored)
+        conn.usage_count = usage_count
+        return conn
 
     async def set_values(self, name: str, values: dict, *, enable: bool = False, wait_s: float = 15.0) -> dict:
         """Fill in the header or environment values a server lists by name (the "Add values" form). Values go to the
@@ -594,7 +602,10 @@ class MCPManager:
             delete_secret(f"mcp:{name}")
             forget_server(name, url=url)
             await self._forget_reviews(name)
-            return existed or conn is not None
+            removed = existed or conn is not None
+            if removed:
+                await self.app.store.execute("DELETE FROM mcp_server_metrics WHERE server = ?", (name,))
+            return removed
 
     # ------------------------------------------------------------------ safety check of tools (#146)
     async def review_tools(self, name: str, decisions: dict[str, str]) -> dict:

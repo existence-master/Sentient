@@ -102,9 +102,31 @@ async def test_mcp_usage_health_and_metrics_persist(app, isolated_home):
     await app.integrations.mcp.remove("metrics")
 
 
+async def test_mcp_usage_count_survives_relaunch_and_removal(app):
+    await app.integrations.mcp.add(
+        "relaunch", {"transport": "stdio", "command": sys.executable, "args": [str(SERVER)]}, wait_s=30
+    )
+    ctx = app.agent.tool_context(None, "relaunch")
+    assert await app.registry.get("mcp_relaunch_echo").call(ctx, {"text": "before"}) == {"content": "echo: before"}
+    assert app.integrations.mcp.describe(app.integrations.mcp.servers["relaunch"])["usage_count"] == 1
+
+    disabled = await app.integrations.mcp.set_enabled("relaunch", False)
+    assert disabled["usage_count"] == 1
+    row = await app.store.fetchone("SELECT usage_count FROM mcp_server_metrics WHERE server = ?", ("relaunch",))
+    assert row["usage_count"] == 1
+
+    await app.integrations.mcp.set_enabled("relaunch", True)
+    current = app.integrations.mcp.describe(app.integrations.mcp.servers["relaunch"])
+    assert current["usage_count"] == 1
+    assert await app.integrations.mcp.remove("relaunch")
+    assert await app.store.fetchone("SELECT 1 FROM mcp_server_metrics WHERE server = ?", ("relaunch",)) is None
+
+
 async def test_mcp_catalog_adds_disabled_official_template(app):
     catalog = app.integrations.mcp.catalog()
     assert {entry["id"] for entry in catalog} == {"fetch", "github"}
+    fetch = next(entry for entry in catalog if entry["id"] == "fetch")
+    assert fetch["command"] == "uvx" and fetch["args"] == ["mcp-server-fetch"]
     added = await app.integrations.mcp.add_catalog("github")
     assert added["enabled"] is False
     assert added["missing_values"] == ["GITHUB_PERSONAL_ACCESS_TOKEN"]

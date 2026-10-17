@@ -98,8 +98,8 @@ export function useMcpServers() {
   return useQuery({
     queryKey: qk.integrations.mcp,
     queryFn: api.integrations.mcp.list,
-    // No event tells the window when a browser sign-in finishes or a server connects: poll while one is pending.
-    refetchInterval: (q) => (q.state.data?.some((s) => s.signing_in || s.status === 'connecting') ? 2000 : false)
+    // Health and usage change in the engine without a domain event; keep the open screen current.
+    refetchInterval: 5000
   })
 }
 
