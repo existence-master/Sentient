@@ -1,6 +1,6 @@
 [project]
 name = "sentient"
-version = "3.0.0a0"
+version = "3.0.0b1"
 description = "Sentient - a local-first, configurable, self-evolving personal assistant"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REPO_URL = "https://github.com/existence-master/Sentient"
 # Keep a Changelog order; anything else keeps its place after these
 ORDER = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
+# An entry that already ends with its own "(#123)" gets a second one from towncrier: "(#123) (#123)".
+_DUP_REF = re.compile(r"(\(#\d+\))(?:\s*\1)+")
 
 
 def _trim(lines: list[str]) -> list[str]:
@@ -58,7 +60,7 @@ def fold_release(changelog: str, version: str) -> str:
         out += [*_trim(intro), ""]
     rank = {name: i for i, name in enumerate(ORDER)}
     for name in sorted(groups, key=lambda n: rank.get(n, len(ORDER))):
-        items = [line for chunk in groups[name] for line in _trim(chunk)]
+        items = [_DUP_REF.sub(r"\1", line) for chunk in groups[name] for line in _trim(chunk)]
         if items:
             out += [f"### {name}", *items, ""]
     text = changelog[:start] + "\n".join(out) + "\n" + changelog[end:]
