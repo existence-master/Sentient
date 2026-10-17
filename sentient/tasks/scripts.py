@@ -499,30 +499,29 @@ def normalize_script(
     return out
 
 
-# The newest request about changes wins.  A bare "change" can be a verb ("change it to every 30 minutes"), so it
-# is removed before looking for an update preference.  "Anything else" is deliberately not a preference either.
-_IMPORTANT_CHANGE = re.compile(
-    r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?changes?\b", re.IGNORECASE,
+# The newest request about updates wins. A question about a page is not a request to change its watch setting;
+# neither is a bare use of "change" as a verb. Requests for every update must say that positively.
+_NOTEWORTHY_REQUEST = re.compile(
+    r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?(?:changes?|updates?|stuff)\b"
+    r"|\b(?:ignore|skip|don't|do not)\s+(?:\w+\s+)?(?:minor|small|little)\s+(?:changes?|updates?)\b",
+    re.IGNORECASE,
 )
-_CHANGE_AS_EDIT = re.compile(
-    r"\bchange\s+(?:it|this|that|the\b|my\b|your\b|a\b|an\b)|\bchange\s+my\s+mind\b", re.IGNORECASE,
+_EVERY_CHANGE_REQUEST = re.compile(
+    r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
+    r"|\bwhenever\b[^.?!]{0,80}\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^.?!]{0,80}\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^.?!]{0,80}\b(?:anything|everything)\s+(?:at\s+all|new)\b",
+    re.IGNORECASE,
 )
-_CHANGE = re.compile(r"\bchang(?:e|es|ed|ing)\b", re.IGNORECASE)
-_ALL_UPDATES = re.compile(r"\b(?:anything|everything)\s+(?:at\s+all|new)\b", re.IGNORECASE)
 
 
 def _change_preference(message: str) -> str | None:
     """``changed`` or ``noteworthy`` when one user message says which updates to report."""
-    preferences = [(match.start(), "noteworthy", match.span()) for match in _IMPORTANT_CHANGE.finditer(message)]
-    edits = [match.span() for match in _CHANGE_AS_EDIT.finditer(message)]
-    preferences += [
-        (match.start(), "changed", match.span())
-        for match in _CHANGE.finditer(message)
-        if not any(start <= match.start() < end for start, end in edits)
-        and not any(start <= match.start() < end for _, _, (start, end) in preferences)
-    ]
-    preferences += [(match.start(), "changed", match.span()) for match in _ALL_UPDATES.finditer(message)]
-    return max(preferences, default=(0, None, (0, 0)))[1]
+    if message.rstrip().endswith("?"):
+        return None
+    preferences = [(match.start(), "noteworthy") for match in _NOTEWORTHY_REQUEST.finditer(message)]
+    preferences += [(match.start(), "changed") for match in _EVERY_CHANGE_REQUEST.finditer(message)]
+    return max(preferences, default=(0, None), key=lambda preference: preference[0])[1]
 
 
 def _latest_change_preference(request: str | list[str]) -> str | None:

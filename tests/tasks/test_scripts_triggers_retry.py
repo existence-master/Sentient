@@ -418,6 +418,23 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     )["condition"] == "noteworthy"
 
 
+@pytest.mark.parametrize(("message", "preference"), [
+    ("Has anything changed on that page?", None),
+    ("What changed on the page?", None),
+    ("Change to every hour", None),
+    ("I changed my mind about the watch", None),
+    ("Change of plans", None),
+    ("Can you change how often it checks?", None),
+    ("Tell me about any change", "changed"),
+    ("Let me know whenever the page updates", "changed"),
+    ("Only important updates", "noteworthy"),
+    ("Only tell me about important stuff. Schedule changes are fine", "noteworthy"),
+    ("Ignore minor changes, I only care about new events", "noteworthy"),
+])
+def test_change_preference_requires_an_explicit_watch_request(message, preference):
+    assert scripts._change_preference(message) == preference
+
+
 async def test_planner_watch_default_gives_later_chat_priority_over_answers(make_app):
     watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
     app = await make_app(FakeProvider(json_replies=[watch]))
