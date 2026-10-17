@@ -34,7 +34,9 @@ jobs:
         run: |
           uv venv .venv --python 3.12
           if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
-          uv pip install --python "$PY" -e ".[dev,whatsapp]"
+          # voice brings numpy, which the engine imports on start (sentient.voice); the heavy voice runtimes stay
+          # out of the frozen engine through the EXCLUDES in packaging/sentient-engine.spec
+          uv pip install --python "$PY" -e ".[dev,voice,whatsapp]"
       - name: Build installer
         working-directory: desktop
         env:

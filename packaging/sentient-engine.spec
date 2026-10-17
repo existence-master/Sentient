@@ -176,7 +176,8 @@ EXCLUDES = [
     "cv2",
     "av",
     "transformers",
-    "tokenizers",
+    # not "tokenizers": litellm imports it at module level, so excluding it breaks every model call
+    # (v3.0.0-beta.1's first build). `sentient-engine selfcheck` catches this at build time.
     "huggingface_hub",
     "hf_xet",
     "sklearn",

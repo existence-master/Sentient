@@ -229,10 +229,16 @@ npm run package:win        # just the installer (reuses desktop/build/engine)
 ```
 
 Take `desktop/.build.lock` first: packaging rebuilds the shared `desktop/out`.
-The Windows result is `desktop/dist/Sentient-Setup-<version>.exe` (~216 MiB), a
+The Windows result is `desktop/dist/Sentient-Setup-<version>.exe` (~246 MiB), a
 per-user NSIS installer that needs no administrator rights and installs into
 `%LOCALAPPDATA%\Programs\Sentient`. `/S` installs and uninstalls silently.
 Uninstalling leaves `~/.sentient` alone: that is the user's memories and tasks.
+
+`packaging/build_engine.py` checks the frozen engine before staging it: `version`, then `selfcheck` (a hidden
+command that imports everything the engine needs at runtime, including litellm and numpy, and the database
+migrations), then a real `serve` on a throwaway data folder until `GET /api/health` answers. Before a release, also
+run the unpacked app (`desktop/dist/win-unpacked`) against a fresh `SENTIENT_HOME` and send one chat: the checks
+above can't see what only a model call or the Claude Code backend exercises.
 
 | File | What it is |
 |---|---|
