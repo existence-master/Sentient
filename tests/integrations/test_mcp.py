@@ -79,8 +79,64 @@ async def test_mcp_add_with_env_secret_and_broken_server(app, keychain):
 
     broken = await app.integrations.mcp.add(
         "broken", {"transport": "stdio", "command": "definitely-not-a-real-command-xyz", "args": []}, wait_s=30)
-    assert broken["status"] == "error" and broken["error"]
+    assert broken["status"] == "error" and broken["error"] and broken["health"] == "failing" and broken["last_check_at"]
     assert (await app.integrations.mcp.test("broken"))["ok"] is False
     await app.integrations.mcp.remove("broken")
     await app.integrations.mcp.remove("echo2")
     assert "mcp:echo2" not in keychain
+
+
+async def test_mcp_usage_health_and_metrics_persist(app, isolated_home):
+    added = await app.integrations.mcp.add(
+        "metrics", {"transport": "stdio", "command": sys.executable, "args": [str(SERVER)]}, wait_s=30
+    )
+    assert added["health"] == "healthy"
+    assert added["usage_count"] == 0
+    ctx = app.agent.tool_context(None, "metrics")
+    result = await app.registry.get("mcp_metrics_echo").call(ctx, {"text": "hello"})
+    assert result == {"content": "echo: hello"}
+    server = next(s for s in app.integrations.mcp.list() if s["name"] == "metrics")
+    assert server["usage_count"] == 1
+    row = await app.store.fetchone("SELECT usage_count, health, last_check_at FROM mcp_server_metrics WHERE server = ?", ("metrics",))
+    assert row["usage_count"] == 1 and row["health"] == "healthy" and row["last_check_at"]
+    await app.integrations.mcp.remove("metrics")
+
+
+async def test_mcp_catalog_adds_disabled_official_template(app):
+    catalog = app.integrations.mcp.catalog()
+    assert {entry["id"] for entry in catalog} == {"fetch", "github"}
+    added = await app.integrations.mcp.add_catalog("github")
+    assert added["enabled"] is False
+    assert added["missing_values"] == ["GITHUB_PERSONAL_ACCESS_TOKEN"]
+    try:
+        await app.integrations.mcp.add_catalog("github")
+    except ValueError as exc:
+        assert "already configured" in str(exc)
+    else:
+        raise AssertionError("duplicate catalog addition should fail")
+    await app.integrations.mcp.remove("GitHub")
+
+
+async def test_mcp_health_semantics_for_disabled_and_auth_required(app):
+    disabled = await app.integrations.mcp.add(
+        "disabled", {"transport": "stdio", "command": "not-run", "enabled": False}, wait_s=0
+    )
+    assert disabled["status"] == "disabled" and disabled["health"] is None and disabled["last_check_at"] is None
+
+    auth = await app.integrations.mcp.add(
+        "auth-required", {"transport": "http", "url": "http://127.0.0.1:9/mcp", "auth": "oauth"}, wait_s=2
+    )
+    conn = app.integrations.mcp.servers["auth-required"]
+    current = app.integrations.mcp.describe(conn)
+    assert auth["health"] is None and current["health"] is None
+    assert current["status"] == "needs_sign_in"
+    assert current["last_check_at"] is None
+    await app.integrations.mcp.remove("auth-required")
+    await app.integrations.mcp.remove("disabled")
+
+
+async def test_mcp_health_task_is_cleaned_up(app):
+    task = app.integrations.mcp._health_task
+    assert task is not None and not task.done()
+    await app.stop()
+    assert task.done() and task.cancelled()

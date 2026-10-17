@@ -47,3 +47,11 @@ CREATE TABLE IF NOT EXISTS hooks (
     last_called_at  TEXT,
     calls           INTEGER NOT NULL DEFAULT 0
 );
+
+-- MCP operational metrics. Values are local metadata; secrets remain in the keychain.
+CREATE TABLE IF NOT EXISTS mcp_server_metrics (
+    server         TEXT PRIMARY KEY,
+    usage_count    INTEGER NOT NULL DEFAULT 0,
+    health         TEXT,
+    last_check_at  TEXT
+);

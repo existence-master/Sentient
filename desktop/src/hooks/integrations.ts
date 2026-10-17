@@ -103,11 +103,16 @@ export function useMcpServers() {
   })
 }
 
+export function useMcpCatalog() {
+  return useQuery({ queryKey: [...qk.integrations.mcp, 'catalog'], queryFn: api.integrations.mcp.catalog })
+}
+
 export function useMcpActions() {
   const qc = useQueryClient()
   const invalidate = () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })
   return {
     add: useMutation({ mutationFn: (body: McpServerCreate) => api.integrations.mcp.add(body), onSuccess: invalidate }),
+    addCatalog: useMutation({ mutationFn: (id: string) => api.integrations.mcp.addCatalog(id), onSuccess: invalidate }),
     remove: useMutation({ mutationFn: (name: string) => api.integrations.mcp.remove(name), onSuccess: invalidate }),
     test: useMutation({ mutationFn: (name: string) => api.integrations.mcp.test(name) }),
     /** Starts a browser sign-in and opens the provider's page; the server list shows when it finishes. */
