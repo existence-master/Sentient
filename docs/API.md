@@ -613,18 +613,24 @@ accept or loosen a rule.
   out keeps its model, a field left out keeps its value) and the last one applied is `models.active_preset`. Names are
   1 to 40 characters, no slashes, matched without case; built-in names are reserved.
   - **Preset** `{name, builtin, available, reason, provider, description, roles, fallbacks?, reasoning?, context_length?,
-    context_length_per_role?, active}`. `available: false` with a plain `reason` for Cloud and Mixed when no cloud key
-    is set (or when a ChatGPT plan's model list can't be loaded). `provider` is the cloud provider a built-in uses.
+    context_length_per_role?, cloud, blocked_by, active}`. `available: false` with a plain `reason` for Cloud and Mixed
+    when no cloud key is set (or when a ChatGPT plan's model list can't be loaded). `provider` is the cloud provider a
+    built-in uses. `cloud` (#335) is true when a role the preset sets uses a model outside this computer (the
+    `runs_here` rule of Local only). With `models.local_only` on, a `cloud` preset that is otherwise usable is
+    `available: false`, `blocked_by: "local_only"` and a plain `reason`; `blocked_by` is null otherwise.
   - `GET /api/models/presets` → `{active, modified, can_undo, undo_preset, presets: [Preset]}` (built-ins first).
     `modified` is true when a role was changed by hand after `active` was applied.
-  - `POST /api/models/presets/{name}/apply` → `{preset, changed: [{role, from, to}], missing: [Missing], can_undo}`.
-    Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404 unknown preset, 409
-    `available: false`. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
+  - `POST /api/models/presets/{name}/apply` `{local_only?}` → `{preset, changed: [{role, from, to}], missing: [Missing],
+    can_undo, local_only}`. Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404
+    unknown preset, 409 `available: false`. `local_only: true` (#335; the window asks first when Local only is applied
+    with the switch off) also turns `models.local_only` on in the same save, 409 for a `cloud` preset; without it the
+    switch is left as it is. The result's `local_only` is the switch after the call. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
     detail, fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the
     pull route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`),
     no ChatGPT sign-in for a `chatgpt/` model (`sign_in`, `action: null`), or Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.
   - `POST /api/models/presets/undo` → same shape: puts back the roles, fallbacks, reasoning, context lengths and active
-    preset from before the last switch. One step only: 409 when there is nothing to undo.
+    preset from before the last switch, and turns Local only back off when that switch turned it on. One step only:
+    409 when there is nothing to undo.
   - `POST /api/models/presets` `{name, overwrite?}` → Preset: saves the current roles, fallbacks, reasoning and context
     lengths and makes it active. 400 bad or built-in name, 409 name taken (unless `overwrite`).
   - `PATCH /api/models/presets/{name}` `{name}` → Preset (rename; `active_preset` follows). 400 built-in, 404, 409.
@@ -2500,8 +2506,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
   else escaped; plain text fallback). While tools run, a short status message ("Searching the web...") is shown and deleted
   when the answer continues (`show_tool_activity`). A typing indicator is sent while the reply runs.
-- `/model` (model presets, section 3): shows the active preset and the chat model, lists presets that need a key with
-  the reason, and offers every usable preset as a button (callback `mp:a:<12 hex of sha1(name)>`; WhatsApp: numbered
+- `/model` (model presets, section 3): shows the active preset and the chat model, lists presets that need a key (or
+  that Local only blocks, #335) with the reason, and offers every usable preset as a button (callback `mp:a:<12 hex of sha1(name)>`; WhatsApp: numbered
   options). Choosing one applies it, settles the message to "Switched to <name>" and sends anything still missing
   ("Still needed: ..."). `/model <number or name>` applies directly (numbers count the usable presets in order),
   `/model undo` undoes the last switch. Paired chats only, like every command.

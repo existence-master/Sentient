@@ -572,7 +572,8 @@ export const api = {
     /** Model presets: switch every role at once, save your own, undo the last switch. */
     presets: {
       list: () => http.get<ModelPresetList>('/api/models/presets'),
-      apply: (name: string) => http.post<PresetApplyResult>(`/api/models/presets/${enc(name)}/apply`),
+      apply: (name: string, localOnly = false) =>
+        http.post<PresetApplyResult>(`/api/models/presets/${enc(name)}/apply`, localOnly ? { local_only: true } : undefined),
       undo: () => http.post<PresetApplyResult>('/api/models/presets/undo'),
       save: (name: string, overwrite = false) => http.post<ModelPreset>('/api/models/presets', { name, overwrite }),
       rename: (name: string, to: string) => http.patch<ModelPreset>(`/api/models/presets/${enc(name)}`, { name: to }),

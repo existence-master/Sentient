@@ -250,3 +250,71 @@ def test_preset_routes(client, keys):
     assert r.status_code == 200 and r.json()["preset"] == "On the road"
     assert client.delete("/api/models/presets/On%20the%20road").json() == {"ok": True}
     assert client.get("/api/models/presets").json()["active"] is None
+
+
+# ----------------------------------------------------------------------------- Local only switch (#335)
+async def test_local_only_preset_can_turn_the_switch_on_and_undo_puts_it_back(app, keys):
+    keys["anthropic"] = "sk-ant"
+    await presets.apply(app, "Cloud")
+    assert app.config.models.local_only is False
+    plain = await presets.apply(app, "Local only")  # without asking: the switch stays as it is
+    assert plain["local_only"] is False and app.config.models.local_only is False
+    await presets.apply(app, "Cloud")
+
+    result = await presets.apply(app, "Local only", local_only=True)
+    assert result["local_only"] is True and app.config.models.local_only is True
+    from sentient.config.loader import load_config
+
+    assert load_config().models.local_only is True  # one save, on disk
+    undone = await presets.undo(app)
+    assert undone["local_only"] is False and app.config.models.local_only is False
+    assert app.config.models.roles.primary == ANTHROPIC["main"]
+
+
+async def test_local_only_preset_already_in_use_still_turns_the_switch_on(app):
+    await presets.apply(app, "Local only")
+    result = await presets.apply(app, "Local only", local_only=True)
+    assert result["changed"] == [] and result["local_only"] is True and app.config.models.local_only is True
+    await presets.undo(app)  # the step is the switch: the models stay, Local only goes back off
+    assert app.config.models.local_only is False and app.config.models.active_preset == "Local only"
+
+
+async def test_the_switch_cant_go_on_with_a_cloud_preset(app, keys):
+    keys["anthropic"] = "sk-ant"
+    with pytest.raises(presets.PresetError) as err:
+        await presets.apply(app, "Cloud", local_only=True)
+    assert err.value.status == 409 and app.config.models.local_only is False
+    assert app.config.models.roles.primary == DEFAULTS.primary
+
+
+async def test_local_only_blocks_presets_with_cloud_models(app, keys):
+    keys["anthropic"] = "sk-ant"
+    await presets.apply(app, "Cloud")
+    presets.save_current(app, "Work")
+    app.config.models.local_only = True
+    items = by_name(await presets.listing(app))
+    assert items["Local only"]["available"] is True and items["Local only"]["cloud"] is False
+    for name in ("Cloud", "Mixed", "Work"):
+        assert items[name]["cloud"] is True and items[name]["available"] is False, name
+        assert items[name]["blocked_by"] == "local_only" and items[name]["reason"] == presets.LOCAL_ONLY_BLOCKED
+        with pytest.raises(presets.PresetError) as err:
+            await presets.apply(app, name)
+        assert err.value.status == 409
+    assert app.config.models.local_only is True  # other presets leave the switch alone
+    # a missing key is still the reason when there is no key at all
+    keys.clear()
+    items = by_name(await presets.listing(app))
+    assert items["Cloud"]["blocked_by"] is None and items["Cloud"]["reason"].startswith("Needs a key")
+
+
+def test_apply_route_turns_local_only_on(client, keys):
+    keys["anthropic"] = "sk-ant"
+    assert client.post("/api/models/presets/Cloud/apply").status_code == 200
+    r = client.post("/api/models/presets/Local%20only/apply", json={"local_only": True})
+    assert r.status_code == 200 and r.json()["local_only"] is True
+    assert client.get("/api/config").json()["models"]["local_only"] is True
+    cloud = by_name(client.get("/api/models/presets").json())["Cloud"]
+    assert cloud["available"] is False and cloud["blocked_by"] == "local_only"
+    assert client.post("/api/models/presets/Cloud/apply").status_code == 409
+    assert client.post("/api/models/presets/undo").json()["local_only"] is False
+    assert client.get("/api/config").json()["models"]["local_only"] is False
