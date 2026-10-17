@@ -3,7 +3,7 @@
 // Run with `npm test` (no Electron needed).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { approvalRisk } from '../src/features/chat/approvalRisk.ts'
+import { approvalRisk, approvalCardReason } from '../src/features/chat/approvalRisk.ts'
 
 const email = (name: string, body: string, reason = 'mcp_mailer: Send an email to one address') => ({
   risk: 'send' as const,
@@ -200,3 +200,17 @@ test('a priced subscribe button still reads as a purchase', () => {
   assert.equal(w.label, 'Purchase')
   assert.equal(w.verb, 'make a purchase')
 })
+
+// #409: the small-print reason skips the reason when it matches the badge label,
+// so a free Subscribe card doesn't repeat "Signs up" twice.
+test('approval card small print skips the reason when it repeats the badge label (#409)', () => {
+  assert.equal(approvalCardReason('Signs up', 'Signs up'), null)
+  assert.equal(approvalCardReason('  signs up  ', 'Signs up'), null)
+  assert.equal(approvalCardReason('Purchase', 'Purchase'), null)
+  assert.equal(approvalCardReason('Deletes', 'Deletes'), null)
+  assert.equal(approvalCardReason('Unlocks a door', 'Home security'), 'Unlocks a door')
+  assert.equal(approvalCardReason('Send payment', 'Purchase'), 'Send payment')
+  assert.equal(approvalCardReason('', 'Signs up'), null)
+  assert.equal(approvalCardReason(undefined, 'Signs up'), null)
+})
+

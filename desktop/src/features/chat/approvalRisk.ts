@@ -168,3 +168,17 @@ function isEmailSendingTool(name: string): boolean {
   if (tokens.some((t) => /^(draft|drafts)$/.test(t))) return false
   return isEmailTool(name) && tokens.some((t) => /^(send|sends|sending|sent|reply|forward)$/.test(t))
 }
+
+/**
+ * Pick the small-print reason for an approval card (#409).
+ * Skips the reason when it matches the badge label after trimming and ignoring case,
+ * avoiding duplicate lines such as a [Signs up] badge followed by "Signs up" in small print.
+ */
+export function approvalCardReason(reason?: string | null, badgeLabel?: string | null): string | null {
+  const trimmed = reason?.trim()
+  if (!trimmed) return null
+  if (badgeLabel && trimmed.toLowerCase() === badgeLabel.trim().toLowerCase()) {
+    return null
+  }
+  return trimmed
+}
