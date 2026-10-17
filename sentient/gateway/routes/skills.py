@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from sentient.evolution.log import log_event, read_log
 from sentient.gateway.deps import AUTH, get_core
+from sentient.skills import checks as skill_checks
 from sentient.skills import vet
 from sentient.skills.loader import slugify, valid_name
 
@@ -164,12 +165,27 @@ async def approve_skill(request: Request, name: str, body: dict | None = None):
         # high-risk findings default to declined: approving needs an explicit "approve anyway" (#146)
         raise HTTPException(409, "The safety check found high-risk problems in this skill. Approve it anyway only if "
                                  "you trust where it came from.")
+    pending = s.skills.get_pending(name)
+    report = None
+    if pending is not None and pending.validate:
+        # the skill's own checks run before it is saved (#386); approving is the user's yes for a code check
+        current = s.skills.get_active_file(name)
+        folders = [pending.dir, *([current.dir] if current else [])]
+        report = await skill_checks.run(s, pending.name, pending.validate, folders, run_code=True,
+                                        outside=imported is not None)
+        await s.skills.record_check(pending.name, report, s.store, pending=True)
+        if reason := skill_checks.failure(report):
+            s.bus.publish("skill.updated", {"name": pending.name, "state": "pending_review"})
+            await log_event(s.store, "skill_check_failed", {"name": pending.name, "reason": reason, "by": "user"})
+            raise HTTPException(409, f"The skill's check failed: {reason}. It is still waiting for your review.")
     try:
         s.skills.approve_pending(name)
     except FileNotFoundError as exc:
         raise HTTPException(404, f"no pending skill named {name}") from exc
     await s.skills.set_state(name, "active", s.store)
     await s.skills.record_origin(name, s.store)  # the accepted version is the new original
+    await s.skills.record_check(name, report, s.store)  # its check report is now the active skill's
+    await s.skills.record_check(name, None, s.store, pending=True)
     if imported is not None:
         await vet.mark_approved(s.store, name, s.skills.root / name.strip().lower())
     await _changed(s, name, "active")
@@ -203,6 +219,7 @@ async def reject_skill(request: Request, name: str):
         s.skills.reject_pending(name)
     except FileNotFoundError as exc:
         raise HTTPException(404, f"no pending skill named {name}") from exc
+    await s.skills.record_check(name, None, s.store, pending=True)
     if imported is not None and imported.get("decision") != "approved":
         await vet.forget(s.store, name)
         await log_event(s.store, "skill_import_declined", {"name": name, "source": imported["source"],

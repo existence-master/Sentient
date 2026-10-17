@@ -2289,10 +2289,30 @@ export interface Skill {
   lint?: SkillLintFinding[]
   /** Skills from outside (a link or Hermes): the safety check, run again on the files as they are now (#146). */
   vetting?: SkillVetting | null
+  /** How to check the skill works, from its `validate` header (#386). */
+  validate?: SkillCheck[]
+  /** The last run of those checks, or null when it declares none or they haven't run. */
+  check?: SkillCheckReport | null
+}
+
+/** One check in a skill's `validate` header: a file that must exist, or Python run in the code sandbox. */
+export interface SkillCheck {
+  file?: string
+  run?: string
+  /** Text the file or the output must contain. */
+  expect?: string
+  timeout_s?: number
+}
+
+/** `waiting`: a code check runs when the user approves. `not_run`: it can't run here (the detail says why). */
+export interface SkillCheckReport {
+  status: 'passed' | 'failed' | 'waiting' | 'not_run'
+  results: { kind: 'file' | 'run'; target: string; ok: boolean | null; detail: string }[]
+  checked_at: string
 }
 
 export interface SkillLintFinding {
-  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | string
+  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | 'validate' | string
   level: 'error' | 'warning'
   message: string
 }

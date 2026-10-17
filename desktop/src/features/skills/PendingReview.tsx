@@ -14,6 +14,7 @@ import { ReviewNowButton } from './actions'
 import { DiffView } from './DiffView'
 import { LintList } from './LintList'
 import { SafetyReport, vetSourceLabel } from './SafetyReport'
+import { SkillChecks, checkWaits } from './SkillChecks'
 import { AuthorBadge } from './SkillCard'
 import { SkillBody } from './SkillDetail'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
@@ -164,6 +165,7 @@ function ReviewCard({
       })
     } catch (e) {
       if (prev) qc.setQueryData(qk.skills.all, prev)
+      void qc.invalidateQueries({ queryKey: qk.skills.all }) // a failed check is shown on the card (#386)
       toast.error("Couldn't approve", { description: errorMessage(e) })
       setBusy(null)
     }
@@ -255,6 +257,8 @@ function ReviewCard({
         ) : null}
         <LintList findings={vetting ? pending.lint?.filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule)) : pending.lint} title={pending.lint?.some((f) => f.level === 'error') ? 'Check this proposal carefully' : 'Suggestions for this proposal'} />
 
+        <SkillChecks skill={pending} />
+
         {/* content */}
         {draft ? (
           <SkillEditor draft={draft} onChange={setDraft} minHeight={360} />
@@ -334,7 +338,7 @@ function ReviewCard({
               Edit
             </Button>
             <Button variant="primary" leftIcon={<IconCheck size={15} />} disabled={!!busy} loading={busy === 'approve'} onClick={() => void approve()}>
-              {repair ? 'Approve fix' : isUpdate ? 'Approve update' : 'Approve skill'}
+              {checkWaits(pending) ? 'Approve and run check' : repair ? 'Approve fix' : isUpdate ? 'Approve update' : 'Approve skill'}
             </Button>
           </>
         )}

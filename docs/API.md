@@ -1729,14 +1729,38 @@ facts). Bulk and consolidation changes publish `memory.updated` with `reason` (`
 
 ## 8. Skills & self-evolution
 
-**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool, browser_profile: "<name>"|null}`
+**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool, browser_profile: "<name>"|null, validate: [SkillCheck], check: CheckReport|null}`
 (`browser_profile` comes from the skill's frontmatter; once `skill_view` reads that skill, the run's browser tools use
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
-**Lint finding** `{rule: "frontmatter|required|size|reference|danger|hidden|outbound|log_shaped|sections", level: "error|warning", message}`
+**Skill checks (#386, ADR 0010 amendment).** A skill can say how to check it works, under `validate` in its header:
+one check or a list of up to five. **SkillCheck** `{file: "<path>", expect?}` (the file exists, in the skill's
+folder or else Sentient's files folder, never outside them; `expect`: text it must contain) or `{run: "<python>",
+expect?, timeout_s: 5-120 (default 30)}` (runs in the code sandbox, section 11, with read-only tools; `expect`: text
+its printed output or result must contain; otherwise it must finish without an error). Unknown keys are ignored; an
+unusable check is dropped with a `validate` lint warning. **CheckReport** `{status: "passed"|"failed"|"waiting"|
+"not_run", results: [{kind: "file"|"run", target, ok: true|false|null, detail}], checked_at}` is the last run, kept
+in `skill_stats.check_report` for the active skill and `pending_check_report` for its pending proposal (`check` on a
+Skill is its own copy's; `null` when it declares no checks or they haven't run). A check of `SKILL.md` reads the steps
+of the version about to be saved, without its header. The checks run:
+- before a reviewer, repair or curator proposal is staged. File checks run then. Code checks never run in this
+  background work (ADR 0017) and are `waiting` (`ok: null`). A failing proposal is dropped and logged as
+  `skill_check_failed {name, reason, session_id?|task_id?|repair?|curator?}`, with no notification. The reviewer may
+  add `validate` to its answer; a repair or merge keeps every check the skill had and adds new ones (at most five).
+- before `skill_save` changes a skill that has checks: a failure returns `{error}` and nothing is saved, and a
+  `waiting` code check makes the change wait for review.
+- on `POST /api/skills/{name}/approve`, again, with code: the approve click is the user's yes (the app labels the
+  button "Approve and run check"). A failure returns 409 "The skill's check failed: <reason>. It is still waiting for
+  your review." and logs `skill_check_failed {name, reason, by: "user"}`. Approving an update keeps the skill's other
+  files (a proposal holds only its SKILL.md), so a check of `scripts/x.py` stays true.
+
+A code check is `not_run` with a plain `detail` when code execution is off, `execute_code` has a Never rule or a Read
+only setting, or the skill came from outside (vetting, ADR 0027).
+
+**Lint finding** `{rule: "frontmatter|required|size|reference|danger|hidden|outbound|log_shaped|sections|validate", level: "error|warning", message}`
 (plain sentences for the Skills screen; `sentient/skills/lint.py` lists the rules. `danger` is always an `error`.
-`danger` also covers sending the user's data to a fixed address, reading secrets or the keychain, hiding what it does
+`danger` also reads the code of `run` checks, and covers sending the user's data to a fixed address, reading secrets or the keychain, hiding what it does
 from the user and giving Sentient new orders, and reads text with invisible characters removed. `hidden`: invisible
 characters, text styled to be invisible, hidden comments (an `error` when they hold instructions or an address) and
 text pushed out of view. `outbound` (a `warning`): it always sends to one fixed address.)
@@ -1771,6 +1795,7 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
 - `PUT /api/skills/{name}` `{description?, body?, tags?, requires_tools?}` → `Skill & {body, lint}` (edits the active skill, else the pending proposal; bumps `version` of active skills; an edit to the active skill makes it `user_edited`)
 - `POST /api/skills/{name}/reset` → `Skill & {body, lint}` (puts back the original, undoing the user's edits; 404 no active skill or no original, 409 nothing to undo; evolution log `skill_reset {name, by: "user"}`)
 - `POST /api/skills/{name}/approve` | `/archive` | `/restore` → `Skill`; `/reject` → `{ok}` (404 when there is nothing to act on; restore 409 if an active skill has that name)
+  - `approve` runs the skill's checks first (see Skill checks above; 409 when one fails).
   - `approve` takes `{accept_risk?: bool}`: a skill from outside whose `vetting.verdict` is `high` is declined by default, so
     approving it returns 409 unless `accept_risk` is true. Approving records the approved hash and logs `source` and
     `verdict` on `skill_created`. Rejecting a skill from outside deletes its lock record and logs
@@ -1778,7 +1803,7 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
 - `DELETE /api/skills/{name}` → `{ok}`
 - `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed, user_edited, changed_since_proposal}`
 - `POST /api/skills/review-now` `{session_id?}` → `{reviewed, proposed: [name]}` (with `session_id`: review that chat now; without: every chat with enough tool calls not yet reviewed, plus completed task runs seen on the bus)
-- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_archived|skill_reset|skill_imported|skill_import_declined|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
+- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_check_failed|skill_archived|skill_reset|skill_imported|skill_import_declined|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
 
 Skills proposed by the background reviewer or curator always land in pending with a `skill` notification `payload: {skill, action: "create"|"patch", origin}`.
 Repair proposals (section 15) send `payload: {skill, action: "patch", origin: "repair", reason, session_id?, turn_id?, task_id?, run_id?}` with title "Skill fix to review".

@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Skills can say how to check they work.** A skill can list a file that must exist or a few lines of Python with the
+  output they should print. Sentient checks a skill it drafted for itself before it shows it to you, and doesn't
+  propose one that fails. A check that runs code waits until you approve the skill (the button says "Approve and run
+  check"), then runs in the code sandbox without your keys, and the skill is only saved if it passes. The Skills
+  screen shows each check and how it went (#386).
 - **Home Assistant devices are checked after Sentient changes them.** A moment after it turns on a light, locks a
   door, opens the blinds, arms the alarm or sets the thermostat, Sentient asks Home Assistant for the device's state
   again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly

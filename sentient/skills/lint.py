@@ -14,6 +14,8 @@ something unsafe) or ``warning`` (it works but could be better). Rules:
 - ``outbound``: it always sends something to one fixed email address or web address (a warning: check who it is)
 - ``log_shaped``: it reads like a diary of past runs instead of a lesson ("lessons, not logs")
 - ``sections``: there is no Procedure section
+- ``validate``: a check in the ``validate`` header can't be used (``sentient/skills/checks.py``, #386); the ``danger``
+  rules read a check's code too
 
 The linter never blocks a user's own save. ``skill_save`` stages a skill with a ``danger`` finding for review.
 """
@@ -26,6 +28,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from sentient.skills.checks import parse as parse_checks
 
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
@@ -357,7 +361,11 @@ def lint_text(
         for tool in [str(t) for t in requires if str(t) not in known_tools][:5]:
             out.append(_finding("reference", "warning", f"It needs the {tool} tools, which aren't installed or turned on."))
 
-    out.extend(security_findings(body + "\n" + description, hidden_in=text))
+    declared, problems = parse_checks(meta.get("validate")) if header_ok else ([], [])
+    for problem in problems:
+        out.append(_finding("validate", "warning", problem))
+    code = "\n".join(str(c["run"]) for c in declared if "run" in c)
+    out.extend(security_findings(body + "\n" + description + ("\n" + code if code else ""), hidden_in=text))
 
     dated = sum(1 for line in body.splitlines() if _DATED_LINE.match(line))
     diary = len(_DIARY.findall(body))
