@@ -148,9 +148,11 @@ function ChatView({
   // ?message=<id> (a memory's source, #152): scroll to that message once it is on screen, and mark it a moment
   const focusId = new URLSearchParams(useLocation().search).get("message")
   const loadedAll = !messages.isFetching
+  const focused = useRef<string | null>(null) // done once per link, not again when the chat refetches
   useEffect(() => {
-    if (!focusId || items.length === 0 || !loadedAll) return
+    if (!focusId || items.length === 0 || !loadedAll || focused.current === focusId) return
     const t = window.setTimeout(() => {
+      focused.current = focusId
       const el = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(focusId)}"]`)
       if (!el) {
         // this view shows a chat's newest 500 messages: say so rather than leave the user guessing
