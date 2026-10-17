@@ -142,8 +142,10 @@ desktop app renders the connect screen from your plugin, so most integrations ne
 
 ## Using AI coding assistants
 
-Welcome. Point your assistant at [CLAUDE.md](CLAUDE.md) (also linked from `AGENTS.md`). You are still the
-author: read the diff, run the checks, and make sure the PR description is yours and accurate.
+Welcome. Point your assistant at [CLAUDE.md](CLAUDE.md) (also linked from `AGENTS.md`). How agents work
+here (testing for real, sharing one computer, what goes in the PR) is in
+[docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md). You are still the author: read the diff, run the checks, and
+make sure the PR description is yours and accurate.
 
 ## Contributor License Agreement
 
