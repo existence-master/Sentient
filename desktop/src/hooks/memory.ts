@@ -8,6 +8,7 @@ import { qk } from './queryKeys'
 export function invalidateForgotten(qc: QueryClient) {
   void qc.invalidateQueries({ queryKey: qk.memories.all })
   void qc.invalidateQueries({ queryKey: qk.sessions })
+  void qc.invalidateQueries({ queryKey: qk.allMessages }) // an app's results in chats were replaced
   void qc.invalidateQueries({ queryKey: qk.timeline.all })
 }
 

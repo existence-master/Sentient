@@ -1134,7 +1134,7 @@ export interface DomainEventMap {
   'integration.updated': Integration
   'memory.updated': MemoryUpdatedData
   /** "Also forget what Sentient learned from it" ran for a source (#153). */
-  'memory.forgotten': { id: string; source: string; label: string; counts: ForgetCounts; at: string }
+  'memory.forgotten': { id: string; source: string; label: string; counts: Omit<ForgetCounts, 'source'>; at: string }
   'skill.updated': { name: string; state: SkillState }
   /** A server's tools wait for review, or the user answered (#146). */
   'mcp.review': { server: string; reason?: 'new' | 'changed'; tools?: string[]; needed: boolean }

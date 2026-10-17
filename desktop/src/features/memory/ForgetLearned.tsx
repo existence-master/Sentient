@@ -29,7 +29,8 @@ export function forgetParts(c: ForgetCounts): string {
 export function forgottenMessage(c?: ForgetCounts | null): string | undefined {
   if (!c) return undefined
   const what = forgetParts(c)
-  return what ? `Forgot ${what}.` : 'There was nothing to forget.'
+  if (what) return `Forgot ${what}.`
+  return c.shared ? `Unlinked ${count(c.shared, 'memory', 'memories')} you also shared elsewhere.` : 'There was nothing to forget.'
 }
 
 /** The box's state, cleared each time the dialog opens. */
@@ -63,7 +64,7 @@ export function ForgetLearned({
   })
   const c = preview.data
   const what = c ? forgetParts(c) : ''
-  const nothing = !!c && !what
+  const nothing = !!c && !what && !c.shared
   // nothing to forget: the box can't stay ticked (a deep link may have ticked it)
   useEffect(() => {
     if (nothing && checked) onCheckedChange(false)
@@ -72,6 +73,7 @@ export function ForgetLearned({
   if (preview.isPending) line = 'Counting what Sentient learned from it...'
   else if (preview.isError || !c) line = "Couldn't count what Sentient learned from it. Ticking the box still forgets all of it."
   else if (nothing) line = "Sentient hasn't learned anything from it yet."
+  else if (!what) line = 'Nothing it learned comes only from here.'
   else line = `Forget ${what}.`
 
   return (
@@ -94,7 +96,7 @@ export function ForgetLearned({
         <span className="block text-sm font-medium text-fg">Also forget what Sentient learned from it</span>
         <span id={`forget-${source}`} className="mt-0.5 block text-xs text-fg-muted">
           {line}
-          {c && c.shared > 0 && ` ${count(c.shared, 'memory', 'memories')} you also shared elsewhere ${c.shared === 1 ? 'stays' : 'stay'}.`}
+          {c && c.shared > 0 && ` ${count(c.shared, 'memory', 'memories')} you also shared elsewhere ${c.shared === 1 ? 'stays' : 'stay'}, no longer linked to it.`}
           {extra && ` ${extra}`}
           {!checked && !nothing && ' Leave it clear to keep everything.'}
         </span>

@@ -1101,6 +1101,8 @@ class FactMemory:
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
             log.info("kept from the user's own words although the chat read outside content: %r", fact)
             review = None
+        # held because the chat read outside content (decided before an instruction note can replace the reason)
+        outside = review is not None and review.get("reason") != reviews.INSTRUCTION
         if source == "conversation" and reviews.instruction_shaped(fact):
             log.info("held for review as an instruction: %r", fact)
             if review is None:
@@ -1112,8 +1114,7 @@ class FactMemory:
             # a chat in a messaging app or on a device is that app's (#153), and also the apps and folders it read
             try:
                 first, read = await origins.of_session(self.store, session_id)
-                held = review is not None and review.get("reason") != reviews.INSTRUCTION
-                source, *others = origins.sources_for(fact, first, read, held=held, user_name=user)
+                source, *others = origins.sources_for(fact, first, read, held=outside, user_name=user)
             except Exception as exc:
                 log.debug("sources of chat %s unknown: %s", session_id, exc)
         if review is not None:
