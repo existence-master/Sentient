@@ -4,6 +4,7 @@
  * computer, signed in by the user, and never reads that login.
  */
 import { IconAlertTriangle, IconCheck, IconExternalLink, IconTerminal2 } from '@tabler/icons-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Skeleton, StatusDot, Switch } from '@/components/ui'
@@ -13,6 +14,7 @@ import { ModelTest } from '@/features/models/ModelTest'
 import { SchemaForm } from '@/features/settings/SchemaForm'
 import { useConfigEditor } from '@/hooks/config'
 import { useClaudeCodeStatus, useHardware, useLocalModels, useSetRoles } from '@/hooks/models'
+import { qk } from '@/hooks/queryKeys'
 import { errorMessage } from '@/lib/api'
 import { claudeCodeState, isClaudeCode, otherModel, refusingRoles } from '@/lib/claudeCode'
 import { modelShortName, recommendFastLocal, recommendLocal, ROLE_META } from '@/lib/models'
@@ -42,7 +44,8 @@ export function ClaudeCodePanel({
   onUseForChat: (model: string) => void
   onUseForEverything: (primary: string, fast: string) => void
 }) {
-  const { config, patch } = useConfigEditor()
+  const qc = useQueryClient()
+  const { config, patch, flush } = useConfigEditor()
   const enabled = !!config?.models.experimental_claude_code
   const everywhere = enabled && !!config?.models.claude_code_everywhere
   const status = useClaudeCodeStatus(enabled)
@@ -53,14 +56,19 @@ export function ClaudeCodePanel({
   const state = claudeCodeState(enabled, everywhere)
   const maxConcurrent = config?.models.claude_code_max_concurrent ?? 2
 
-  const setEnabled = (on: boolean) =>
-    patch({ models: on ? { experimental_claude_code: true } : { experimental_claude_code: false, claude_code_everywhere: false } }, { immediate: true })
+  // Saved at once, then every Claude Code status is asked again: the roles that may use it change with the switches
+  const save = async (models: Record<string, boolean>) => {
+    patch({ models })
+    await flush()
+    void qc.invalidateQueries({ queryKey: qk.claudeCodeAll })
+  }
+  const setEnabled = (on: boolean) => void save(on ? { experimental_claude_code: true } : { experimental_claude_code: false, claude_code_everywhere: false })
   const turnOnEverything = () => {
-    patch({ models: { experimental_claude_code: true, claude_code_everywhere: true } }, { immediate: true })
+    void save({ experimental_claude_code: true, claude_code_everywhere: true })
     toast.success('Claude Code can now do everything', { description: 'Pick it for each job below, or under Roles.' })
   }
   const turnOffEverything = () => {
-    patch({ models: { claude_code_everywhere: false } }, { immediate: true })
+    void save({ claude_code_everywhere: false })
     toast.success('Claude Code answers only your chats again', { description: 'Jobs that used it move to another model.' })
   }
   const allOnClaudeCode = isClaudeCode(primary) && isClaudeCode(fast)
