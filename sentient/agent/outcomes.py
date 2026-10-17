@@ -57,7 +57,8 @@ _NEGATED_BROWSER_CLICK = re.compile(
 _OTHER_PERSON_BROWSER_CLICK = re.compile(
     r"\b(?:you|he|she|they|someone|anyone|a friend|my friend)\b[^.!?]{0,50}\bclicked\b", re.I
 )
-_ASSISTANT_BROWSER_CLICK = re.compile(r"\b(?:i|we|sentient)\s+(?:have\s+)?clicked\b|\bclicked\s+(?:it|the\b)", re.I)
+_ASSISTANT_BROWSER_CLICK = re.compile(r"\b(?:i|we|sentient)\s+(?:have\s+)?clicked\b", re.I)
+_PRIOR_BROWSER_CLICK_REFERENCE = re.compile(r"\b(?:it|that|previous(?:ly)?|earlier|last)\b", re.I)
 
 # an MCP tool's kind from its name (servers declare nothing like it)
 _NAME_KINDS: list[tuple[str, re.Pattern, re.Pattern]] = [
@@ -301,7 +302,7 @@ def claimed(text: str, kind: str | None) -> bool:
     return bool((_CLAIMS.get(kind or "") or _CLAIM_ANY).search(text or ""))
 
 
-def unmade_browser_click_note(text: str, calls: list[dict]) -> str:
+def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] | None = None) -> str:
     """A short correction when a reply says it clicked although this turn did not.
 
     Small local models occasionally state that a browser click happened without making
@@ -309,13 +310,23 @@ def unmade_browser_click_note(text: str, calls: list[dict]) -> str:
     narrow: it only corrects the completed form of ``click`` and only looks at calls
     recorded by the loop, never at text supplied by a page or the user.
     """
-    if not _BROWSER_CLICK_CLAIM.search(text or ""):
+    current_clicks = [call for call in calls if call.get("name") == "browser_click"]
+    claims = re.split(r"(?<=[.!?])\s+", text or "")
+    has_claim = any(
+        _ASSISTANT_BROWSER_CLICK.search(claim)
+        or (
+            current_clicks
+            and _BROWSER_CLICK_CLAIM.search(claim)
+            and not _NEGATED_BROWSER_CLICK.search(claim)
+            and not _OTHER_PERSON_BROWSER_CLICK.search(claim)
+        )
+        for claim in claims
+    )
+    if not has_claim:
         return ""
-    if _NEGATED_BROWSER_CLICK.search(text) or _OTHER_PERSON_BROWSER_CLICK.search(text):
-        return ""
-    if not calls and not _ASSISTANT_BROWSER_CLICK.search(text):
-        return ""
-    clicks = [call for call in calls if call.get("name") == "browser_click"]
+    clicks = current_clicks
+    if not clicks and _PRIOR_BROWSER_CLICK_REFERENCE.search(text):
+        clicks = [call for call in history or [] if call.get("name") == "browser_click"]
     if clicks and clicks[-1].get("ok"):
         return ""
     if clicks and clicks[-1].get("declined"):

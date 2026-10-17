@@ -418,6 +418,8 @@ class LoopResult:
     checks: list[dict] = field(default_factory=list)
     # browser clicks attempted in this run, recorded by code so a final reply cannot invent one (#402)
     browser_clicks: list[dict] = field(default_factory=list)
+    # completed browser clicks from earlier chat turns, consulted only for an explicit reference to one (#402)
+    browser_click_history: list[dict] = field(default_factory=list)
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -932,7 +934,9 @@ class Agent:
                     result.from_findings = True
                     log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
                     yield TextDelta(text=text_acc, **ev)
-                if note := outcomes.unmade_browser_click_note(text_acc, result.browser_clicks):
+                if note := outcomes.unmade_browser_click_note(
+                    text_acc, result.browser_clicks, result.browser_click_history
+                ):
                     correction = f"\n\nCorrection: {note}"
                     text_acc += correction
                     yield TextDelta(text=correction, **ev)
@@ -1064,7 +1068,9 @@ class Agent:
 
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
-        if note := outcomes.unmade_browser_click_note(result.text, result.browser_clicks):
+        if note := outcomes.unmade_browser_click_note(
+            result.text, result.browser_clicks, result.browser_click_history
+        ):
             correction = f"\n\nCorrection: {note}"
             result.text += correction
             yield TextDelta(text=correction, **ev)
@@ -1741,7 +1747,7 @@ class Agent:
             system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
-            result.browser_clicks.extend(browser_click_history(history))
+            result.browser_click_history.extend(browser_click_history(history))
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the

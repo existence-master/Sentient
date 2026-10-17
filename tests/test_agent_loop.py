@@ -81,6 +81,7 @@ async def test_approval_gate_deny_and_allow(config, isolated_home):
         sid = await s.store.create_session(channel="cli")
 
         async def deny(ev):
+            """Decline the browser-click approval shown by this test."""
             if isinstance(ev, ApprovalRequest):
                 assert ev.risk == "write"
                 s.approvals.resolve(ev.approval_id, "deny")
@@ -91,6 +92,7 @@ async def test_approval_gate_deny_and_allow(config, isolated_home):
         assert sent == []
 
         async def allow(ev):
+            """Allow the postcard approval shown by this test."""
             if isinstance(ev, ApprovalRequest):
                 s.approvals.resolve(ev.approval_id, "allow_session")
 
@@ -126,6 +128,7 @@ async def test_reply_corrects_a_browser_click_the_user_declined(config, isolated
         sid = await s.store.create_session(channel="cli")
 
         async def deny(ev):
+            """Decline the browser-click approval shown by this test."""
             if isinstance(ev, ApprovalRequest):
                 s.approvals.resolve(ev.approval_id, "deny")
 
@@ -182,6 +185,17 @@ def test_browser_click_correction_uses_the_latest_call():
     assert outcomes.unmade_browser_click_note("The button hasn't been clicked yet.", []) == ""
     assert outcomes.unmade_browser_click_note("My friend clicked a link in a phishing email.", []) == ""
     assert outcomes.unmade_browser_click_note("The subscription button was clicked.", []) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I did not click A, but I clicked B.", []
+    ) == "I didn't click it, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "You clicked A, and I clicked B.", []
+    ) == "I didn't click it, so nothing changed on the page."
+    prior_success = [{"name": "browser_click", "ok": True}]
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the upgrade button.", [], prior_success
+    ) == "I didn't click it, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note("I clicked it.", [], prior_success) == ""
 
 
 async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, isolated_home):
@@ -193,6 +207,7 @@ async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, 
         sid = await s.store.create_session(channel="cli")
 
         async def deny(ev):
+            """Decline the browser-click approval shown by this test."""
             if isinstance(ev, ApprovalRequest):
                 s.approvals.resolve(ev.approval_id, "deny")
 
