@@ -499,16 +499,38 @@ def normalize_script(
     return out
 
 
-# the user asks to hear about a change itself ("when it changes", "anything", "everything"): no AI check decides that.
-# Not a bare "every": "every 10 minutes" is a schedule. "important changes" (group 1) asks for the AI check.
-_ANY_CHANGE = re.compile(
-    r"\b(?:(important|big|major|significant|meaningful)\s+)?chang(?:e|es|ed|ing)\b|\bany\s?thing\b|\bevery\s?thing\b",
+# The newest request about updates wins. A question about a page is not a request to change its watch setting;
+# neither is a bare use of "change" as a verb. Requests for every update must say that positively.
+_NOTEWORTHY_REQUEST = re.compile(
+    r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?(?:changes?|updates?|stuff)\b"
+    r"|\b(?:ignore|skip|don't|do not)\s+(?:\w+\s+)?(?:minor|small|little)\s+(?:changes?|updates?)\b",
+    re.IGNORECASE,
+)
+_EVERY_CHANGE_REQUEST = re.compile(
+    r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
+    r"|\bwhenever\b[^.?!]{0,80}\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^.?!]{0,80}\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^.?!]{0,80}\b(?:anything|everything)\s+(?:at\s+all|new)\b",
     re.IGNORECASE,
 )
 
 
-def _asks_for_any_change(request: str) -> bool:
-    return any(not m.group(1) for m in _ANY_CHANGE.finditer(request or ""))
+def _change_preference(message: str) -> str | None:
+    """``changed`` or ``noteworthy`` when one user message says which updates to report."""
+    if message.rstrip().endswith("?"):
+        return None
+    preferences = [(match.start(), "noteworthy") for match in _NOTEWORTHY_REQUEST.finditer(message)]
+    preferences += [(match.start(), "changed") for match in _EVERY_CHANGE_REQUEST.finditer(message)]
+    return max(preferences, default=(0, None), key=lambda preference: preference[0])[1]
+
+
+def _latest_change_preference(request: str | list[str]) -> str | None:
+    messages = request.split("\n") if isinstance(request, str) else request
+    for message in reversed(messages):
+        preference = _change_preference(str(message or ""))
+        if preference is not None:
+            return preference
+    return None
 
 
 def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
@@ -547,14 +569,17 @@ def returns_whole_page(code: str) -> bool:
     )
 
 
-def planner_default(script: dict, request: str, previous: dict | None = None) -> dict:
+def planner_default(script: dict, request: str | list[str], previous: dict | None = None) -> dict:
     """A ``changed`` check the planner proposes that returns a whole fetched page becomes ``noteworthy`` (#298): a
     view counter or a timestamp there would notify on every check. One value taken out of the page, a search, a
-    request that talks about a change ("changes", "anything", "everything", but not "important changes") and a task
-    already on ``changed`` keep ``changed``."""
-    if script.get("condition") != "changed" or (previous or {}).get("condition") == "changed":
+    request whose newest update preference is every change keeps ``changed``. A newer request for important changes
+    switches an existing ``changed`` task back to ``noteworthy``."""
+    if script.get("condition") != "changed":
         return script
-    if _asks_for_any_change(request) or not returns_whole_page(script.get("code") or ""):
+    if not returns_whole_page(script.get("code") or ""):
+        return script
+    preference = _latest_change_preference(request)
+    if preference == "changed" or (preference is None and (previous or {}).get("condition") == "changed"):
         return script
     return {**script, "condition": "noteworthy"}
 
