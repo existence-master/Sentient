@@ -1033,6 +1033,10 @@ class Agent:
 
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
+        if note := outcomes.unmade_browser_click_note(result.text, result.browser_clicks):
+            correction = f"\n\nCorrection: {note}"
+            result.text = f"{result.text.rstrip()}{correction}"
+            yield TextDelta(text=correction, **ev)
         result.messages = messages
 
     async def _model_stream(
@@ -1444,6 +1448,7 @@ class Agent:
                 "name": tc.name,
                 "declined": declined,
                 "ok": ran and not is_error and not err and outcomes.result_problem(res) is None,
+                "uncertain": ran and (is_error or bool(err)),
             })
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):

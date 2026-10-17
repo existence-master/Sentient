@@ -309,6 +309,8 @@ def unmade_browser_click_note(text: str, calls: list[dict]) -> str:
         return ""
     if clicks and clicks[-1].get("declined"):
         return "I didn't click it: you declined."
+    if clicks and clicks[-1].get("uncertain"):
+        return "I couldn't confirm whether it was clicked."
     return "I couldn't click it." if clicks else "I haven't clicked anything yet."
 
 

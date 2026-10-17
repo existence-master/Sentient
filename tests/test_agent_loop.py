@@ -2,6 +2,7 @@
 from sentient.agent import outcomes
 from sentient.app import SentientApp
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
+from sentient.llm.provider import StreamChunk, ToolCall
 from tests.conftest import FakeProvider, tool_call
 
 
@@ -103,6 +104,7 @@ async def test_approval_gate_deny_and_allow(config, isolated_home):
 
 
 async def test_reply_corrects_a_browser_click_it_never_made(config, isolated_home):
+    """A natural-language click claim needs evidence from a browser click call."""
     llm = FakeProvider(replies=["The subscription button was clicked."])
     s = await SentientApp(config, llm=llm, db_path=isolated_home / "never-clicked.db").start()
     try:
@@ -116,6 +118,7 @@ async def test_reply_corrects_a_browser_click_it_never_made(config, isolated_hom
 
 
 async def test_reply_corrects_a_browser_click_the_user_declined(config, isolated_home):
+    """A denied browser-click approval must remain visible in the final reply."""
     config.tools.approvals.mode = "ask"
     llm = FakeProvider(replies=[[tool_call("browser_click", ref="e1")], "It was clicked, but the action was declined."])
     s = await SentientApp(config, llm=llm, db_path=isolated_home / "declined-click.db").start()
@@ -135,7 +138,35 @@ async def test_reply_corrects_a_browser_click_the_user_declined(config, isolated
         await s.stop()
 
 
+async def test_step_limit_corrects_a_declined_browser_click_claim(config, isolated_home):
+    """A streamed claim is corrected even when its tool call exhausts the final round."""
+    class ClaimAndClick(FakeProvider):
+        async def stream(self, role, messages, tools=None, *, model=None):
+            """Stream a textual click claim and its tool call in one final round."""
+            self.calls.append({"role": role, "messages": messages, "tools": tools, "model": model})
+            yield StreamChunk(text="The subscription button was clicked.", model="fake")
+            yield StreamChunk(done=True, tool_calls=[ToolCall(**tool_call("browser_click", ref="e1"))], model="fake")
+
+    config.models.max_tool_rounds = 1
+    config.tools.approvals.mode = "ask"
+    s = await SentientApp(config, llm=ClaimAndClick(), db_path=isolated_home / "limit-click.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async def deny(ev):
+            if isinstance(ev, ApprovalRequest):
+                s.approvals.resolve(ev.approval_id, "deny")
+
+        events = await _collect(s.agent, sid, "click the subscription button", deny)
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text.endswith("Correction: I didn't click it: you declined.")
+        assert isinstance(events[-1], Done) and events[-1].content == text
+    finally:
+        await s.stop()
+
+
 def test_browser_click_correction_uses_the_latest_call():
+    """The latest known click outcome controls its correction wording."""
     assert outcomes.unmade_browser_click_note(
         "The button was clicked.", [{"name": "browser_click", "ok": True, "declined": False}]
     ) == ""
@@ -145,6 +176,9 @@ def test_browser_click_correction_uses_the_latest_call():
             {"name": "browser_click", "ok": False, "declined": True},
         ]
     ) == "I didn't click it: you declined."
+    assert outcomes.unmade_browser_click_note(
+        "The button was clicked.", [{"name": "browser_click", "ok": False, "uncertain": True}]
+    ) == "I couldn't confirm whether it was clicked."
 
 
 async def test_internal_tools_do_not_prompt_in_ask_mode(config, isolated_home):
