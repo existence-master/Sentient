@@ -208,9 +208,11 @@ class SentientApp:
 
     def _note_claude_code(self, moved: list[dict]) -> None:
         """One notification saying which roles left Claude Code and which still need a model."""
+        off = not self.config.models.experimental_claude_code  # turned off altogether, not just back to chats
+        title = "Claude Code is turned off" if off else "Claude Code is back to chats only"
         try:
             task = asyncio.get_running_loop().create_task(
-                self.notify("info", claude_code.leftover_note(moved), title="Claude Code is back to chats only",
+                self.notify("info", claude_code.leftover_note(moved, off=off), title=title,
                             payload={"kind": "claude_code_roles", "moved": moved})
             )
         except RuntimeError:  # no running loop (a command-line change): the log above says it

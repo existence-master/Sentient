@@ -23,7 +23,7 @@ from sentient.app import SentientApp
 from sentient.llm import claude_code, meter
 from sentient.llm.claude_code_tools import NOT_HERE, handle
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
-from sentient.llm.provider import LiteLLMProvider, ModelRefused, ProviderError
+from sentient.llm.provider import LiteLLMProvider, ModelRefused, ProviderError, Stopped
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider
 
@@ -814,6 +814,7 @@ async def test_at_most_max_concurrent_run_at_once(fake_claude, everywhere, caplo
 
 async def test_stop_everything_drops_calls_still_waiting(fake_claude, everywhere):
     everywhere.models.claude_code_max_concurrent = 1
+    everywhere.models.fallbacks["fast"] = ["fake/next"]  # never tried: everything was meant to stop
     fake_claude.scenario("hang")
     llm = Provider(everywhere)
 
@@ -834,7 +835,7 @@ async def test_stop_everything_drops_calls_still_waiting(fake_claude, everywhere
     assert claude_code.kill_all() == 1
     done = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 30)
     assert all(isinstance(r, ProviderError) for r in done)
-    assert claude_code.STOPPED in str(done[1])
+    assert isinstance(done[1], Stopped) and str(done[1]) == claude_code.STOPPED
     assert not claude_code._live and claude_code._gate.running == 0 and claude_code._gate.waiting == 0
     assert len(fake_claude.runs()) == 1  # the waiting call never started Claude Code
 
@@ -900,3 +901,16 @@ async def test_a_place_freed_during_stop_everything_goes_to_nobody(monkeypatch):
         await waiter
     assert not gate.held and gate.waiting == 0
     assert await gate.acquire(1, "the next chat") == 0.0  # after the stop, new work starts as usual
+
+
+async def test_turning_claude_code_off_altogether_says_so(make_app, fake_claude, everywhere):
+    everywhere.models.fallbacks["fast"] = ["ollama_chat/qwen3:8b"]
+    app = await make_app()
+    cfg = app.config.model_copy(deep=True)
+    cfg.models.experimental_claude_code = False  # the chats switch clears both
+    cfg.models.claude_code_everywhere = False
+    app.save_config(cfg)
+    await asyncio.gather(*list(app._notes))
+    notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("kind") == "claude_code_roles"]
+    assert len(notes) == 1 and notes[0]["title"] == "Claude Code is turned off"
+    assert notes[0]["message"].startswith("Claude Code is turned off. Fast / background now uses qwen3:8b.")

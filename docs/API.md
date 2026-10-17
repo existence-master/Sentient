@@ -684,8 +684,8 @@ accept or loosen a rule.
   model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
   (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
-  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
-  and vision, with that role's refusal and a `use_model` action for a chat model in use that isn't Claude Code, the
+  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles that
+  don't accept it, see `roles` above, with that role's refusal and a `use_model` action for a chat model in use that isn't Claude Code, the
   background model first, else the local model sized for this computer when it is downloaded; an empty planner or
   executor counts when the main model is Claude Code). Stop everything kills every running Claude Code process tree and
   drops the calls waiting for one (they fail with "Stop everything ended this before Claude Code started." and no
@@ -705,7 +705,8 @@ accept or loosen a rule.
   own model is `claude-code/*` and no longer accepts it moves to its first model that isn't Claude Code (its
   fallbacks, then `fallbacks.primary`, then the primary model); a role with no other model stays and is refused as
   before. One `info` notification says what moved (`payload: {kind: "claude_code_roles", moved: [{role, model, to}]}`,
-  `to` null when the role stayed). Usage is counted per call with its role (`claude_code_by_role` in the cost meter).
+  `to` null when the role stayed), titled "Claude Code is back to chats only", or "Claude Code is turned off" when
+  `experimental_claude_code` went off too. Usage is counted per call with its role (`claude_code_by_role` in the cost meter).
 - **Keychain namespaces (#302).** Every secret (API keys, integration tokens, channel bot tokens, MCP headers and
   sign-ins, the ChatGPT sign-in) is an OS keychain entry under one service per data folder. The default data folder
   (`~/.sentient`, used when `SENTIENT_HOME` is unset or points at it) uses the service `sentient`, the entries every

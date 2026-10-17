@@ -54,6 +54,11 @@ class BudgetReached(ModelRefused):
     code = "budget_reached"
 
 
+class Stopped(PlainProviderError):
+    """Stop everything ended this call before it started (a Claude Code call waiting its turn, #444): no fallback
+    model is tried, since everything was meant to stop."""
+
+
 class ProviderFailed(PlainProviderError):
     """A provider turned the request down for a known reason: out of credits, a rate limit, a bad key... (#280)."""
 
@@ -435,6 +440,8 @@ class LiteLLMProvider:
                     if isinstance(failure, PlainProviderError):
                         raise ProviderFailed(str(failure)) from exc
                     raise ProviderError(f"{model} stopped mid-reply: {exc}") from exc
+                if isinstance(exc, Stopped):
+                    raise
                 continue
         raise _all_failed(role, errors)
 
@@ -510,6 +517,8 @@ class LiteLLMProvider:
                     await self._count(model, role, _usage_of(resp), _response_cost(litellm, resp, model))
                     text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            except Stopped:
+                raise  # Stop everything: no fallback model
             except Exception as exc:
                 errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)
@@ -539,6 +548,8 @@ class LiteLLMProvider:
                 await self._count(model, role, _usage_of(resp), _response_cost(litellm, resp, model))
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
+            except Stopped:
+                raise  # Stop everything: no fallback model
             except Exception as exc:
                 errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)

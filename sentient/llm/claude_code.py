@@ -44,7 +44,7 @@ from typing import Any
 from sentient import paths
 from sentient.config.schema import CLAUDE_CODE_MODELS, MODEL_ROLE_NAMES, SentientConfig
 from sentient.llm import jobs
-from sentient.llm.provider import ModelRefused, ProviderError, StreamChunk, ToolCall
+from sentient.llm.provider import ModelRefused, ProviderError, Stopped, StreamChunk, ToolCall
 from sentient.sandbox.backends import (
     CREATE_NEW_PROCESS_GROUP,
     CREATE_NO_WINDOW,
@@ -183,7 +183,7 @@ class _Gate:
         stopped = 0
         for _rank, _seq, fut, _label in self._waiters:
             if not fut.done():
-                fut.set_exception(ProviderError(STOPPED))
+                fut.set_exception(Stopped(STOPPED))
                 stopped += 1
         self._waiters = []
         return stopped
@@ -412,15 +412,17 @@ ROLE_LABELS = {"primary": "Primary", "fast": "Fast / background", "planner": "Pl
                "embedding": "Embedding", "vision": "Vision", "voice": "Voice"}  # as Settings > Models names them
 
 
-def leftover_note(moved: list[dict[str, str | None]]) -> str:
-    """The note after "everything" is turned off: which roles moved where, and which still need a model."""
+def leftover_note(moved: list[dict[str, str | None]], *, off: bool = False) -> str:
+    """The note after "everything" is turned off: which roles moved where, and which still need a model. ``off``:
+    Claude Code itself was turned off too, so it doesn't answer chats either."""
     parts = []
     for item in moved:
         name = ROLE_LABELS.get(str(item["role"]), str(item["role"]))
         to = item["to"]
         parts.append(f"{name} now uses {to.split('/', 1)[-1]}." if to
                      else f"{name} has no other model, so pick one in Settings > Models.")
-    return "Claude Code answers only your chats again. " + " ".join(parts)
+    lead = "Claude Code is turned off. " if off else "Claude Code answers only your chats again. "
+    return lead + " ".join(parts)
 
 
 def refusal(config: SentientConfig, role: str | None = None) -> str | None:
