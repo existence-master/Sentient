@@ -5,6 +5,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+New entries wait in [`changes/`](changes/), one file per change, and are added here when a version is
+released.
+
+<!-- towncrier release notes start -->
+
 ### Added
 - **Skills can say how to check they work.** A skill can list a file that must exist or a few lines of Python with the
   output they should print. Sentient checks a skill it drafted for itself before it shows it to you, and doesn't

@@ -78,6 +78,12 @@ The full engine suite takes a few minutes. While you work, run just the folder y
 - Adds or updates tests. Bug fixes come with a test that failed before the fix.
 - Updates [docs/API.md](docs/API.md) in the same PR when it changes anything the desktop app and the engine
   exchange. The contract comes first.
+- Adds a changelog entry when people using Sentient will notice the change: one file,
+  `changes/<issue or PR number>.<type>.md`, such as `changes/412.fixed.md`, with a short bold first sentence in
+  plain language. Don't edit `CHANGELOG.md` itself; the entries are joined into it at release time, so pull
+  requests don't collide there. Types and examples are in [changes/README.md](changes/README.md). The
+  "Changelog entry" check asks for one when you change `sentient/`, `desktop/src/` or `packaging/`; for changes
+  nobody will notice (tests, refactoring, tooling) a maintainer adds the `no changelog` label instead.
 - Includes a screenshot or short clip for visible UI changes.
 - Keeps the product rules: no login or accounts, keys only in the keychain, every tool declares a risk, and
   sending, deleting, buying or running code asks the user first.

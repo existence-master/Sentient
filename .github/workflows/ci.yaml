@@ -67,6 +67,89 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  changelog:
+    name: Changelog entry
+    # A pull request that changes the engine, the app's screens or the installers adds a file to changes/
+    # (changes/README.md). Dependabot's version bumps and PRs labelled "no changelog" don't need one.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !contains(github.event.pull_request.labels.*.name, 'no changelog')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Look for a changes/ file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          api() { gh api -H "Accept: application/vnd.github+json" "$@"; }
+
+          # read the labels now, not from the event, so re-running this check sees a label added since
+          labels=$(api "repos/$GITHUB_REPOSITORY/issues/$PR/labels" --jq '.[].name')
+          if grep -qx 'no changelog' <<<"$labels"; then
+            echo "Labelled 'no changelog': no entry needed."
+            exit 0
+          fi
+
+          files=$(api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | "\(.status) \(.filename)"')
+          touched=$(awk '{print $2}' <<<"$files" | grep -E '^(sentient/|desktop/src/|packaging/)' || true)
+          entries=$(awk '$1 != "removed" {print $2}' <<<"$files" | grep -E '^changes/' \
+            | grep -vE '^changes/(README|template)\.md$' || true)
+          valid='^changes/([0-9]+|\+[A-Za-z0-9_-]+)\.(added|changed|deprecated|removed|fixed|security)(\.[0-9]+)?\.md$'
+          bad=$(grep -vE "$valid" <<<"$entries" | grep . || true)
+
+          if [ -n "$bad" ]; then
+            {
+              echo "### Changelog entry: file name not recognised"
+              echo
+              echo "These files in changes/ don't match \`<number>.<type>.md\`, so they would be left out of the changelog:"
+              echo
+              sed 's/^/- `/; s/$/`/' <<<"$bad"
+              echo
+              echo "Types: added, changed, deprecated, removed, fixed, security. For example \`changes/$PR.fixed.md\`."
+              echo "See changes/README.md."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "::error title=Changelog entry::A file in changes/ has a name towncrier can't read. Rename it to <number>.<type>.md (see the job summary)."
+            exit 1
+          fi
+
+          if [ -z "$touched" ]; then
+            echo "Nothing under sentient/, desktop/src/ or packaging/ changed: no entry needed."
+            exit 0
+          fi
+          if [ -n "$entries" ]; then
+            echo "Changelog entry: $(tr '\n' ' ' <<<"$entries")"
+            exit 0
+          fi
+
+          # suggest the issue the PR closes (outside the template's comments), or else the PR's own number
+          body=$(api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.body // ""' | perl -0pe 's/<!--.*?-->//gs')
+          number=$(grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+' <<<"$body" \
+            | grep -oE '[0-9]+' | head -n1 || true)
+          number=${number:-$PR}
+          {
+            echo "### Changelog entry missing"
+            echo
+            echo "This pull request changes \`sentient/\`, \`desktop/src/\` or \`packaging/\` but adds no file to \`changes/\`."
+            echo
+            echo "Add one file, \`changes/$number.<type>.md\`, where \`<type>\` is \`added\`, \`changed\`, \`deprecated\`,"
+            echo "\`removed\`, \`fixed\` or \`security\`. Write it for people who use Sentient: plain language and a short bold"
+            echo "first sentence. The number is added at the end for you. For example \`changes/$number.fixed.md\`:"
+            echo
+            echo '```markdown'
+            echo '**Paused tasks stay paused after a restart.** Before, Sentient started them again when it opened.'
+            echo '```'
+            echo
+            echo "More in [changes/README.md](https://github.com/$GITHUB_REPOSITORY/blob/main/changes/README.md)."
+            echo "If nothing here changes what people see (tests, refactoring, build tooling), a maintainer can add the"
+            echo "\`no changelog\` label and re-run this check."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::error title=Changelog entry missing::Add changes/$number.<type>.md (type: added, changed, deprecated, removed, fixed or security), e.g. changes/$number.fixed.md with one bold sentence for users. See the job summary or changes/README.md."
+          exit 1
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
