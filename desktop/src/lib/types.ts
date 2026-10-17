@@ -166,6 +166,10 @@ export interface ModelsConfig {
   budget_at_limit?: 'ask' | 'stop'
   /** Experimental: claude-code/<model> answers chats through the user's own Claude Code (ADR 0022). */
   experimental_claude_code?: boolean
+  /** Claude Code does everything, not just chats (ADR 0032); only counts with experimental_claude_code on. */
+  claude_code_everywhere?: boolean
+  /** Most Claude Code runs at once; more wait their turn, chats first. */
+  claude_code_max_concurrent?: number
   max_tool_rounds: number
   request_timeout_s: number
   /** #149: one local model job at a time, chats first; background waits after a chat and on battery. */
@@ -625,6 +629,8 @@ export interface CostPeriod {
   local_tokens: number
   by_model: Array<CostRow & { model: string; billing: Billing }>
   by_role: Array<CostRow & { role: string; plan_calls: number; local_calls: number }>
+  /** Claude Code calls by the role that made them, most tokens first (#444). Missing from older engines. */
+  claude_code_by_role?: Array<{ role: string; calls: number; prompt_tokens: number; completion_tokens: number }>
 }
 
 export interface BudgetState {
@@ -724,8 +730,16 @@ export interface ClaudeCodeStatus {
   version: string | null
   detail: string
   models: string[]
-  /** The roles that may use Claude Code, the ones that answer chats (#442). Missing from older engines. */
+  /** The quick-jobs model when Claude Code does everything (claude-code/haiku). */
+  fast_model?: string
+  /** Claude Code does everything, not just chats (`models.claude_code_everywhere`, ADR 0032). Missing from older engines. */
+  everywhere?: boolean
+  /** The roles that may use a Claude Code model (#442, #444). Missing from older engines. */
   roles?: RoleName[]
+  /** Most Claude Code runs at once, and how many run and wait now. */
+  max_concurrent?: number
+  running?: number
+  waiting?: number
 }
 
 export interface ModelTestResult {

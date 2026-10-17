@@ -490,7 +490,9 @@ async def test_startup_sweeps_old_scratch_folders(make_app, isolated_home):
 # ---------------------------------------------------------------------------- status, check-up, pieces
 async def test_status_and_checkup(cc_config, fake_claude, monkeypatch):
     status = await claude_code.status(cc_config)
-    assert status == {"enabled": True, "installed": True, "version": "9.9.9 (Claude Code)", "detail": status["detail"]}
+    assert status == {"enabled": True, "installed": True, "version": "9.9.9 (Claude Code)", "detail": status["detail"],
+                      "everywhere": False, "roles": ["primary", "voice", "vision"], "max_concurrent": 2,
+                      "running": 0, "waiting": 0}
     assert "Test" in status["detail"]
 
     cc_config.models.experimental_claude_code = False
@@ -742,3 +744,139 @@ async def test_meter_marks_usage_for_claude_code_models(monkeypatch, config):
                                     None, {"prompt_tokens": 180_000, "completion_tokens": 0}, "chat")
     assert long_chat["context_percent"] == 90
     assert long_chat["context_warning"] and "90%" in long_chat["context_warning"]
+
+
+# ---------------------------------------------------------------------------- Claude Code for everything (#444)
+@pytest.fixture
+def everywhere(cc_config):
+    cc_config.models.claude_code_everywhere = True
+    cc_config.models.roles.fast = MODEL
+    cc_config.models.roles.planner = MODEL
+    return cc_config
+
+
+def test_everything_needs_the_experimental_switch(cc_config):
+    cc_config.models.claude_code_everywhere = True
+    cc_config.models.experimental_claude_code = False
+    assert not claude_code.everywhere(cc_config)
+    assert claude_code.accepting_roles(cc_config) == claude_code.CHAT_ROLES
+    cc_config.models.experimental_claude_code = True
+    assert claude_code.everywhere(cc_config)
+    assert claude_code.accepting_roles(cc_config) == ("primary", "fast", "planner", "executor", "vision", "voice")
+    assert claude_code.refusal(cc_config, "fast") is None
+    assert claude_code.refusal(cc_config, "embedding") == claude_code.NO_EMBEDDINGS
+
+
+async def test_everything_runs_background_work_and_counts_it_by_role(make_app, fake_claude, everywhere):
+    app = await make_app()
+    hi = [{"role": "system", "content": "Answer with JSON."}, {"role": "user", "content": "What do you know?"}]
+    fake_claude.scenario("json")
+    assert await app.llm.complete_json("fast", hi) == {"facts": ["Maya likes chai"]}  # memory notes and other jobs
+    assert "Maya likes chai" in await app.llm.complete_text("planner", hi)
+    text = ""
+    async for chunk in app.llm.stream("executor", hi):  # nobody waits on it: a task step
+        text += chunk.text
+    assert "facts" in text
+    with pytest.raises(ProviderError, match="embeddings"):
+        await app.llm.embed(["hi"], model=MODEL)
+    runs = fake_claude.runs()
+    assert len(runs) == 3 and all(r["argv"][r["argv"].index("--tools") + 1] == "" for r in runs)
+
+    month = next(p for p in (await app.spending.report())["periods"] if p["key"] == "month")
+    by_role = {r["role"]: r["calls"] for r in month["claude_code_by_role"]}
+    assert by_role == {"fast": 1, "planner": 1, "executor": 1}
+    assert month["plan_calls"] == 3 and month["cost_usd"] == 0
+
+
+async def test_at_most_max_concurrent_run_at_once(fake_claude, everywhere, caplog, monkeypatch):
+    everywhere.models.claude_code_max_concurrent = 2
+    fake_claude.scenario("slow")
+    monkeypatch.setenv("FAKE_CLAUDE_SLEEP", "2")
+    llm = Provider(everywhere)
+
+    async def one() -> str:
+        return await llm.complete_text("fast", [{"role": "user", "content": "hi"}])
+
+    caplog.set_level("INFO", logger="sentient.llm.claude_code")
+    calls = [asyncio.create_task(one()) for _ in range(3)]
+    for _ in range(300):
+        if claude_code._gate.waiting == 1 and claude_code._gate.running == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert (claude_code._gate.running, claude_code._gate.waiting) == (2, 1)  # the third waits its turn
+    results = await asyncio.wait_for(asyncio.gather(*calls), 60)
+    assert results == ["Hello from Claude"] * 3
+    assert claude_code._gate.running == 0 and claude_code._gate.waiting == 0
+    queued = [r.getMessage() for r in caplog.records if "Claude Code queued" in r.getMessage()]
+    assert len(queued) == 1 and "2 running, at most 2 at once" in queued[0]
+    assert any("after waiting" in r.getMessage() for r in caplog.records)
+
+
+async def test_stop_everything_drops_calls_still_waiting(fake_claude, everywhere):
+    everywhere.models.claude_code_max_concurrent = 1
+    fake_claude.scenario("hang")
+    llm = Provider(everywhere)
+
+    async def one() -> str:
+        return await llm.complete_text("fast", [{"role": "user", "content": "hi"}])
+
+    first = asyncio.create_task(one())
+    for _ in range(300):
+        if claude_code._live:
+            break
+        await asyncio.sleep(0.05)
+    second = asyncio.create_task(one())
+    for _ in range(100):
+        if claude_code._gate.waiting:
+            break
+        await asyncio.sleep(0.02)
+    assert claude_code._gate.waiting == 1
+    assert claude_code.kill_all() == 1
+    done = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 30)
+    assert all(isinstance(r, ProviderError) for r in done)
+    assert claude_code.STOPPED in str(done[1])
+    assert not claude_code._live and claude_code._gate.running == 0 and claude_code._gate.waiting == 0
+    assert len(fake_claude.runs()) == 1  # the waiting call never started Claude Code
+
+
+async def test_turning_it_off_moves_the_roles_with_a_note(make_app, fake_claude, everywhere):
+    everywhere.models.fallbacks["fast"] = ["ollama_chat/qwen3:8b"]
+    app = await make_app()
+    cfg = app.config.model_copy(deep=True)
+    cfg.models.claude_code_everywhere = False
+    app.save_config(cfg)
+    assert app.config.models.roles.fast == "ollama_chat/qwen3:8b"  # moved to its fallback
+    assert app.config.models.roles.planner == MODEL  # no other model: stays, and its work is refused as before
+    assert app.config.models.roles.primary == MODEL  # chats keep Claude Code
+    await asyncio.gather(*list(app._notes))
+    notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("kind") == "claude_code_roles"]
+    assert len(notes) == 1
+    assert notes[0]["message"] == ("Claude Code answers only your chats again. Fast / background now uses qwen3:8b. "
+                                   "Planner has no other model, so pick one in Settings > Models.")
+    with pytest.raises(ModelRefused, match="can't plan tasks"):
+        await app.llm.complete_json("planner", [{"role": "user", "content": "plan"}])
+    app.save_config()  # saving again changes nothing more
+    assert not app._notes
+    assert fake_claude.runs() == []
+
+
+def test_status_route_reports_the_roles_that_accept_it(everywhere, fake_claude, isolated_home):
+    from fastapi.testclient import TestClient
+
+    from sentient.gateway.app import create_app
+
+    with TestClient(create_app(SentientApp(everywhere, llm=FakeProvider(), db_path=isolated_home / "r.db",
+                                           enable_background=False))) as client:
+        body = client.get("/api/models/claude-code", headers={"Authorization": "Bearer not-for-claude"}).json()
+    assert body["everywhere"] and body["max_concurrent"] == 2
+    assert body["roles"] == ["primary", "fast", "planner", "executor", "vision", "voice"]
+
+
+async def test_checkup_passes_background_roles_when_it_does_everything(everywhere, fake_claude):
+    from sentient.llm.checkup import checkup
+
+    report = await checkup(everywhere, Provider(everywhere), {"primary": MODEL, "fast": MODEL, "embedding": MODEL})
+    by_role = {r["role"]: r for r in report["roles"]}
+    assert by_role["fast"]["status"] == "pass"
+    assert by_role["embedding"]["status"] == "fail"
+    assert fake_claude.runs() == []

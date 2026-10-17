@@ -50,7 +50,8 @@ import {
   StatusDot,
   Switch
 } from '@/components/ui'
-import { ClaudeCodeRoleWarning, ClaudeCodeSection } from '@/features/models/ClaudeCodeSection'
+import { ClaudeCodeRoleWarning } from '@/features/models/ClaudeCodeSection'
+import { ConnectClaudeSection } from '@/features/models/ConnectClaude'
 import { ConnectPlansSection } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
@@ -139,8 +140,8 @@ export function ModelsSection({ query }: SectionProps) {
           <RoleCard key={r} role={r} config={config} />
         ))}
       </section>
-      {(!q || 'plan claude max anthropic credits chatgpt openai plus pro openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
-      {(!q || 'claude code experimental subscription plan sign in'.includes(q)) && <ClaudeCodeSection />}
+      {(!q || 'connect claude code anthropic api key max team plan credits experimental subscription everything'.includes(q)) && <ConnectClaudeSection />}
+      {(!q || 'plan chatgpt openai plus pro openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
       <ProvidersPanel />
       <OllamaPanel />
       {(!q || 'one job at a time queue busy background wait battery local model sharing'.includes(q)) && (

@@ -85,6 +85,8 @@ class SentientApp:
         enable_background: bool = True,
     ):
         self.config = config or load_config()
+        self._claude_code_everywhere = claude_code.everywhere(self.config)  # to notice it being turned off (#444)
+        self._notes: set[asyncio.Task] = set()
         self.enable_background = enable_background  # tests turn schedulers/pollers off
         self.bus = EventBus()
         self.store = Store(db_path, before_migration=self._snapshot_before_migration)
@@ -174,6 +176,7 @@ class SentientApp:
         """Persist and hot-apply configuration."""
         if config is not None:
             self.config = config
+        moved = self._claude_code_switched()
         save_config(self.config)
         if hasattr(self.llm, "config"):
             self.llm.config = self.config  # type: ignore[attr-defined]
@@ -185,6 +188,35 @@ class SentientApp:
         self.approvals.config = self.config.tools.approvals
         self.registry.set_hidden("subagents", not self.config.subagents.enabled)
         self.bus.publish("config.updated", {"sections": list(self.config.model_dump().keys())})
+        if moved:
+            self._note_claude_code(moved)
+
+    def _claude_code_switched(self) -> list[dict]:
+        """Claude Code doing everything (#444, ADR 0032) was just turned off: move the roles still on it that refuse it
+        now to another model (in place, before saving). Returns what moved, or [] when nothing changed."""
+        now = claude_code.everywhere(self.config)
+        was, self._claude_code_everywhere = self._claude_code_everywhere, now
+        if now != was:
+            log.warning("Claude Code for everything turned %s", "on" if now else "off")
+        if not was or now:
+            return []
+        moved = claude_code.move_leftovers(self.config)
+        for item in moved:
+            log.info("Claude Code for everything is off: role %s moves from %s to %s", item["role"], item["model"],
+                     item["to"] or "nothing (no other model)")
+        return moved
+
+    def _note_claude_code(self, moved: list[dict]) -> None:
+        """One notification saying which roles left Claude Code and which still need a model."""
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self.notify("info", claude_code.leftover_note(moved), title="Claude Code answers only your chats again",
+                            payload={"kind": "claude_code_roles", "moved": moved})
+            )
+        except RuntimeError:  # no running loop (a command-line change): the log above says it
+            return
+        self._notes.add(task)
+        task.add_done_callback(self._notes.discard)
 
     # ------------------------------------------------------------------ stop everything
     @property

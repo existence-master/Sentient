@@ -1982,11 +1982,12 @@ class Agent:
 
     async def helper_model(self, session_id: str | None, role: str) -> str | None:
         """The model a helper started from a chat (a subagent) uses instead of ``role``'s: the chat's own model, where
-        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it."""
+        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it, unless it
+        does everything (ADR 0032)."""
         if role != "primary" or not session_id:
             return None
         picked, _ = await self.chat_model(await self.store.get_session(session_id), role)
-        if picked and picked.split("/", 1)[0] == claude_code.PREFIX:
+        if picked and picked.split("/", 1)[0] == claude_code.PREFIX and not claude_code.everywhere(self.config):
             return None
         return picked
 

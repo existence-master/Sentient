@@ -1,121 +1,173 @@
 /**
- * Claude through your own Claude Code (experimental, issue #206, ADR 0022, docs/API.md §3).
- * Off by default. Sentient runs the claude program already on this computer, signed in by the user, and never reads
- * that login. It only answers chats; background work keeps using the other models.
+ * Claude through your own Claude Code (experimental, issue #206, ADR 0022, docs/API.md §3), for chats or, after a
+ * separate warning, for everything (#444, ADR 0032). Off by default. Sentient runs the claude program already on this
+ * computer, signed in by the user, and never reads that login.
  */
 import { IconAlertTriangle, IconCheck, IconExternalLink, IconTerminal2 } from '@tabler/icons-react'
+import { useState } from 'react'
 import { toast } from 'sonner'
-import { Alert, Badge, Button, Card, Skeleton, StatusDot, Switch } from '@/components/ui'
+import { Alert, Badge, Button, Skeleton, StatusDot, Switch } from '@/components/ui'
+import { openExternal } from '@/features/integrations/InstructionsGuide'
+import { ANTHROPIC_PLAN_ARTICLE, CLAUDE_CODE_EVERYWHERE_WARNING, ClaudeCodeEverywhereDialog } from '@/features/models/ClaudeCodeEverywhere'
 import { ModelTest } from '@/features/models/ModelTest'
+import { SchemaForm } from '@/features/settings/SchemaForm'
 import { useConfigEditor } from '@/hooks/config'
 import { useClaudeCodeStatus, useHardware, useLocalModels, useSetRoles } from '@/hooks/models'
 import { errorMessage } from '@/lib/api'
-import { getBridge } from '@/lib/bridge'
-import { otherModel, refusingRoles } from '@/lib/claudeCode'
-import { modelShortName, providerOf, recommendFastLocal, recommendLocal, ROLE_META } from '@/lib/models'
+import { claudeCodeState, isClaudeCode, otherModel, refusingRoles } from '@/lib/claudeCode'
+import { modelShortName, recommendFastLocal, recommendLocal, ROLE_META } from '@/lib/models'
 import type { RoleName } from '@/lib/types'
 
 export const CLAUDE_CODE_WARNING = 'Experimental. Uses your own Claude Code install and login. Anthropic may change how this is counted or allowed.'
 /** Claude Code starts fresh for every reply and sends text in bursts (issue #246). */
 export const CLAUDE_CODE_STREAMING = 'Replies take a few seconds to start, and the text arrives in larger pieces than with your other models.'
 const CLAUDE_CODE_URL = 'https://claude.com/claude-code'
+export const CLAUDE_CODE_FAST_MODEL = 'claude-code/haiku'
 
-export function ClaudeCodeSection() {
+/**
+ * Claude Code for chats (`way="chats"`) or for everything (`way="everything"`). `onUseForChat` puts a Claude Code
+ * model on chat; `onUseForEverything` puts Claude Code on every job (main and fast models).
+ */
+export function ClaudeCodePanel({
+  way,
+  primary,
+  fast,
+  onUseForChat,
+  onUseForEverything
+}: {
+  way: 'chats' | 'everything'
+  /** The main and fast models in use (saved, or picked so far in setup). */
+  primary: string
+  fast: string
+  onUseForChat: (model: string) => void
+  onUseForEverything: (primary: string, fast: string) => void
+}) {
   const { config, patch } = useConfigEditor()
   const enabled = !!config?.models.experimental_claude_code
+  const everywhere = enabled && !!config?.models.claude_code_everywhere
   const status = useClaudeCodeStatus(enabled)
-  const setRoles = useSetRoles()
-  const primary = config?.models.roles.primary ?? ''
+  const [asking, setAsking] = useState(false)
   const models = status.data?.models ?? []
-  const testModel = providerOf(primary) === 'claude-code' ? primary : models[0]
+  const fastModel = status.data?.fast_model ?? CLAUDE_CODE_FAST_MODEL
+  const testModel = isClaudeCode(primary) ? primary : models[0]
+  const state = claudeCodeState(enabled, everywhere)
+  const maxConcurrent = config?.models.claude_code_max_concurrent ?? 2
 
-  const chooseForChat = (model: string) =>
-    setRoles.mutate(
-      { primary: model },
-      {
-        onSuccess: () => toast.success('Chat now uses Claude through Claude Code', { description: modelShortName(model) }),
-        onError: (e) => toast.error("Couldn't change the model", { description: errorMessage(e) })
-      }
-    )
+  const setEnabled = (on: boolean) =>
+    patch({ models: on ? { experimental_claude_code: true } : { experimental_claude_code: false, claude_code_everywhere: false } }, { immediate: true })
+  const turnOnEverything = () => {
+    patch({ models: { experimental_claude_code: true, claude_code_everywhere: true } }, { immediate: true })
+    toast.success('Claude Code can now do everything', { description: 'Pick it for each job below, or under Roles.' })
+  }
+  const turnOffEverything = () => {
+    patch({ models: { claude_code_everywhere: false } }, { immediate: true })
+    toast.success('Claude Code answers only your chats again', { description: 'Jobs that used it move to another model.' })
+  }
+  const allOnClaudeCode = isClaudeCode(primary) && isClaudeCode(fast)
 
   return (
-    <section className="space-y-3">
-      <div className="px-1">
-        <h3 className="text-sm font-semibold text-fg">Claude through your Claude Code</h3>
-        <p className="mt-0.5 text-xs text-fg-subtle">Chat with Claude using the Claude Code program already on this computer.</p>
-      </div>
-      <Card className="space-y-3.5 p-4">
-        <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-elevated text-accent-text">
-            <IconTerminal2 size={18} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 text-sm font-medium text-fg">
-              Use my Claude Code for chats
-              <Badge size="xs" tone="warning">
-                Experimental
-              </Badge>
-            </div>
-            <p className="mt-0.5 text-xs leading-relaxed text-fg-subtle">
-              Sentient starts Claude Code with the plan you signed in to and never sees or keeps your Claude login. API keys and other sign-in settings in your environment are left out, so it always uses that plan. Claude Code's own tools stay off: everything it does goes through Sentient's tools and approvals.
-            </p>
-          </div>
-          <Switch
-            checked={enabled}
-            onCheckedChange={(on) => patch({ models: { experimental_claude_code: on } }, { immediate: true })}
-            aria-label="Use my Claude Code for chats"
-          />
+    <div className="space-y-3.5">
+      <div className="flex items-start gap-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-elevated text-accent-text">
+          <IconTerminal2 size={18} />
         </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 text-sm font-medium text-fg">
+            {way === 'chats' ? 'Use my Claude Code for chats' : 'Use my Claude Code for everything'}
+            <Badge size="xs" tone="warning">
+              Experimental
+            </Badge>
+            <Badge size="xs" tone={state.tone}>
+              Now: {state.label}
+            </Badge>
+          </div>
+          <p className="mt-0.5 text-xs leading-relaxed text-fg-subtle">
+            Sentient starts Claude Code with the plan you signed in to and never sees or keeps your Claude login. API keys and other sign-in settings in your environment are left out, so it always uses that plan. Claude Code's own tools stay off: everything it does goes through Sentient's tools and approvals.
+          </p>
+        </div>
+        {way === 'chats' ? (
+          <Switch checked={enabled} onCheckedChange={setEnabled} aria-label="Use my Claude Code for chats" />
+        ) : (
+          <Switch checked={everywhere} onCheckedChange={(on) => (on ? setAsking(true) : turnOffEverything())} aria-label="Use my Claude Code for everything" />
+        )}
+      </div>
 
+      {way === 'chats' ? (
         <Alert tone="warning">
-          {CLAUDE_CODE_WARNING} It only answers your chats: tasks, suggestions and other background work keep using your other models, and it can't be the memory search model. {CLAUDE_CODE_STREAMING}
+          {CLAUDE_CODE_WARNING} {everywhere ? 'It also does everything else now, because you turned that on.' : 'It only answers your chats: tasks, suggestions and other background work keep using your other models, and it can\'t be the memory search model.'} {CLAUDE_CODE_STREAMING}
         </Alert>
+      ) : (
+        <Alert tone="danger" title={everywhere ? 'On: Claude Code does everything' : 'Off until you accept the risk'}>
+          <span className="block">{CLAUDE_CODE_EVERYWHERE_WARNING}</span>
+          <button type="button" onClick={() => openExternal(ANTHROPIC_PLAN_ARTICLE)} className="mt-1.5 inline-flex items-center gap-1 font-medium text-accent-text hover:underline">
+            Anthropic&apos;s article <IconExternalLink size={12} />
+          </button>
+        </Alert>
+      )}
 
-        {enabled &&
-          (status.isLoading ? (
-            <Skeleton className="h-9 rounded-lg" />
-          ) : status.isError ? (
-            <Alert tone="danger" title="Couldn't check for Claude Code">
-              {errorMessage(status.error)}
-            </Alert>
-          ) : !status.data?.installed ? (
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-muted">
-                <StatusDot tone="danger" />
-                {status.data?.detail}
+      {enabled &&
+        (status.isLoading ? (
+          <Skeleton className="h-9 rounded-lg" />
+        ) : status.isError ? (
+          <Alert tone="danger" title="Couldn't check for Claude Code">
+            {errorMessage(status.error)}
+          </Alert>
+        ) : !status.data?.installed ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="flex min-w-0 flex-1 items-center gap-2 text-xs text-fg-muted">
+              <StatusDot tone="danger" />
+              {status.data?.detail}
+            </span>
+            <Button size="sm" variant="secondary" leftIcon={<IconExternalLink size={13} />} onClick={() => openExternal(CLAUDE_CODE_URL)}>
+              Get Claude Code
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-xs text-fg-muted">
+              <StatusDot tone={status.data.version ? 'success' : 'warning'} />
+              <span className="min-w-0 truncate">
+                {status.data.version ? `Found Claude Code ${status.data.version}. ` : ''}
+                {status.data.detail}
               </span>
-              <Button size="sm" variant="secondary" leftIcon={<IconExternalLink size={13} />} onClick={() => void getBridge().openExternal(CLAUDE_CODE_URL)}>
-                Get Claude Code
-              </Button>
             </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-xs text-fg-muted">
-                <StatusDot tone={status.data.version ? 'success' : 'warning'} />
-                <span className="min-w-0 truncate">
-                  {status.data.version ? `Found Claude Code ${status.data.version}. ` : ''}
-                  {status.data.detail}
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                {models.map((m) =>
+            <div className="flex flex-wrap items-center gap-2">
+              {way === 'chats' &&
+                models.map((m) =>
                   m === primary ? (
                     <Badge key={m} tone="success">
                       <IconCheck size={12} /> Chat uses {modelShortName(m)}
                     </Badge>
                   ) : (
-                    <Button key={m} size="sm" variant="secondary" loading={setRoles.isPending && setRoles.variables?.primary === m} onClick={() => chooseForChat(m)}>
+                    <Button key={m} size="sm" variant="secondary" onClick={() => onUseForChat(m)}>
                       Use {modelShortName(m)} for chat
                     </Button>
                   )
                 )}
-                <div className="flex-1" />
-                <ModelTest model={testModel} role="primary" className="shrink-0" />
-              </div>
+              {way === 'everything' &&
+                everywhere &&
+                models[0] &&
+                (allOnClaudeCode ? (
+                  <Badge tone="success">
+                    <IconCheck size={12} /> Every job uses Claude Code
+                  </Badge>
+                ) : (
+                  <Button size="sm" variant="secondary" onClick={() => onUseForEverything(models[0], fastModel)}>
+                    Use Claude Code for every job
+                  </Button>
+                ))}
+              <div className="flex-1" />
+              <ModelTest model={testModel} role="primary" className="shrink-0" />
             </div>
-          ))}
-      </Card>
-    </section>
+          </div>
+        ))}
+
+      {way === 'everything' && everywhere && (
+        <SchemaForm section="models" include={['models.claude_code_max_concurrent']} />
+      )}
+
+      <ClaudeCodeEverywhereDialog open={asking} onOpenChange={setAsking} onConfirm={turnOnEverything} maxConcurrent={maxConcurrent} />
+    </div>
   )
 }
 

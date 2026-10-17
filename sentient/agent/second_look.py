@@ -635,11 +635,14 @@ def parse_verdict(data: Any) -> tuple[bool | None, str]:
 
 async def ask_without_tools(llm: Any, messages: list[dict], *, attended: bool, model: str | None) -> Any:
     """The model's answer: the fast role, else (when it can't do this job) the primary role or the chat's model.
-    Claude Code answers only as part of a chat reply someone is waiting for (ADR 0022)."""
+    Claude Code answers only as part of a chat reply someone is waiting for (ADR 0022), or anywhere when it does
+    everything (ADR 0032)."""
     refusals: list[str] = []
     for role in ("fast", "primary"):
         picked = (model if role == "primary" else None) or llm.model_for(role)
-        if str(picked).split("/", 1)[0] == claude_code.PREFIX:
+        if str(picked).split("/", 1)[0] == claude_code.PREFIX and (
+            attended or not claude_code.everywhere(getattr(llm, "config", None))
+        ):
             if not attended:
                 refusals.append(f"{picked} only answers chats")
                 continue
