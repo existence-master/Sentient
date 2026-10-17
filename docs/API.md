@@ -1400,7 +1400,7 @@ can't act.
   reads the original's headers (Reply-To, else From; the To of the user's own message, a nudge; the other To and Cc
   addresses with `reply_all`). The reply tools declare `Tool.destinations_fn(arguments, ctx) ->
   [{address, why: "sender"|"reply_to"|"yours"|"thread", sender}]` (`yours`: the recipients of the user's own message,
-  which needs the app's own word that the user sent it: Gmail's `SENT` label, or for IMAP a folder other than INBOX;
+  which needs the app's own word that the user sent it: Gmail's `SENT` label, or for IMAP the account's Sent mailbox;
   a received email that only claims the user's From is answered like any other;
   `thread`: the others on a reply-all), which the second look calls before the reply runs
   (section 10). A forward refuses an email hidden by privacy filters, like a read.

@@ -628,8 +628,11 @@ async def _reply_parts(c: dict, message_id: str, mailbox: str, reply_all: bool) 
     orig = parse_message((await _fetch_one(c, message_id, mailbox))["raw"])
     headers = {k: _header(orig, k) for k in ("From", "To", "Cc", "Reply-To")}
     me = {str(c.get("username") or "").strip().lower()} - {""}
-    # the user's own message lives outside the inbox (a sent-mail folder); a received one claiming their From doesn't
-    own = str(mailbox or "INBOX").strip().upper() != "INBOX"
+    # only a message in the account's own Sent mailbox is the user's; a received one claiming their From is not
+    own = False
+    if str(mailbox or "INBOX").strip().upper() != "INBOX":
+        async with _session(c, "INBOX") as s:
+            own = find_sent_mailbox(await s.list_mailboxes()) == mailbox
     return orig, mail.reply_targets({k.lower(): v for k, v in headers.items() if v}, me=me, reply_all=reply_all,
                                     own=own)
 

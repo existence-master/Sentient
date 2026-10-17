@@ -732,3 +732,21 @@ async def test_an_empty_folder_still_sends_its_first_email(app, monkeypatch):
         {"INBOX": {"uidvalidity": "7", "last_uid": 0, "searched": True}}))
 
     assert await email_imap.PLUGIN.check_new(mgr, FakeSession(box), "INBOX") == 1
+
+
+async def test_only_the_sent_mailbox_makes_a_message_the_users_own(app, ctx, monkeypatch):
+    """A message in another folder that claims the user's From is answered like any received email (review of #430)."""
+    spoof = raw_email("Me <me@gmail.com>", "Invoice", "pay", "s1").replace(b"To: me@gmail.com", b"To: x@evil.example")
+    box = FakeMailbox({1: spoof})
+    install_fake_imap(monkeypatch, box)
+
+    async def list_mailboxes(self):
+        return [({"\\hasnochildren"}, "INBOX"), ({"\\sent"}, "Sent"), (set(), "Work")]
+
+    monkeypatch.setattr(FakeSession, "list_mailboxes", list_mailboxes, raising=False)
+    await connect_imap(app)
+    reply = app.registry.get("email_imap_reply")
+    work = await reply.destinations_fn({"message_id": "1", "mailbox": "Work"}, ctx)
+    sent = await reply.destinations_fn({"message_id": "1", "mailbox": "Sent"}, ctx)
+    assert [(d["address"], d["why"]) for d in work] == [("me@gmail.com", "sender")]
+    assert [(d["address"], d["why"]) for d in sent] == [("x@evil.example", "yours")]
