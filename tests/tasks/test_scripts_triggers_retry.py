@@ -408,6 +408,29 @@ async def test_planner_watch_default_uses_newest_change_preference(make_app):
     assert (await app.tasks.get(task_id))["script"]["condition"] == "noteworthy"
 
 
+def test_planner_default_uses_the_last_preference_in_one_message():
+    changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
+    assert scripts.planner_default(
+        changed, "Only important changes — actually, tell me about any change.",
+    )["condition"] == "changed"
+    assert scripts.planner_default(
+        changed, "Tell me about any change — only important changes, please.",
+    )["condition"] == "noteworthy"
+
+
+async def test_planner_watch_default_gives_later_chat_priority_over_answers(make_app):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="noteworthy", code=PAGE_CODE,
+        original_prompt="Watch this page for new events: https://example.org/events",
+        clarifying_questions=[{"question": "What should I report?", "answer": "Only important changes"}],
+    )
+    await app.tasks.chat(task_id, "Actually, tell me about any change.")
+    await app.tasks.drain()
+    assert (await app.tasks.get(task_id))["script"]["condition"] == "changed"
+
+
 FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.org')\n"
 
 

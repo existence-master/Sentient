@@ -513,12 +513,16 @@ _ALL_UPDATES = re.compile(r"\b(?:anything|everything)\s+(?:at\s+all|new)\b", re.
 
 def _change_preference(message: str) -> str | None:
     """``changed`` or ``noteworthy`` when one user message says which updates to report."""
-    if _IMPORTANT_CHANGE.search(message):
-        return "noteworthy"
-    without_edits = _CHANGE_AS_EDIT.sub("", message)
-    if _CHANGE.search(without_edits) or _ALL_UPDATES.search(message):
-        return "changed"
-    return None
+    preferences = [(match.start(), "noteworthy", match.span()) for match in _IMPORTANT_CHANGE.finditer(message)]
+    edits = [match.span() for match in _CHANGE_AS_EDIT.finditer(message)]
+    preferences += [
+        (match.start(), "changed", match.span())
+        for match in _CHANGE.finditer(message)
+        if not any(start <= match.start() < end for start, end in edits)
+        and not any(start <= match.start() < end for _, _, (start, end) in preferences)
+    ]
+    preferences += [(match.start(), "changed", match.span()) for match in _ALL_UPDATES.finditer(message)]
+    return max(preferences, default=(0, None, (0, 0)))[1]
 
 
 def _latest_change_preference(request: str | list[str]) -> str | None:

@@ -1603,9 +1603,9 @@ class TaskService(Service):
         """What the user asked for, for the planner's script checks (#375): the request, what they said in the task's
         chat since and their answers to clarifying questions."""
         said = [str(task.get("original_prompt") or task.get("description") or task.get("name") or "")]
+        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
         said += [str(m.get("content") or "") for m in task.get("chat_history") or []
                  if isinstance(m, dict) and m.get("role") == "user"]
-        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
         said = [s for s in said if s.strip()]
         return said if separate else "\n".join(said)
 
