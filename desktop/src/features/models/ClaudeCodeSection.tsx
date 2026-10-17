@@ -15,7 +15,7 @@ import { SchemaForm } from '@/features/settings/SchemaForm'
 import { useConfigEditor } from '@/hooks/config'
 import { useClaudeCodeStatus, useHardware, useLocalModels, useSetRoles } from '@/hooks/models'
 import { qk } from '@/hooks/queryKeys'
-import { errorMessage } from '@/lib/api'
+import { api, errorMessage } from '@/lib/api'
 import { claudeCodeState, isClaudeCode, otherModel, refusingRoles } from '@/lib/claudeCode'
 import { modelShortName, recommendFastLocal, recommendLocal, ROLE_META } from '@/lib/models'
 import type { RoleName } from '@/lib/types'
@@ -28,12 +28,14 @@ export const CLAUDE_CODE_FAST_MODEL = 'claude-code/haiku'
 
 /**
  * Claude Code for chats (`way="chats"`) or for everything (`way="everything"`). `onUseForChat` puts a Claude Code
- * model on chat; `onUseForEverything` puts Claude Code on every job (main and fast models).
+ * model on chat; `onUseForEverything` puts Claude Code on every job (main and fast models; planner and executor follow
+ * the main model).
  */
 export function ClaudeCodePanel({
   way,
   primary,
   fast,
+  others = {},
   onUseForChat,
   onUseForEverything
 }: {
@@ -41,11 +43,13 @@ export function ClaudeCodePanel({
   /** The main and fast models in use (saved, or picked so far in setup). */
   primary: string
   fast: string
+  /** The other jobs that can use Claude Code (planner, executor). Empty follows the main model. */
+  others?: Record<string, string | null | undefined>
   onUseForChat: (model: string) => void
   onUseForEverything: (primary: string, fast: string) => void
 }) {
   const qc = useQueryClient()
-  const { config, patch, flush } = useConfigEditor()
+  const { config } = useConfigEditor()
   const enabled = !!config?.models.experimental_claude_code
   const everywhere = enabled && !!config?.models.claude_code_everywhere
   const status = useClaudeCodeStatus(enabled)
@@ -56,22 +60,27 @@ export function ClaudeCodePanel({
   const state = claudeCodeState(enabled, everywhere)
   const maxConcurrent = config?.models.claude_code_max_concurrent ?? 2
 
-  // Saved at once, then every Claude Code status is asked again: the roles that may use it change with the switches
-  const save = async (models: Record<string, boolean>) => {
-    patch({ models })
-    await flush()
-    void qc.invalidateQueries({ queryKey: qk.claudeCodeAll })
+  // Saved at once, and only a save that worked says so. Then every Claude Code status is asked again: the roles that
+  // may use it change with the switches.
+  const save = async (models: Record<string, boolean>, done?: { title: string; description: string }) => {
+    try {
+      const res = await api.config.patch({ models })
+      qc.setQueryData(qk.config, res.config)
+      void qc.invalidateQueries({ queryKey: qk.bootstrap })
+      if (done) toast.success(done.title, { description: done.description })
+    } catch (e) {
+      toast.error("Couldn't change Claude Code", { description: errorMessage(e) })
+    } finally {
+      void qc.invalidateQueries({ queryKey: qk.claudeCodeAll })
+    }
   }
   const setEnabled = (on: boolean) => void save(on ? { experimental_claude_code: true } : { experimental_claude_code: false, claude_code_everywhere: false })
-  const turnOnEverything = () => {
-    void save({ experimental_claude_code: true, claude_code_everywhere: true })
-    toast.success('Claude Code can now do everything', { description: 'Pick it for each job below, or under Roles.' })
-  }
-  const turnOffEverything = () => {
-    void save({ claude_code_everywhere: false })
-    toast.success('Claude Code answers only your chats again', { description: 'Jobs that used it move to another model.' })
-  }
-  const allOnClaudeCode = isClaudeCode(primary) && isClaudeCode(fast)
+  const turnOnEverything = () =>
+    void save({ experimental_claude_code: true, claude_code_everywhere: true }, { title: 'Claude Code can now do everything', description: 'Pick it for each job below, or under Roles.' })
+  const turnOffEverything = () =>
+    void save({ claude_code_everywhere: false }, { title: 'Claude Code answers only your chats again', description: 'Jobs that used it move to another model.' })
+  // every job: main and fast on Claude Code, and the other jobs on it too or following the main model
+  const allOnClaudeCode = isClaudeCode(primary) && isClaudeCode(fast) && Object.values(others).every((m) => !m || isClaudeCode(m))
 
   return (
     <div className="space-y-3.5">

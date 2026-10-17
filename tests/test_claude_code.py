@@ -847,15 +847,14 @@ async def test_turning_it_off_moves_the_roles_with_a_note(make_app, fake_claude,
     cfg.models.claude_code_everywhere = False
     app.save_config(cfg)
     assert app.config.models.roles.fast == "ollama_chat/qwen3:8b"  # moved to its fallback
-    assert app.config.models.roles.planner == MODEL  # no other model: stays, and its work is refused as before
+    assert app.config.models.roles.planner == "ollama_chat/qwen3:8b"  # no fallback of its own: the background model
+    assert app.config.models.roles.executor == "ollama_chat/qwen3:8b"  # empty, it used the main model: moved too
     assert app.config.models.roles.primary == MODEL  # chats keep Claude Code
     await asyncio.gather(*list(app._notes))
     notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("kind") == "claude_code_roles"]
     assert len(notes) == 1
     assert notes[0]["message"] == ("Claude Code answers only your chats again. Fast / background now uses qwen3:8b. "
-                                   "Planner has no other model, so pick one in Settings > Models.")
-    with pytest.raises(ModelRefused, match="can't plan tasks"):
-        await app.llm.complete_json("planner", [{"role": "user", "content": "plan"}])
+                                   "Planner now uses qwen3:8b. Executor now uses qwen3:8b.")
     app.save_config()  # saving again changes nothing more
     assert not app._notes
     assert fake_claude.runs() == []
@@ -929,4 +928,13 @@ def test_with_everything_on_background_roles_can_be_given_it(everywhere, fake_cl
         assert roles.status_code == 200 and roles.json()["fast"] == "claude-code/haiku"
         embedding = client.put("/api/models/roles", json={"embedding": MODEL}, headers=auth)
         assert embedding.status_code == 400 and embedding.json()["detail"] == claude_code.NO_EMBEDDINGS
+
+
+def test_a_role_with_no_other_model_stays_and_says_so(everywhere):
+    everywhere.models.roles.fast = MODEL
+    everywhere.models.claude_code_everywhere = False
+    moved = claude_code.move_leftovers(everywhere)
+    assert {m["role"]: m["to"] for m in moved} == {"fast": None, "planner": None, "executor": None}
+    assert everywhere.models.roles.planner == MODEL and everywhere.models.roles.executor is None
+    assert claude_code.leftover_note(moved).endswith("Executor has no other model, so pick one in Settings > Models.")
 

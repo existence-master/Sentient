@@ -701,10 +701,10 @@ accept or loosen a rule.
   processes run at once; more wait in a queue, served by who waits (a reply someone is waiting for, then tasks, then
   upkeep, as in the local model queue) and then first come first served. The engine log says
   `Claude Code queued: <role> on <model> (<kind>) waits; N running, at most M at once ...` and
-  `Claude Code start: ... after waiting Xs`. When the setting goes from on to off (any config save), each role whose
-  own model is `claude-code/*` and no longer accepts it moves to its first model that isn't Claude Code (its
-  fallbacks, then `fallbacks.primary`, then the primary model); a role with no other model stays and is refused as
-  before. One `info` notification says what moved (`payload: {kind: "claude_code_roles", moved: [{role, model, to}]}`,
+  `Claude Code start: ... after waiting Xs`. When the setting goes from on to off (any config save), each role on
+  `claude-code/*` that no longer accepts it (its own model, or for an empty planner or executor the main model it
+  uses) moves to its first model that isn't Claude Code (its fallbacks, then `fallbacks.primary`, then the fast model,
+  then the primary model); a role with no other model stays and is refused as before. One `info` notification says what moved (`payload: {kind: "claude_code_roles", moved: [{role, model, to}]}`,
   `to` null when the role stayed), titled "Claude Code is back to chats only", or "Claude Code is turned off" when
   `experimental_claude_code` went off too. Usage is counted per call with its role (`claude_code_by_role` in the cost meter).
 - **Keychain namespaces (#302).** Every secret (API keys, integration tokens, channel bot tokens, MCP headers and

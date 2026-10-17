@@ -382,11 +382,16 @@ def unattended_refusal(config: SentientConfig, role: str | None) -> str | None:
     return None
 
 
+INHERITS_PRIMARY = ("planner", "executor")  # empty, these use the main model (and refuse Claude Code there, #442)
+
+
 def leftover_roles(config: SentientConfig) -> list[tuple[str, str]]:
-    """``[(role, model)]``: roles whose own model is a ``claude-code/`` model they don't accept (any more)."""
+    """``[(role, model)]``: roles on a ``claude-code/`` model they don't accept (any more), their own model or, for an
+    empty planner or executor, the main model they use."""
     out = []
+    roles = config.models.roles
     for role in MODEL_ROLE_NAMES:
-        model = getattr(config.models.roles, role, None) or ""
+        model = getattr(roles, role, None) or (roles.primary if role in INHERITS_PRIMARY else "") or ""
         if model.split("/", 1)[0] == PREFIX and not accepts(config, role):
             out.append((role, model))
     return out
@@ -394,13 +399,14 @@ def leftover_roles(config: SentientConfig) -> list[tuple[str, str]]:
 
 def move_leftovers(config: SentientConfig) -> list[dict[str, str | None]]:
     """After Claude Code stops doing everything: move each role still on it that no longer accepts it to its first
-    model that isn't Claude Code (its fallbacks, then the main model's fallbacks, then the main model). Changes
+    model that isn't Claude Code (its fallbacks, the main model's fallbacks, the background model, the main model). Changes
     ``config`` in place and returns ``[{role, model, to}]``. ``to`` is None when there is no other model: that role
     stays as it is, and its work falls back or fails with the plain refusal as before."""
     models = config.models
     moved: list[dict[str, str | None]] = []
     for role, model in leftover_roles(config):
-        candidates = [*models.fallbacks.get(role, []), *models.fallbacks.get("primary", []), models.roles.primary]
+        candidates = [*models.fallbacks.get(role, []), *models.fallbacks.get("primary", []), models.roles.fast,
+                      models.roles.primary]  # the background model is already moved: roles come in order
         to = next((m for m in candidates if m and m.split("/", 1)[0] != PREFIX), None)
         if to is not None:
             setattr(models.roles, role, to)

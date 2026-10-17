@@ -398,6 +398,7 @@ function CloudBrain() {
             <ConnectClaude
               primary={d.primary}
               fast={d.fast}
+              others={{ planner: config.data?.models.roles.planner, executor: config.data?.models.roles.executor }}
               onUseModels={(primary, fast) => d.set({ primary, fast })}
               // Claude Code only answers chats: the background model stays on another model (#442)
               onUseForChat={(primary) => d.set({ primary, fast: fastForChatsOnly })}

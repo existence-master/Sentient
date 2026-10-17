@@ -44,12 +44,15 @@ export const CLAUDE_WAYS: Array<{ value: ClaudeWay; title: string; line: string;
 export function ConnectClaude({
   primary,
   fast,
+  others,
   onUseModels,
   onUseForChat,
   onUseForEverything
 }: {
   primary: string
   fast: string
+  /** The planner and executor models (empty follows the main model). */
+  others?: Record<string, string | null | undefined>
   /** Claude through an API key (or the plan's credits) for the main and fast models. */
   onUseModels: (primary: string, fast: string) => void
   onUseForChat: (model: string) => void
@@ -59,7 +62,10 @@ export function ConnectClaude({
   const [way, setWay] = useState<ClaudeWay>(() => claudeWayFor(config.data?.models, primary))
   const picked = useRef(false)
   useEffect(() => {
-    if (!picked.current && config.data) setWay(claudeWayFor(config.data?.models, primary)) // once the saved setup is known
+    // once, when the saved setup is first known; later saves (a switch on this card) never move the choice
+    if (picked.current || !config.data) return
+    picked.current = true
+    setWay(claudeWayFor(config.data.models, primary))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.data])
   const choose = (w: ClaudeWay) => {
@@ -108,6 +114,7 @@ export function ConnectClaude({
             way={way === 'code_chats' ? 'chats' : 'everything'}
             primary={primary}
             fast={fast}
+            others={others}
             onUseForChat={onUseForChat}
             onUseForEverything={onUseForEverything}
           />
@@ -139,6 +146,7 @@ export function ConnectClaudeSection() {
         <ConnectClaude
           primary={roles?.primary ?? ''}
           fast={roles?.fast ?? ''}
+          others={{ planner: roles?.planner, executor: roles?.executor }}
           onUseModels={applyPlan('anthropic', 'Claude')}
           onUseForChat={(m) => setRoles.mutate({ primary: m }, done('Chat now uses Claude through Claude Code', modelShortName(m)))}
           onUseForEverything={(primary, fast) =>
