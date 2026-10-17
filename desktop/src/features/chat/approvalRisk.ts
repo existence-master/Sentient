@@ -4,11 +4,15 @@
  * Split out of ApprovalCard.tsx so it can be unit-tested without the UI imports (#344).
  * It has no runtime imports: `node --test tests/approvalRisk.test.ts` runs it directly.
  *
- * The rule (#344): the heading comes from the tool's NAME and its DECLARED RISK first
- * (e.g. `send_email`, `gmail_send` means "send an email"). Word guessing is a last resort
- * and only ever looks at the tool name and the reason (the tool's description, e.g.
- * "mcp_mailer: Send an email to one address"): never at the arguments' content, so an
- * email body mentioning "post", "publish" or "tweet" cannot read as posting publicly.
+ * The rule (#344, refined by #347): the heading comes from the tool's NAME and its DECLARED RISK first
+ * (e.g. `send_email`, `gmail_send` means "send an email"; Home Assistant's locks read as "Home security").
+ * Two exceptions: a click/type/press tool's describe_fn always runs and reads the actual element, so its risk_label
+ * names the action better than the rules (a "Send feedback" button reads as Sends, not Purchase); and when
+ * the rules return a generic label, the engine's risk_label breaks the tie if a describe_fn actually ran.
+ * When the engine's label has no known verb, the heading falls back to what the rules would have said.
+ * Word guessing is a last resort and only ever looks at the tool name and the reason (the tool's description,
+ * e.g. "mcp_mailer: Send an email to one address"): never at the arguments' content, so an email body
+ * mentioning "post", "publish" or "tweet" cannot read as posting publicly.
  *
  * One deliberate exception: multi-execute tools (Composio's COMPOSIO_MULTI_EXECUTE_TOOL)
  * carry the real action in slug keys (`tool_slug`, `action_slug`, `slug` — the same
@@ -167,4 +171,131 @@ function isEmailSendingTool(name: string): boolean {
   const tokens = name.toLowerCase().split(/[^a-z0-9]+/)
   if (tokens.some((t) => /^(draft|drafts)$/.test(t))) return false
   return isEmailTool(name) && tokens.some((t) => /^(send|sends|sending|sent|reply|forward)$/.test(t))
+}
+
+/**
+ * The engine's generic per-risk fallback labels (sentient/tools/base.py RISK_LABELS):
+ * the engine always fills risk_label, so receiving one of these means no tool
+ * describe_fn ran and the card should keep the tool-name rules below (#346).
+ */
+const ENGINE_FALLBACK: Record<'read' | 'write' | 'send' | 'exec', string> = {
+  read: 'Looks something up',
+  write: 'Changes something',
+  send: 'Sends',
+  exec: 'Runs code'
+}
+
+/**
+ * Plain verbs for the engine's describe_fn action labels (sentient/browser/safety.py,
+ * terminal, nodes, home assistant): "Sentient wants to ..." + verb.
+ */
+const ENGINE_VERBS: Record<string, string> = {
+  Purchase: 'make a purchase',
+  Deletes: 'delete something',
+  'Posts publicly': 'post something publicly',
+  'Sends an email': 'send an email',
+  Sends: 'send something on your behalf',
+  Submits: 'submit something for you',
+  'Signs up': 'sign you up for something',
+  'Runs a command': 'run a command on this computer',
+  'Runs code': 'run code on your computer',
+  'Changes something': 'make a change',
+  'Looks something up': 'look something up',
+  Clicks: 'click',
+  'Types into the page': 'type into the page',
+  'Presses a key': 'press a key',
+  'Takes a photo': 'take a photo',
+  'Looks at the screen': 'look at the screen'
+}
+
+/**
+ * The browser tools whose describe_fn reads the actual element (sentient/browser/tools.py):
+ * only these get a risk_kind, so only their risk_label is trusted as-is. The other
+ * browser_* tools (e.g. browser_select) keep the tool-name rules.
+ */
+const BROWSER_DESCRIBE_TOOLS: ReadonlySet<string> = new Set(['browser_click', 'browser_type', 'browser_press'])
+
+const ENGINE_TONE: Record<'read' | 'write' | 'send' | 'exec', RiskTone> = {
+  read: 'neutral',
+  write: 'warning',
+  send: 'danger',
+  exec: 'danger'
+}
+
+export interface EngineWording {
+  label: string
+  /** "Sentient wants to ..." */
+  verb: string
+  tone: RiskTone
+}
+
+/**
+ * Wording from the engine's own risk_label, or null to keep the tool-name rules (#346).
+ *
+ * A tool's describe_fn names the actual action (a browser click's describe_fn reads the
+ * clicked element: "Place order" -> "Purchase", an ordinary button -> "Clicks"), so when
+ * the engine's label is specific it names the card more accurately than our rules (#347).
+ * The engine always fills risk_label, so a label that is just the generic per-risk
+ * fallback means no describe_fn ran: return null and let approvalRisk name it.
+ */
+export function engineWording(
+  riskLabel: string | null | undefined,
+  risk: 'read' | 'write' | 'send' | 'exec',
+  /**
+   * What the tool-name rules said: used for the heading when the engine's label
+   * has no known verb, so the heading stays a real sentence (#347 review).
+   */
+  fallbackVerb = 'do this'
+): EngineWording | null {
+  const label = (riskLabel ?? '').trim()
+  if (!label || label === ENGINE_FALLBACK[risk]) return null
+  return { label, verb: ENGINE_VERBS[label] ?? fallbackVerb, tone: ENGINE_TONE[risk] }
+}
+
+/**
+ * Labels approvalRisk returns when the tool-name rules could not name the action.
+ * Only for these does the engine's risk_label get the tiebreaker (#347).
+ */
+export const GENERIC_RISK_LABELS: ReadonlySet<string> = new Set(['Sends', 'Changes things', 'Reads'])
+
+export interface CardWording {
+  label: string
+  /** "Sentient wants to ..." */
+  verb: string
+  tone: RiskTone
+  /** One plain sentence on what could go wrong (#175). */
+  caution?: string
+}
+
+/**
+ * The full heading precedence for an approval card, icon aside (#347):
+ *
+ * 1. A trash-kind preview (#142) reads as a move to the trash, not a loss.
+ * 2. A click/type/press tool's describe_fn always runs and reads the actual element, so
+ *    its risk_label is trusted as-is: "Send feedback" reads as Sends, not Purchase.
+ *    Other browser_* tools have no describe_fn and keep the tool-name rules.
+ * 3. The tool-name rules (#346, #372) come first otherwise: terminal_run, Home security
+ *    and the rest already name the action with their caution and icon.
+ * 4. When the rules return a generic label, the engine's risk_label breaks the tie if
+ *    a describe_fn actually ran.
+ */
+export function resolveWording(approval: {
+  risk: 'read' | 'write' | 'send' | 'exec'
+  reason?: string | null
+  name: string
+  arguments?: Record<string, unknown>
+  preview?: { kind?: string | null } | null
+  riskLabel?: string | null
+}): CardWording {
+  if (approval.preview?.kind === 'trash' && approval.risk !== 'exec')
+    return { label: 'Moves to the trash', verb: 'move something to the trash', tone: 'warning' }
+  if (BROWSER_DESCRIBE_TOOLS.has(approval.name)) {
+    const label = (approval.riskLabel ?? '').trim()
+    // The verb falls back to what the rules would have said, so an engine label
+    // with no known verb (e.g. a future "Signs up") still reads as a sentence.
+    if (label) return { label, verb: ENGINE_VERBS[label] ?? approvalRisk(approval).verb, tone: ENGINE_TONE[approval.risk] }
+  }
+  const wording = approvalRisk(approval)
+  if (!GENERIC_RISK_LABELS.has(wording.label)) return wording
+  return engineWording(approval.riskLabel, approval.risk, wording.verb) ?? wording
 }
