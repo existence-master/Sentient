@@ -113,6 +113,13 @@ function DrawerBody({
 
   useEffect(() => {
     if (!focus) return
+    if (focus === 'disconnect' || focus === 'forget') {
+      // the disconnect question, with "Also forget" ticked for `forget` (#153; deep link, also for screenshots)
+      if (!i.connected) return
+      forget.setForget(focus === 'forget')
+      setConfirm(true)
+      return
+    }
     const t = window.setTimeout(() => root.current?.querySelector(`#section-${focus}`)?.scrollIntoView({ block: 'start' }), 260)
     return () => window.clearTimeout(t)
   }, [focus])

@@ -10,7 +10,7 @@ import {
 } from '@tabler/icons-react'
 import { motion } from 'motion/react'
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, IconButton, Input, Skeleton, Spinner, Switch, type Tone } from '@/components/ui'
 import { CopyChip, InstructionsGuide } from '@/features/integrations/InstructionsGuide'
@@ -98,6 +98,15 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
   const actions = useChannelActions()
   const [confirm, setConfirm] = useState(false)
   const forget = useForgetChoice()
+  // deep link (also for screenshots): ?disconnect=<id>[&forget=1] opens the disconnect question (#153)
+  const [params] = useSearchParams()
+  const linked = useRef(false)
+  useEffect(() => {
+    if (linked.current || params.get('disconnect') !== channel.id || channel.status !== 'connected') return
+    linked.current = true
+    forget.setForget(params.get('forget') === '1')
+    setConfirm(true)
+  }, [params, channel.id, channel.status, forget])
   const status = STATUS[channel.status] ?? STATUS.disconnected
   const connected = channel.status === 'connected'
   const whatsapp = channel.id === 'whatsapp'
@@ -172,9 +181,13 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
         onOpenChange={setConfirm}
         title={`Disconnect ${channel.display_name}?`}
         description={
-          whatsapp
-            ? 'Sentient is removed from Linked devices on your phone and stops answering. Your chats and their history stay here. To use WhatsApp again, scan a new code.'
-            : 'Sentient stops answering messages there. Your paired chats and their history stay, and come back if you reconnect the same bot.'
+          forget.forget
+            ? whatsapp
+              ? 'Sentient is removed from Linked devices on your phone and stops answering. To use WhatsApp again, scan a new code.'
+              : 'Sentient stops answering messages there. Your paired chats stay paired if you reconnect the same bot.'
+            : whatsapp
+              ? 'Sentient is removed from Linked devices on your phone and stops answering. Your chats and their history stay here. To use WhatsApp again, scan a new code.'
+              : 'Sentient stops answering messages there. Your paired chats and their history stay, and come back if you reconnect the same bot.'
         }
         confirmLabel={forget.forget ? 'Disconnect and forget' : 'Disconnect'}
         onConfirm={async () => {

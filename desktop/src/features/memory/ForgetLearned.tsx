@@ -4,7 +4,7 @@
  * emails"); with the box left clear nothing is deleted.
  */
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { qk } from '@/hooks/queryKeys'
 import { api } from '@/lib/api'
 import type { ForgetCounts } from '@/lib/types'
@@ -64,6 +64,10 @@ export function ForgetLearned({
   const c = preview.data
   const what = c ? forgetParts(c) : ''
   const nothing = !!c && !what
+  // nothing to forget: the box can't stay ticked (a deep link may have ticked it)
+  useEffect(() => {
+    if (nothing && checked) onCheckedChange(false)
+  }, [nothing, checked, onCheckedChange])
   let line: string
   if (preview.isPending) line = 'Counting what Sentient learned from it...'
   else if (preview.isError || !c) line = "Couldn't count what Sentient learned from it. Ticking the box still forgets all of it."
@@ -74,7 +78,7 @@ export function ForgetLearned({
     <label
       className={cn(
         'flex cursor-pointer items-start gap-2.5 rounded-xl border px-3 py-2.5 transition-colors',
-        checked ? 'border-danger/40 bg-danger/5' : 'border-border bg-surface hover:bg-hover',
+        checked && !nothing ? 'border-danger/40 bg-danger/5' : 'border-border bg-surface hover:bg-hover',
         nothing && 'cursor-default opacity-70'
       )}
     >
