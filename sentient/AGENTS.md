@@ -24,7 +24,9 @@ and plain-language instructions; the desktop renders the connect screen from the
 
 **A config option.** Add it to your area's section in `config/schema.py` with a default and a `description`.
 
-**A table or column.** Put idempotent DDL in your package's `schema.sql`; add columns with `store.ensure_column`.
+**A table or column.** Put idempotent DDL for the whole current shape in your package's `schema.sql`. A new column
+also needs the next numbered step in `store/migrations/` ([ADR 0030](../docs/adr/0030-numbered-migration-files.md),
+"Changing the database" in [docs/DEVELOPING.md](../docs/DEVELOPING.md)); never type `SCHEMA_VERSION` by hand.
 
 **A REST route.** Add it to your package's router in `gateway/routes/`, document it in `docs/API.md`.
 

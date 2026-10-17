@@ -1,6 +1,8 @@
 -- Sentient v3 storage. One SQLite file replaces Mongo + Postgres/pgvector + Chroma + Redis.
 -- Vectors: sqlite-vec virtual tables (created lazily once the embedding dimension is known).
 -- Keyword search: FTS5.
+-- Idempotent, and the whole current shape: a new database is made from the schema.sql files alone. An older
+-- database first gets its missing columns from sentient/store/migrations (docs/DEVELOPING.md).
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -91,8 +93,14 @@ CREATE TABLE IF NOT EXISTS facts (
     previous_content TEXT,                                  -- kept on UPDATE so edits are auditable
     status          TEXT NOT NULL DEFAULT 'active',         -- active | pending (held for the user's review, ADR 0021)
     review          TEXT,                                   -- JSON {from, snippet, session_id}: where a held memory came from
-    scope           TEXT NOT NULL DEFAULT 'personal'        -- personal | work | always | a project's name (#155)
+    scope           TEXT NOT NULL DEFAULT 'personal',       -- personal | work | always | a project's name (#155)
+    recall_count    INTEGER NOT NULL DEFAULT 0,             -- times recalled into a prompt (dreaming promotes them)
+    last_recalled_at TEXT,
+    merged_into     INTEGER,                                -- the memory the nightly tidy-up merged this one into (#353)
+    merged_at       TEXT,                                   -- kept for undo
+    merged_by       TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope, status);
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);
 CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);   -- the activity timeline (#147)
@@ -121,6 +129,7 @@ CREATE TABLE IF NOT EXISTS usage (
     created_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_paid ON usage(created_at) WHERE cost_usd > 0;   -- the activity timeline's spending lines (#147)
 
 -- ---------------------------------------------------------------- integrations / credentials metadata
 -- Actual OAuth tokens go to the OS keychain under sentient/integration:<id>;
@@ -132,7 +141,9 @@ CREATE TABLE IF NOT EXISTS integrations (
     account_label TEXT,                           -- e.g. the email address
     settings      TEXT,                           -- JSON (privacy filters etc.)
     connected_at  TEXT,
-    updated_at    TEXT
+    updated_at    TEXT,
+    status        TEXT,                           -- connected | disconnected | error, as last seen
+    error         TEXT                            -- why it last failed
 );
 
 -- ---------------------------------------------------------------- skills (self-evolution ledger)
@@ -142,7 +153,21 @@ CREATE TABLE IF NOT EXISTS skill_stats (
     view_count   INTEGER NOT NULL DEFAULT 0,
     patch_count  INTEGER NOT NULL DEFAULT 0,
     last_used_at TEXT,
-    state        TEXT NOT NULL DEFAULT 'active'   -- active | pending_review | stale | archived
+    state        TEXT NOT NULL DEFAULT 'active',  -- active | pending_review | stale | archived
+    created_at   TEXT,
+    -- usage outcomes recorded by self-evolution (skill repair) so the curator can prefer reliable skills
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_failure_at TEXT,
+    -- edit protection (#164): the SKILL.md as Sentient last wrote it (or as first seen), so a hand edit shows up as a
+    -- different hash and reset can put the original back; and the active hash a proposal was drafted from
+    origin_hash  TEXT,
+    origin_text  TEXT,
+    proposal_base_hash TEXT,
+    -- the last run of the skill's own checks (#386, sentient.skills.checks), as JSON: the active skill's, and its
+    -- pending proposal's
+    check_report TEXT,
+    pending_check_report TEXT
 );
 
 -- ---------------------------------------------------------------- chat subagents (owner: core, docs/API.md section 10)

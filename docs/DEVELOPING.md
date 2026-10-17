@@ -123,6 +123,55 @@ machine run it per folder (`tests/test_*.py`, `tests/tasks`, `tests/memory` ...)
 The web device app is served at `http://127.0.0.1:<port>/node/` so it can be tried on the same computer
 (camera and microphone work on localhost). For a phone, turn on Devices → Allow devices on my Wi-Fi.
 
+### Changing the database
+
+Everything lives in one SQLite file ([ADR 0003](adr/0003-single-sqlite-database.md)). Two things describe its shape
+([ADR 0030](adr/0030-numbered-migration-files.md)):
+
+- the `schema.sql` files (`sentient/store/schema.sql` and one per package in `PACKAGE_SCHEMAS`): idempotent
+  `CREATE ... IF NOT EXISTS` statements for the **whole current shape**. A new database is made from them alone.
+- numbered steps in `sentient/store/migrations/`, one file per step, that bring a database made by an older build
+  up to date. The highest number is the schema version (`SCHEMA_VERSION`, stored in `PRAGMA user_version`).
+
+When Sentient opens an existing database with a lower version, it takes a snapshot (issue #151), runs every step
+above that version in order (stamping the version after each), and then runs the `schema.sql` files, which add any
+missing tables and indexes.
+
+**A new table or index.** Add it to your package's `schema.sql`. That is all: the file runs on every start, so older
+databases get it too. An index on a new column also goes there: the step below adds the column first.
+
+**A new column** (or a change to existing rows):
+
+1. Add the column to the `CREATE TABLE` in the `schema.sql`, so new databases have it.
+2. Add the next step: copy the newest file in `sentient/store/migrations/` to the next number with a short name, for
+   example `0014_task_colour.py`:
+
+   ```python
+   """Tasks remember their colour (#123)."""
+
+   from __future__ import annotations
+
+   from typing import Any
+
+
+   async def migrate(store: Any) -> None:
+       await store.ensure_column("tasks", "colour", "TEXT")
+   ```
+
+   Use the same type and default as in `schema.sql`. A step may also fix rows (`await store.db.execute("UPDATE ...")`).
+   A `.sql` file works too when plain SQL is enough, but only for statements that are safe to run twice
+   (`ALTER TABLE ... ADD COLUMN` is not, so columns go in a `.py` step).
+3. Run `pytest -q tests/test_migrations.py`. It fails when two steps share a number, a number is skipped, or a
+   database migrated from an old build differs from a new one (tables, columns, indexes and triggers).
+
+Never type the version anywhere, and never edit a step that is already on `main`: databases that ran it will not
+run it again. A step must work twice (a crash before its version is stamped runs it again) and on a table that is
+missing (a very old database), which `store.ensure_column` already handles.
+
+**When two pull requests both add a step.** Both pick the next free number, say `0014`, and git sees no conflict
+because the file names differ. Whoever merges second rebases on `main`, sees `tests/test_migrations.py` fail with
+"two migrations share a number", and renames their file to `0015_...`.
+
 ## Packaging
 
 The shipped app carries its own engine, so the person installing it needs neither
@@ -186,6 +235,7 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 | You want to… | Go to |
 |---|---|
 | Change what the window and engine exchange | `docs/API.md` first, then both sides |
+| Add a table or a column | your package's `schema.sql`, plus a numbered step for a column ([Changing the database](#changing-the-database)) |
 | Add a config option | your package's section in `sentient/config/schema.py` (with a `description`; Settings renders it) |
 | Add a tool | a plugin in `sentient/integrations/plugins/` (integrations) or `sentient/tools/builtin/` (core); set `risk`, and `internal=True` if it only touches Sentient's own data |
 | Change how turns run | `sentient/agent/loop.py` (`run_loop`, `run_turn`) and `agent/toolselect.py` |

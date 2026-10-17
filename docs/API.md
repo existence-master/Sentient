@@ -3172,10 +3172,10 @@ copied to the cloud too.
 **Snapshots** are backups without `files/`, kept in `<home>/backups/snapshots` (the newest `backups.snapshots_keep`).
 Sentient takes one:
 - when it opens a database whose `PRAGMA user_version` differs from `sentient.store.db.SCHEMA_VERSION` (an update or a
-  downgrade; a new database has no snapshot). Bump `SCHEMA_VERSION` with any schema change that needs existing
-  databases updated;
+  downgrade; a new database has no snapshot). `SCHEMA_VERSION` is the highest numbered step in
+  `sentient/store/migrations/` (ADR 0030), so a change that adds a column raises it by adding a step;
 - before the first `store.ensure_column` that actually adds a column to an existing database in a run (at most one per
-  start), as a safety net for a change that forgot the bump;
+  start), as a safety net;
 - before `POST /api/import/hermes/apply` (section 19);
 - before a restore replaces the data (so a restore can be undone).
 A snapshot that fails is logged and never keeps Sentient from starting.

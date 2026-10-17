@@ -32,29 +32,6 @@ RUN_COLUMNS = {
     "sources", "dry_run", "would_do", "checks",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
-_ADDED_TASK_COLUMNS = {
-    "assignee": "TEXT NOT NULL DEFAULT 'ai'",
-    "model": "TEXT",
-    "chat_history": "TEXT",
-    "clarifying_questions": "TEXT",
-    "swarm_details": "TEXT",
-    "original_context": "TEXT",
-    "error": "TEXT",
-    "next_execution_at": "TEXT",
-    "last_execution_at": "TEXT",
-    "script": "TEXT",
-    "browser_profile": "TEXT",
-    "deliver_to": "TEXT",
-    "notepad": "TEXT",
-    "keep_running": "INTEGER NOT NULL DEFAULT 0",  # never paused while the user is away (#163)
-    "memory_scope": "TEXT",  # the memories its runs use and save to (#155); NULL: personal
-}
-_ADDED_RUN_COLUMNS = {
-    "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
-    "limits": "TEXT", "last_activity_at": "TEXT", "memory_sources": "TEXT", "sources": "TEXT",
-    "dry_run": "INTEGER NOT NULL DEFAULT 0", "would_do": "TEXT",  # try runs (#142)
-    "checks": "TEXT",  # outcome checks (#165)
-}
 # SQL condition: a real run, not a try run (#142). Try runs never hold a task busy or count as its last result.
 REAL_RUN = "COALESCE(dry_run, 0) = 0"
 
@@ -99,22 +76,6 @@ def _question_to_api(question: Any) -> dict | None:
 class TaskRepo:
     def __init__(self, store: Store):
         self.store = store
-
-    # ------------------------------------------------------------------ schema
-    async def ensure_schema(self) -> None:
-        for col, decl in _ADDED_TASK_COLUMNS.items():
-            await self.store.ensure_column("tasks", col, decl)
-        for col, decl in _ADDED_RUN_COLUMNS.items():
-            await self.store.ensure_column("task_runs", col, decl)
-        await self.store.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_next_exec ON tasks(status, enabled, next_execution_at)"
-        )
-        await self.store.db.execute(
-            "CREATE TABLE IF NOT EXISTS task_trigger_seen ("
-            " task_id TEXT NOT NULL, item_key TEXT NOT NULL, seen_at TEXT NOT NULL,"
-            " PRIMARY KEY (task_id, item_key))"
-        )
-        await self.store.db.commit()
 
     # ------------------------------------------------------------------ tasks
     @staticmethod

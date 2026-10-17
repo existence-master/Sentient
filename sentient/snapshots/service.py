@@ -284,7 +284,6 @@ class FileSnapshots(Service):
         return self.app.config.tools.snapshots
 
     async def start(self) -> None:
-        await self.app.store.ensure_column("file_snapshots", "restoring_at", "TEXT")
         await self.repair()
         if self.app.enable_background:
             self.run_every(PRUNE_EVERY_S, self.prune, name="prune", initial_delay=60)

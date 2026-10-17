@@ -12,7 +12,7 @@ electron-builder picks it up as ``extraResources``.
 
 What a naive freeze misses, and is therefore listed explicitly below:
   * ``sqlite_vec/vec0.dll``  - loaded as a SQLite extension by path, never imported
-  * ``sentient/**/schema.sql`` and ``sentient/nodes/web/*`` - read with ``Path(__file__)``
+  * ``sentient/**/schema.sql``, ``sentient/store/migrations/*.sql`` and ``sentient/nodes/web/*`` - read as files
   * litellm + tiktoken data files, certifi's CA bundle, the tzdata database
   * keyring's Windows backend, which is only ever found dynamically
   * neonize's whatsmeow library (WhatsApp), loaded with ctypes by path, when the ``whatsapp`` extra is installed
@@ -68,6 +68,8 @@ def add_meta(name: str) -> None:
 
 # --------------------------------------------------------------- Sentient's own data files
 for sql in sorted(PKG.rglob("schema.sql")):
+    datas.append((str(sql), str(sql.parent.relative_to(REPO))))
+for sql in sorted((PKG / "store" / "migrations").glob("*.sql")):  # .sql migration steps (ADR 0030)
     datas.append((str(sql), str(sql.parent.relative_to(REPO))))
 for asset in sorted((PKG / "nodes" / "web").rglob("*")):
     if asset.is_file():
