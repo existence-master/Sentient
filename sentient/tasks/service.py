@@ -2411,9 +2411,12 @@ class TaskService(Service):
     async def _check_source_missing(self, task: dict, script: dict, code: str, reason: str) -> None:
         """A check script's page (or app, or folder) isn't there (#161): the check is ``skipped`` in its history, and
         the checklist's ``if_missing`` decides the rest, as for a run: nothing more, a notification, or an earlier
-        check (``tasks.source_retry_minutes`` from now, at most ``tasks.source_retries`` in a row, then a notice)."""
+        check (``tasks.source_retry_minutes`` from now, at most ``tasks.source_retries`` in a row, then a notice). A
+        triggered check can't be moved up, so "try again later" tells the user instead."""
         task_id = task["id"]
         policy = self._missing_policy(task)
+        if policy == "retry" and (task.get("schedule") or {}).get("type") != "recurring":
+            policy = "notify"  # a triggered check has no time to move up: its event is gone, so the user is told
         cfg = self.app.config.tasks
         tries = 1
         for check in reversed([c for c in script.get("checks") or [] if isinstance(c, dict)]):
@@ -2437,7 +2440,7 @@ class TaskService(Service):
         if sooner is not None:
             current = await self.repo.get_task(task_id) or {}
             due = parse_iso(current.get("next_execution_at"))
-            if current.get("status") == "active" and (due is None or sooner < due):
+            if current.get("status") == "active" and due is not None and sooner < due:
                 await self._set(task_id, {"next_execution_at": iso(sooner)})
         await self.publish(task_id)
         if tell:

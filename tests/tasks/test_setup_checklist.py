@@ -347,7 +347,56 @@ async def test_a_check_script_follows_the_same_choice(make_app, page, clock):
     assert await _events(app, "script_failed") == []
 
 
+async def test_a_triggered_check_script_tells_instead_of_checking_again_early(make_app, page):
+    app = await make_app(FakeProvider())
+    now = app.tasks.now_iso()
+    code = f"from sentient_tools import tools, result\nresult(tools.web_fetch(url='{PAGE}')['content'])\n"
+    task_id = await app.tasks.repo.insert_task({
+        "name": "Studio page on new mail", "description": f"Read {PAGE} on new mail", "original_prompt": f"read {PAGE}",
+        "status": "approval_pending", "task_type": "script",
+        "script": normalize_script({"code": code, "condition": "every_run", "then": "notify"}),
+        "schedule": {"type": "triggered", "source": "webhook", "event": "studio", "filter": {}},
+        "plan": [{"tool": "", "description": "Check the page"}], "created_at": now, "updated_at": now,
+    })
+    await app.tasks.update(task_id, {"setup": {"if_missing": "retry", "confirm": True}})
+    await app.tasks.approve(task_id)
+    page["down"] = "the page studio.example/events.html couldn't be reached"
+    await app.tasks.handle_event("webhook", "studio", {"id": "e1", "body": {}})
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert task["script"]["checks"][-1]["outcome"] == "skipped"
+    assert task["next_execution_at"] is None  # never claimed later without its event
+    [note] = await _events(app, "source_missing")
+    assert note["payload"]["if_missing"] == "notify"
+
+
 # ---------------------------------------------------------------------------- what it may do without asking
+async def test_ask_me_first_also_holds_a_write_that_carries_data_out(make_app, page):
+    log: list[str] = []
+
+    @tool("tracker_update_issue", risk=Risk.write, exfiltrates=True)
+    async def tracker_update_issue(ctx: ToolContext, title: str = "") -> dict:
+        """Update an issue on a shared tracker."""
+        log.append(title)
+        return {"ok": True}
+
+    class Tracker(ToolPlugin):
+        id = "tracker"
+        display_name = "Tracker"
+        tools = [tracker_update_issue]
+
+    app = await make_app(FakeProvider(replies=[[tool_call("tracker_update_issue", title="New events")]]))
+    app.registry.register(_mail([]))
+    app.registry.register(Tracker())
+    task_id = await _routine(app, approval="ask")
+    await app.tasks.update(task_id, {"plan": [*PLAN["plan"], {"tool": "tracker", "description": "Update the issue"}]})
+    await app.tasks.run_now(task_id)
+    await app.tasks.drain()
+    run = (await app.tasks.get(task_id))["runs"][-1]
+    assert run["status"] == "waiting_for_user" and log == []
+    assert "You set this task to ask you first." in run["pending_question"]["question"]
+
+
 async def test_ask_me_first_holds_a_send_and_asks_with_the_tasks_reason(make_app, page):
     log: list[str] = []
     llm = FakeProvider(replies=[SEND])

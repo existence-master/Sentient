@@ -1011,8 +1011,8 @@ if_missing: "skip|notify|retry", confirmed_at: "...|null"}`
   in); else the first connected app the plan reads; else `none`.
 - `output`, what the user gets: the plan's last step, else the description (at most 300 characters).
 - `approval`, what it may do without asking: `plan` (default) goes ahead with what the approved plan does, as before;
-  `ask` holds every call that sends, posts, buys, deletes or runs something (effective risk `send` or `exec`, not
-  `internal`) and asks first, like an Ask rule (section 2), with the question `This task wants to use <tool> (...). You
+  `ask` holds every call that sends, posts, buys, deletes or runs something (effective risk `send` or `exec`, or a
+  write marked `exfiltrates` that carries data out; never `internal`) and asks first, like an Ask rule (section 2), with the question `This task wants to use <tool> (...). You
   set this task to ask you first. OK to go ahead?` and the usual answers. `Allow for this task` lets later runs go
   ahead. A lasting rule the user set (Allow, Never...) still wins. `acts` lists the plan's apps that can do such
   things, for the checklist to name.
@@ -1040,7 +1040,8 @@ When it isn't there:
   opens with `Trying again now: what it reads wasn't there last time.`. After `tasks.source_retries` (default 3) retries
   in a row the run says `It tried again 3 times, so it waits for its next run.` and the `source_missing` notification
   is sent. A retry is dropped when the task is paused by then, or (scheduled routines) when a newer run came first. A
-  check script checks again early instead (`next_execution_at` moves up, never later than it was).
+  recurring check script checks again early instead (`next_execution_at` moves up, never later than it was); a
+  triggered one can't, so `retry` tells the user like `notify`.
 
 ### Checking the outcome (#165)
 Code, never a model, checks what a call that should change something really did, right after it runs

@@ -1118,7 +1118,8 @@ class Agent:
             tool, ctx.user_words, self._app_name(tool), plan.risk, self._other_apps(tool)
         )
         rule = applied_rule(rule, asked=asked, risk=plan.risk)
-        if rule is None and ctx.extra.get(ASK_FIRST_KEY) and plan.risk >= Risk.send and not tool.internal:
+        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)  # send or exec, or a write that carries data out
+        if rule is None and ctx.extra.get(ASK_FIRST_KEY) and outgoing and not tool.internal:
             rule = ASK  # this routine asks first (#161); a lasting rule the user set wins either way
             plan.level = TASK_ASKS  # the hold and the task's question say why it asks
         if chat_rule == "ask" and pending_asks(self.approvals.config.mode, plan.risk):
@@ -1140,7 +1141,6 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
-        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
         tried = ctx.extra.get(dry_run.KEY) if ctx.extra else None
         if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk, outgoing=outgoing):
             # a try run (#142): anything above a look-up, or that can send data out, is noted instead of done, decided
