@@ -472,6 +472,7 @@ def test_a_remembered_fact_is_never_reworded_by_a_paraphrase():
 
 
 # ---------------------------------------------------------------------------- REST
+@pytest.mark.flaky(reruns=2)  # ~4 s polling budget, import still running on Windows CI: #422
 def test_routes(app, chatgpt_zip, openclaw_home, monkeypatch):
     monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "test-token")
     monkeypatch.setattr(exports.Path, "home", classmethod(lambda cls: openclaw_home.parent))

@@ -6,10 +6,14 @@ name: Changelog
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  # The merge queue waits for every required check on each merge group. A pull request passed this one before it
+  # could join the queue, so there it just reports success.
+  merge_group:
 
+# Merge groups each have their own ref and are never cancelled here.
 concurrency:
-  group: changelog-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: changelog-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -19,14 +23,19 @@ jobs:
     name: Changelog entry
     # Dependabot's version bumps and PRs labelled "no changelog" don't need one.
     if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.user.login != 'dependabot[bot]' &&
-      !contains(github.event.pull_request.labels.*.name, 'no changelog')
+      github.event_name == 'merge_group' || (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.user.login != 'dependabot[bot]' &&
+        !contains(github.event.pull_request.labels.*.name, 'no changelog'))
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
     steps:
+      - name: Checked on the pull request
+        if: github.event_name == 'merge_group'
+        run: echo "Each pull request passed this check before it could join the merge queue."
       - name: Look for a changes/ file
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
