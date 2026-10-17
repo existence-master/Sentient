@@ -1631,8 +1631,10 @@ window), `channel:<telegram|discord|whatsapp>` (a chat in a messaging app), `dev
 paired device; `sessions.node_id`), `app:<plugin id>` (an app or MCP server, `app:mcp_<name>`), `folder:<folder id>`,
 `file:<name>`, `manual`, `onboarding`, `import:<app>` and so on. Every other place the same fact is learned again (a
 duplicate skipped, an update, a merge, an approval of the same words) is linked in `fact_sources`. A fact learned in a
-chat is the chat's, plus every added folder whose notes that chat read (its answer sources, section 2); a fact held
-for review because the chat read an app's content (Gmail, Home Assistant, an MCP server...) is that app's instead.
+chat is the chat's, plus every added folder whose notes that chat read (its answer sources, section 2) and say the same
+thing (two of the fact's words or one of its numbers in the excerpt read); a fact held for review because the chat
+read an app's content (Gmail, Home Assistant, an MCP server...) is that app's instead (the ones whose excerpts say it,
+else every app the chat read).
 Forgetting a source deletes the facts no other source backs, with their vectors and merged copies, and takes it off
 the others (the next source becomes a fact's own `source`).
 
