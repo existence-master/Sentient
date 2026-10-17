@@ -224,8 +224,8 @@ async def spans(
     store: Any, fact: str, sources: list[str], session_id: str, read: list[Read], user_name: str = ""
 ) -> dict[str, dict]:
     """Exactly where each of ``sources`` said ``fact`` in chat ``session_id``: the user's message for the chat
-    itself (the newest of its last 40 that says it, else the newest), the email, app result or note for what the chat
-    read. ``{source: ref}``; a source with nothing to point at is left out."""
+    itself (the newest of its last 40 that says it, else just the chat), the email, app result or note for what the
+    chat read. ``{source: ref}``; a source with nothing to point at is left out."""
     out: dict[str, dict] = {}
     for src in sources:
         if is_chat(src):
@@ -236,9 +236,12 @@ async def spans(
             )
             if not rows:
                 continue
-            best = next((r for r in rows if backs(fact, r["content"] or "", user_name)), rows[0])
-            out[src] = {"kind": "message", "session_id": session_id, "message_id": best["id"],
-                        "quote": quote(best["content"] or "", fact) or None}
+            best = next((r for r in rows if backs(fact, r["content"] or "", user_name)), None)
+            if best is None:  # no message says it (a summary of several, a rewording): the chat itself
+                out[src] = {"kind": "message", "session_id": session_id}
+            else:
+                out[src] = {"kind": "message", "session_id": session_id, "message_id": best["id"],
+                            "quote": quote(best["content"] or "", fact) or None}
             continue
         items = [r for r in read if r[0] == src]
         if not items:

@@ -18,10 +18,12 @@ from typing import Any
 
 CHANNELS = ("discord", "telegram", "whatsapp")  # sentient.memory.origins.CHANNELS (imported late: no import cycle)
 WINDOW = timedelta(minutes=30)  # extraction runs in the background, a little after the message it reads
-CONFIDENCE = (
-    "CASE WHEN source IN ('manual', 'user') THEN 1.0"
+CONFIDENCE = (  # sentient.memory.origins.confidence, in the same order
+    "CASE WHEN status = 'pending' THEN 0.6"
+    " WHEN source IN ('manual', 'user') THEN 1.0"
     " WHEN source IN ('conversation', 'onboarding') OR source LIKE 'channel:%' OR source LIKE 'device:%' THEN 0.9"
-    " WHEN status = 'pending' THEN 0.6"
+    " WHEN source LIKE 'folder:%' THEN 0.8"
+    " WHEN source LIKE 'app:%' THEN 0.6"
     " ELSE 0.7 END"
 )
 

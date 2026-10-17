@@ -147,6 +147,28 @@ async def test_saying_a_disputed_memory_again_makes_it_current(app):
     assert again["id"] == fid and (await mem.get_fact(fid))["state"] == "current"
 
 
+async def test_a_memory_out_of_prompts_also_leaves_the_workspace_files(app):
+    mem, ws = app.memory, app.workspace
+    pune = (await mem.remember("Maya lives in Pune", source="manual", use_llm=False))["id"]
+    tea = (await mem.remember("Maya drinks masala chai every morning", source="manual", use_llm=False))["id"]
+    ws.append_learned(["Maya lives in Pune", "Maya drinks masala chai every morning"])
+    await mem.set_state(pune, "disputed")
+    assert "Pune" not in ws.user.read_text(encoding="utf-8") and "chai" in ws.user.read_text(encoding="utf-8")
+    await mem.supersede(pune, tea)
+    assert "chai" not in ws.user.read_text(encoding="utf-8")
+    # history is found by its words
+    hits = await mem.list_facts(q="chai", state="all")
+    assert [h["id"] for h in hits] == [tea] and hits[0]["state"] == "superseded"
+
+
+async def test_no_message_saying_it_points_at_the_chat_only(app):
+    mem, store = app.memory, app.store
+    tg = await store.create_session(channel="telegram")
+    await store.add_message(tg, "user", "ok see you tomorrow")
+    fid = (await mem.remember("Maya's sister Riya lives in Lisbon", use_llm=False, session_id=tg))["id"]
+    assert (await mem.get_fact(fid))["ref"] == {"kind": "message", "session_id": tg}
+
+
 # ---------------------------------------------------------------- correct, then delete
 async def test_correct_then_delete_leaves_nothing_derived(app):
     mem, store, ws = app.memory, app.store, app.workspace

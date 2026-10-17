@@ -1021,6 +1021,18 @@ class FactMemory:
             if hasattr(res, "__await__"):
                 await res
 
+    async def _out_of_prompts(self, texts: list[str]) -> None:
+        """A memory left the prompts (disputed or superseded): its lines leave USER.md and MEMORY.md too, which go
+        into every prompt (``on_erase``)."""
+        if self.on_erase is None:
+            return
+        try:
+            res = self.on_erase(texts)
+            if hasattr(res, "__await__"):
+                await res
+        except Exception:
+            log.exception("removing a memory from the workspace files failed")
+
     # ------------------------------------------------------------------ state and confidence (#152)
     async def set_state(self, fid: int, state: str) -> dict:
         """The user says a memory isn't right (``disputed``: kept, but out of every prompt) or is (``current``:
@@ -1043,6 +1055,7 @@ class FactMemory:
             await self.store.execute(
                 "UPDATE facts SET state = 'disputed', updated_at = ? WHERE id = ?", (now_iso(), fid)
             )
+            await self._out_of_prompts([row["content"]])
         if row["state"] != state:
             self.publish("UPDATE", fid, row["content"], state=state, reason="confirmed" if state == "current" else "disputed")
         fact = await self.get_fact(fid)
@@ -1797,7 +1810,7 @@ class FactMemory:
         if topic:
             topic = normalize_topics([topic])[0]
         one = memory_scopes.normalize(scope)
-        if q and q.strip():
+        if q and q.strip() and state not in {"superseded", "all"}:  # superseded ones have no vector: matched by words
             try:
                 hits = await self._search(
                     q, min(offset + limit, 500) * (3 if topic else 1), self.config.memory.min_similarity, source,
@@ -2091,6 +2104,7 @@ class FactMemory:
             (keep_id, ts, drop_id),
         )
         await self.vec.delete(drop_id)
+        await self._out_of_prompts([drop["content"]])
         self.publish("DELETE", drop_id, drop["content"], reason="contradicted", superseded_by=keep_id)
         return True
 

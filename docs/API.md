@@ -1632,8 +1632,8 @@ attribute and no word of what it says in common ("a piano recital in July" for "
 **Source links, confidence and state (#152).**
 
 - A memory points at exactly where it was said: `ref` (its own source) and `sources`, every source in the order they
-  came, `{source, ref, at, own}`. A **SourceRef** is `{kind: "message", session_id, message_id, quote}` for a chat (the
-  user's message that says it), `{kind: "email"|"app", app, id?, title, url?, session_id, quote}` for what a chat read
+  came, `{source, ref, at, own}`. A **SourceRef** is `{kind: "message", session_id, message_id?, quote?}` for a chat (the
+  user's message that says it; just the chat when no single message does), `{kind: "email"|"app", app, id?, title, url?, session_id, quote}` for what a chat read
   in an app, `{kind: "note", folder_id, path, title, url?, session_id, quote}` for a note, `{kind: "file", file,
   quote}` for an imported file; `quote` is the sentence that says it. Older memories may have none.
 - `confidence` (0..1) starts from the source: 1.0 what the user typed in Memory or edited, 0.9 what they said in a
@@ -1642,7 +1642,8 @@ attribute and no word of what it says in common ("a piano recital in July" for "
   right makes it 1.0.
 - `state`: `current`, `disputed` (the user said it isn't right) or `superseded` (`superseded_by`: the nightly tidy-up
   found a newer memory that contradicts it). Only current memories are recalled into chats, tasks, proactivity, the
-  user model, USER.md and MEMORY.md; dedup still sees disputed ones, so saying one again in a chat makes it current.
+  user model, USER.md and MEMORY.md (a memory that becomes disputed or superseded also leaves those two files); dedup
+  still sees disputed ones, so saying one again in a chat makes it current.
   A superseded memory stays as history (out of recall, not listed unless `state` asks for it).
 - Deleting a memory (`DELETE /api/memories/{id}`, the `memory_forget` tool, discarding one from review, resetting a
   scope, forgetting a source) also removes everything derived from it: its vector, merged copies and source links, its
