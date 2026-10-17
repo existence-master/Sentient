@@ -301,7 +301,10 @@ def browser_click_history(rows: list[dict]) -> list[dict]:
         if row.get("role") == "assistant":
             for call in _normalize_tool_calls(row.get("tool_calls")):
                 if call["function"]["name"] == "browser_click":
-                    calls[call["id"]] = {"name": "browser_click"}
+                    calls[call["id"]] = {
+                        "name": "browser_click",
+                        "target": _arguments(call["function"].get("arguments")).get("ref", ""),
+                    }
             continue
         if row.get("role") != "tool":
             continue
@@ -319,6 +322,8 @@ def browser_click_history(rows: list[dict]) -> list[dict]:
             ok=isinstance(res, dict) and res.get("ok") is True and not err and outcomes.result_problem(res) is None,
             uncertain=not declined and bool(err),
         )
+        if isinstance(res, dict) and res.get("clicked"):
+            call["target"] = str(res["clicked"])
         out.append(call)
     return out
 
@@ -1486,6 +1491,7 @@ class Agent:
                 "declined": declined,
                 "ok": ran and not is_error and not err and outcomes.result_problem(res) is None,
                 "uncertain": ran and is_error,
+                "target": str(res.get("clicked") or tc.arguments.get("ref", "")) if isinstance(res, dict) else tc.arguments.get("ref", ""),
             })
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):

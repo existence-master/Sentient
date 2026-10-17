@@ -196,6 +196,16 @@ def test_browser_click_correction_uses_the_latest_call():
         "I clicked the upgrade button.", [], prior_success
     ) == "I didn't click it, so nothing changed on the page."
     assert outcomes.unmade_browser_click_note("I clicked it.", [], prior_success) == ""
+    prior_subscribe = [{"name": "browser_click", "ok": True, "target": 'button "Subscribe"'}]
+    assert outcomes.unmade_browser_click_note("I clicked the Subscribe button.", [], prior_subscribe) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.", [], prior_subscribe
+    ) == "I didn't click it, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "The Subscribe button was clicked, but the action failed.", [], [{"name": "browser_click", "declined": True}]
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note("If I clicked it, you would be charged $19.", []) == ""
+    assert outcomes.unmade_browser_click_note("I've clicked the button.", []) == "I didn't click it, so nothing changed on the page."
 
 
 async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, isolated_home):
