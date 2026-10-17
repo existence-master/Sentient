@@ -444,6 +444,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Pausing a task stops it now.** Before, pausing a task while it was working only stopped its next runs, and the
+  run already going carried on and could finish while the task showed Paused. Now the run stops before its next step
+  (a step already in progress finishes first, so nothing is cut off halfway), shows "Paused before it finished.
+  Resume the task to continue.", and Resume carries it on from where it stopped without redoing earlier steps. An
+  approval it was waiting on is withdrawn and asked again on Resume. A task whose agents work side by side, and a
+  one-step action that already started, can't be stopped part-way: the task page says so, and they finish (#408).
 - **Approval cards name browser clicks the way the engine sees them.** A browser tool's label reads the clicked
   element, so clicking an ordinary button reads as a click and "Send feedback" reads as sending, while clicking
   "Place order" still reads as a purchase.

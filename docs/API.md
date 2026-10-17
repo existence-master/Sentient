@@ -935,6 +935,17 @@ Behaviour notes:
   from its transcript and starting with `The task was resumed. Carrying on from where it stopped.`; a withdrawn
   approval is asked again), plans a held `planning` task, and clears the note. A held one-off task is not also
   scheduled for a fresh run.
+- Pausing a task (`PATCH {enabled: false}`, also from the chat tool, being away, or disconnecting an app) while a run
+  works stops that run at its next safe point (#408): before its next model call or tool call, never in the middle of
+  a tool call (a call in progress finishes and keeps its result; calls of the same answer that hadn't started are
+  made again later). The run is then held exactly like the restart case above (`cancelled` with the
+  `Paused before it finished. Resume the task to continue.` note, the task `pending` or `active` with that `error`),
+  and a run waiting on an approval is held at once (its notification gets `status: "cancelled"`). A question to the
+  user keeps waiting. `PATCH {enabled: true}` carries it on as a Retry, as above; resumed before it reached a safe
+  point, the run simply goes on. Exceptions, which finish and add an `info` update saying so: a swarm's run
+  (`This task's agents work side by side, so this run can't be stopped part-way. ...`) and a one-call run whose call
+  already started (`This one-step action had already started, so it can't be stopped part-way. ...`). A run that has
+  already given its final answer only writes its report.
 - Disconnecting an integration sets `enabled: false` on tasks whose plan or trigger uses it (instead of v2's delete) and sends a notification.
 
 ### Try it first (#142, ADR 0026)
@@ -2215,6 +2226,9 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Task runs publish `task.run_finished` `{task_id, run_id, status, tool_errors, skills_viewed}`.
 - `Agent.run_loop(..., stop=fn)`: `fn()` is checked after each round of tool results; when it returns True the loop ends
   without another model call and sets `LoopResult.paused` (task runs use it for `ask_user`).
+- `Agent.run_loop(..., interrupt=fn)`: `fn()` is checked at every safe point, before each model call and before each
+  tool call (never during one); when it returns True the loop ends there and sets `LoopResult.interrupted` (task runs
+  use it when their task is paused, #408). Calls of the last answer that did not run are left without a result.
 - `Agent.run_loop(..., budget=Budget(max_tokens, max_cost_usd))` (`sentient.agent.loop.Budget`): checked before each
   model call; when it has run out the loop ends with `LoopResult.stopped_by_budget` (also in `error`). Usage from
   local models is not counted; `StreamChunk.cost` (US dollars, or None when the price is unknown) feeds the cost.
