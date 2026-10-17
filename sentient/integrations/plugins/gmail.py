@@ -263,9 +263,10 @@ async def _reply_parts(ctx: ToolContext, message_id: str, reply_all: bool) -> di
         "format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject", "Message-ID", "References", "Reply-To"]})
     h = _headers(orig)
     me = _me(mgr)
-    if "SENT" in (orig.get("labelIds") or []):  # a message in Sent is the user's own, whatever its From says
+    own = "SENT" in (orig.get("labelIds") or [])  # only Gmail's own label says the user sent it, never its From
+    if own:
         me |= {email_of(h.get("from"))} - {""}
-    targets = mail.reply_targets(h, me=me, reply_all=reply_all)
+    targets = mail.reply_targets(h, me=me, reply_all=reply_all, own=own)
     return {"to": targets["to"], "cc": targets["cc"], "subject": mail.reply_subject(h.get("subject") or ""),
             "in_reply_to": h.get("message-id"), "references": h.get("references"), "thread_id": orig.get("threadId"),
             "destinations": targets["destinations"]}

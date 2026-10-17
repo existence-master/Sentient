@@ -54,8 +54,11 @@ def _addresses(value: str) -> list[tuple[str, str]]:
     return [(n.strip(), a.strip()) for n, a in getaddresses([value or ""]) if a and "@" in a]
 
 
-def reply_targets(headers: Mapping[str, str], *, me: set[str], reply_all: bool) -> dict:
+def reply_targets(headers: Mapping[str, str], *, me: set[str], reply_all: bool, own: bool = False) -> dict:
     """Who a reply to a message goes to, from its headers alone (lower-case header names).
+
+    ``own``: the app confirms the message is the user's own (Gmail's SENT label, a sent-mail folder). Only then does a
+    reply go to its recipients; a received message whose From merely says it is the user's is answered as any other.
 
     Returns ``{to, cc, destinations}``: ``to``/``cc`` as header text, ``destinations`` as
     ``[{address, why, sender}]`` for the second look and the approval card. ``why`` is ``sender`` (the From address),
@@ -63,7 +66,7 @@ def reply_targets(headers: Mapping[str, str], *, me: set[str], reply_all: bool) 
     for a nudge) or ``thread`` (the other people on the conversation, with ``reply_all``)."""
     sender_header = headers.get("from") or ""
     sender = next((a.lower() for _, a in _addresses(sender_header)), "")
-    from_me = bool(sender) and sender in me
+    from_me = own and bool(sender) and sender in me
     to = headers.get("reply-to") or sender_header
     why_to = "reply_to" if headers.get("reply-to") else "sender"
     if from_me:  # replying to your own message (a nudge) goes to its recipients, like Gmail does

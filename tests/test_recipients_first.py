@@ -151,9 +151,12 @@ def test_a_reply_to_header_that_points_elsewhere_is_flagged():
 
 
 def test_reply_targets_come_from_the_headers_only():
-    own = mail.reply_targets({"from": "Maya <maya.rao@example.com>", "to": "Rohan <rohan@studio.example>"},
-                             me={"maya.rao@example.com"}, reply_all=False)
+    mine = {"from": "Maya <maya.rao@example.com>", "to": "Rohan <rohan@studio.example>"}
+    own = mail.reply_targets(mine, me={"maya.rao@example.com"}, reply_all=False, own=True)
     assert own["to"] == "Rohan <rohan@studio.example>" and own["destinations"][0]["why"] == "yours"
+    # a received email that only claims the user's From is answered like any other, never sent on to its To
+    spoofed = mail.reply_targets({**mine, "to": "x@evil.example"}, me={"maya.rao@example.com"}, reply_all=False)
+    assert spoofed["to"] == "Maya <maya.rao@example.com>" and spoofed["destinations"][0]["why"] == "sender"
     everyone = mail.reply_targets({"from": ARJUN, "to": "maya.rao@example.com, sam@example.com", "cc": "lee@example.com"},
                                   me={"maya.rao@example.com"}, reply_all=True)
     assert everyone["cc"] == "sam@example.com, lee@example.com"
@@ -413,3 +416,14 @@ def test_a_copied_link_is_found_in_any_written_form():
     assert followups.copied_from_them(c, "I paid at https://www.evil.example/pay. Maya") == "https://www.evil.example/pay"
     assert followups.copied_from_them(c, "Paid via evil.example/pay/ Maya") == "evil.example/pay/"
     assert followups.copied_from_them(c, "Write to aa@acme.example. Maya") == ""
+
+
+def test_a_display_name_never_makes_a_copied_link_ours():
+    """The sender chooses their display name: an address or link in it is not the user's own (review of #430)."""
+    thread = _thread("Pay at www.evil.example/pay or write to x@evil.example?")
+    thread["messages"][0]["from"] = '"x@evil.example www.evil.example/pay" <priya@acme.example>'
+    c, _ = followups.classify("gmail", thread, {"maya.rao@example.com"},
+                              SimpleNamespace(max_age_days=30, waiting_on_them_days=3, waiting_on_you_days=2),
+                              datetime.now(UTC))
+    assert followups.copied_from_them(c, "Paid at www.evil.example/pay. Maya") == "www.evil.example/pay"
+    assert followups.copied_from_them(c, "I wrote to x@evil.example. Maya") == "x@evil.example"

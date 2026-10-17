@@ -628,7 +628,10 @@ async def _reply_parts(c: dict, message_id: str, mailbox: str, reply_all: bool) 
     orig = parse_message((await _fetch_one(c, message_id, mailbox))["raw"])
     headers = {k: _header(orig, k) for k in ("From", "To", "Cc", "Reply-To")}
     me = {str(c.get("username") or "").strip().lower()} - {""}
-    return orig, mail.reply_targets({k.lower(): v for k, v in headers.items() if v}, me=me, reply_all=reply_all)
+    # the user's own message lives outside the inbox (a sent-mail folder); a received one claiming their From doesn't
+    own = str(mailbox or "INBOX").strip().upper() != "INBOX"
+    return orig, mail.reply_targets({k.lower(): v for k, v in headers.items() if v}, me=me, reply_all=reply_all,
+                                    own=own)
 
 
 async def reply_destinations(arguments: dict, ctx: ToolContext) -> list[dict] | None:

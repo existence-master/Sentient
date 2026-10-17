@@ -173,7 +173,7 @@ class SubagentManager(Service):
         if task is not None and not task.done():
             task.cancel()
             await asyncio.wait({task}, timeout=10)
-        else:
+        elif subagent_id not in self._tasks:  # still listed: it is saving its own result right now
             sub = await self.get(subagent_id, events=False)
             if sub and sub["status"] == "running":  # orphaned row: nothing is running it any more
                 await self._update(subagent_id, status="cancelled", finished_at=now_iso())

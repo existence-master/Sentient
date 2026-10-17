@@ -233,7 +233,8 @@ def copied_from_them(c: Candidate, draft: str) -> str:
     for m in c.thread.get("messages") or []:
         text = f"{m.get('subject') or ''}\n{m.get('body') or m.get('snippet') or ''}"
         (ours if m.get("from_me") else theirs).append(text)
-        ours.append(" ".join(str(m.get(k) or "") for k in ("from", "to", "cc", "sender_email")))
+        # only the parsed addresses of the headers: a display name is text the sender chose
+        ours.append(" ".join(addresses(" , ".join(str(m.get(k) or "") for k in ("from", "to", "cc")))))
     their_text, our_text = "\n".join(theirs), "\n".join(ours)
     for address in _EMAIL_RE.findall(draft or ""):
         if _has_address(their_text, address) and not _has_address(our_text, address):
