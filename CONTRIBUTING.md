@@ -66,9 +66,10 @@ Life happens, and that's fine. To keep issues moving for everyone, a bot checks 
   days (and at least a week after the ping), you are unassigned so someone else can pick it up. You can
   `/assign` it again any time while it is free.
 - **A pull request where we asked for changes** and nothing has happened for 7 days gets the
-  `waiting on author` label and one gentle reminder. Pushing a commit or replying removes the label. After 21
-  days (and at least a week after the reminder) we close it with a thank-you, and unassign you from its issue.
-  You can reopen it whenever you have time, or comment and we will reopen it for you.
+  `waiting on author` label and one gentle reminder (only ever one per pull request). Pushing a commit or
+  replying removes the label. After 21 days (and at least a week after the reminder) we close it with a
+  thank-you, and unassign you from its issue. You can reopen it whenever you have time, or comment and we will
+  reopen it for you.
 
 Draft pull requests are never touched, and the clock only runs while we are waiting on you, never while you
 are waiting on us.

@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const run = require('./stale.js');
-const { BOT, MARK, LABEL, prWaiting, decidePr, decideClaim, claimFacts } = run;
+const { BOT, MARK, LABEL, prWaiting, prWarnings, decidePr, decideClaim, claimFacts } = run;
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.parse('2026-10-01T12:00:00Z');
@@ -58,22 +58,45 @@ test('an approval or dismissal after the request means not waiting', () => {
 
 test('PR timeline: wait, nudge at 7 days, close at 21 only after a week of warning', () => {
   const since = T0;
-  const base = { waiting: true, since, nudgedAt: 0, hasLabel: false };
+  const base = { waiting: true, since, nudged: false, warnedAt: 0, hasLabel: false };
   assert.equal(decidePr({ ...base, now: T0 + 6.9 * DAY }).action, 'wait');
   assert.match(decidePr({ ...base, now: T0 + 6.9 * DAY }).note, /nudge due 2026-10-08/);
   assert.equal(decidePr({ ...base, now: T0 + 7 * DAY }).action, 'nudge');
   assert.equal(decidePr({ ...base, now: T0 + 30 * DAY }).action, 'nudge'); // never closed without a warning
-  const nudged = { ...base, nudgedAt: T0 + 7 * DAY, hasLabel: true };
+  const nudged = { ...base, nudged: true, warnedAt: T0 + 7 * DAY, hasLabel: true };
   assert.equal(decidePr({ ...nudged, now: T0 + 20 * DAY }).action, 'wait');
   assert.equal(decidePr({ ...nudged, now: T0 + 21 * DAY }).action, 'close');
-  const lateNudge = { ...nudged, nudgedAt: T0 + 20 * DAY };
+  const lateNudge = { ...nudged, warnedAt: T0 + 20 * DAY };
   assert.equal(decidePr({ ...lateNudge, now: T0 + 22 * DAY }).action, 'wait');
   assert.equal(decidePr({ ...lateNudge, now: T0 + 27 * DAY }).action, 'close');
 });
 
+test('only one nudge per PR, ever', () => {
+  const base = { waiting: true, since: T0, hasLabel: false, now: T0 + 8 * DAY };
+  // Nudged in an earlier round (before the author pushed and got a new review): the label comes back, no comment.
+  assert.equal(decidePr({ ...base, nudged: true, warnedAt: T0 - 30 * DAY }).action, 'label');
+  // Labeled already (by a maintainer or an earlier run) without the bot's comment: no comment either.
+  assert.equal(decidePr({ ...base, nudged: true, warnedAt: T0 + 7.5 * DAY, hasLabel: true }).action, 'wait');
+  assert.equal(decidePr({ ...base, nudged: false, warnedAt: 0, hasLabel: true }).action, 'wait');
+  // A label with no timeline event never leads straight to a close.
+  assert.equal(decidePr({ ...base, nudged: false, warnedAt: 0, hasLabel: true, now: T0 + 40 * DAY }).action, 'wait');
+});
+
+test('warnings come from the nudge comment and the label, whenever they happened', () => {
+  const labeled = { event: 'labeled', actor: user('itsskofficial'), label: { name: LABEL.name }, created_at: at(3) };
+  const other = { event: 'labeled', actor: user('itsskofficial'), label: { name: 'area: tasks' }, created_at: at(4) };
+  assert.deepEqual(prWarnings([other]), { nudged: false, warnedAt: 0 });
+  assert.deepEqual(prWarnings([labeled, other]), { nudged: true, warnedAt: Date.parse(at(3)) });
+  const nudge = comment(BOT, 5, `Hi @maya ${MARK.nudge}`);
+  assert.deepEqual(prWarnings([labeled, nudge]), { nudged: true, warnedAt: Date.parse(at(5)) });
+  // Someone quoting the marker does not count.
+  assert.deepEqual(prWarnings([comment('maya', 6, MARK.nudge)]), { nudged: false, warnedAt: 0 });
+});
+
 test('the label comes off when the author is active again', () => {
-  assert.equal(decidePr({ waiting: false, since: 0, nudgedAt: 0, hasLabel: true, now: T0 }).action, 'unlabel');
-  assert.equal(decidePr({ waiting: false, since: 0, nudgedAt: 0, hasLabel: false, now: T0 }).action, 'none');
+  const idle = { waiting: false, since: 0, nudged: true, warnedAt: 0, now: T0 };
+  assert.equal(decidePr({ ...idle, hasLabel: true }).action, 'unlabel');
+  assert.equal(decidePr({ ...idle, hasLabel: false }).action, 'none');
 });
 
 test('claims: only /assign claims, ping at 14 days, unassign at 21 after a week of warning', () => {
@@ -113,6 +136,8 @@ function fakeGithub() {
     { number: 4, user: user('ravi'), draft: false, labels: [{ name: LABEL.name }] }, // pushed since: unlabel
     { number: 5, user: user('dependabot[bot]'), draft: false, labels: [] }, // bot: skipped
     { number: 6, user: user('lena'), draft: false, labels: [{ name: LABEL.name }] }, // nudged long ago: close
+    { number: 7, user: user('kai'), draft: false, labels: [{ name: LABEL.name }] }, // labeled by hand: no nudge
+    { number: 8, user: user('noor'), draft: false, labels: [] }, // nudged in an earlier round: label only
   ];
   const reviews = {
     1: [review('itsskofficial', 'CHANGES_REQUESTED', 0)],
@@ -121,11 +146,15 @@ function fakeGithub() {
     4: [review('itsskofficial', 'CHANGES_REQUESTED', 0)],
     5: [review('itsskofficial', 'CHANGES_REQUESTED', 0)],
     6: [review('itsskofficial', 'CHANGES_REQUESTED', -14)],
+    7: [review('itsskofficial', 'CHANGES_REQUESTED', 0)],
+    8: [review('itsskofficial', 'CHANGES_REQUESTED', -40), review('itsskofficial', 'CHANGES_REQUESTED', 0)],
   };
   const timelines = {
     1: [commit(-1)],
     4: [commit(-1), commit(2)],
     6: [commit(-15), comment(BOT, -7, `Hi @lena\n\n${MARK.nudge}`)],
+    7: [commit(-1), { event: 'labeled', actor: user('itsskofficial'), label: { name: LABEL.name }, created_at: at(1) }],
+    8: [commit(-41), comment(BOT, -33, `Hi @noor ${MARK.nudge}`), commit(-20)],
     10: [{ event: 'assigned', actor: user(BOT), assignee: user('omar'), created_at: at(-7) }],
     11: [{ event: 'assigned', actor: user('itsskofficial'), assignee: user('omar'), created_at: at(-30) }],
   };
@@ -177,13 +206,15 @@ test('a dry run decides everything and changes nothing', async () => {
     'PR #3': 'none',
     'PR #4': 'unlabel',
     'PR #6': 'close',
+    'PR #7': 'wait',
+    'PR #8': 'label',
     'issue #10': 'ping',
     'issue #11': 'none',
   });
   assert.ok(lines.some((l) => l.startsWith('[dry run] would nudge PR #1 (maya)')));
 });
 
-test('a live run labels, nudges, closes, unassigns and pings', async () => {
+test('a live run labels, nudges once, closes, unassigns and pings', async () => {
   const { github, writes } = fakeGithub();
   await run({ github, context, core: quietCore, dryRun: false, now: T0 + 14 * DAY });
   const names = writes.map((w) => `${w[0]} ${w[1].issue_number || w[1].pull_number}`);
@@ -195,6 +226,7 @@ test('a live run labels, nudges, closes, unassigns and pings', async () => {
     'removeAssignees 20',
     'createComment 6',
     'pulls.update 6',
+    'addLabels 8',
     'createComment 10',
   ]);
   const nudge = writes.find((w) => w[0] === 'createComment' && w[1].issue_number === 1)[1].body;

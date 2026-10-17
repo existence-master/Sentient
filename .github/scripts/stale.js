@@ -2,8 +2,9 @@
 //
 // Pull requests (not maintainers', not drafts) whose latest review asks for changes, with no new commit or
 // comment from the author since:
-//   7 days  -> label "waiting on author" and one friendly nudge
-//   21 days -> close with a kind note (only if the nudge went out at least 7 days earlier) and unassign the
+//   7 days  -> label "waiting on author" and one friendly nudge. Only one nudge per PR, ever: a PR that has had a
+//              nudge comment or the label (now or before) only gets the label back, quietly.
+//   21 days -> close with a kind note (only if the last nudge or label is at least 7 days old) and unassign the
 //              author from the issues the PR closes
 //   author pushes or comments -> the label comes off
 // Issues claimed with /assign by someone who isn't a maintainer, with no open PR from them and no comment from
@@ -97,6 +98,24 @@ function botCommentAfter(timeline, mark, since, mention) {
   return at;
 }
 
+/**
+ * Earlier warnings on a PR. `nudged`: the bot's nudge comment or the label was ever there (so no second nudge).
+ * `warnedAt`: the latest nudge comment or labeling, which the close waits a week after.
+ */
+function prWarnings(timeline) {
+  let nudged = false;
+  let warnedAt = 0;
+  for (const e of timeline) {
+    const isNudge = e.event === 'commented' && actorOf(e) === BOT && String(e.body || '').includes(MARK.nudge);
+    const isLabel = e.event === 'labeled' && lower(e.label && e.label.name) === LABEL.name;
+    if (isNudge || isLabel) {
+      nudged = true;
+      warnedAt = Math.max(warnedAt, time(e.created_at));
+    }
+  }
+  return { nudged, warnedAt };
+}
+
 /** Whether a PR counts as waiting on its author, and since when. */
 function prWaiting({ author, reviews, timeline }) {
   const review = latestDecisiveReview(reviews, author);
@@ -106,17 +125,23 @@ function prWaiting({ author, reviews, timeline }) {
   return { waiting, since, reviewer: review.user.login };
 }
 
-/** Pure decision for one PR. Returns { action, note }. Actions: none, unlabel, wait, nudge, close. */
-function decidePr({ waiting, since, nudgedAt, hasLabel, now }) {
+/**
+ * Pure decision for one PR. Returns { action, note }. Actions: none, unlabel, wait, nudge, label, close.
+ * `nudged` and `warnedAt` come from prWarnings; a PR that has the label now also counts as nudged.
+ */
+function decidePr({ waiting, since, nudged, warnedAt, hasLabel, now }) {
   if (!waiting) return hasLabel ? { action: 'unlabel', note: 'author is active again' } : { action: 'none', note: '' };
-  const waited = (now - since) / DAY;
-  if (!nudgedAt) {
-    if (waited >= LIMITS.nudge) return { action: 'nudge', note: `waiting ${days(now - since)} days` };
-    return { action: 'wait', note: `waiting ${days(now - since)} days; nudge due ${dateOnly(since + LIMITS.nudge * DAY)}` };
+  const waited = days(now - since);
+  if (now - since < LIMITS.nudge * DAY) {
+    return { action: 'wait', note: `waiting ${waited} days; nudge due ${dateOnly(since + LIMITS.nudge * DAY)}` };
   }
-  const closeAt = Math.max(since + LIMITS.close * DAY, nudgedAt + LIMITS.grace * DAY);
-  if (now >= closeAt) return { action: 'close', note: `waiting ${days(now - since)} days, nudged ${dateOnly(nudgedAt)}` };
-  return { action: 'wait', note: `waiting ${days(now - since)} days, nudged; close due ${dateOnly(closeAt)}` };
+  if (!nudged && !hasLabel) return { action: 'nudge', note: `waiting ${waited} days` };
+  // Already nudged once: never comment again. Close a week after the last warning, at the earliest.
+  const lastWarning = warnedAt || now;
+  const closeAt = Math.max(since + LIMITS.close * DAY, lastWarning + LIMITS.grace * DAY);
+  if (now >= closeAt) return { action: 'close', note: `waiting ${waited} days, warned ${dateOnly(lastWarning)}` };
+  if (!hasLabel) return { action: 'label', note: `waiting ${waited} days, nudged before; label only, no comment` };
+  return { action: 'wait', note: `waiting ${waited} days, already nudged; close due ${dateOnly(closeAt)}` };
 }
 
 /** Pure decision for one claim. Actions: none, wait, ping, unassign. */
@@ -205,8 +230,7 @@ async function run({ github, context, core, dryRun = true, now = Date.now() }) {
     ]);
     const state = prWaiting({ author, reviews, timeline });
     const hasLabel = (pr.labels || []).some((l) => lower(l.name) === LABEL.name);
-    const nudgedAt = state.waiting ? botCommentAfter(timeline, MARK.nudge, state.since) : 0;
-    const { action, note } = decidePr({ ...state, nudgedAt, hasLabel, now });
+    const { action, note } = decidePr({ ...state, ...prWarnings(timeline), hasLabel, now });
     let reason = note || 'no open request for changes';
     if (state.reviewer) {
       const asked = `changes asked by ${state.reviewer} on ${dateOnly(state.since)}`;
@@ -221,6 +245,11 @@ async function run({ github, context, core, dryRun = true, now = Date.now() }) {
         await ensureLabel();
         await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL.name] });
         await github.rest.issues.createComment({ owner, repo, issue_number, body: MESSAGES.nudge(author) });
+      });
+    } else if (action === 'label') {
+      await write(async () => {
+        await ensureLabel();
+        await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL.name] });
       });
     } else if (action === 'close') {
       const issues = (await linkedIssues(github, owner, repo, pr.number)).filter((i) =>
@@ -275,5 +304,5 @@ async function run({ github, context, core, dryRun = true, now = Date.now() }) {
 module.exports = run;
 Object.assign(module.exports, {
   MAINTAINERS, BOT, LABEL, LIMITS, MARK, MESSAGES,
-  latestDecisiveReview, lastAuthorActivity, botCommentAfter, prWaiting, decidePr, decideClaim, claimFacts,
+  latestDecisiveReview, lastAuthorActivity, botCommentAfter, prWarnings, prWaiting, decidePr, decideClaim, claimFacts,
 });

@@ -1,9 +1,10 @@
 # Daily check of contributor pull requests waiting on their author and of quiet issue claims. The rules are in
 # .github/scripts/stale.js and CONTRIBUTING.md ("If things go quiet").
 #
-# Dry run by default: it only logs what it would do. A manual run with dry_run unticked acts once. Scheduled runs
-# act only when the repository variable STALE_BOT_LIVE is "true" (Settings > Secrets and variables > Actions).
-# A pull request that changes the bot gets a dry run against the real repository as a preview.
+# Scheduled runs act for real. A manual run is a dry run (it only logs what it would do) unless dry_run is unticked.
+# To pause the scheduled runs without a code change, set the repository variable STALE_BOT_DRY_RUN to "true"
+# (Settings > Secrets and variables > Actions > Variables). A pull request that changes the bot gets a dry run
+# against the real repository as a preview. Each PR gets at most one nudge comment, ever (see stale.js).
 name: Stale pull requests and claims
 
 on:
@@ -42,7 +43,7 @@ jobs:
         env:
           LIVE: >-
             ${{ (github.event_name == 'workflow_dispatch' && !inputs.dry_run) ||
-                (github.event_name == 'schedule' && vars.STALE_BOT_LIVE == 'true') }}
+                (github.event_name == 'schedule' && vars.STALE_BOT_DRY_RUN != 'true') }}
         with:
           script: |
             const run = require('./.github/scripts/stale.js');
