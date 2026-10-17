@@ -502,8 +502,13 @@ async def test_status_and_checkup(cc_config, fake_claude, monkeypatch):
         missing = await claude_code.status(cc_config)
     assert not missing["installed"] and "can't find Claude Code" in missing["detail"]
 
+    from sentient.llm import checkup as checkup_mod
     from sentient.llm.checkup import checkup
 
+    async def none_installed(self, base):
+        return []
+
+    monkeypatch.setattr(checkup_mod._Ollama, "installed", none_installed)  # never asks a real Ollama
     cc_config.models.experimental_claude_code = True
     cc_config.models.roles.fast = MODEL
     report = await checkup(cc_config, Provider(cc_config), {"primary": MODEL, "fast": MODEL})
@@ -524,6 +529,66 @@ def test_status_route(cc_config, fake_claude, isolated_home):
     assert r.status_code == 200
     body = r.json()
     assert body["enabled"] and body["installed"] and body["models"] == ["claude-code/sonnet", "claude-code/opus"]
+    assert body["roles"] == ["primary", "voice", "vision"]  # the window offers it only for these (#442)
+
+
+def test_roles_that_refuse_it_cannot_be_given_it(cc_config, fake_claude, isolated_home):
+    """#442: background roles never get a Claude Code model, so onboarding's context can't silently go nowhere."""
+    from fastapi.testclient import TestClient
+
+    from sentient.gateway.app import create_app
+
+    with TestClient(create_app(SentientApp(cc_config, llm=FakeProvider(), db_path=isolated_home / "r.db",
+                                           enable_background=False))) as client:
+        auth = {"Authorization": "Bearer not-for-claude"}
+        fast = client.put("/api/models/roles", json={"fast": MODEL}, headers=auth)
+        assert fast.status_code == 400 and fast.json()["detail"] == claude_code.CHATS_ONLY
+        planner = client.put("/api/models/roles", json={"planner": "claude-code/opus"}, headers=auth)
+        assert planner.status_code == 400 and planner.json()["detail"] == claude_code.ROLE_REFUSALS["planner"]
+        embedding = client.put("/api/models/roles", json={"embedding": MODEL}, headers=auth)
+        assert embedding.status_code == 400 and embedding.json()["detail"] == claude_code.NO_EMBEDDINGS
+        roles = client.put("/api/models/roles", json={"voice": MODEL, "fast": "ollama_chat/qwen3:8b"}, headers=auth)
+        assert roles.status_code == 200 and roles.json()["voice"] == MODEL
+    assert cc_config.models.roles.fast != MODEL
+
+
+async def test_checkup_names_roles_that_inherit_claude_code(cc_config, fake_claude, monkeypatch):
+    """#442: an empty planner or executor uses the main model; with Claude Code there, the check-up says it refuses
+    the work and offers the background model instead, without calling Claude Code."""
+    from sentient.llm.checkup import checkup
+
+    cc_config.models.roles.fast = "fake/background"
+    cc_config.models.roles.planner = None
+    cc_config.models.roles.executor = None
+    cc_config.models.roles.voice = None
+    report = await checkup(cc_config, Provider(cc_config), timeout_s=5)
+    by_role = {r["role"]: r for r in report["roles"]}
+    planner = by_role["planner"]
+    assert planner["model"] == MODEL and planner["inherits"] == "primary" and planner["status"] == "fail"
+    assert planner["checks"][0]["detail"] == claude_code.ROLE_REFUSALS["planner"]
+    assert planner["checks"][0]["action"] == {"kind": "use_model", "role": "planner", "model": "fake/background",
+                                              "label": "Use background"}
+    assert by_role["executor"]["status"] == "fail" and by_role["executor"]["inherits"] == "primary"
+    assert by_role["voice"] == {**by_role["voice"], "model": None, "status": "skip"}  # voice may use Claude Code
+    assert fake_claude.runs() == []
+
+    cc_config.models.experimental_claude_code = False  # off: still "pick another model", never "turn it on"
+    report = await checkup(cc_config, Provider(cc_config), {"primary": MODEL, "planner": None}, timeout_s=5)
+    planner = {r["role"]: r for r in report["roles"]}["planner"]
+    assert planner["checks"][0]["detail"] == claude_code.ROLE_REFUSALS["planner"]
+
+    # every chat role on Claude Code: the fix is the local model sized for this computer, when it is downloaded
+    from sentient.llm import checkup as checkup_mod
+
+    async def installed(self, base):
+        return ["qwen3:8b", "nomic-embed-text:latest"]
+
+    monkeypatch.setattr(checkup_mod._Ollama, "installed", installed)
+    cc_config.models.roles.fast = MODEL
+    report = await checkup(cc_config, Provider(cc_config), {"primary": MODEL, "fast": MODEL}, timeout_s=5)
+    fast = {r["role"]: r for r in report["roles"]}["fast"]
+    assert fast["checks"][0]["action"] == {"kind": "use_model", "role": "fast", "model": "ollama_chat/qwen3:8b",
+                                           "label": "Use qwen3:8b"}
 
 
 def test_transcript_and_tool_names():
