@@ -36,7 +36,7 @@ from sentient.memory.facts import (
     TIME_WORDING_RE,
     conflict_strength,
     new_details,
-    profile_fact,
+    profile_fact_async,
     word_overlap,
 )
 from sentient.memory.schema import ensure_memory_schema
@@ -552,15 +552,20 @@ class DreamingService(Service):
     def contradiction_candidate(a: str, b: str, user_name: str = "") -> bool:
         return conflict_strength(a, b, user_name) > 0
 
-    def contradiction_pairs(self, facts: list[dict]) -> list[tuple[int, float, int, int]]:
+    async def contradiction_pairs(self, facts: list[dict]) -> list[tuple[int, float, int, int]]:
         """Candidate pairs ``(strength, similarity, i, j)``, strongest first.
 
         Facts are grouped by subject (the person or entity a fact is about, including possessive relations
         and the user's own name), so "Maya moved to Bengaluru" meets "Maya lives in Pune" without sharing
         a leading word or a high embedding score. Pairs sharing only a broad attribute also need
-        ``contradiction_similarity``."""
+        ``contradiction_similarity``. A fact's attribute family falls back to embedding similarity when the
+        English keyword families miss it, e.g. non-English text (``profile_fact_async``)."""
         user = self.app.config.assistant.user_name
-        profiles = [profile_fact(f["content"], user) for f in facts]
+        mem = self.app.memory
+        embed_one = mem.embed_query if mem is not None else None
+        model_key = mem.llm.model_for("embedding") if mem is not None else ""
+        threshold = self.app.config.memory.family_similarity
+        profiles = [await profile_fact_async(f["content"], embed_one, user, model_key, threshold) for f in facts]
         groups: dict[str, list[int]] = {}
         for n, prof in enumerate(profiles):
             for s in prof.subjects:
@@ -596,7 +601,7 @@ class DreamingService(Service):
         checked = set(checked_list)
         gone: set[int] = set()
         name = self._name()
-        for _strength, _sim, i, j in self.contradiction_pairs(facts):
+        for _strength, _sim, i, j in await self.contradiction_pairs(facts):
             if budget[0] <= 0:
                 break
             older, newer = sorted((facts[i], facts[j]), key=lambda f: (f["updated_at"], f["id"]))

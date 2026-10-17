@@ -28,8 +28,10 @@ import contextlib
 import json
 import logging
 import re
+import unicodedata
 from collections import OrderedDict
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -134,13 +136,42 @@ def new_details(new_fact: str, existing: str) -> set[str]:
 
 # ---------------------------------------------------------------------- subjects and attribute families
 _RSQUO = chr(0x2019)  # curly apostrophe some models write in possessives
-_NAME_WORD_RE = re.compile(r"[A-Za-z][\w'-]*")
-_LEAD_SKIP = STOPWORDS | {
+
+
+def _name_words(text: str) -> list[str]:
+    """Words of ``text`` for :func:`fact_subjects`: a letter followed by letters, marks, digits, apostrophes
+    or hyphens. Any Unicode letter starts a word, not just A-Z, so a Devanagari, Cyrillic or CJK name is one
+    too - and marks continue it, since ``\\w`` alone stops at the first one: Devanagari (and other Indic
+    scripts') vowel signs are combining marks, not letters, so plain ``\\w`` truncated "माया" to "म"."""
+    words: list[str] = []
+    current: list[str] = []
+    for ch in text:
+        category = unicodedata.category(ch)[0]
+        if category in "LMN" or ch in "'-":
+            if current or category != "M":  # a mark can't start a word
+                current.append(ch)
+        elif current:
+            words.append("".join(current))
+            current = []
+    if current:
+        words.append("".join(current))
+    return words
+
+
+_MONTHS = {
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+    "november", "december",
+}
+_WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+_LEAD_SKIP = STOPWORDS | _MONTHS | _WEEKDAYS | {
     "every", "last", "next", "since", "today", "tonight", "yesterday", "tomorrow", "recently", "currently",
     "lately", "usually", "always", "sometimes", "often", "earlier", "later", "after", "before", "during", "once",
     "still", "morning", "evening", "night", "week", "weekend", "month", "year", "day", "until", "yes", "okay",
     "actually", "update", "correction", "oh", "well",
 }
+# Enough to clear a short leading clause ("Last year in March, after the wedding, Riya ..."); the subject is
+# still whichever word looks name-like first, so this is a bound on how far to look, not a guess of where it is.
+_SUBJECT_SCAN_WORDS = 12
 _RELATION_WORDS = {
     "sister", "brother", "mother", "mom", "mum", "father", "dad", "wife", "husband", "partner", "girlfriend",
     "boyfriend", "son", "daughter", "friend", "manager", "boss", "colleague", "cousin", "uncle", "aunt", "grandmother",
@@ -197,23 +228,33 @@ TIME_WORDING_RE = re.compile(
 )
 
 
+def _cased(ch: str) -> bool:
+    """Whether ``ch`` belongs to a script with a case distinction (Latin, Cyrillic, Greek, ...).
+    Devanagari, CJK, Arabic and similar scripts have no upper/lower case, so ``isupper()`` can
+    never say "this looks like a proper noun" there - every letter counts as name-like instead."""
+    return ch.isupper() or ch.islower()
+
+
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
     """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for
-    "Maya's sister Riya ...". "I", "my" and "the user" mean ``user_name``. Empty when unclear."""
+    "Maya's sister Riya ...". "I", "my" and "the user" mean ``user_name``. Empty when unclear.
+
+    Name-like words are capitalized ones (the English/Latin signal) plus, in scripts without case,
+    any word at all - there is no capitalization to check, so this is necessarily cruder there and
+    only reliable when the subject leads the sentence."""
     user = user_name.strip().lower() or "user"
     text = (text or "").replace(_RSQUO, "'").strip()
     text = re.sub(r"^(the user's|my)\b", f"{user}'s", text, flags=re.IGNORECASE)
     text = re.sub(r"^(the user|i)\b", user, text, flags=re.IGNORECASE)
-    words = _NAME_WORD_RE.findall(text)
-    for i, w in enumerate(words[:6]):
+    words = _name_words(text)
+    for i, w in enumerate(words[:_SUBJECT_SCAN_WORDS]):
         low = w.lower()
         poss = low.endswith("'s")
         root = low[:-2] if poss else low
-        is_name = (w[0].isupper() and root not in _LEAD_SKIP) or root == user
+        namelike = w[0].isupper() or not _cased(w[0])
+        is_name = (namelike and root not in _LEAD_SKIP) or root == user
         if not is_name:
-            if w[0].isupper() or root in _LEAD_SKIP:
-                continue  # sentence starters like "Every", "Since", "Last"
-            return set()
+            continue  # a stopword, a sentence starter, or an ordinary word earlier in the clause
         nxt = words[i + 1].lower() if i + 1 < len(words) else ""
         if poss and nxt in _RELATION_WORDS:
             aliases = {f"{root}'s {nxt}"}
@@ -228,6 +269,40 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
 def attribute_families(text: str) -> set[str]:
     low = (text or "").lower().replace(_RSQUO, "'")
     return {name for name, rx in ATTRIBUTE_FAMILIES.items() if rx.search(low)}
+
+
+# A short description of each family, embedded once per model and cached, for text the English keyword
+# regexes above miss - chiefly non-English facts, whose words never match ATTRIBUTE_FAMILIES at all.
+_FAMILY_PROTOTYPES: dict[str, str] = {
+    "residence": "where someone lives, has lived, or has moved to",
+    "job": "someone's job, employer, role or career",
+    "relationship": "someone's romantic relationship or marital status",
+    "diet": "what someone eats, or their diet",
+    "health": "someone's health, an illness, allergy or medical condition",
+    "ownership": "something someone owns, bought or sold",
+    "schedule": "someone's daily routine or schedule",
+}
+_family_proto_cache: dict[str, dict[str, list[float]]] = {}  # embedding-model key -> family -> prototype vector
+
+
+async def embedding_attribute_families(
+    text: str,
+    embed_one: Callable[[str], Awaitable[list[float]]],
+    model_key: str,
+    threshold: float,
+) -> set[str]:
+    """Attribute families for ``text`` found by embedding similarity to a short description of each one,
+    rather than the English keyword families above. Meant as a fallback for text those regexes find
+    nothing in - typically non-English facts - not a replacement: the keyword path is nearly free and
+    exact, so callers should only reach for this once it comes back empty."""
+    if not (text or "").strip():
+        return set()
+    cache = _family_proto_cache.get(model_key)
+    if cache is None:
+        cache = {name: await embed_one(proto) for name, proto in _FAMILY_PROTOTYPES.items()}
+        _family_proto_cache[model_key] = cache
+    vec = await embed_one(text)
+    return {name for name, proto_vec in cache.items() if cosine(vec, proto_vec) >= threshold}
 
 
 PAST_RE = re.compile(
@@ -263,6 +338,23 @@ def profile_fact(text: str, user_name: str = "") -> FactProfile:
         words=frozenset(w.lower().removesuffix("'s") for w in found),
         tokens=frozenset(keyword_tokens(text, None)),
     )
+
+
+async def profile_fact_async(
+    text: str,
+    embed_one: Callable[[str], Awaitable[list[float]]] | None,
+    user_name: str = "",
+    model_key: str = "",
+    threshold: float = 0.78,
+) -> FactProfile:
+    """Like :func:`profile_fact`, but when the keyword attribute families come back empty - usually because
+    ``text`` isn't English - falls back to :func:`embedding_attribute_families`. ``embed_one`` is omitted
+    (``None``) wherever an embedder isn't on hand (e.g. the dreaming service with no configured memory)."""
+    prof = profile_fact(text, user_name)
+    if prof.families or embed_one is None:
+        return prof
+    families = await embedding_attribute_families(text, embed_one, model_key, threshold)
+    return prof if not families else replace(prof, families=frozenset(families))
 
 
 # ---------------------------------------------------------------------- is a new fact about the same thing?
@@ -929,9 +1021,12 @@ class FactMemory:
         self, fact: str, exclude: set[int], scopes: list[str] | None = None
     ) -> list[dict]:
         """Up to 3 facts about the same subject and attribute family as ``fact``, found by keyword rather
-        than embedding ("moved to Bengaluru last month" scores low against "lives in Pune")."""
+        than embedding ("moved to Bengaluru last month" scores low against "lives in Pune"). The family
+        itself falls back to embedding similarity when the keyword families miss, e.g. non-English text."""
         user = self.config.assistant.user_name
-        prof = profile_fact(fact, user)
+        model_key = self.llm.model_for("embedding")
+        threshold = self.config.memory.family_similarity
+        prof = await profile_fact_async(fact, self.embed_query, user, model_key, threshold)
         if not prof.subjects or not prof.families:
             return []
         terms = [t for s in sorted(prof.subjects) for t in keyword_tokens(s)]
@@ -950,7 +1045,7 @@ class FactMemory:
         )
         out = []
         for r in rows:
-            other = profile_fact(r["content"], user)
+            other = await profile_fact_async(r["content"], self.embed_query, user, model_key, threshold)
             if prof.families & other.families and conflict_strength(prof, other) > 0:
                 out.append(_row_to_memory(r))
         out.sort(key=lambda m: m["updated_at"] or "", reverse=True)
