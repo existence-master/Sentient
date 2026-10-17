@@ -51,6 +51,13 @@ _CLAIMS: dict[str, re.Pattern] = {
 }
 _CLAIM_ANY = re.compile(r"\b(done|completed|finished|success(?:fully)?|sent|saved|created|updated)\b", re.I)
 _BROWSER_CLICK_CLAIM = re.compile(r"\b(?:clicked|was clicked)\b", re.I)
+_NEGATED_BROWSER_CLICK = re.compile(
+    r"\b(?:not|didn't|hasn't|wasn't|haven't|never)\b[^.!?]{0,50}\bclicked\b", re.I
+)
+_OTHER_PERSON_BROWSER_CLICK = re.compile(
+    r"\b(?:you|he|she|they|someone|anyone|a friend|my friend)\b[^.!?]{0,50}\bclicked\b", re.I
+)
+_ASSISTANT_BROWSER_CLICK = re.compile(r"\b(?:i|we|sentient)\s+(?:have\s+)?clicked\b|\bclicked\s+(?:it|the\b)", re.I)
 
 # an MCP tool's kind from its name (servers declare nothing like it)
 _NAME_KINDS: list[tuple[str, re.Pattern, re.Pattern]] = [
@@ -304,14 +311,18 @@ def unmade_browser_click_note(text: str, calls: list[dict]) -> str:
     """
     if not _BROWSER_CLICK_CLAIM.search(text or ""):
         return ""
+    if _NEGATED_BROWSER_CLICK.search(text) or _OTHER_PERSON_BROWSER_CLICK.search(text):
+        return ""
+    if not calls and not _ASSISTANT_BROWSER_CLICK.search(text):
+        return ""
     clicks = [call for call in calls if call.get("name") == "browser_click"]
     if clicks and clicks[-1].get("ok"):
         return ""
     if clicks and clicks[-1].get("declined"):
-        return "I didn't click it: you declined."
+        return "I didn't click it: you declined, so nothing changed on the page."
     if clicks and clicks[-1].get("uncertain"):
         return "I couldn't confirm whether it was clicked."
-    return "I couldn't click it." if clicks else "I haven't clicked anything yet."
+    return "I couldn't click it, so nothing changed on the page." if clicks else "I didn't click it, so nothing changed on the page."
 
 
 def _settled(failed: dict, later: list[dict]) -> bool:

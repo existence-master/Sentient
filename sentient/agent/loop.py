@@ -293,6 +293,36 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
     return fixed
 
 
+def browser_click_history(rows: list[dict]) -> list[dict]:
+    """Completed browser-click outcomes in stored chat history, oldest first (#402)."""
+    calls: dict[str, dict] = {}
+    out: list[dict] = []
+    for row in rows:
+        if row.get("role") == "assistant":
+            for call in _normalize_tool_calls(row.get("tool_calls")):
+                if call["function"]["name"] == "browser_click":
+                    calls[call["id"]] = {"name": "browser_click"}
+            continue
+        if row.get("role") != "tool":
+            continue
+        call = calls.pop(str(row.get("tool_call_id") or ""), None)
+        if call is None:
+            continue
+        try:
+            res = json.loads(str(row.get("content") or ""))
+        except (TypeError, ValueError):
+            res = {}
+        declined = isinstance(res, dict) and bool(res.get("declined"))
+        err = _error_text(res)
+        call.update(
+            declined=declined,
+            ok=isinstance(res, dict) and res.get("ok") is True and not err and outcomes.result_problem(res) is None,
+            uncertain=not declined and bool(err),
+        )
+        out.append(call)
+    return out
+
+
 def is_tool_format_error(exc: Exception) -> bool:
     """True when the provider rejected the request because the model cannot do tool calling
     (e.g. an old Ollama model template emitting malformed tool calls)."""
@@ -903,8 +933,9 @@ class Agent:
                     log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
                     yield TextDelta(text=text_acc, **ev)
                 if note := outcomes.unmade_browser_click_note(text_acc, result.browser_clicks):
-                    text_acc = f"{text_acc.rstrip()}\n\nCorrection: {note}"
-                    yield TextDelta(text=f"\n\nCorrection: {note}", **ev)
+                    correction = f"\n\nCorrection: {note}"
+                    text_acc += correction
+                    yield TextDelta(text=correction, **ev)
                 result.text = text_acc
                 result.messages = messages
                 return
@@ -1035,7 +1066,7 @@ class Agent:
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
         if note := outcomes.unmade_browser_click_note(result.text, result.browser_clicks):
             correction = f"\n\nCorrection: {note}"
-            result.text = f"{result.text.rstrip()}{correction}"
+            result.text += correction
             yield TextDelta(text=correction, **ev)
         result.messages = messages
 
@@ -1448,7 +1479,7 @@ class Agent:
                 "name": tc.name,
                 "declined": declined,
                 "ok": ran and not is_error and not err and outcomes.result_problem(res) is None,
-                "uncertain": ran and (is_error or bool(err)),
+                "uncertain": ran and is_error,
             })
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):
@@ -1710,6 +1741,7 @@ class Agent:
             system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
+            result.browser_clicks.extend(browser_click_history(history))
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the

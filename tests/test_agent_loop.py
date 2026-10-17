@@ -105,13 +105,13 @@ async def test_approval_gate_deny_and_allow(config, isolated_home):
 
 async def test_reply_corrects_a_browser_click_it_never_made(config, isolated_home):
     """A natural-language click claim needs evidence from a browser click call."""
-    llm = FakeProvider(replies=["The subscription button was clicked."])
+    llm = FakeProvider(replies=["I clicked the subscription button. "])
     s = await SentientApp(config, llm=llm, db_path=isolated_home / "never-clicked.db").start()
     try:
         sid = await s.store.create_session(channel="cli")
         events = await _collect(s.agent, sid, "click the subscription button")
         text = "".join(e.text for e in events if isinstance(e, TextDelta))
-        assert text.endswith("Correction: I haven't clicked anything yet.")
+        assert text == "I clicked the subscription button. \n\nCorrection: I didn't click it, so nothing changed on the page."
         assert (await s.store.recent_messages(sid, 1))[-1]["content"] == text
     finally:
         await s.stop()
@@ -131,7 +131,7 @@ async def test_reply_corrects_a_browser_click_the_user_declined(config, isolated
 
         events = await _collect(s.agent, sid, "click the subscription button", deny)
         text = "".join(e.text for e in events if isinstance(e, TextDelta))
-        assert text.endswith("Correction: I didn't click it: you declined.")
+        assert text.endswith("Correction: I didn't click it: you declined, so nothing changed on the page.")
         result = next(e for e in events if isinstance(e, ToolResultEvent))
         assert result.result["declined"] is True
     finally:
@@ -159,7 +159,7 @@ async def test_step_limit_corrects_a_declined_browser_click_claim(config, isolat
 
         events = await _collect(s.agent, sid, "click the subscription button", deny)
         text = "".join(e.text for e in events if isinstance(e, TextDelta))
-        assert text.endswith("Correction: I didn't click it: you declined.")
+        assert text.endswith("Correction: I didn't click it: you declined, so nothing changed on the page.")
         assert isinstance(events[-1], Done) and events[-1].content == text
     finally:
         await s.stop()
@@ -175,10 +175,34 @@ def test_browser_click_correction_uses_the_latest_call():
             {"name": "browser_click", "ok": True, "declined": False},
             {"name": "browser_click", "ok": False, "declined": True},
         ]
-    ) == "I didn't click it: you declined."
+    ) == "I didn't click it: you declined, so nothing changed on the page."
     assert outcomes.unmade_browser_click_note(
         "The button was clicked.", [{"name": "browser_click", "ok": False, "uncertain": True}]
     ) == "I couldn't confirm whether it was clicked."
+    assert outcomes.unmade_browser_click_note("The button hasn't been clicked yet.", []) == ""
+    assert outcomes.unmade_browser_click_note("My friend clicked a link in a phishing email.", []) == ""
+    assert outcomes.unmade_browser_click_note("The subscription button was clicked.", []) == ""
+
+
+async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, isolated_home):
+    """A later unsupported click claim retains the preceding declined-click context."""
+    config.tools.approvals.mode = "ask"
+    llm = FakeProvider(replies=[[tool_call("browser_click", ref="e1")], "I didn't click it: you declined.", "I clicked it."])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "prior-declined-click.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async def deny(ev):
+            if isinstance(ev, ApprovalRequest):
+                s.approvals.resolve(ev.approval_id, "deny")
+
+        first = await _collect(s.agent, sid, "click the subscription button", deny)
+        assert "Correction:" not in "".join(e.text for e in first if isinstance(e, TextDelta))
+        second = await _collect(s.agent, sid, "did it work?")
+        text = "".join(e.text for e in second if isinstance(e, TextDelta))
+        assert text.endswith("Correction: I didn't click it: you declined, so nothing changed on the page.")
+    finally:
+        await s.stop()
 
 
 async def test_internal_tools_do_not_prompt_in_ask_mode(config, isolated_home):
