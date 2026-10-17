@@ -1913,13 +1913,35 @@ class FactMemory:
     # ------------------------------------------------------------------ housekeeping
     async def purge_expired(self) -> int:
         rows = await self.store.fetchall(
-            "SELECT id FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
+            "SELECT id, state FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
         )
         for r in rows:
-            await self.forget(int(r["id"]))
+            # Superseded rows have derived history too; discard it with the same cascade as retention cleanup.
+            if r["state"] == "superseded":
+                await self.erase(int(r["id"]))
+            else:
+                await self.forget(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, reason="expired", count=len(rows))
-        return len(rows)
+        return len(rows) + await self.purge_superseded()
+
+    async def purge_superseded(self) -> int:
+        """Erase memories that were superseded more than ``memory.keep_superseded_days`` ago, with everything derived
+        from them (:meth:`erase`). 0 keeps them forever. Current and disputed memories are never touched."""
+        days = self.config.memory.keep_superseded_days
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE state = 'superseded' AND updated_at < ?", (cutoff,)
+        )
+        erased = 0
+        for r in rows:
+            if await self.erase(int(r["id"])):
+                erased += 1
+        if erased:
+            self.publish("DELETE", None, None, reason="superseded_expired", count=erased)
+        return erased
 
     async def count(self) -> int:
         row = await self.store.fetchone(f"SELECT COUNT(*) AS n FROM facts WHERE {ACTIVE}")

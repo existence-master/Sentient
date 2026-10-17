@@ -530,6 +530,11 @@ class MemoryConfig(BaseModel):
         description="Memories waiting for your review (from emails, web pages, imports or work Sentient did on its "
         "own) are let go after this many days without an answer.",
     )
+    keep_superseded_days: int = Field(
+        180, ge=0, le=3650,
+        description="When a newer memory replaces an older one, the older one is kept as history for this many days, "
+        "then deleted for good. Your current memories are never deleted by this. 0 keeps the history forever.",
+    )
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
