@@ -1089,7 +1089,10 @@ class Channel:
         else:
             lines = [f"Models: your own setup, chatting with {primary}."]
         for p in listing["presets"]:
-            if not p["available"]:
+            if p["blocked_by"] == "local_only":
+                lines.append(f"{p['name']}: Local only is on, and it uses cloud models. Turn Local only off in "
+                             "Sentient's model menu to use it.")
+            elif not p["available"]:
                 lines.append(f"{p['name']}: {p['reason']} Add one in Sentient under Settings, Models.")
         lines.append("Pick a setup to switch every model at once." + (" Send /model undo to go back." if listing["can_undo"] else ""))
         buttons = [[Button(p["name"] + (" (current)" if p["active"] else ""), f"mp:a:{self.preset_ref(p['name'])}",

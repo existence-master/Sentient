@@ -58,6 +58,7 @@ import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
 import { PresetFixes } from '@/features/models/PresetFixes'
 import { ProviderKeyDialog } from '@/features/models/ProviderKeyDialog'
+import { LocalOnlyPresetConfirm } from '@/features/models/LocalOnlyPresetConfirm'
 import { usePresetSwitch } from '@/features/models/usePresetSwitch'
 import { useConfigEditor } from '@/hooks/config'
 import {
@@ -245,6 +246,7 @@ function PresetsPanel() {
         </Card>
       )}
       <ProviderKeyDialog provider={sw.keyFor} open={!!sw.keyFor} onOpenChange={(o) => !o && sw.setKeyFor(null)} />
+      <LocalOnlyPresetConfirm sw={sw} />
       <Dialog
         open={!!naming}
         onOpenChange={(o) => !o && setNaming(null)}

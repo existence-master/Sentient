@@ -153,7 +153,10 @@ export interface ModelsConfig {
   context_length_per_role: Record<string, number>
   providers: Record<string, ProviderConfig>
   /** The user's own saved model setups (built-ins are not stored). */
-  presets: Record<string, Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'active'>>
+  presets: Record<
+    string,
+    Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'cloud' | 'blocked_by' | 'active'>
+  >
   active_preset: string | null
   /** #148: no request goes to a model outside this computer (switched from the title bar model menu). */
   local_only?: boolean
@@ -735,9 +738,13 @@ export interface ModelTestResult {
 export interface ModelPreset {
   name: string
   builtin: boolean
-  /** False for Cloud and Mixed until a cloud key is set; `reason` says why. */
+  /** False for Cloud and Mixed until a cloud key is set, or while Local only blocks it; `reason` says why. */
   available: boolean
   reason: string | null
+  /** #335: the preset sets a model outside this computer. */
+  cloud: boolean
+  /** #335: `local_only` when Local only is on and this preset uses cloud models. */
+  blocked_by: 'local_only' | null
   /** The cloud provider a built-in uses. */
   provider: string | null
   description: string | null
@@ -776,6 +783,8 @@ export interface PresetApplyResult {
   changed: { role: RoleName; from: string | null; to: string | null }[]
   missing: PresetMissing[]
   can_undo: boolean
+  /** Local only after the switch (#335: applying Local only can turn it on, and undo puts it back). */
+  local_only: boolean
 }
 
 /** `POST /api/models/checkup` (docs/API.md §3). */

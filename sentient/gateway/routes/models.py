@@ -268,6 +268,10 @@ class RenameBody(BaseModel):
     name: str
 
 
+class ApplyBody(BaseModel):
+    local_only: bool = False  # #335: also turn Local only on (the window asks first)
+
+
 def _preset_call(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
@@ -299,8 +303,8 @@ async def undo_preset(request: Request):
 
 
 @router.post("/models/presets/{name}/apply")
-async def apply_preset(request: Request, name: str):
-    return await _preset_await(presets.apply(get_core(request), name))
+async def apply_preset(request: Request, name: str, body: ApplyBody | None = None):
+    return await _preset_await(presets.apply(get_core(request), name, local_only=bool(body and body.local_only)))
 
 
 @router.patch("/models/presets/{name}")
