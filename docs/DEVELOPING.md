@@ -263,8 +263,9 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 - Every pull request runs [CI](../.github/workflows/ci.yaml): ruff, the engine tests on Linux and Windows, the
   desktop typecheck and build, and a secret scan, plus the [changelog check](../.github/workflows/changelog.yaml).
   They need no secrets, so they run the same on forks. The same checks, and CLAAssistant, also run on each merge
-  group when `main` uses GitHub's merge queue; there the changelog and CLA checks just pass, because a pull request
-  can only join the queue after passing them.
+  group when `main` uses GitHub's merge queue. There the changelog and CLA checks only report success without
+  checking again; that is safe because both are required checks on `main`, so a pull request has passed them before
+  it can join the queue. Keep "Changelog entry" and "CLAAssistant" required in the ruleset for this to hold.
 - **Changelog entries are files, not edits to CHANGELOG.md.** A pull request that changes what people get adds
   `changes/<issue or PR number>.<type>.md` (type `added`, `changed`, `deprecated`, `removed`, `fixed` or
   `security`; details in [changes/README.md](../changes/README.md)). The "Changelog entry" job fails when a pull
