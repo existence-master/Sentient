@@ -38,3 +38,7 @@ jobs:
           # signatures live in this repository on the cla-signatures branch (no personal token to expire)
           branch: 'cla-signatures'
           allowlist: itsskofficial,Kabeer2004,dependabot[bot],github-actions[bot]
+          # The action locks a pull request's conversation whenever it closes, merged or not. A PR closed by the
+          # stale policy or by a maintainer must stay open to comments and reopening, and a locked PR also fails
+          # this check after a reopen ("issue is locked"), so never lock.
+          lock-pullrequest-aftermerge: false
