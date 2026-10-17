@@ -100,12 +100,10 @@ CREATE TABLE IF NOT EXISTS facts (
     merged_into     INTEGER,                                -- the memory the nightly tidy-up merged this one into (#353)
     merged_at       TEXT,                                   -- kept for undo
     merged_by       TEXT,
-    source_ref      TEXT,                                   -- JSON: exactly where its source said it (#152), e.g.
-                                                            -- {kind: "message", session_id, message_id, quote}
-    confidence      REAL NOT NULL DEFAULT 0.8,              -- 0..1: how sure Sentient is (its source, learned again)
-    state           TEXT NOT NULL DEFAULT 'current',        -- current | disputed | superseded (#152); only current
-                                                            -- ones go into prompts
-    superseded_by   INTEGER                                 -- the memory that replaced it (state superseded)
+    source_ref      TEXT,                                   -- JSON: exactly where its source said it (#152)
+    confidence      REAL NOT NULL DEFAULT 0.8,              -- 0..1: how sure Sentient is of it (#152)
+    state           TEXT NOT NULL DEFAULT 'current',        -- current | disputed | superseded: only current in prompts
+    superseded_by   INTEGER                                 -- the memory that replaced it (#152)
 );
 CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope, status);
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;

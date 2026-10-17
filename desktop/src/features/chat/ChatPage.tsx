@@ -145,6 +145,20 @@ function ChatView({
     return [...history, ...liveItems(liveSession)]
   }, [messages.data, liveSession])
 
+  // ?message=<id> (a memory's source, #152): scroll to that message once it is on screen, and mark it a moment
+  const focusId = new URLSearchParams(location.search).get('message')
+  useEffect(() => {
+    if (!focusId || items.length === 0) return
+    const t = window.setTimeout(() => {
+      const el = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(focusId)}"]`)
+      if (!el) return
+      el.scrollIntoView({ block: 'center' })
+      el.classList.add('ring-2', 'ring-accent/60')
+      window.setTimeout(() => el.classList.remove('ring-2', 'ring-accent/60'), 2400)
+    }, 350)
+    return () => window.clearTimeout(t)
+  }, [focusId, items.length])
+
   const streaming = !!liveSession?.streaming
   const lastAssistantIndex = items.map((i) => i.kind).lastIndexOf('assistant')
 

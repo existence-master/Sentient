@@ -707,6 +707,10 @@ export const api = {
     /** §7 memory scopes (#155): Always, Personal, Work and the user's projects, with counts. */
     scopes: () => http.get<MemoryScope[]>('/api/memories/scopes'),
     move: (id: number, scope: string) => http.patch<Memory>(`/api/memories/${id}`, { scope }),
+    /** #152: one memory with every source and exactly where it said it. */
+    get: (id: number) => http.get<Memory>(`/api/memories/${id}`),
+    /** #152: the user says a memory isn't right (`disputed`, kept out of chats and tasks) or is (`current`). */
+    setState: (id: number, state: 'current' | 'disputed') => http.patch<Memory>(`/api/memories/${id}`, { state }),
     resetScope: (scope: string) => http.delete<{ deleted: number }>(`/api/memories/scope/${enc(scope)}`),
     update: (id: number, content: string) => http.put<Memory>(`/api/memories/${id}`, { content }),
     delete: (id: number) => http.delete<{ deleted: boolean }>(`/api/memories/${id}`),

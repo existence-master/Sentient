@@ -164,11 +164,17 @@ def sources_for(fact: str, first: str, read: list[Read], *, held: bool, user_nam
 # ---------------------------------------------------------------------- spans and confidence (#152)
 QUOTE_CHARS = 200
 _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+_ABBREVIATION = re.compile(r"(?:\b(?:Dr|Mr|Mrs|Ms|Prof|St|Jr|Sr|vs|etc|No|e\.g|i\.e)|\b[A-Z])\.$")
 
 
 def quote(text: str, fact: str) -> str:
     """The sentence of ``text`` that says most of ``fact`` (its start when none does), short."""
-    parts = [p.strip() for p in _SENTENCE.split(str(text or "")) if p.strip()]
+    parts: list[str] = []
+    for p in (p.strip() for p in _SENTENCE.split(str(text or ""))):
+        if p and parts and _ABBREVIATION.search(parts[-1]):  # "Dr. Mehta" is one sentence
+            parts[-1] = f"{parts[-1]} {p}"
+        elif p:
+            parts.append(p)
     if not parts:
         return ""
     want = _words(fact)
