@@ -410,6 +410,10 @@ export interface Session {
   incognito?: boolean
   /** The model picked for this chat (#312); null or missing follows the default model. */
   model?: string | null
+  /** The memories this chat uses and saves to (#155): "personal", "work" or a project's name. */
+  memory_scope?: string
+  /** Who or what wrote outside content this chat read ("Gmail"), "" when clean, null before its first turn (ADR 0018). */
+  untrusted?: string | null
   [key: string]: unknown
 }
 
@@ -419,7 +423,9 @@ export interface ToolCallRef {
   function: { name: string; arguments: string }
 }
 
-export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
+/** `other`: a message someone else wrote in a paired group chat (`name` = who); `event`: something the user did to
+ * the chat, e.g. trusting it again (`name: "trusted"`, content JSON `{event, was, via}`), ADR 0029. */
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system' | 'other' | 'event'
 
 /** Raw transcript row (`GET /api/sessions/{id}/messages`). */
 export interface TranscriptMessage {
@@ -1073,13 +1079,18 @@ export interface MemoryUpdatedData {
   content?: string
   source?: string
   /**
-   * `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired`, or
+   * `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired` | `moved` |
+   * `scope_reset` (#155), or
    * `instruction` on a held memory that reads like an instruction for how Sentient should act (#234)
    */
   reason?: string
   count?: number
   /** `pending`: the memory waits in the review inbox (ADR 0021). */
   status?: 'pending'
+  /** The memory's scope (#155) on a save: where it was kept. With `reason: "moved"`, where it moved to (`previous_scope`
+   * is where it was); with `reason: "scope_reset"`, the scope that was forgotten. */
+  scope?: string
+  previous_scope?: string
   /** An UPDATE's words before it, so the save can be undone (#234). */
   previous?: string
   /** The chat it was learned in; that chat shows "Remembered: ... Undo" (#234). */
@@ -1103,7 +1114,7 @@ export interface DomainEventMap {
   /** A server's tools wait for review, or the user answered (#146). */
   'mcp.review': { server: string; reason?: 'new' | 'changed'; tools?: string[]; needed: boolean }
   /** Only the fields that changed are sent: a rename (`title`) or the chat's own model (`model`, null = default). */
-  'session.updated': { session_id: string; title?: string; model?: string | null }
+  'session.updated': { session_id: string; title?: string; model?: string | null; untrusted?: string }
   /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
   'session.deleted': { session_id: string; reason?: 'incognito' }
   'rule_proposal.updated': RuleProposal
@@ -1391,6 +1402,9 @@ export interface PairedChat {
   paired_at: ISODate
   deliver: boolean
   session_id: string | null
+  /** A group chat: only its owner (who paired it) talks to Sentient there (ADR 0029). */
+  is_group?: boolean
+  owner_id?: string | null
 }
 
 export interface Channel {
@@ -1655,6 +1669,8 @@ export interface Task {
   model: string | null
   /** Named browser profile its browser steps use (§12); `null` is the default one. */
   browser_profile?: string | null
+  /** The memories its runs use and save to (#155): "personal", "work" or a project's name. */
+  memory_scope?: string
   /** Where its notifications go besides the app (§4 "Where results go"). Older engines leave it out (default). */
   deliver_to?: TaskDeliverTo
   /** Recurring tasks: short notes its runs keep for the next run (§4 "Recurring tasks remember"). */
@@ -1674,6 +1690,8 @@ export interface TaskCreateRequest {
   assignee?: 'ai'
   model?: string
   browser_profile?: string
+  /** The memories its runs use (#155); personal when left out. */
+  memory_scope?: string
 }
 
 export interface TaskPreview {
@@ -1702,7 +1720,7 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to' | 'notepad' | 'keep_running'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'memory_scope' | 'deliver_to' | 'notepad' | 'keep_running'>>
 
 /** `GET /api/tasks/away` (#163): routines pause after a long absence and resume with one click. */
 export interface AwayStatus {
@@ -2095,6 +2113,18 @@ export interface Memory {
   /** Listed memories are always `active`; `pending` ones are only in the review inbox. */
   status?: 'active' | 'pending'
   review?: ReviewNote | null
+  /** Where it is kept (#155): "personal" (default), "work", "always" (every chat) or a project's name. */
+  scope?: string
+}
+
+/** One memory scope (#155) from `GET /api/memories/scopes`. */
+export interface MemoryScope {
+  name: string
+  label: string
+  /** Active memories kept there. */
+  count: number
+  /** Always, Personal and Work; projects are the user's own. */
+  built_in: boolean
 }
 
 /** Where a memory waiting for review came from (ADR 0021). */
@@ -2123,6 +2153,8 @@ export interface MemoryReviewItem {
   created_at: ISODate
   /** When it is let go if nobody reviews it. */
   expires_at: ISODate | null
+  /** A fact's memory scope (#155): it is approved into it. Null for insights. */
+  scope?: string | null
 }
 
 export interface MemoryReviewInbox {
@@ -2149,6 +2181,7 @@ export interface MemoryQuery {
   topic?: string
   q?: string
   source?: string
+  scope?: string
   limit?: number
   offset?: number
 }
@@ -2256,10 +2289,30 @@ export interface Skill {
   lint?: SkillLintFinding[]
   /** Skills from outside (a link or Hermes): the safety check, run again on the files as they are now (#146). */
   vetting?: SkillVetting | null
+  /** How to check the skill works, from its `validate` header (#386). */
+  validate?: SkillCheck[]
+  /** The last run of those checks, or null when it declares none or they haven't run. */
+  check?: SkillCheckReport | null
+}
+
+/** One check in a skill's `validate` header: a file that must exist, or Python run in the code sandbox. */
+export interface SkillCheck {
+  file?: string
+  run?: string
+  /** Text the file or the output must contain. */
+  expect?: string
+  timeout_s?: number
+}
+
+/** `waiting`: a code check runs when the user approves. `not_run`: it can't run here (the detail says why). */
+export interface SkillCheckReport {
+  status: 'passed' | 'failed' | 'waiting' | 'not_run'
+  results: { kind: 'file' | 'run'; target: string; ok: boolean | null; detail: string }[]
+  checked_at: string
 }
 
 export interface SkillLintFinding {
-  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | string
+  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | 'validate' | string
   level: 'error' | 'warning'
   message: string
 }
@@ -2903,6 +2956,9 @@ export interface WatchedFolder {
   kind: 'folder' | 'obsidian'
   /** This folder's own ignore patterns (Settings > Folders adds them to `folders.ignore`). */
   ignore: string[]
+  /** The chats its notes are used in (#392): `always` (every chat, the default), `personal`, `work` or a project.
+   * Missing on older engines. */
+  scope?: string
   status: FolderStatus
   /** While a look through it runs: new or changed files read so far. */
   progress: { done: number; total: number } | null
@@ -2958,4 +3014,13 @@ export interface Reminder {
   fired_at: ISODate | null
   cancelled_at: ISODate | null
   notification_id: string | null
+  /** An alarm: when it was stopped or snoozed while ringing (#390). */
+  stopped_at?: ISODate | null
+  /** An alarm made by a snooze: the id of the alarm that was ringing (#390). */
+  snoozed_from?: string | null
+}
+
+export interface SnoozedAlarm {
+  stopped: Reminder
+  reminder: Reminder
 }

@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS folders (
     last_scan_at  TEXT,
     last_scan_ms  INTEGER,
     skipped       INTEGER NOT NULL DEFAULT 0,        -- files left out at the last look (too big, unreadable, over the cap)
-    error         TEXT                               -- plain sentence, or NULL
+    error         TEXT,                              -- plain sentence, or NULL
+    scope         TEXT NOT NULL DEFAULT 'always'     -- the chats its notes are recalled in: always, personal, work, a project (#392)
 );
 
 CREATE TABLE IF NOT EXISTS folder_files (

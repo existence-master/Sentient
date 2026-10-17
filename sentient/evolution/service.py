@@ -31,11 +31,13 @@ from typing import Any
 from sentient.evolution import prompts
 from sentient.evolution.log import log_event
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import CLEAN as CLEAN_SUMMARY
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
-from sentient.skills.loader import slugify, valid_name
+from sentient.skills import checks as skill_checks
+from sentient.skills.loader import render_skill, slugify, valid_name
 from sentient.store.db import after_watermark, next_watermark, now_iso
 
 log = logging.getLogger(__name__)
@@ -44,6 +46,8 @@ SECTIONS = ["When to use", "Procedure", "Pitfalls", "Verification"]
 TRANSCRIPT_BUDGET = 14_000
 REVIEW_LOOKBACK_DAYS = 3
 STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
+# the memory scopes the profile files (MEMORY.md, USER.md) are built from (#155); work and project chats leave them out
+PROFILE_SCOPES = "COALESCE(scope, 'personal') IN ('personal', 'always')"
 DONE_STATUSES = {"completed", "completed_with_errors"}
 FAILED_RUN_STATUSES = {"error", "failed", "completed_with_errors"}
 REPAIR_TRANSCRIPT_BUDGET = 6_000
@@ -495,14 +499,20 @@ class EvolutionService(Service):
         plugin_ids = {p.id for p in self.app.registry.plugins()}
         requires = [str(t) for t in raw.get("requires_tools") or [] if str(t) in plugin_ids]
         tags = [str(t) for t in raw.get("tags") or []][:8]
+        validate = skill_checks.merge(existing.validate if existing else [], skill_checks.parse(raw.get("validate"))[0])
+        body = ensure_sections(body)
+        report = await self.check_skill(name, validate, origin=origin, description=description, body=body)
+        if skill_checks.failure(report):
+            return None  # a skill whose own check fails isn't proposed (#386)
         lib.write(
-            name, description, ensure_sections(body),
+            name, description, body,
             author=existing.author if existing else "assistant",
             tags=tags or (existing.tags if existing else []),
             requires_tools=requires or (existing.requires_tools if existing else []),
-            pending=True, created_by_review=True,
+            pending=True, created_by_review=True, validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
+        await lib.record_check(name, report, self.app.store, pending=True)
         user_edited = existing is not None and (await lib.edit_state(name, self.app.store))["user_edited"]
         kind = "skill_patched" if existing else "skill_created"
         detail = {"name": name, "pending": True, "reason": raw.get("reason"), **origin}
@@ -526,6 +536,25 @@ class EvolutionService(Service):
             "skill", msg, title=title, payload={"skill": name, "action": decision, "origin": origin}
         )
         return name
+
+    async def check_skill(
+        self, name: str, validate: list[dict], *, origin: dict, description: str, body: str
+    ) -> dict | None:
+        """Run a drafted skill's checks before it is proposed (#386): its file checks now, in the active skill's folder
+        and Sentient's files folder. This is work Sentient started itself, so a code check never runs here (ADR 0017):
+        it waits for the user's approval. A failure is logged as ``skill_check_failed`` and the draft is dropped."""
+        if not validate:
+            return None
+        current = self.app.skills.get_active_file(name)
+        draft = render_skill(name, description, body, author="assistant", version=1, tags=[], requires_tools=[],
+                             validate=validate)  # what a check of SKILL.md itself reads
+        report = await skill_checks.run(self.app, name, validate, [current.dir] if current else [], run_code=False,
+                                        candidate=draft)
+        if reason := skill_checks.failure(report):
+            log.info("skill %s not proposed: its check failed (%s)", name, reason)
+            clean = {k: v for k, v in origin.items() if v is not None}
+            await log_event(self.app.store, "skill_check_failed", {"name": name, "reason": reason, **clean})
+        return report
 
     # ------------------------------------------------------------------ repair during use
     async def handle_repair_event(self, event: dict) -> list[str]:
@@ -732,11 +761,18 @@ class EvolutionService(Service):
         description = " ".join(str(raw.get("description") or "").split()) or current.description
         fix = " ".join(str(raw.get("reason") or "").split())
         full_reason = (reason.rstrip(". ") + (f". {fix}" if fix else ""))[:400]
+        validate = skill_checks.merge(current.validate, skill_checks.parse(raw.get("validate"))[0])
+        report = await self.check_skill(name, validate, origin={"repair": True, **origin}, description=description,
+                                        body=body)
+        if skill_checks.failure(report):
+            return None  # the fix doesn't pass the skill's own check (#386)
         lib.write(
             name, description, body, author=current.author, tags=current.tags,
             requires_tools=current.requires_tools, pending=True, created_by_review=current.created_by_review,
+            validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
+        await lib.record_check(name, report, self.app.store, pending=True)
         clean_origin = {k: v for k, v in origin.items() if v is not None}
         detail = {"name": name, "pending": True, "origin": "repair", "failure": failure_kind, "reason": full_reason, **clean_origin}
         if user_edited:
@@ -858,19 +894,21 @@ class EvolutionService(Service):
         facts_mark = await store.get_meta(PROFILE_FACTS_MARK) or since
         summaries_mark = await store.get_meta(PROFILE_SUMMARIES_MARK) or since
         after, params = after_watermark(facts_mark, "updated_at", "id")
+        # MEMORY.md and USER.md are personal: work and project memories never go in them (#155)
         new_facts = await store.fetchall(
             "SELECT id, content, topics, source, updated_at FROM facts WHERE status = 'active'"
             f" AND memory_type = 'long-term' AND {after} AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at, id",
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at, id",
             (*params, nowiso),
         )
         # chats that read outside content never feed MEMORY.md (ADR 0021): their facts wait for review and their
         # summaries are left out
         after, params = after_watermark(summaries_mark, "created_at", "id")
+        personal, personal_params = memory_scopes.personal_summary_sql(cfg)  # no work or project chat's (#155)
         new_summaries = await store.fetchall(
-            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY}"
+            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY} AND {personal}"
             " ORDER BY created_at, id LIMIT 8",  # in watermark order, so the limit never jumps over a summary
-            params,
+            (*params, *personal_params),
         )
         await store.set_meta("evolution.profile_last_run", nowiso)
         # saved after every read, also an empty one: the next read starts where this one did, never at this run's time
@@ -890,11 +928,13 @@ class EvolutionService(Service):
         budget = cfg.memory.workspace_budget_chars
         all_facts = await store.fetchall(
             "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at DESC, id DESC LIMIT 80",
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at DESC, id DESC LIMIT 80",
             (nowiso,),
         )
         summaries = await store.fetchall(
-            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} ORDER BY end_at DESC, rowid DESC LIMIT 8"
+            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} AND {personal}"
+            " ORDER BY end_at DESC, rowid DESC LIMIT 8",
+            personal_params,
         )
         current = app.workspace.read_full()["memory"]
         memory_chars = 0

@@ -10,9 +10,10 @@ import json
 import re
 
 from sentient.memory import review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
-from sentient.tools.rules import brings_untrusted
+from sentient.tools.rules import OTHER_ROLE, brings_untrusted, group_source
 
 INCOGNITO_REFUSAL = (
     "Not saved: this is an incognito chat, so nothing from it is remembered. Don't tell the user you will remember it."
@@ -44,14 +45,21 @@ def _fts_query(text: str, joiner: str) -> str:
 
 
 @tool("memory_recall", risk=Risk.read)
-async def memory_recall(ctx: ToolContext, query: str, limit: int = 8) -> list[dict]:
+async def memory_recall(ctx: ToolContext, query: str, limit: int = 8, everywhere: bool = False) -> list[dict]:
     """Search what you remember about the user. Use when a question depends on personal
-    context (their preferences, people, projects, routines) that is not already in your prompt."""
+    context (their preferences, people, projects, routines) that is not already in your prompt.
+    It searches this chat's memories (for example Work) and the ones kept for every chat. Set everywhere=true only
+    when the user asks about something from another part of their life, like family or health in a work chat."""
     if ctx.memory is None or await _memory_closed(ctx):
         return []
-    facts = await ctx.memory.recall(query, top_k=limit)
+    scope = await memory_scopes.for_context(ctx)
+    facts = await ctx.memory.recall(
+        query, top_k=limit, scopes=None if everywhere else memory_scopes.recall_scopes(scope)
+    )
     return [
-        {"id": f["id"], "fact": f["content"], "topics": f["topics"], "similarity": f["similarity"]} for f in facts
+        {"id": f["id"], "fact": f["content"], "topics": f["topics"], "similarity": f["similarity"]}
+        | ({"kept_for": memory_scopes.label(f.get("scope"))} if scope and f.get("scope") not in (scope, memory_scopes.ALWAYS) else {})
+        for f in facts
     ]
 
 
@@ -71,7 +79,8 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
     # instruction's review card shows what the user said (#234)
     own = None if review.is_unprompted_note(held) else await _own_words(ctx)
     out = await ctx.memory.remember(
-        fact, source="conversation", notify=True, review=held, own_words=own, session_id=ctx.session_id
+        fact, source="conversation", notify=True, review=held, own_words=own, session_id=ctx.session_id,
+        scope=await memory_scopes.for_context(ctx),  # the chat's or task's scope (#155); personal when neither
     )
     if out.get("status") == "pending":
         return {**out, "note": INSTRUCTION_NOTE if out.get("reason") == review.INSTRUCTION else HELD_NOTE}
@@ -172,7 +181,8 @@ async def memory_search_by_source(ctx: ToolContext, query: str, source: str, lim
     "conversation" or "manual". Use when the user asks what you learned from a specific document."""
     if ctx.memory is None or await _memory_closed(ctx):
         return []
-    facts = await ctx.memory.search_by_source(query, source, top_k=limit)
+    scopes = memory_scopes.recall_scopes(await memory_scopes.for_context(ctx))
+    facts = await ctx.memory.search_by_source(query, source, top_k=limit, scopes=scopes)
     return [{"id": f["id"], "fact": f["content"], "similarity": f["similarity"]} for f in facts]
 
 
@@ -191,8 +201,12 @@ async def memory_search_history(ctx: ToolContext, query: str, limit: int = 8) ->
         if rows:
             break
     await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
+    other = next((r for r in rows if r.get("role") == OTHER_ROLE), None)
+    if other is not None and not ctx.untrusted:  # a group member's message, even in a chat trusted again (ADR 0029)
+        ctx.untrusted = group_source(str(other.get("name") or ""))
     return [
-        {"when": r["created_at"], "role": r["role"], "session_id": r["session_id"], "text": (r["content"] or "")[:500]}
+        {"when": r["created_at"], "role": r["role"], "session_id": r["session_id"], "text": (r["content"] or "")[:500],
+         **({"from": r.get("name") or "another group member"} if r.get("role") == OTHER_ROLE else {})}
         for r in rows
     ]
 
@@ -242,7 +256,7 @@ async def user_model_ask(ctx: ToolContext, question: str) -> dict:
     um = getattr(app, "user_model", None)
     if um is None or not hasattr(um, "ask"):
         return {"error": "user model unavailable"}
-    return await um.ask(question)
+    return await um.ask(question, scopes=memory_scopes.recall_scopes(await memory_scopes.for_context(ctx)))
 
 
 class MemoryPlugin(ToolPlugin):

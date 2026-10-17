@@ -37,7 +37,7 @@ All carry `session_id` and `turn_id`.
 | `tool_call` | `call_id`, `name`, `arguments` |
 | `tool_progress` | `call_id`, `name`, `kind: stdout\|stderr\|status\|frame\|subagent`, `text?`, `image?`, `data?` (section 10) |
 | `tool_result` | `call_id`, `name`, `result`, `is_error`, `duration_ms` (a call the user declined has `result: {error, declined: true}`; a call a "Hand it to me" rule handed to the user has `result: HandOff`, section 2, #140), `check?: OutcomeCheck` (what code found the call really did, section 4 "Checking the outcome", #165; absent for calls that aren't checked) |
-| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason`, `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts), `preview?: ActionPreview` (what will be sent or changed, the way a person reads it, section 10, #142) |
+| `approval_request` | `approval_id`, `call_id`, `name`, `arguments`, `risk: read\|write\|send\|exec` (effective risk), `reason` (a short plain label for the card: `risk_label` when it says more than the risk itself, such as `"Purchase"` or `"Unlocks a door"`, else `""`; never the tool's description, which is written for the model, #398), `risk_label?`, `target?`, `untrusted?` (section 10), `warning?` (what a second look found off, section 10, #143), `choices?: string[]` (the answers offered, in order, section 2 "Scoped answers"), `grant_minutes?` (how long `allow_timed` lasts), `preview?: ActionPreview` (what will be sent or changed, the way a person reads it, section 10, #142) |
 | `undo_window` | `undo_id`, `call_id`, `name`, `seconds`, `until` (ISO time it ends), `preview?: ActionPreview`: an email, message or post waits `seconds` before it runs, so it can still be undone (section 10, #142). Its `tool_result` follows when the window ends; after Undo that result is `{error, undone: true}` and nothing was sent |
 | `user_interjection` | `text` (a steer message the model just received, section 10) |
 | `steer_ack` | `session_id`, `queued`, `client_id` (echo; no `turn_id`) |
@@ -88,10 +88,10 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
-| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE) |
+| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE). Memory scopes (#155, section 7): a save carries `scope` (where it was kept); moving a memory sends UPDATE with `reason: "moved"`, `scope` and `previous_scope`; resetting a scope sends a bulk DELETE with `reason: "scope_reset"`, `scope` and `count` |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `mcp.review` | `{server, reason?: "new"\|"changed", tools?: [tool names on the server], needed}`: an MCP server's tools wait for review, or the user answered (section 5) |
-| `session.updated` | `{session_id, title?, model?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked (section 2) |
+| `session.updated` | `{session_id, title?, model?, memory_scope?, untrusted?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked; `memory_scope` (the scope it uses now) after its memories were picked (section 2); `untrusted` when the chat's outside-content mark changes (it read outside content, a group member wrote, or the user trusted it again: `""`, section 10) |
 | `session.deleted` | `{session_id, reason?: "incognito"}`: a chat was deleted (`DELETE /api/sessions/{id}`, or an incognito chat closed by the engine, section 2) |
 | `rule_proposal.updated` | **RuleProposal** (section 2, rules from chat): a new "Make this a rule?" card, or one the user answered |
 | `approval_grants.updated` | `{count}`: a task or timed grant was added, revoked or ran out (section 2, "Scoped answers"); refetch `GET /api/approvals/grants` |
@@ -104,7 +104,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `import.updated` | **MemoryImportJob** (section 19): an import from ChatGPT, Claude or OpenClaw started, read a batch or finished |
 | `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
 | `folders.updated` | `{id, removed?: true, progress?: {done, total}}` (section 22): a folder was added, removed or queued, or a look through it started, moved on (at most once a second) or ended; refetch `GET /api/folders` |
-| `reminder.updated` | **Reminder** (section 23): a timer or reminder was set, cancelled or went off |
+| `reminder.updated` | **Reminder** (section 23): a timer or reminder was set, cancelled or went off, or a ringing alarm was stopped or snoozed |
 
 ---
 
@@ -302,15 +302,20 @@ accept or loosen a rule.
   "From your answer on <date>"). An entry is dropped when its rule is changed or removed.
 
 ### Sessions (chats)
-- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model}]` newest first
+- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model, memory_scope}]` newest first
   (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
   `visited_hosts`: list of web hosts it loaded, or `null`; section 10; `incognito`: bool, below. The window keeps
-  incognito chats out of its chat list; `model`: the chat's own model, `null` when it follows the default, below)
-- `POST /api/sessions?incognito=false&model=` → `{session_id}` (`model` optional: a new chat that starts on its own
-  model; 422 when it isn't `provider/model`)
-- `PATCH /api/sessions/{id}` `{title?, model?}` → `{ok, title?, model?}`: only the fields sent change. `model`
+  incognito chats out of its chat list; `model`: the chat's own model, `null` when it follows the default, below;
+  `memory_scope`: the memories it uses now, section 7 "Memory scopes": its own, else its messaging app's, else
+  `"personal"`)
+- `POST /api/sessions?incognito=false&model=&memory_scope=` → `{session_id}` (`model` optional: a new chat that starts on its own
+  model; 422 when it isn't `provider/model`. `memory_scope` optional: `personal`, `work` or a project's name; 422 for
+  `always`)
+- `PATCH /api/sessions/{id}` `{title?, model?, memory_scope?}` → `{ok, title?, model?, memory_scope?}`: only the fields sent change. `model`
   `"provider/model"` keeps that model for the chat; `null` or `""` makes it follow the default again ("Use the
-  default"). 404 unknown chat, 422 a `model` that isn't `provider/model`. Publishes `session.updated` with what changed.
+  default"). `memory_scope` picks the chat's memories (#155); `null` or `""` goes back to the default, and the response
+  carries the scope it uses now. 404 unknown chat, 422 a `model` that isn't `provider/model` or `memory_scope: "always"`.
+  Publishes `session.updated` with what changed.
 - **The chat's model** (#312). `sessions.model` is the one place a chat's model is kept: set it with `POST
   /api/sessions?model=` (a new chat) or `PATCH /api/sessions/{id}` `{model}`, or `/model chat <model>` in a messaging
   app (section 14). A `model` on `chat.send` or `POST /api/chat` is for that message only and never changes it.
@@ -329,16 +334,29 @@ accept or loosen a rule.
     (`subagents.role: primary`), except Claude Code, which only answers chats. Background work after a reply (titles,
     memory, rule checks, summaries) and tasks keep their own role models.
   - Incognito chats keep a model the same way.
+- `POST /api/sessions/{id}/trust` `{upto?: message id}` → `{ok, was, trusted, untrusted, writer}`: "I've checked it,
+  trust this chat again" (ADR 0029, section 10 "Outside content"). `upto` is the newest message the window has shown;
+  the window always sends it. Clears the chat's outside-content mark (`sessions.untrusted` = `""`) unless outside
+  content was stored after `upto` (a group member's message, a tool result that brought outside content in): then
+  `trusted: false`, the chat stays marked, now with that newer source (`untrusted`, e.g. `"another group member
+  (Priya)"`, published with `session.updated`), and `writer` names the member ("" for other content). `was` is what it
+  had read (`""` when it was clean: nothing changes and nothing is logged). A clear logs an `event` row in the chat
+  (content `{event, was, via, upto}`) and publishes `session.updated` `{untrusted: ""}`. Without `upto` it covers
+  everything stored. 404 unknown chat, 422 an `upto` that isn't a message of this chat. No tool can do this.
 - `DELETE /api/sessions/{id}` → `{ok}` (helpers the chat started are cancelled first; publishes `session.deleted`)
 - `GET /api/sessions/{id}/messages?limit=500` → raw transcript rows, oldest first (404 when the chat doesn't exist, e.g. a
   closed incognito chat):
   ```json
-  {"id": "...", "role": "user|assistant|tool", "content": "...", "thinking": "...|null",
+  {"id": "...", "role": "user|assistant|tool|other|event", "content": "...", "thinking": "...|null",
    "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "memory_recall", "arguments": "{\"query\":\"sister\"}"}}],
    "tool_call_id": "call_1", "name": "memory_recall", "attachments": ["report.pdf"], "interjection": false,
    "memory_sources": [], "sources": [], "approval": null, "checks": [], "created_at": "..."}
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
+  `other` (ADR 0029): a message someone other than the owner wrote in a paired group chat, `name` = their display
+  name; the model reads it as outside content, the window shows it as theirs. `event`: something the user did to the
+  chat, never sent to the model; `name: "trusted"` with `content` JSON `{event: "trusted", was, via: "desktop"|<channel
+  id>}` is "trusted this chat again".
   `approval` (tool messages, #147) is how the user answered that call's approval request, `null` when it did not ask:
   `{decision: "allow"|"allow_session"|"allow_timed"|"allow_always"|"deny", asked_at, answered_at, target, risk_label,
   untrusted, rule, warning}` (a request nobody answered in time is `deny`; `rule` is the lasting rule then, e.g.
@@ -757,7 +775,7 @@ Routes:
   "swarm_details": {"goal": "...", "items": [], "total_agents": 0, "completed_agents": 0,
                     "progress_updates": [{"worker_id": "agent-1|aggregator", "timestamp": "...", "status": "processing|completed|error|aggregating", "message": "..."}],
                     "aggregated_results": []} | null,
-  "enabled": true, "keep_running": false, "model": null, "browser_profile": "x-posting|null",
+  "enabled": true, "keep_running": false, "model": null, "browser_profile": "x-posting|null", "memory_scope": "personal",
   "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
   "notepad": "...|null",
   "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
@@ -767,6 +785,8 @@ Routes:
 ```
 `swarm_details` is `null` for single tasks. `script` is `null` unless `task_type` is `script` (section 16).
 `browser_profile` is the browser profile its runs use (section 12); `null` means `default`.
+`memory_scope` is the memories its runs use and save to (section 7, "Memory scopes"): `personal` unless set; a task a
+chat creates (`create_task_from_prompt`) takes that chat's scope.
 `deliver_to` is where the task's notifications go besides the app (see "Where results go" below).
 `notepad` is the notes a recurring task's runs keep for the next run (see "Recurring tasks remember" below); `null` when empty.
 `error` holds the last planning/run failure message (v2 `task.error`).
@@ -774,7 +794,7 @@ Each run embeds its most recent 200 progress updates; the full log is at the `/e
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive. The
 task-creation prompt produces them for repeats measured in minutes or hours, and a request that says so ("every 10
 minutes", "every hour", "every 2 hours", "every 30 min", "hourly") is always saved as `interval`, whatever the model
-wrote (triggered schedules stay triggered). The planner also uses `interval` for script jobs.
+wrote (triggered schedules stay triggered, except a web check's, section 16). The planner also uses `interval` for script jobs.
 **Fuzzy windows:** a daily or weekly schedule with `window` runs at a random minute inside that part of the day, in its
 timezone, instead of at `time` (kept for the editor): `morning` 07:00-10:00, `afternoon` 12:00-16:00, `evening`
 17:00-20:00, `night` 20:00-23:00. `next_execution_at` is the next window that has not started yet (so a run inside
@@ -838,9 +858,11 @@ A run that called no tool and answers nothing still fails. Chat replies (`done.c
 ### Endpoints
 - `GET /api/tasks` → `[Task]`
 - `GET /api/tasks/{id}` → `Task`
-- `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
+- `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?, memory_scope?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, deliver_to, notepad, keep_running}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, memory_scope, deliver_to, notepad, keep_running}` → `Task`
+  (`memory_scope`: the memories its runs recall and save to, section 7 "Memory scopes"; `null` or `""` is personal, 400
+  for `always`)
   (`keep_running: true`: never paused while the user is away, see "Routines pause while you are away")
   (`notepad`: text, trimmed and cut to 1500 characters; `null` or `""` clears it)
   (`browser_profile`: a name from `browser.profiles`, 400 for an unknown one; `null`, `""` or `"default"` clear it)
@@ -932,15 +954,25 @@ or `Tool.verify`, and every MCP tool that is not a look-up (its kind guessed fro
 Today that is `file_write`, `gmail_send`, `gmail_reply`, `email_imap_send`, `gcal_create_event`, `gcal_quick_add`,
 `slack_post_message`, `slack_reply_in_thread`, `discord_send_message`, `whatsapp_send_message`, the Home Assistant
 actions (`home_assistant_turn_on`/`turn_off`/`set_temperature`/`activate_scene`/`run_script`/`open_cover`/`close_cover`/
-`lock`/`unlock`/`set_alarm`, result only) and MCP tools. A call
+`lock`/`unlock`/`set_alarm`) and MCP tools. A call
 the user declined or undid, a try run's noted call and a call handed to the user are never checked.
 1. The result says it worked: no `error`, no `ok`/`success`/`sent`/`created: false`, no failed `status`, and no
    non-empty `failed`/`errors`/`rejected`/`bounced`/`not_sent` list, looked for one level down too (an MCP result's
    `structured` part, or `content` that is JSON). Text `content` starting with "Error" or "Failed" counts as failed.
 2. Read back, where the tool declares `verify(arguments, result, ctx) -> {ok, detail?}` (sync or async, 15 s at most):
    `file_write` reads the file (it exists and holds what was written, line endings aside), Gmail finds the sent
-   message with the `SENT` label, Google Calendar finds the event and it is not cancelled. A read-back that can't run
-   (offline) leaves the result's own answer standing.
+   message with the `SENT` label, Google Calendar finds the event and it is not cancelled. Home Assistant (#386)
+   waits a moment (0.5 s), then reads each device's state again (`GET /api/states/<id>`, about once a second, for
+   `integrations.home_assistant_check_s` seconds in all, default 4, 0 turns it off) until it is as asked: on or off
+   for lights, switches, fans and the like (a media player, thermostat or water heater that was turned on only has to
+   be not off), `locked`/`unlocked`, `open`/`closed`, `armed_<mode>`/`disarmed`, and the asked `hvac_mode` and target
+   `temperature`. A device still `opening`, `closing`, `locking`, `unlocking`, `arming` or `pending` when the time is
+   up counts as fine, with `detail` "Garage door is still opening". One that still shows the old state, or is
+   `unavailable`, fails with `detail` "Hallway light still reports off" and `missed` its entity id (`targets` of a
+   Home Assistant check are the call's entity ids). Scenes, scripts and kinds with no plain on
+   and off are not read back. A read-back that can't run (offline) leaves the result's own answer standing.
+   When a read-back fails, the tool message the model reads ends with "[Sentient checked afterwards and it did not
+   work: <detail>. Tell the user plainly; don't say it worked.]", so the reply never calls it done.
 
 **OutcomeCheck** `{tool, app, kind: "email"|"message"|"file"|"event"|"home"|null, action: "email sent", ok, detail,
 how: "result"|"read_back", targets: [...], missed: [...], settled?, message?}`. `detail` is the plain reason it failed
@@ -958,7 +990,9 @@ that tool, if it worked.
   clean run logs one `info` update: "Checked: file written, email sent." The report writer gets the same line as
   `checked_outcome` and is told to believe it. Try runs and swarm runs are not checked.
 - Chat replies carry the reply's `checks` on `done` and on the saved message; the app shows "Checked: ..." under the
-  reply, or the failures in a Needs your attention box. A failed check also counts in the turn's `tool_errors`
+  reply, or the failures in a Needs your attention box. Quick commands (section 23) are checked the
+  same way: when the read-back fails the reply is "I tried, but Bedroom lamp still reports off." instead of "Turned on
+  the bedroom lamp.". A failed check also counts in the turn's `tool_errors`
   (`chat.turn_completed`), so the self-improvement reviewer sees it.
 
 ### Where results go
@@ -1535,7 +1569,7 @@ offered to proactive look-ups.
 
 ## 7. Memory
 
-**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from)
+**Memory** `{id: int, content, topics: string[], source, memory_type: "long-term|short-term", created_at, updated_at, expires_at, previous_content: string|null, status: "active"|"pending", review: ReviewNote|null, scope}` (`previous_content` is the text before the last UPDATE; `review` says where a held memory came from; `scope`: where it is kept, below)
 
 **ReviewNote** `{from, snippet: string|null, session_id: string|null, title?, dated?, export?}`: `from` names the source
 in plain words ("Gmail", "Hermes", "ChatGPT", "resume.pdf", "a proactive check"), `snippet` is the text it came from
@@ -1546,10 +1580,10 @@ conversation, note or file it was in, such as "10K training plan" or "Saved memo
 Topics are the v2 set: Personal Identity, Interests & Lifestyle, Work & Learning, Health & Wellbeing,
 Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
 
-- `GET /api/memories?topic=&q=&source=&limit=&offset=` → `[Memory]` newest first, expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
+- `GET /api/memories?topic=&q=&source=&scope=&limit=&offset=` → `[Memory]` newest first (`scope`: one scope only), expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending"}` (runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
+- `POST /api/memories` `{content, source?, scope?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending", scope?}` (`scope` defaults to `personal`; runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
 near-duplicate shortcut needs the same person too; names in Devanagari (Hindi) count, and match across scripts
 ("माया" is "Maya", "प्रिया" is not "Riya") (#339). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact. A correction always UPDATEs, decided in code without the model and never skipped as a
 near-duplicate (#364): a new fact about the same person and action that says the same thing about it with a changed
@@ -1559,17 +1593,23 @@ result carries `previous` as any update does. Looser cases are marked `changes_v
 correction is never `SKIP`. An UPDATE the model picks for something unrelated about the same person, with no
 attribute and no word of what it says in common ("a piano recital in July" for "starts school in July"), is added instead)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
+- `PATCH /api/memories/{id}` `{scope}` → `Memory`: moves it to another scope (below). 400 empty `scope`, 404 if missing.
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
 - `DELETE /api/memories/source/{source}` → `{deleted: n}`
+- `GET /api/memories/scopes` → `[{name, label, count, built_in}]`: `always`, `personal` and `work` first, then every
+  project a memory, chat, task, messaging app or added folder uses, by name; `count` = active memories in it.
+- `DELETE /api/memories/scope/{scope}` → `{deleted: n}`: resets one scope. Every memory in it goes (also ones waiting
+  for review), nothing in any other scope changes.
 - `POST /api/memories/export` `{format: "markdown"|"sqlite"}` → `{path, folder, name, format, memories, about_you,
   waiting}`: writes everything Sentient remembers to a new file in `<home>/files/exports/`
   (`sentient-memory-YYYYMMDD-HHMMSS.md|.db`, never overwriting one). Markdown: active facts grouped by first topic,
-  then insights ("About <name>"), then what waits for review, each line saying where it came from and when. SQLite:
-  tables `memories (id, content, source, topics, memory_type, status, created_at, updated_at, expires_at, came_from)`
+  then insights ("About <name>"), then what waits for review, each line saying where it came from and when (and
+  its scope when it isn't Personal: "Work, a chat, 3 Oct 2026"). SQLite:
+  tables `memories (id, content, source, topics, memory_type, status, created_at, updated_at, expires_at, came_from, scope)`
   and `about_you (id, dimension, statement, confidence, status, source, created_at, updated_at, came_from)`
   (`came_from` = the ReviewNote JSON or null). Retired insights and embeddings are left out. `memories` and
   `about_you` count active ones, `waiting` held ones. 400 for another format. Code: `sentient/memory/export.py`.
-- `POST /api/memories/import` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, pending, source}` (`source` = `file:<name>`; the facts wait for review, `pending` counts them, and existing memories are kept; 400 for other types)
+- `POST /api/memories/import?scope=` multipart `file` (pdf/txt/md/docx) → `{added, updated, skipped, pending, source}` (`scope` defaults to `personal`; `source` = `file:<name>`; the facts wait for review, `pending` counts them, and existing memories are kept; 400 for other types)
 - `GET /api/memories/summaries?limit=` → `[{id, content, start_at, end_at, session_id, untrusted}]` (`untrusted` = the app whose content that chat read, else `null`; such summaries are listed here but kept out of other chats, see below)
 - `GET /api/memories/workspace` → `{soul, user, memory, today, yesterday}` (full file contents, not the prompt-budgeted snapshot)
 - `PUT /api/memories/workspace/{soul|user|memory}` `{content}` → `{saved}`
@@ -1578,6 +1618,43 @@ attribute and no word of what it says in common ("a piano recital in July" for "
 - `GET /api/memories/dreams?limit=`, `POST /api/memories/dreams/run`, `GET /api/memories/dreams/{id}`: see section 15.
 
 When sqlite-vec cannot load, list/topics/graph return empty data and write routes return 503.
+
+### Memory scopes (#155)
+Every memory has a `scope`: `personal` (the default, and where every memory saved before scopes went), `work`, a
+project's own name (`"Kestrel launch"`, up to 40 characters; `Work`/`PERSONAL` are read as the built-in names), or
+`always` for the few things every chat should know (the user's name, how they like answers). Code:
+`sentient/memory/scopes.py`.
+- **What a run reads.** A chat (`sessions.memory_scope`), a task (`tasks.memory_scope`) and a messaging app
+  (`channels.<app>.memory_scope`, default `personal`) each have a scope; a chat without its own uses its messaging
+  app's, else personal, and `always` can't be picked for any of them. Recall for the system prompt, `memory_recall`,
+  `memory_search_by_source`, `user_model_ask` and a task's executor prompt reads that scope plus `always`, so a work
+  chat never brings up personal family or health memories. `memory_recall` takes `everywhere: true` for when the user
+  asks about one directly; a result from another scope then says where it is kept (`kept_for`). Scopes filter facts;
+  the rest of the prompt context is shared (below): user-model insights other than relationships, and USER.md
+  without its learned part. A helper a chat
+  started reads its chat's scope. Work not tied to a chat or task (proactive look-ups, dreaming, the user model's
+  refresh, the profile upkeep below) reads every scope.
+- **Personal files.** MEMORY.md and the "## Learned" part of USER.md are built from personal and always memories and
+  summaries of personal chats only (a deleted chat's summary keeps the scope it was written in, `summaries.scope`); moving a memory out of them (or resetting Personal or Always) also removes its
+  line from USER.md's learned part, and MEMORY.md is rewritten at its next upkeep.
+  A work or project chat leaves out MEMORY.md, the daily notes and USER.md's learned part (the rest of USER.md stays),
+  leaves out user-model insights about relationships, and its prompt says which memories it uses.
+- **Saving.** A save goes into the run's scope: facts extracted after a turn, saved when a chat is compressed, and
+  `memory_remember` (personal outside a chat or task). Duplicates, updates and corrections only look at memories in
+  that scope and `always`, so a save never changes a memory in an unrelated scope (`always` memories are shared, so a
+  correction anywhere can update one). `POST /api/memories`, document imports
+  and imports from other assistants (section 19) save to `personal` unless given a scope.
+- **Review.** A held memory keeps the scope it was saved for and is approved into it (ReviewItem `scope`; `null` for
+  insights).
+- **Incognito** chats (section 2) have a scope too; it only decides what they read, as nothing is saved from them.
+- **Dreaming** (section 15) never merges or settles two memories from different scopes.
+- **Folders** (#392, section 22) have a scope too (`folders.scope`, default `always`, also for folders added before
+  it): their notes come up only in runs that read that scope (note pieces in a chat's prompt, `folder_search`,
+  `folder_read`), and `GET /api/memories/scopes` lists a project a folder uses.
+- **Messaging apps:** `/scope <work|personal|project>` sets a chat's `sessions.memory_scope` from the app itself
+  (section 14).
+- **Backups** (section 20) carry scopes in `sentient.db` (`summaries.scope` and `folders.scope` too); restoring a backup from before scopes puts every memory in
+  `personal` (`SCHEMA_VERSION` 11) and every folder in `always` (`SCHEMA_VERSION` 12).
 
 ### Memories waiting for review (ADR 0021)
 A memory that did not come from the user's own words in a clean chat is held: `status: "pending"` for facts, status
@@ -1652,14 +1729,38 @@ facts). Bulk and consolidation changes publish `memory.updated` with `reason` (`
 
 ## 8. Skills & self-evolution
 
-**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool, browser_profile: "<name>"|null}`
+**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool, browser_profile: "<name>"|null, validate: [SkillCheck], check: CheckReport|null}`
 (`browser_profile` comes from the skill's frontmatter; once `skill_view` reads that skill, the run's browser tools use
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
-**Lint finding** `{rule: "frontmatter|required|size|reference|danger|hidden|outbound|log_shaped|sections", level: "error|warning", message}`
+**Skill checks (#386, ADR 0010 amendment).** A skill can say how to check it works, under `validate` in its header:
+one check or a list of up to five. **SkillCheck** `{file: "<path>", expect?}` (the file exists, in the skill's
+folder or else Sentient's files folder, never outside them; `expect`: text it must contain) or `{run: "<python>",
+expect?, timeout_s: 5-120 (default 30)}` (runs in the code sandbox, section 11, with read-only tools; `expect`: text
+its printed output or result must contain; otherwise it must finish without an error). Unknown keys are ignored; an
+unusable check is dropped with a `validate` lint warning. **CheckReport** `{status: "passed"|"failed"|"waiting"|
+"not_run", results: [{kind: "file"|"run", target, ok: true|false|null, detail}], checked_at}` is the last run, kept
+in `skill_stats.check_report` for the active skill and `pending_check_report` for its pending proposal (`check` on a
+Skill is its own copy's; `null` when it declares no checks or they haven't run). A check of `SKILL.md` reads the steps
+of the version about to be saved, without its header. The checks run:
+- before a reviewer, repair or curator proposal is staged. File checks run then. Code checks never run in this
+  background work (ADR 0017) and are `waiting` (`ok: null`). A failing proposal is dropped and logged as
+  `skill_check_failed {name, reason, session_id?|task_id?|repair?|curator?}`, with no notification. The reviewer may
+  add `validate` to its answer; a repair or merge keeps every check the skill had and adds new ones (at most five).
+- before `skill_save` changes a skill that has checks: a failure returns `{error}` and nothing is saved, and a
+  `waiting` code check makes the change wait for review.
+- on `POST /api/skills/{name}/approve`, again, with code: the approve click is the user's yes (the app labels the
+  button "Approve and run check"). A failure returns 409 "The skill's check failed: <reason>. It is still waiting for
+  your review." and logs `skill_check_failed {name, reason, by: "user"}`. Approving an update keeps the skill's other
+  files (a proposal holds only its SKILL.md), so a check of `scripts/x.py` stays true.
+
+A code check is `not_run` with a plain `detail` when code execution is off, `execute_code` has a Never rule or a Read
+only setting, or the skill came from outside (vetting, ADR 0027).
+
+**Lint finding** `{rule: "frontmatter|required|size|reference|danger|hidden|outbound|log_shaped|sections|validate", level: "error|warning", message}`
 (plain sentences for the Skills screen; `sentient/skills/lint.py` lists the rules. `danger` is always an `error`.
-`danger` also covers sending the user's data to a fixed address, reading secrets or the keychain, hiding what it does
+`danger` also reads the code of `run` checks, and covers sending the user's data to a fixed address, reading secrets or the keychain, hiding what it does
 from the user and giving Sentient new orders, and reads text with invisible characters removed. `hidden`: invisible
 characters, text styled to be invisible, hidden comments (an `error` when they hold instructions or an address) and
 text pushed out of view. `outbound` (a `warning`): it always sends to one fixed address.)
@@ -1694,6 +1795,7 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
 - `PUT /api/skills/{name}` `{description?, body?, tags?, requires_tools?}` → `Skill & {body, lint}` (edits the active skill, else the pending proposal; bumps `version` of active skills; an edit to the active skill makes it `user_edited`)
 - `POST /api/skills/{name}/reset` → `Skill & {body, lint}` (puts back the original, undoing the user's edits; 404 no active skill or no original, 409 nothing to undo; evolution log `skill_reset {name, by: "user"}`)
 - `POST /api/skills/{name}/approve` | `/archive` | `/restore` → `Skill`; `/reject` → `{ok}` (404 when there is nothing to act on; restore 409 if an active skill has that name)
+  - `approve` runs the skill's checks first (see Skill checks above; 409 when one fails).
   - `approve` takes `{accept_risk?: bool}`: a skill from outside whose `vetting.verdict` is `high` is declined by default, so
     approving it returns 409 unless `accept_risk` is true. Approving records the approved hash and logs `source` and
     `verdict` on `skill_created`. Rejecting a skill from outside deletes its lock record and logs
@@ -1701,7 +1803,7 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
 - `DELETE /api/skills/{name}` → `{ok}`
 - `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed, user_edited, changed_since_proposal}`
 - `POST /api/skills/review-now` `{session_id?}` → `{reviewed, proposed: [name]}` (with `session_id`: review that chat now; without: every chat with enough tool calls not yet reviewed, plus completed task runs seen on the bus)
-- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_archived|skill_reset|skill_imported|skill_import_declined|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
+- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_check_failed|skill_archived|skill_reset|skill_imported|skill_import_declined|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
 
 Skills proposed by the background reviewer or curator always land in pending with a `skill` notification `payload: {skill, action: "create"|"patch", origin}`.
 Repair proposals (section 15) send `payload: {skill, action: "patch", origin: "repair", reason, session_id?, turn_id?, task_id?, run_id?}` with title "Skill fix to review".
@@ -1830,7 +1932,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Outside `run_loop`, use `await app.approvals.requires_approval(tool, arguments, ctx) -> (bool, Risk)`;
   `needs_approval(tool, session_id, risk=None, *, arguments=None, ctx=None)` evaluates a synchronous `risk_fn` when
   given `arguments` (an async one counts as at least `send` there).
-- `approval_request` also carries `risk_label` (e.g. "Purchase", "Deletes", "Posts publicly", "Sends", "Runs code",
+- `approval_request` also carries `risk_label` (e.g. "Purchase", "Signs up", "Deletes", "Posts publicly", "Sends", "Runs code",
   "Changes something") and `target` (short label of what is acted on, e.g. "Place order", or null). They come from the
   optional `Tool.describe_fn(arguments, ctx) -> {risk_label?, target?}` (sync or async, also `@tool(..., describe_fn=...)`);
   without it `risk_label` is "Looks something up" / "Changes something" / "Sends" / "Runs code" by effective risk.
@@ -1953,6 +2055,23 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   Stored `messages` rows keep the unmarked result; `app.agent.mark_outside_messages(messages)` marks a transcript
   read back from storage (chat history, task checkpoints; a `file_read` is matched to its call's arguments) and
   `app.agent.outside_content(content, tool, arguments)` one tool message. `run_tool` returns the marked content. The user's own messages are never marked.
+- **Group chats** (ADR 0029): a message from anyone but the owner of a paired group chat (section 14) is stored as a
+  `messages` row with role `other` (`rules.OTHER_ROLE`, the sender in `name`) through
+  `app.agent.add_group_messages(session_id, [(sender, text)])`, which marks the chat with
+  `rules.group_source(sender)` (`"another group member (<name>)"`, the name cleaned and at most 40 characters) unless
+  it is marked already, and publishes `session.updated`. `history_to_openai` turns each such row into a user turn
+  `mark_outside("<name> wrote in the group:\n<text>", group_source(name))`, always, whatever
+  `chat.mark_outside_content` says. They never reach `ToolContext.user_words`, rule checks, fact extraction or quick
+  commands. `memory_search_history` marks the run when a hit is an `other` row (its hits carry `from`).
+- **Trusting a chat again** (ADR 0029): only the user, from the window (`POST /api/sessions/{id}/trust`) or with
+  `/trust yes` in a paired chat (section 14), through `app.agent.trust_chat(session_id, via=, upto=)` →
+  `TrustResult{was, trusted, still, writer}` (`None` for no chat, `ValueError` for an `upto` outside the chat). It covers
+  the messages up to `upto` (the newest one the user had seen): outside content stored after it keeps the chat marked
+  (`still`, also saved as the mark). Otherwise it sets `sessions.untrusted` to `""` (so the chat is not classified
+  again), adds an `event` row (`rules.EVENT_ROLE`, `name` `rules.TRUSTED_EVENT`) and publishes `session.updated`. It
+  and `mark_group_chat` take turns per chat. New outside content marks it again. Rules, the second look and memories
+  already held for review are unchanged. `app.agent.chat_mark(session_id)` reads the mark and
+  `app.agent.last_message_id(session_id)` gives the newest message.
 - A result that says so itself (ADR 0025): a tool result whose **first key** is `outside_content` (a string naming
   where it came from) counts as outside content even when its tool does not: it marks the run, is wrapped for the
   model and counts in `rules.untrusted_in` (`rules.result_outside_source(result_or_stored_text)`). It only adds a
@@ -1965,7 +2084,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     number in an argument whose key names a recipient (`to`, `cc`, `bcc`, `recipient_email`, `attendees`, `guests`,
     `phone`...; nested arguments such as Composio's multi-execute are walked) must appear in the user's own words
     (user messages, without outside-content blocks or the time note; in a task run, also its brief in the system
-    prompt), in trusted records read in the run (results of tools that bring no outside content, Google Contacts, a
+    prompt; the blocks, such as a group member's message, count as outside content with the source in their marker,
+    ADR 0029), in trusted records read in the run (results of tools that bring no outside content, Google Contacts, a
     chat's system prompt) or in an active saved memory, or belong to a name the user gave ("email Arjun" and
     `arjun.mehta@...`; the user's own name counts). Every amount of money (`$1,200`, `500 rupees`, a number in an
     `amount`/`price`/`total`... field) must appear there too. After outside content, a link in the call that came
@@ -2194,6 +2314,13 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     pay, place order, checkout, send, post, publish, delete, remove, confirm, subscribe, transfer, or it submits a form
     with payment fields → `{ok, clicked, url, message, new_tab?, dialogs?}`. A link opening a new tab makes it active.
     `confirm()` dialogs are accepted only for clicks approved as `send`; alerts are accepted; `dialogs` lists them.
+    Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
+    "notify me" reads "Signs up" (normal approval rules) only when the element or the text around it (its card or
+    form) says what free thing it is (newsletter, updates, waitlist, alerts, "free" ...) and shows no price, currency,
+    billing period ("/month", "per seat", an amount beside "monthly" or "annually"), plan, trial or upgrade. When that text stops early at another offer's button
+    and holds little besides the button itself, the free word is not enough. Anything else, a bare "Subscribe"
+    included, stays "Purchase", which always asks; a sign-up labelled "Purchase" is always rated `send`. A "Sign up"
+    with neither a free nor a money signal keeps its plain "Clicks" label and `write` risk.
     Defensive check at call time: a send-looking click that approvals did not rate `send` (page changed, or no approval
     step ran and approvals mode is not `off`) is refused with an explanation.
   - `browser_type(ref, text, submit=False)` write (`send` when submit presses Enter in a payment form, a form whose button
@@ -2298,7 +2425,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
     failed polls in a row or when the token was revoked.
   - `qr`: WhatsApp only, while `status` is `linking`: the text to render as a QR code (it changes about every 20 s and
     arrives through `channel.updated`); `null` otherwise.
-- **PairedChat** `{chat_id, label, paired_at, deliver: bool, session_id}` (`deliver` defaults to `channels.<id>.deliver_default`).
+- **PairedChat** `{chat_id, label, paired_at, deliver: bool, session_id, is_group: bool, owner_id: string|null}`
+  (`deliver` defaults to `channels.<id>.deliver_default`, and to off for a group; `is_group` and `owner_id`, the app's
+  id of the person who paired a group, ADR 0029; `label` of a group is its title, Telegram, or `#<channel id>`, Discord).
+- `channels.<id>.memory_scope` (default `personal`, #155): the memories that app's chats use and save to, unless a chat
+  has its own (section 7, "Memory scopes").
 - `GET /api/channels` → `[Channel]` (always all three ids).
 - `POST /api/channels/{id}/connect` `{fields: {bot_token}}` → `Channel`. The token is checked with the service (Telegram
   `getMe`, Discord `GET /users/@me`), stored in the OS keychain as `channel_<id>_token` (never in config, the database or
@@ -2314,11 +2445,30 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   without it re-checks the token. `ok: false` when not connected or the chat is not paired.
 - Pairing: the user sends `/pair <code>` to the bot. `channels.pairing_max_attempts` (5) wrong codes cancel the active code,
   and a chat that sent that many wrong codes is ignored for the code lifetime. Messages from chats that are not paired get
-  one polite refusal (once per chat, remembered across restarts) and are otherwise ignored. Telegram: private chats only
-  (groups are ignored). Discord: direct messages only (server messages are ignored).
+  one polite refusal (once per chat, remembered across restarts) and are otherwise ignored. Telegram: private chats,
+  groups and supergroups (never channels or bots). Discord: direct messages and server channels (intents
+  `DIRECT_MESSAGES | GUILD_MESSAGES`; a server message carries text only when it mentions the bot). WhatsApp: the
+  user's own chat and chats paired with a code; groups are ignored (Sentient would speak as the user there).
+- **Group chats** (ADR 0029): a group is paired like a direct chat, and the person who sent `/pair` is its owner
+  (`owner_id`). Only the owner talks to Sentient there, and only with messages meant for it (`Incoming.addressed`: a
+  command, a mention of the bot, which is taken out of the text, or a reply to one of its messages); the owner's other
+  messages are ignored. Messages from anyone else that Sentient can see (Telegram: every one the bot receives,
+  all of them with privacy mode off; Discord: only those that mention the bot (a reply that doesn't mention it carries no text), since Discord sends
+  no text for others without the privileged Message Content intent) never start a reply, run a command or answer a question; they are
+  kept as outside content (section 10, "Group chats", at most 20 waiting while a reply runs and stored when it ends, also
+  when it fails or is stopped; the chat is marked at once, `app.agent.mark_group_chat`; with a
+  note for voice notes and files, which are not opened) and mark the chat. Buttons pressed by anyone but the owner
+  answer "Only the person who paired this chat with Sentient can use these buttons." A group message for a chat
+  paired as a direct chat is ignored.
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
   fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
-  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/help`; other
+  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/scope`, `/help`,
+  `/trust` (says what the chat read and why sending asks, and remembers the newest message then; `/trust yes` trusts
+  the chat up to that message, `Agent.trust_chat` with `via` = the channel id, section 10: anything from outside that
+  arrived after the owner's `/trust`, also a member's message still waiting for a reply to end, keeps it marked and the
+  reply says who wrote, "Ravi wrote in this chat after you sent /trust, ..."; `/trust yes` alone covers what is stored
+  now; `/new` forgets it). A group chat's Sentient chat is titled with the group's name (Telegram title, Discord
+  `#<channel id>`), never its first message, so Activity and the chat list name the group; other
   `/commands` get a hint. Unpaired chats cannot use any command except `/pair`. Replies stream by editing the message at most once per `channels.<id>.edit_interval_s` (1 s) when
   `stream_edits` is on; long replies are split (Telegram 4096, Discord 2000 characters, code blocks kept balanced).
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
@@ -2329,6 +2479,13 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   options). Choosing one applies it, settles the message to "Switched to <name>" and sends anything still missing
   ("Still needed: ..."). `/model <number or name>` applies directly (numbers count the usable presets in order),
   `/model undo` undoes the last switch. Paired chats only, like every command.
+- `/scope` (#392) picks the memories this chat uses and saves to (its `sessions.memory_scope`, section 7 "Memory
+  scopes"; publishes `session.updated` with `memory_scope`), answered without a model: `/scope work`, `/scope personal`
+  or `/scope <project>` (an existing project matches whatever the case and spacing; a new name starts a project),
+  `/scope default` follows `channels.<id>.memory_scope` again, `/scope` alone says which one it uses and lists the
+  projects. `/scope always` is refused with a plain reason. `/new` keeps the chat's scope. Paired chats only, like
+  every command, and in a group only its owner (ADR 0029): another member's `/scope` is stored as their message and
+  changes nothing.
 - `/model chat <provider/model>` (#312) keeps a model for this conversation only (its `sessions.model`, section 2;
   publishes `session.updated`); presets and other chats are untouched. It is refused with the plain reason when the
   model can't answer right now (no key, Claude Code off, not downloaded). `/model chat default` follows the default
@@ -2628,6 +2785,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   for this, so the AI will do it at each run instead."). Its runs use the recurring-task memory ("Recurring tasks
   remember"). The same rules apply to script code changed by chat tools; code a person edits
   (`PATCH /api/tasks/{id}`) only has to compile. A script job the planner leaves on an immediate one-off schedule becomes `interval` 60.
+  A script job (or the AI-run task that replaced one) that reads the web (`web_fetch`, `web_search`, `news_search`,
+  `news_top_headlines`) never keeps a `triggered` schedule it has no use for (#389): unless the code reads
+  `trigger_event` or the request names the trigger's app ("email", "inbox", "calendar", "meeting", "door", "lights",
+  "webhook"...), it becomes recurring: the interval the request says, else the planner's daily or weekly schedule,
+  else `interval` 60.
   The planner is told to use `noteworthy` by default for a page, a feed or the news, and `changed` for one exact value
   or when the user wants to hear about any change at all (#298). A `changed` script it proposes that returns the whole
   result of `tools.web_fetch` (the page or its `content`) is stored as `noteworthy`, unless the request talks about a
@@ -2992,6 +3154,12 @@ Sentient takes one:
 - before a restore replaces the data (so a restore can be undone).
 A snapshot that fails is logged and never keeps Sentient from starting.
 
+Memory scopes (#155) are part of `sentient.db` (`facts.scope`, `sessions.memory_scope`, `tasks.memory_scope`,
+`summaries.scope`, `folders.scope`), so a
+backup keeps them. Restoring a backup made before them (database version 10 or older) adds the columns on the next
+start, with every memory in `personal`; one made before folder scopes (version 11 or older) puts every folder in
+`always` (#392).
+
 **Restore** is two steps, so nothing in use is swapped under the running engine: `POST /api/backups/restore` checks the
 archive (manifest, names, SQLite `quick_check`) and unpacks it into `<home>/backups/restore-pending`; the next engine
 start applies it before config or database are opened (the desktop restarts the engine at once). Applying takes a
@@ -3081,6 +3249,7 @@ What each source gives (past):
 |---|---|
 | `messages` (role `tool`, not incognito) | "Used Gmail: Search" + the call's first arguments; an answered approval is an `approvals` item ("Asked you before "Send" in Gmail (to Arjun)", detail "You chose Allow once." or "You said no, so it was not done.") |
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
+| `messages` (role `event`, `name` `trusted`, ADR 0029) | `approvals` item `trust:<id>`: "You trusted the chat "X" again", `why` "It had read content from Gmail. You said you checked it (in Sentient \| with /trust on Telegram), so sending from it stops asking just because of what it read. New outside content asks again." |
 | `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
 | `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." |
 | `file_snapshots` (#142) | "A command changed 2 files", "Code changed 1 file", "Wrote over notes.txt", "Put back 2 files"; `kind` `tasks` when a task run did it, else `chat`; `app` `terminal`, `code` or `files`; `detail` the command or script and the file names; `undo` Restore while the copies are kept and not put back yet; `status: "restored"` after |
@@ -3177,6 +3346,15 @@ answer scored 0.58 to 0.74 and unrelated ones at most 0.65. Clipped web pages ne
 `folder_search` is offered (a folder is added); an incognito chat without memory gets none. The look-up gives up after
 4 s. The notes the reply drew on show as sources with `via: "prompt"` (section 2, "Answer sources").
 
+**Scopes (#392).** A folder has a memory scope (section 7, "Memory scopes"): `always` (the default, and what folders
+added before scopes have), `personal`, `work` or a project's name. A run reads a folder when the folder's scope is
+`always` or the run's scope: note pieces in a chat's prompt use the chat's scope, `folder_search` and `folder_read` the
+run's (`ToolContext`, as `memory_recall`). Work not tied to a chat or task, and `POST /api/folders/search`, read every
+folder. `folder_search(everywhere=true)` reads every folder, and a result from a folder of another scope then carries
+`kept_for` (its scope's label). When every folder belongs to another scope, `folder_search` returns
+`{results: [], note}` saying so; `folder_read` of a note there returns an `error` naming the scope, and reads it with
+`everywhere=true`.
+
 **Clipped web pages (ADR 0025).** A note with a web address under `source`, `url`, `clipped_from`, `source_url`,
 `original_url` or `link` in its front matter, a `clippings`-style tag, or in a `Clippings` folder is a clipping. With
 `folders.clippings_are_outside` (default on) a `folder_search` result that includes one, and a `folder_read` of one,
@@ -3184,36 +3362,39 @@ start with `outside_content: "a web page clipped into your notes"`, so the chat 
 (section 10). The user's own notes are not outside content.
 
 ### Tools (plugin `folders`, "Your folders"; hidden while no folder is added, and `folder_search` is offered on every chat turn while one is, also to local models)
-- `folder_search(query, folder = "", limit = 0)` (risk `read`) → `{outside_content?, results: [{title, folder, path,
-  heading?, text, tags?, file, link?, clipped_from?, similarity?}]}` or `{results: [], note}`. `path` is inside the
-  folder, `file` the full path, `link` an `obsidian://open?vault=&file=` link in a vault. `folder` is a folder's name
-  or id.
-- `folder_read(path, offset = 0, limit = 0)` (risk `read`) → `{outside_content?, title, folder, path, file, link?,
+- `folder_search(query, folder = "", limit = 0, everywhere = false)` (risk `read`) → `{outside_content?, results:
+  [{title, folder, path, heading?, text, tags?, file, link?, clipped_from?, similarity?, kept_for?}]}` or
+  `{results: [], note}`. `path` is inside the folder, `file` the full path, `link` an `obsidian://open?vault=&file=`
+  link in a vault. `folder` is a folder's name or id. Only folders the run's scope reads unless `everywhere`.
+- `folder_read(path, offset = 0, limit = 0, everywhere = false)` (risk `read`) → `{outside_content?, title, folder, path, file, link?,
   clipped_from?, offset, content, total, more, next_offset?}`: a whole indexed file read now from disk, in parts like
   `file_read`. `path` is the full path, the path inside the folder, or `<folder name>/<path inside>` (`.md` may be
   left off). Only files in the index that the current ignore rules keep can be read (never hidden or ignored ones),
   and whether it is a clipping is checked on the file as it is now.
 
 ### REST
-A **Folder** is `{id, path, name, kind: "folder"|"obsidian", ignore: string[], status: "waiting"|"scanning"|"ready"|
+A **Folder** is `{id, path, name, kind: "folder"|"obsidian", ignore: string[], scope, status: "waiting"|"scanning"|"ready"|
 "missing", progress: {done, total}|null, added_at, last_scan_at, last_scan_ms, files, unreadable, chunks, embedded,
 skipped, clippings, error}`: `files` read, `unreadable` that could not be read, `chunks` searchable pieces and
 `embedded` how many of them are searchable by meaning, `skipped` left out at the last scan (too big, over
 `max_files`), `clippings` clipped web pages, `error` a plain sentence (the folder can't be found, only part of it is
-searched). `progress` counts the new or changed files of the running scan.
+searched). `progress` counts the new or changed files of the running scan. `scope`: the chats its notes are used in
+(above).
 
 - `GET /api/folders` → `{folders: [Folder], searching_by_meaning, embedding_error}`
-- `POST /api/folders` `{path, ignore?}` → Folder, and a scan starts. 400 with a plain `detail` when the path is not a
+- `POST /api/folders` `{path, ignore?, scope?}` → Folder (`scope` defaults to `always`), and a scan starts. 400 with a plain `detail` when the path is not a
   full path to an existing folder, is a whole drive or the home folder, holds or is inside Sentient's data folder, is
   already added, or is inside or holds an added folder.
-- `PATCH /api/folders/{id}` `{ignore}` → Folder, and it is scanned again. 404 when unknown.
+- `PATCH /api/folders/{id}` `{ignore?, scope?}` → Folder. New `ignore` patterns scan it again; a new `scope` (empty
+  is `always`) takes effect at once and sends `folders.updated`. 404 when unknown.
 - `DELETE /api/folders/{id}` → `{removed: true}`: forgets the folder and its whole index. 404 when unknown.
 - `POST /api/folders/{id}/rescan` → 202 `{queued: true}`. 404 when unknown.
 - `POST /api/folders/search` `{query, folder?, limit?}` → what `folder_search` returns.
 - Event `folders.updated` (section 1).
 
 Settings > Folders lists them with their status and counts, adds one with the folder picker, removes one (with a
-confirmation), checks again, edits the folder's ignore patterns and shows the `folders` config section.
+confirmation), checks again, edits the folder's ignore patterns, picks where it is used (Every chat, Personal, Work
+or a project) and shows the `folders` config section.
 
 ## 23. Timers, reminders, alarms and quick commands (owner: reminders and core, #150, #359)
 
@@ -3234,6 +3415,7 @@ language under `sentient/agent/fastpath/`, tried for `assistant.language` and th
 | cancel | "cancel the timer", "stop the pasta timer", "cancel the 10 minute timer", "cancel my reminder to stretch", "cancel all timers", "turn off the gym alarm" | two or more match and "all" was not said; nothing matches the words given; a plural without "all" |
 | home (#175) | "turn off the living room lights", "turn on the bedroom lamp", "living room lights off", "turn the lights in the kitchen off", "switch off all the lights", "dim the living room lights to 30%", "turn on the coffee maker" | Home Assistant not connected or not reachable; the words name no room or device exactly (one light named that, the lights of the room named that, or the lights whose names hold every word); "the bedroom light" when the bedroom has two; "the lights" without a room or "all"; a device left out by the entity picker; locks, alarms, doors, garage doors and gates, and switches that sound like one (never quick); a question ("is the porch light on") |
 | alarm (#359) | "wake me at 7", "wake me up at 6:30 am", "set an alarm for 6:30", "set an alarm for 6:30 tomorrow", "set a 6:30 alarm", "set an alarm for 7 called gym", "wake me up in 20 minutes" | a repeating wish, a day name, "today" at a time that has passed, "tomorrow morning" |
+| stop or snooze a ringing alarm (#390) | only while a Sentient alarm rings: "stop", "stop the alarm", "turn it off", "turn off the gym alarm", "I'm up" (`stop_alarm`, "Alarm stopped."); "snooze", "snooze for 5 minutes", "snooze 10", "5 more minutes" (`snooze_alarm`, "Snoozed until 7:39 AM.") | nothing ringing ("stop the alarm" may mean a house alarm, #175: the usual commands and then the model have it); the words name another alarm ("stop the pasta alarm"); a snooze that is unclear ("snooze for a bit") or over 3 hours |
 | calendar (#359) | "what's next on my calendar", "what's my next meeting", "when is my next meeting", "what do I have next" | no calendar connected; anything more ("... and email it to Ravi"), another day ("what's on my calendar tomorrow"), a bare "what's next" |
 
 An alarm is the one place a clock time without AM or PM is fine, as on a phone: "set an alarm for 6:30" rings at the
@@ -3252,7 +3434,8 @@ sends, buys or deletes anything ("delete the timer" goes to the model). It runs 
 asking: with approvals mode `always`, or an "Ask" or "Never" rule on the tool or on `reminders`, the model answers as
 usual. A home command calls `home_assistant_turn_on` or `home_assistant_turn_off` (with `brightness_pct` for a
 level) once for every device it names, and says "Turned off the living room lights." or "Set the bedroom lamp to
-30%.". Its words name exactly that change, so in approvals mode `ask` they count as the yes for it (effective risk
+30%.", or "I tried, but Bedroom lamp still reports off." when reading the device back shows it didn't change
+(section 4, "Checking the outcome", #386). Its words name exactly that change, so in approvals mode `ask` they count as the yes for it (effective risk
 `write` only, ADR 0028); approvals mode `always`, an "Ask", "Hand it to me" or "Never" rule on the tool or on
 `home_assistant`, or a Read only connection send it to the model. Not used for a message with attachments. Turned
 off with `chat.quick_commands`.
@@ -3260,16 +3443,25 @@ off with `chat.quick_commands`.
 **Timers, reminders and alarms** (`sentient/reminders/`, table `reminders`). **Reminder**
 `{id, kind: "timer"|"reminder"|"alarm", message, connector: ""|"to"|"about"|"that", label, duration_s, fire_at, status:
 "scheduled"|"fired"|"cancelled", session_id, channel, language, source: "quick"|"chat"|"api", created_at, fired_at,
-cancelled_at, notification_id}`. `fire_at` is UTC; a clock time is read in the user's timezone
+cancelled_at, notification_id, stopped_at, snoozed_from}`. `fire_at` is UTC; a clock time is read in the user's timezone
 (`assistant.timezone`). `duration_s` is a timer's length or a reminder's "in 20 minutes". `session_id` is the chat it
 was set in (null in an incognito chat). A timer runs 1 second to 24 hours; a reminder or alarm can be up to a year
-ahead. An alarm has no `message`; its `label` names it ("gym").
+ahead. An alarm has no `message`; its `label` names it ("gym"). `stopped_at` is when a ringing alarm was stopped or
+snoozed; `snoozed_from` is set on an alarm made by a snooze, to the id of the alarm that was ringing (#390).
+
+**A ringing alarm (#390).** An alarm counts as ringing for 3 minutes after it goes off (as long as the window's chime
+plays), until it is stopped or snoozed: from the banner's **Stop** or **Snooze**, over REST, or by saying "stop" or
+"snooze" in any chat, by voice or in a messaging app (a quick command, above). A snooze stops it and sets a new alarm
+with the same `label`, `channel` and chat, `chat.alarm_snooze_minutes` from now (9 by default, 1 to 60), or the minutes
+said (1 minute to 3 hours). The engine publishes `reminder.updated` for the new alarm first and then for the one that
+stopped (`stopped_at` set), so the window turns the ringing banner into "Snoozed until 7:39 AM" (with **Turn off**,
+which cancels the snoozed alarm) or hides it when it stopped.
 
 When one comes due, the engine sends a `reminder` notification (`notification.new`): title "Timer done" (message "Your
 10 minute timer is done."), "Reminder" (message: what to remind about) or "Alarm" / "Alarm: gym" (message "It's
 7:00 AM.", or when late "Your 7:00 AM alarm went off while Sentient wasn't running."), payload `{event:
 "timer"|"reminder"|"alarm", reminder_id, fire_at, late, channel, session_id?}`. The window rings for an alarm: a
-banner with **Stop** and a chime (Web Audio, no sound file) that plays until Stop, for 3 minutes at most. One that came due while Sentient was not running goes off when it
+banner with **Stop** and **Snooze** and a chime (Web Audio, no sound file) that plays until Stop, for 3 minutes at most. One that came due while Sentient was not running goes off when it
 starts, and says when it was due (`late: true`). A reminder set in a Telegram, Discord or WhatsApp chat is also sent
 to that chat (the delivery is listed on the Activity timeline as "A timer, reminder or alarm you set"); one set
 anywhere else stays on the desktop, unless `channels.deliver_reminders` is on (#359, off by default; "Reminders and
@@ -3287,6 +3479,10 @@ ones are forgotten after 30 days.
 - `list_reminders(kind = "any")` (risk `read`; `kind` "timer", "reminder", "alarm" or "any") → `{status, reminders}`,
   soonest first.
 - `cancel_reminder(reminder_id)` (risk `write`) → `{status, reminder}`.
+- `stop_alarm()` (risk `write`, #390) → `{status, stopped: [Reminder]}`: stops every ringing alarm. `{error: "No Sentient
+  alarm is ringing right now."}` when none is (the model may then think of a house alarm, #175).
+- `snooze_alarm(minutes = 0)` (risk `write`, #390) → `{status, stopped, reminder}`: the alarm that rang and the new one.
+  `minutes` 0 is `chat.alarm_snooze_minutes`. With several ringing, the newest is snoozed and the others stop.
 
 Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
 
@@ -3296,4 +3492,9 @@ Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
 - `POST /api/reminders` `{kind: "timer"|"reminder"|"alarm", minutes?, at?, message?, label?}` → Reminder (`source: "api"`).
   400 with a plain `detail` when it can't be set.
 - `POST /api/reminders/{id}/cancel` → Reminder. 404 when unknown, 409 when it already went off or was cancelled.
+- `POST /api/reminders/{id}/stop` → Reminder (#390): stop that ringing alarm. 404 when unknown, 409 when it isn't
+  ringing.
+- `POST /api/reminders/{id}/snooze` `{minutes?}` → `{stopped: Reminder, reminder: Reminder}` (#390): snooze that ringing
+  alarm (`minutes` defaults to `chat.alarm_snooze_minutes`; the new alarm has `source: "api"`). 400 for a length
+  outside 1 minute to 3 hours, 404 when unknown, 409 when it isn't ringing.
 - Event `reminder.updated` (section 1). The Activity timeline (section 21) lists them under `reminders`.

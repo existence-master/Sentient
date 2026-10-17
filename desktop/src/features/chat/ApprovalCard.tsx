@@ -17,6 +17,7 @@ import {
   IconTerminal2,
   IconTrash,
   IconLock,
+  IconUserPlus,
   IconWorldWww,
   IconX,
   type Icon
@@ -61,6 +62,7 @@ const RISK_ICONS: Record<RiskLabel, Icon> = {
   'Home security': IconLock,
   'Runs code': IconTerminal2,
   Purchase: IconCreditCard,
+  'Signs up': IconUserPlus,
   Deletes: IconTrash,
   'Posts publicly': IconSend,
   Submits: IconSend,

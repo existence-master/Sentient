@@ -85,6 +85,7 @@ import type {
   MemoryImportResult,
   MemoryQuery,
   MemoryReviewInbox,
+  MemoryScope,
   MemorySummary,
   MemoryTopic,
   MemoryWriteResult,
@@ -121,6 +122,7 @@ import type {
   RoleName,
   Reminder,
   ReminderStatus,
+  SnoozedAlarm,
   RuleProposal,
   SecretStatus,
   SentientConfig,
@@ -453,15 +455,34 @@ export const api = {
 
   sessions: {
     list: (limit = 100) => http.get<Session[]>('/api/sessions', { query: { limit } }),
-    create: (opts: { incognito?: boolean; model?: string | null } = {}) =>
+    create: (opts: { incognito?: boolean; model?: string | null; memory_scope?: string | null } = {}) =>
       http.post<{ session_id: string }>('/api/sessions', undefined, {
-        query: opts.incognito || opts.model ? { ...(opts.incognito ? { incognito: true } : {}), ...(opts.model ? { model: opts.model } : {}) } : undefined
+        query:
+          opts.incognito || opts.model || opts.memory_scope
+            ? {
+                ...(opts.incognito ? { incognito: true } : {}),
+                ...(opts.model ? { model: opts.model } : {}),
+                ...(opts.memory_scope ? { memory_scope: opts.memory_scope } : {})
+              }
+            : undefined
       }),
     rename: (id: string, title: string) => http.patch<OkResponse>(`/api/sessions/${enc(id)}`, { title }),
     /** The chat's own model (#312); null follows the default again. */
     setModel: (id: string, model: string | null) =>
       http.patch<OkResponse & { model: string | null }>(`/api/sessions/${enc(id)}`, { model }),
+    /** The memories this chat uses (#155); null goes back to the default (Personal, or its messaging app's). */
+    setScope: (id: string, memory_scope: string | null) =>
+      http.patch<OkResponse & { memory_scope: string }>(`/api/sessions/${enc(id)}`, { memory_scope }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
+    /**
+     * "I've checked it, trust this chat again" (ADR 0029), up to `upto`, the newest message the window has shown.
+     * `trusted: false` with `untrusted`/`writer` when outside content newer than that keeps the chat marked.
+     */
+    trust: (id: string, upto?: string | null) =>
+      http.post<OkResponse & { was: string; trusted: boolean; untrusted: string; writer: string }>(
+        `/api/sessions/${enc(id)}/trust`,
+        { upto: upto ?? null }
+      ),
     messages: (id: string, limit = 500) =>
       http.get<TranscriptMessage[]>(`/api/sessions/${enc(id)}/messages`, { query: { limit } }),
     search: (q: string) => http.get<MessageSearchHit[]>('/api/sessions/search', { query: { q } })
@@ -677,7 +698,11 @@ export const api = {
     list: (query: MemoryQuery = {}) => http.get<Memory[]>('/api/memories', { query: { ...query } }),
     topics: () => http.get<MemoryTopic[]>('/api/memories/topics'),
     graph: () => http.get<MemoryGraph>('/api/memories/graph'),
-    create: (content: string, source?: string) => http.post<MemoryWriteResult>('/api/memories', { content, source }),
+    create: (content: string, source?: string, scope?: string) => http.post<MemoryWriteResult>('/api/memories', { content, source, scope }),
+    /** §7 memory scopes (#155): Always, Personal, Work and the user's projects, with counts. */
+    scopes: () => http.get<MemoryScope[]>('/api/memories/scopes'),
+    move: (id: number, scope: string) => http.patch<Memory>(`/api/memories/${id}`, { scope }),
+    resetScope: (scope: string) => http.delete<{ deleted: number }>(`/api/memories/scope/${enc(scope)}`),
     update: (id: number, content: string) => http.put<Memory>(`/api/memories/${id}`, { content }),
     delete: (id: number) => http.delete<{ deleted: boolean }>(`/api/memories/${id}`),
     deleteBySource: (source: string) => http.delete<{ deleted: number }>(`/api/memories/source/${enc(source)}`),
@@ -858,6 +883,7 @@ export const api = {
     list: () => http.get<FoldersOverview>('/api/folders'),
     add: (path: string, ignore?: string[]) => http.post<WatchedFolder>('/api/folders', { path, ignore }),
     update: (id: string, ignore: string[]) => http.patch<WatchedFolder>(`/api/folders/${id}`, { ignore }),
+    setScope: (id: string, scope: string) => http.patch<WatchedFolder>(`/api/folders/${id}`, { scope }),
     remove: (id: string) => http.delete<{ removed: boolean }>(`/api/folders/${id}`),
     rescan: (id: string) => http.post<{ queued: boolean }>(`/api/folders/${id}/rescan`, {})
   },
@@ -878,7 +904,11 @@ export const api = {
   // §23 timers and reminders (#150) -------------------------------------------------------------
   reminders: {
     list: (status: ReminderStatus | 'all' = 'scheduled') => http.get<{ reminders: Reminder[] }>('/api/reminders', { query: { status } }),
-    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`)
+    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`),
+    /** Stop a ringing alarm (#390). */
+    stop: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/stop`),
+    /** Snooze a ringing alarm (#390); minutes default to the snooze setting. */
+    snooze: (id: string, minutes?: number) => http.post<SnoozedAlarm>(`/api/reminders/${enc(id)}/snooze`, minutes ? { minutes } : {})
   },
 
   // §16 webhooks --------------------------------------------------------------------------

@@ -19,7 +19,7 @@ TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
-    "browser_profile", "deliver_to", "notepad", "keep_running",
+    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope",
 }
 TASK_BOOL_FIELDS = {"enabled", "keep_running"}
 RUN_JSON_FIELDS = {
@@ -47,6 +47,7 @@ _ADDED_TASK_COLUMNS = {
     "deliver_to": "TEXT",
     "notepad": "TEXT",
     "keep_running": "INTEGER NOT NULL DEFAULT 0",  # never paused while the user is away (#163)
+    "memory_scope": "TEXT",  # the memories its runs use and save to (#155); NULL: personal
 }
 _ADDED_RUN_COLUMNS = {
     "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
@@ -390,6 +391,7 @@ class TaskRepo:
             "keep_running": bool(task.get("keep_running")),
             "model": task.get("model"),
             "browser_profile": task.get("browser_profile"),
+            "memory_scope": task.get("memory_scope") or "personal",
             "deliver_to": from_stored(task.get("deliver_to")),
             "notepad": task.get("notepad") or None,
             "original_context": task.get("original_context") or {"source": "manual_creation"},

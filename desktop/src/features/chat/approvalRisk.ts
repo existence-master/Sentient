@@ -26,6 +26,7 @@ export type RiskLabel =
   | 'Home security'
   | 'Runs code'
   | 'Purchase'
+  | 'Signs up'
   | 'Deletes'
   | 'Posts publicly'
   | 'Submits'
@@ -109,6 +110,8 @@ export function approvalRisk(approval: {
    * data and never steers the wording.
    */
   arguments?: Record<string, unknown>
+  /** The engine's own label for the call (§10 `describe_fn`), e.g. "Signs up" for a free newsletter button (#378). */
+  riskLabel?: string | null
 }): RiskWording {
   // A multi-execute tool's real action lives in its slugs; treat them like tool names.
   const name = [approval.name, ...actionSlugs(approval.arguments)].join(' ')
@@ -118,6 +121,9 @@ export function approvalRisk(approval: {
   if (home && (approval.risk === 'send' || approval.risk === 'exec'))
     return { label: 'Home security', verb: home.verb, tone: 'danger', ...(home.caution ? { caution: home.caution } : {}) }
   if (approval.risk === 'exec') return { label: 'Runs code', verb: 'run code on your computer', tone: 'danger' }
+  // A free subscribe, follow or "notify me" (#378): the engine saw no price or plan on or near the button.
+  if (approval.riskLabel === 'Signs up' && approval.risk !== 'read')
+    return { label: 'Signs up', verb: 'sign you up for something', tone: approval.risk === 'send' ? 'danger' : 'warning' }
   if (approval.risk === 'send') {
     if (isEmailTool(name))
       return { label: 'Sends an email', verb: 'send an email', tone: 'danger' }

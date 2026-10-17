@@ -352,3 +352,42 @@ def test_tools_catalog_keeps_never_tools_for_settings(client):
     client.patch("/api/config", json={"tools": {"approvals": {"rules": {"current_datetime": "never"}}}})
     names = {t["name"] for p in client.get("/api/tools").json() for t in p["tools"]}
     assert "current_datetime" in names
+
+
+async def test_allow_rule_lets_a_free_signup_through_but_a_paid_subscribe_still_asks(config, isolated_home):
+    """#378: "Signs up" follows the normal rules; a subscribe that shows a price stays a purchase and always asks."""
+    from sentient.browser import safety
+    from tests.browser.test_signup_label import PAID_BUTTON
+
+    log: list[str] = []
+
+    def describe(arguments, ctx):
+        label = str(arguments.get("label", ""))
+        return {"risk_label": safety.risk_label_for(label, "click"), "target": label}
+
+    @tool("signup_click", risk=Risk.send, describe_fn=describe)
+    async def signup_click(ctx: ToolContext, label: str) -> dict:
+        """Click a button on the newsletter page."""
+        log.append(label)
+        return {"clicked": label}
+
+    class Signup(ToolPlugin):
+        id = "signup"
+        display_name = "Signup"
+        tools = [signup_click]
+
+    config.tools.approvals.mode = "ask"
+    config.tools.approvals.rules = {"signup": "allow"}
+    llm = FakeProvider(replies=[
+        [tool_call("signup_click", label="Subscribe to newsletter")], "ok1",
+        [tool_call("signup_click", label=PAID_BUTTON)], "ok2",
+    ])
+    s = await _start(config, isolated_home, llm, "signup", Signup())
+    try:
+        sid = await s.store.create_session(channel="cli")
+        assert (await _turn(s, sid, "subscribe me"))[0] == []
+        asked, _ = await _turn(s, sid, "subscribe to pro", decision="deny")
+        assert [a.risk_label for a in asked] == ["Purchase"] and asked[0].choices == ["allow", "deny"]
+        assert log == ["Subscribe to newsletter"]
+    finally:
+        await s.stop()

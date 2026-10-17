@@ -115,7 +115,7 @@ async def test_an_instruction_from_a_clean_chat_waits_for_review(chat):
     updates = [e["data"] for e in events if e["type"] == "memory.updated"]
     pending = next(u for u in updates if u.get("status") == "pending")
     assert pending == {"action": "ADD", "id": held["id"], "content": instruction, "status": "pending",
-                       "reason": "instruction", "session_id": sid}
+                       "reason": "instruction", "session_id": sid, "scope": "personal"}
     # approving it is the user's yes: then it is used
     assert await review.approve(chat, "fact", str(held["id"]))
     assert (await chat.memory.get_fact(held["id"]))["status"] == "active"
@@ -158,7 +158,7 @@ async def test_own_words_are_kept_after_the_chat_read_mail(chat):
     [held] = await chat.memory.pending_facts()
     assert held["content"] == "Maya's flight to Berlin leaves on Friday at 6am" and held["review"]["from"] == "Mail"
     saved = next(e["data"] for e in events if e["type"] == "memory.updated" and e["data"].get("id") == kept["id"])
-    assert saved == {"action": "ADD", "id": kept["id"], "content": kept["content"], "session_id": sid}
+    assert saved == {"action": "ADD", "id": kept["id"], "content": kept["content"], "session_id": sid, "scope": "personal"}
 
 
 async def test_the_model_saving_the_users_own_words_after_reading_mail(chat):

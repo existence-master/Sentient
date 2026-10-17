@@ -37,7 +37,7 @@ RULE_CHOICES = (ALLOW, IF_ASKED, ASK, HAND_OFF, NEVER)
 RULE_TITLES = {
     ALLOW: "Allow", IF_ASKED: "Only if I asked", ASK: "Always ask", HAND_OFF: "Hand it to me", NEVER: "Never",
 }
-# describe_fn label for money leaving the user (browser: buy, pay, order, subscribe, donate, transfer ...)
+# describe_fn label for money leaving the user (browser: buy, pay, order, a priced subscribe, donate, transfer ...)
 PURCHASE_LABEL = "Purchase"
 # describe_fn labels for a call that opens the user's home (#175, ADR 0028): unlocking a door, turning off the alarm,
 # opening a garage door, gate or door, or switching something that sounds like one. Like a purchase, it always asks.
@@ -402,6 +402,22 @@ def attachment_source(name: str) -> str:
     if is_selection(name):
         return SELECTION_SOURCE
     return ""
+
+
+# A message someone other than the user wrote in a paired group chat (ADR 0029) is stored with this role and the
+# sender's name in ``messages.name``. The model reads it as outside content inside a user turn, never as the user's words.
+OTHER_ROLE = "other"
+# A chat's log of something the user did to it (``messages.role``), never sent to the model. ``trusted``: the user
+# cleared the chat's outside-content mark ("I've checked it, trust this chat again", ADR 0029).
+EVENT_ROLE = "event"
+TRUSTED_EVENT = "trusted"
+
+
+def group_source(sender: str) -> str:
+    """Where a group member's message came from, as the approval card and the chat's mark name it:
+    "another group member (Ravi)". The name is the member's own display name, so it is cleaned and kept short."""
+    name = " ".join(re.sub(r"[\[\]()\n\r]", " ", str(sender or "")).split())[:40]
+    return f"another group member ({name})" if name else "another group member"
 
 
 def untrusted_reason(source: str) -> str:

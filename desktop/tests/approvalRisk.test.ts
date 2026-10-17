@@ -303,3 +303,26 @@ test('a trash preview still reads as a move to the trash', () => {
   })
   assert.equal(w.label, 'Moves to the trash')
 })
+
+// #378: a free subscribe the engine labels "Signs up" reads as a sign-up, not a purchase;
+// a priced one keeps the purchase wording.
+const click = (riskLabel: string) => ({
+  risk: 'send' as const,
+  name: 'browser_click',
+  reason: 'browser: Click the element with this ref. Buttons that buy, pay, send, post, delete or confirm need approval.',
+  arguments: { ref: 'e3' },
+  riskLabel
+})
+
+test('a free newsletter button reads as signing up', () => {
+  const w = approvalRisk(click('Signs up'))
+  assert.equal(w.label, 'Signs up')
+  assert.equal(w.verb, 'sign you up for something')
+  assert.equal(w.tone, 'danger')
+})
+
+test('a priced subscribe button still reads as a purchase', () => {
+  const w = approvalRisk(click('Purchase'))
+  assert.equal(w.label, 'Purchase')
+  assert.equal(w.verb, 'make a purchase')
+})

@@ -189,7 +189,9 @@ function PairedRow({ channel, chat }: { channel: Channel; chat: PairedChat }) {
     <div className="flex items-center gap-3 px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium text-fg">{chat.label}</div>
-        <div className="text-xs text-fg-subtle">Paired {relativeTime(chat.paired_at)}</div>
+        <div className="text-xs text-fg-subtle">
+          {chat.is_group ? 'Group: only you can talk to Sentient here. ' : ''}Paired {relativeTime(chat.paired_at)}
+        </div>
       </div>
       <label className="flex cursor-pointer items-center gap-2 text-xs text-fg-muted" title="Task results, plans waiting for approval and suggestions are also sent here">
         Send updates here

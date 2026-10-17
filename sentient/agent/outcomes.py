@@ -221,6 +221,10 @@ def _targets(kind: str | None, arguments: dict) -> list[str]:
                 text = str(v)
                 found += _ADDRESS.findall(text) or [p.strip() for p in re.split(r"[,;]", text) if p.strip()]
         return list(dict.fromkeys(t.lower() for t in found))
+    if kind == "home" and args.get("entity_id"):  # one id, several separated by commas, or a list
+        value = args["entity_id"]
+        ids = value if isinstance(value, list) else re.split(r"[,\s]+", str(value))
+        return list(dict.fromkeys(str(i).strip().lower() for i in ids if str(i).strip()))
     for key in ("name", "path", "filename", "summary", "title", "text"):
         if isinstance(args.get(key), str) and args[key].strip():
             return [args[key].strip().lower()]
@@ -268,7 +272,20 @@ async def check(tool: Any, arguments: dict, res: Any, is_error: bool, ctx: Any, 
         out["how"] = "read_back"
         if not verified.get("ok"):
             out.update(ok=False, detail=_clip(verified.get("detail") or f"{app} doesn't show it"))
+            if isinstance(verified.get("missed"), list):  # which of the things it acted on didn't change
+                out["missed"] = [str(m).lower() for m in verified["missed"]]
+        elif verified.get("detail"):  # fine, with a note ("Garage door is still opening")
+            out["detail"] = _clip(verified["detail"])
     return out
+
+
+def model_note(check: dict | None) -> str:
+    """A line for the model after a call whose result said it worked but whose read-back shows it didn't (#386), so
+    the reply never calls it done; "" otherwise (a failed result is already in the result the model reads)."""
+    if not check or check.get("ok") is not False or check.get("how") != "read_back":
+        return ""
+    detail = str(check.get("detail") or "it did not happen").rstrip(" .")
+    return f"[Sentient checked afterwards and it did not work: {detail}. Tell the user plainly; don't say it worked.]"
 
 
 def claimed(text: str, kind: str | None) -> bool:

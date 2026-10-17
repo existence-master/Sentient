@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { useMemo } from 'react'
 import type { Memory } from '@/lib/types'
 import { cn, formatTime, relativeTime } from '@/lib/utils'
-import { ExpiryBadge, SourceChip, TopicPill } from './bits'
+import { ExpiryBadge, ScopeBadge, SourceChip, TopicPill } from './bits'
 import { useNow } from './hooks'
 import { dayKey, dayLabel, primaryTopic, topicMeta } from './meta'
 
@@ -42,6 +42,7 @@ function MemoryCard({ memory, selected, onSelect, now, compact }: { memory: Memo
         {memory.updated_at && memory.created_at && memory.updated_at > memory.created_at && (
           <span className="shrink-0 text-fg-faint">· edited {relativeTime(memory.updated_at)}</span>
         )}
+        <ScopeBadge scope={memory.scope} className="ml-auto" />
       </div>
     </motion.button>
   )

@@ -123,6 +123,9 @@ class ToolContext:
     # attachments. Set in code by the chat turn only (empty for tasks, subagents and other work); an "Only if I asked"
     # rule (#140) runs a tool without asking only when these words ask for it.
     user_words: list[str] = field(default_factory=list)
+    # the memory scope of this run (#155): a chat's or a task's ("personal", "work", a project). Empty: the chat's own,
+    # or every scope for work not tied to a chat (``memory.scopes.for_context``)
+    memory_scope: str = ""
 
     async def is_incognito(self) -> bool:
         """True when this run belongs to an incognito chat (#154)."""
@@ -276,6 +279,14 @@ async def describe_call(tool: Tool, arguments: dict, ctx: ToolContext, risk: Ris
             if value.get(key):
                 out[key] = str(value[key])[:120]
     return out
+
+
+def approval_reason(wording: dict, risk: Risk) -> str:
+    """The reason line of an approval card (#398): the label a ``describe_fn`` gave when it says more than the risk
+    alone ("Purchase", "Deletes", "Unlocks a door", "Takes a photo"), else empty, so the card writes its own line.
+    Never the tool's description: that is written for the model ("Click the element with this ref ...")."""
+    label = str((wording or {}).get("risk_label") or "").strip()
+    return "" if label == RISK_LABELS.get(Risk(risk), "") else label
 
 
 def _params_model_from_signature(fn: Callable, name: str) -> type[BaseModel]:
