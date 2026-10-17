@@ -140,5 +140,7 @@ test('the copied text leaves Windows clipboard history: the command and its answ
   assert.match(WIN_HELPER, /\$parts\[0\] -eq 'forget'/)
   assert.match(WIN_HELPER, /DeleteItemFromHistory/)
   assert.match(WIN_HELPER, /IsHistoryEnabled/)
+  assert.match(WIN_HELPER, /-ceq \$want/) // exactly that text, case and all
+  assert.match(WIN_HELPER, /FromUnixTimeMilliseconds\(\$since\)/) // nothing copied before the capture began
   assert.doesNotMatch(WIN_HELPER, /`/) // String.raw: a backtick would end the script early
 })

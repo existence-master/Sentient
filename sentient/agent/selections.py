@@ -36,8 +36,9 @@ def _names(raw: str | None) -> set[str]:
 
 async def attached(store: Any, session_id: str | None = None) -> set[str]:
     """The selection files attached to ``session_id``'s messages, or to any message when it is None."""
+    # a broad filter (a name may be stored with a backslash); ``_names`` keeps only real selections
     sql = "SELECT attachments FROM messages WHERE attachments LIKE ?"
-    params: tuple[Any, ...] = (f"%{SELECTION_FOLDER}/%",)
+    params: tuple[Any, ...] = (f"%{SELECTION_FOLDER}%",)
     if session_id is not None:
         sql += " AND session_id = ?"
         params += (session_id,)

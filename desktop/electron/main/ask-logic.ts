@@ -235,7 +235,7 @@ function Remove-FromHistory([long]$since, [string]$encoded) {
   $want = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)).Replace($crlf, $nl)
   $clip = [Windows.ApplicationModel.DataTransfer.Clipboard]
   if (-not $clip::IsHistoryEnabled()) { return 'off' }
-  $from = [DateTimeOffset]::FromUnixTimeMilliseconds($since - 1000)
+  $from = [DateTimeOffset]::FromUnixTimeMilliseconds($since)
   $text = [Windows.ApplicationModel.DataTransfer.StandardDataFormats]::Text
   $n = 0
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -247,7 +247,7 @@ function Remove-FromHistory([long]$since, [string]$encoded) {
       try {
         if ($item.Timestamp -lt $from -or -not $item.Content.Contains($text)) { continue }
         $got = Wait-WinRT ($item.Content.GetTextAsync()) ([string])
-        if ($got -and $got.Replace($crlf, $nl) -eq $want -and $clip::DeleteItemFromHistory($item)) { $n++ }
+        if ($got -and $got.Replace($crlf, $nl) -ceq $want -and $clip::DeleteItemFromHistory($item)) { $n++ }
       } catch {}
     }
     if ($n -gt 0) { break }

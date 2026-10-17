@@ -219,3 +219,16 @@ async def test_selected_text_no_chat_has_is_removed_at_start(config, isolated_ho
         assert used.exists()  # a chat still has it
     finally:
         await s.stop()
+
+
+async def test_a_selection_stored_with_a_backslash_is_found(config, isolated_home):
+    from sentient.agent import selections
+
+    s = SentientApp(config, llm=FakeProvider(), db_path=isolated_home / "bs.db", enable_background=False)
+    await s.store.open()
+    try:
+        sid = await s.store.create_session(title="Ask")
+        await s.store.add_message(sid, "user", "Explain.", attachments=["selections\\Notes.txt", "uploads/a.txt"])
+        assert await selections.attached(s.store, sid) == {"selections/Notes.txt"}
+    finally:
+        await s.store.close()
