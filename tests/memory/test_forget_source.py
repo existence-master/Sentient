@@ -155,6 +155,18 @@ async def test_merged_copies_count_as_sources(app):
     assert (await mem.get_fact(keep["id"]))["source"] == "conversation"
 
 
+async def test_merging_a_fact_with_merged_copies_keeps_their_sources(app):
+    mem, store = app.memory, app.store
+    tg = await store.create_session(channel="telegram")
+    first = await mem.remember("Maya lives in Pune", use_llm=False, session_id=tg)
+    copy = await mem.remember("माया पुणे में रहती है", use_llm=False)
+    assert await mem.merge_translation(first["id"], copy["id"])
+    other = await mem.remember("Maya wohnt in Pune", use_llm=False, session_id=await store.create_session(
+        channel="glasses", node_id="node-1"))
+    assert await mem.merge_translation(other["id"], first["id"])  # the copy now sits under a merged row
+    assert set(await mem.sources_of(other["id"])) == {"device:node-1", "channel:telegram", "conversation"}
+
+
 async def test_forget_a_messaging_app(app, tmp_path):
     mem, store = app.memory, app.store
     root = await _folder(app, tmp_path)

@@ -1833,6 +1833,8 @@ class FactMemory:
         if drop is None or keep is None or keep_id == drop_id:
             return False
         indexed = self.vec.ready or await self.vec.exists()
+        # its sources (and those of copies merged into it before) back the kept one now (#153)
+        await self.link_sources(keep_id, await self.sources_of(drop_id))
         db = self.store.db
         try:  # the row and its vector change together (one commit)
             await db.execute(
