@@ -1105,14 +1105,11 @@ class FactMemory:
         if source == origins.CONVERSATION and session_id:
             # a chat in a messaging app or on a device is that app's (#153), and also the apps and folders it read
             try:
-                source, others = await origins.of_session(self.store, session_id)
+                first, read = await origins.of_session(self.store, session_id)
+                held = review is not None and review.get("reason") != reviews.INSTRUCTION
+                source, *others = origins.sources_for(fact, first, read, held=held, user_name=user)
             except Exception as exc:
                 log.debug("sources of chat %s unknown: %s", session_id, exc)
-            if review is not None and review.get("reason") != reviews.INSTRUCTION and others:
-                # held because the chat read outside content: it came from what was read, not from the user
-                source, others = others[0], others[1:]
-            else:  # the user's own words, or the user's own notes it read
-                others = [o for o in others if o.startswith("folder:")]
         if review is not None:
             result = await self._hold(fact, source=source, use_llm=use_llm, review=review, scope=scope)
         else:

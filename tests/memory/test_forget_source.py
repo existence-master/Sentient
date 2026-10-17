@@ -38,11 +38,14 @@ async def _folder(app, tmp_path: Path, fid: str = "fold1", name: str = "Notes") 
     return root
 
 
-async def _read_note(app, sid: str, path: Path) -> None:
+NOTE = "My dentist is Dr. Mehta at Smile Care in Pune. Next checkup in March."
+
+
+async def _read_note(app, sid: str, path: Path, snippet: str = NOTE) -> None:
     """A reply in chat ``sid`` that used a note from the folder (its answer sources, #174)."""
     await app.store.add_message(sid, "assistant", "From your notes: ...", sources=[
-        {"kind": "file", "title": path.name, "path": str(path), "folder": "Notes", "app": "folders",
-         "tool": "folder_search"},
+        {"kind": "file", "title": path.stem, "path": str(path), "folder": "Notes", "app": "folders",
+         "tool": "folder_search", "snippet": snippet},
     ])
 
 
@@ -70,15 +73,19 @@ async def test_a_chat_links_the_apps_and_folders_it_read(app, tmp_path):
     tg = await store.create_session(channel="telegram")
     await _read_note(app, tg, root / "health.md")
     await store.add_message(tg, "assistant", "You have mail", sources=[
-        {"kind": "email", "title": "Hi", "from": "a@example.com", "app": "gmail", "tool": "gmail_search"},
+        {"kind": "email", "title": "Flight update", "from": "a@example.com", "app": "gmail", "tool": "gmail_search",
+         "snippet": "Your flight to Lisbon lands at 9:40"},
         {"kind": "web", "title": "x", "url": "https://example.com", "app": "web", "tool": "web_fetch"},
     ])
-    fact = await mem.remember("Maya is allergic to peanuts", use_llm=False, session_id=tg)
-    assert await mem.sources_of(fact["id"]) == ["channel:telegram", "folder:fold1"]  # Maya said it herself
+    told = await mem.remember("Maya is allergic to peanuts", use_llm=False, session_id=tg)
+    assert await mem.sources_of(told["id"]) == ["channel:telegram"]  # the notes it read don't say it
+    noted = await mem.remember("Maya's dentist is Dr. Mehta in Pune", use_llm=False, session_id=tg)
+    assert await mem.sources_of(noted["id"]) == ["channel:telegram", "folder:fold1"]  # her notes say it too
     held = await mem.remember(
-        "Maya's flight lands at 9", use_llm=False, session_id=tg, review=reviews.note("Gmail", session_id=tg)
+        "Maya's flight to Lisbon lands at 9:40", use_llm=False, session_id=tg,
+        review=reviews.note("Gmail", session_id=tg),
     )
-    assert await mem.sources_of(held["id"]) == ["folder:fold1", "app:gmail"]  # from what the chat read
+    assert await mem.sources_of(held["id"]) == ["app:gmail"]  # from what the chat read, not from Maya
 
 
 async def test_held_facts_belong_to_what_the_chat_read(app):
@@ -139,8 +146,8 @@ async def test_forget_a_messaging_app(app, tmp_path):
     root = await _folder(app, tmp_path)
     tg = await store.create_session(channel="telegram")
     await store.add_message(tg, "user", "I'm allergic to peanuts and my dentist is Dr. Mehta")
-    only = await mem.remember("Maya is allergic to peanuts", use_llm=False, session_id=tg)
     await _read_note(app, tg, root / "health.md")
+    only = await mem.remember("Maya is allergic to peanuts", use_llm=False, session_id=tg)
     shared = await mem.remember("Maya's dentist is Dr. Mehta in Pune", use_llm=False, session_id=tg)
     summary = await mem.episodic.add_summary(tg, "Maya talked about her allergy.", await store.recent_messages(tg, 100))
     desk = await store.create_session(channel="desktop")
@@ -268,7 +275,7 @@ def test_removing_a_device_or_folder_can_forget(client, tmp_path):
         fact = await mem.remember("Maya parks on level 3 at work", use_llm=False, session_id=dev)
         root = await _folder(app, tmp_path)
         desk = await store.create_session(channel="desktop")
-        await _read_note(app, desk, root / "trips.md")
+        await _read_note(app, desk, root / "trips.md", "Next trip: Goa in December, booked with Rohan")
         held = await mem.remember(
             "Maya's next trip is to Goa", use_llm=False, session_id=desk, review=reviews.note("Notes", session_id=desk)
         )
@@ -283,6 +290,13 @@ def test_removing_a_device_or_folder_can_forget(client, tmp_path):
     out = client.delete("/api/folders/fold1", params={"forget": "true"}).json()
     assert out["removed"] and out["forgotten"]["memories"] == 1
     assert client.portal.call(mem.get_fact, held["id"]) is None
+
+
+def test_an_excerpt_backs_a_fact_by_its_words():
+    assert origins.backs("Maya's dentist is Dr. Mehta", NOTE, "Maya")
+    assert origins.backs("Maya's checkup is on 14 March", "Checkup: 14 March", "Maya")
+    assert not origins.backs("Maya is allergic to peanuts", NOTE, "Maya")
+    assert not origins.backs("Maya likes Pune", "Maya Rao lives in Pune", "Maya Rao")
 
 
 def test_source_keys():
