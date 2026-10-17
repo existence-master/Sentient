@@ -5,12 +5,6 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
-- **Browser click claims now stay grounded across a chat.** Sentient does not correct a user or another person's
-  click, or a sentence that already says no click happened. When it does need to correct its own unsupported browser
-  click claim, it says plainly that nothing changed on the page; it also remembers the latest browser-click outcome
-  from the chat, so a later claim after you declined a click says that instead of saying no click was attempted.
-
 ### Added
 - **Home Assistant devices are checked after Sentient changes them.** A moment after it turns on a light, locks a
   door, opens the blinds, arms the alarm or sets the thermostat, Sentient asks Home Assistant for the device's state
