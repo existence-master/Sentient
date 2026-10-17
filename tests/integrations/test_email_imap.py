@@ -285,7 +285,7 @@ async def test_idle_loop_baseline_push_privacy_and_reconnect(app, keychain, monk
     async with app.bus.subscribe() as q:
         mgr.feeds.start_watch("email_imap")
         try:
-            assert await wait_for_cursor(mgr, "email_imap") == {"INBOX": {"uidvalidity": "7", "last_uid": 1}}
+            assert await wait_for_cursor(mgr, "email_imap") == {"INBOX": {"uidvalidity": "7", "last_uid": 1, "searched": True}}
             assert mgr.feed_active("email_imap") is True
             box.messages[2] = raw_email("Jane Doe <jane@y.com>", "Lunch?", "Want lunch at 1?", "m2")
             box.messages[3] = raw_email("Boss <boss@x.com>", "Review", "About your salary", "m3")
@@ -640,7 +640,7 @@ async def test_watch_checks_every_configured_folder_with_its_own_cursor(app, mon
                 if "Work" in cursor:
                     break
                 await asyncio.sleep(0.01)
-            assert cursor == {"INBOX": {"uidvalidity": "7", "last_uid": 1}, "Work": {"uidvalidity": "9", "last_uid": 5}}
+            assert cursor == {"INBOX": {"uidvalidity": "7", "last_uid": 1, "searched": True}, "Work": {"uidvalidity": "9", "last_uid": 5, "searched": True}}
             assert box.selected[:2] == ["INBOX", "Work"]  # the baseline pass visits both, primary first
 
             box.folders["Work"][6] = raw_email("e@f.com", "Second", "z", "m6")
@@ -654,8 +654,8 @@ async def test_watch_checks_every_configured_folder_with_its_own_cursor(app, mon
                 if cursor.get("Work", {}).get("last_uid") == 6:
                     break
                 await asyncio.sleep(0.01)
-            assert cursor["Work"] == {"uidvalidity": "9", "last_uid": 6}
-            assert cursor["INBOX"] == {"uidvalidity": "7", "last_uid": 1}  # untouched by the other folder's new mail
+            assert cursor["Work"] == {"uidvalidity": "9", "last_uid": 6, "searched": True}
+            assert cursor["INBOX"] == {"uidvalidity": "7", "last_uid": 1, "searched": True}  # untouched by the other folder's new mail
         finally:
             await mgr.feeds.stop_watch("email_imap")
 
@@ -671,7 +671,7 @@ async def test_check_new_migrates_the_pre_folders_flat_cursor_shape(app, monkeyp
 
     assert n == 1  # continues from the old last_uid=2: uid 3 is new, not re-baselined
     cursor = json.loads((await mgr.feeds.state("email_imap"))["cursor"])
-    assert cursor == {"INBOX": {"uidvalidity": "7", "last_uid": 3}}
+    assert cursor == {"INBOX": {"uidvalidity": "7", "last_uid": 3, "searched": True}}
 
 
 async def test_a_starting_point_of_zero_starts_again_from_now(app, monkeypatch):
@@ -685,7 +685,7 @@ async def test_a_starting_point_of_zero_starts_again_from_now(app, monkeypatch):
 
     assert await email_imap.PLUGIN.check_new(mgr, FakeSession(box), "INBOX") == 0
     state = await mgr.feeds.state("email_imap")
-    assert json.loads(state["cursor"]) == {"INBOX": {"uidvalidity": "7", "last_uid": 2}}
+    assert json.loads(state["cursor"]) == {"INBOX": {"uidvalidity": "7", "last_uid": 2, "searched": True}}
 
 
 async def test_reply_and_forward_take_recipients_from_headers(app, ctx, monkeypatch, smtp):
@@ -720,3 +720,15 @@ async def test_reply_and_forward_take_recipients_from_headers(app, ctx, monkeypa
     text = msg.get_body(preferencelist=("plain",)).get_content()
     assert text.startswith("FYI") and "From: Arjun <arjun@example.com>" in text and "Slides attached." in text
     assert [a.get_filename() for a in msg.iter_attachments()] == ["deck.pdf"]
+
+
+async def test_an_empty_folder_still_sends_its_first_email(app, monkeypatch):
+    """A folder watched from empty (last_uid 0, already searched) sends its first email as new (review of #430)."""
+    mgr = app.integrations
+    box = FakeMailbox({1: raw_email("a@b.com", "First", "x", "m1")})
+    install_fake_imap(monkeypatch, box)
+    await connect_imap(app)
+    await mgr.feeds.record_success("email_imap", cursor=json.dumps(
+        {"INBOX": {"uidvalidity": "7", "last_uid": 0, "searched": True}}))
+
+    assert await email_imap.PLUGIN.check_new(mgr, FakeSession(box), "INBOX") == 1

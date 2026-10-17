@@ -245,8 +245,14 @@ class Evidence:
         needle = text.lower()
         return next((src for src, body in self.outside if needle in body.lower()), "")
 
-    def add_outside(self, source: str, text: str) -> None:
+    def add_outside(self, source: str, text: str, *, structured: bool = True) -> None:
+        """Note outside content. ``structured``: a tool's result, whose JSON keys the tool wrote, so an email item's
+        "from" is its sender. Text inside a user turn (a group member's message) is never read for senders: anyone
+        can type a "from" field there."""
         self.outside.append((source, text))
+        if not structured:
+            self.places.append(Place(source, "", "text", text))
+            return
         senders, places = read_places(source, text)
         self.senders |= senders
         self.places += places
@@ -308,7 +314,7 @@ def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", t
             request.append(own_words(text))
             # outside content inside a user turn (selected text, a group member's message, ADR 0029) is outside too
             for b in _MARKED_BLOCK.finditer(text):
-                ev.add_outside(b["source"], b["body"])
+                ev.add_outside(b["source"], b["body"], structured=False)
         elif role == "system":
             (request if task else trusted).append(own_words(text_of(m.get("content"))))
         elif role == "tool":
@@ -500,12 +506,26 @@ def _recipient_warning(item: str, ev: Evidence, place: Place | None = None) -> s
     return text
 
 
+_ASKED_ALL = re.compile(r"\b(?:reply|respond|answer|write back)(?:[- ]to)?[- ]all\b|\beveryone\b|\breply[- ]all\b",
+                        re.IGNORECASE)
+DESTINATIONS_UNREAD = "Sentient couldn't read who this reply goes to, so it checks with you first."
+
+
 def destination_check(destinations: Iterable[dict], ev: Evidence, known: Iterable[str] = ()) -> str:
-    """The warning for a reply whose headers send it somewhere other than the person who wrote (#144): a Reply-To
-    that names another address than the From, on another domain, that the user never gave. Else ""."""
+    """The warning for a reply whose headers send it somewhere the user didn't choose (#144), else "":
+
+    - ``reply_to``: a Reply-To that names another address than the From, on another domain, that the user never gave;
+    - ``thread``: the other people on a reply-all, checked like any recipient unless the user asked to reply to all.
+    ``sender`` and ``yours`` (the recipients of the user's own message) always pass."""
     known_set = {k.lower() for k in known}
+    everyone = bool(_ASKED_ALL.search(ev.request))
     for d in destinations:
         address = str(d.get("address") or "").lower()
+        if d.get("why") == "thread" and address and not everyone:
+            warning = _recipient_check(address, ev, known_set)
+            if warning:
+                return warning
+            continue
         if d.get("why") != "reply_to" or not address or ev.knows(address) or address in known_set:
             continue
         sender = next(iter(_addresses_in(str(d.get("sender") or ""))), "")
@@ -694,6 +714,7 @@ class Look:
         self.messages = messages
         self.attended, self.model_name = attended, model
         self._evidence: Evidence | None = None
+        self._unread = False  # the tool's destinations_fn failed: who it goes to couldn't be read
 
     @property
     def arguments(self) -> dict:
@@ -723,6 +744,7 @@ class Look:
             raise
         except Exception as exc:
             log.info("second look: couldn't tell where %s goes (%s: %s)", self.tool.name, type(exc).__name__, exc)
+            self._unread = True  # fails closed: the call itself may read the headers fine a moment later
             return []
         found = [d for d in value or [] if isinstance(d, dict) and str(d.get("address") or "").strip()]
         if hasattr(self.plan, "destinations"):
@@ -738,7 +760,7 @@ class Look:
         unknown = [i for i in items if not ev.knows(i)]
         known = await known_addresses(self.agent.store, unknown) if unknown else set()
         warning = deterministic(self.arguments, ev, untrusted=getattr(self.ctx, "untrusted", "") or "", known=known)
-        warning = warning or destination_check(dests, ev, known)
+        warning = warning or destination_check(dests, ev, known) or (DESTINATIONS_UNREAD if self._unread else "")
         if warning:
             log.info("second look: %s flagged (rules): %s", self.tool.name, warning)
         return warning

@@ -264,17 +264,25 @@ class SubagentManager(Service):
         )
         self._publish(await self.get(sub_id, events=False))
         status, error, values = "completed", None, None
+        # its own task, so ``cancel(sub_id)`` (POST /api/subagents/{id}/cancel) stops the model call too
+        task = asyncio.create_task(reader.read(self.app.llm, document, fields, source=source, attended=attended),
+                                   name=f"reader:{sub_id}")
+        self._tasks[sub_id] = task
         try:
-            values = await reader.read(self.app.llm, document, fields, source=source, attended=attended)
+            values = await task
             events.append({"timestamp": now_iso(), "message": {
                 "type": "final_answer", "content": json.dumps(values, ensure_ascii=False)}})
         except asyncio.CancelledError:
-            status = "cancelled"
-            raise
+            status, error = "cancelled", "The reader was stopped."
+            if not task.cancelled() or (asyncio.current_task() and asyncio.current_task().cancelling()):
+                task.cancel()
+                raise  # the parent was stopped: pass it on
+            events.append({"timestamp": now_iso(), "message": {"type": "info", "content": "Cancelled."}})
         except reader.ReaderError as exc:
             status, error = "error", str(exc)
             events.append({"timestamp": now_iso(), "message": {"type": "error", "content": error}})
         finally:
+            self._tasks.pop(sub_id, None)
             await asyncio.shield(self._update(
                 sub_id, status=status, error=error, tool_calls=0, finished_at=now_iso(),
                 summary=json.dumps(values, ensure_ascii=False) if values is not None else None,
@@ -282,7 +290,8 @@ class SubagentManager(Service):
             ))
             self._publish(await self.get(sub_id, events=False))
         if values is None:
-            return {"subagent_id": sub_id, "status": "error", "error": error or "The reader failed."}
+            return {"subagent_id": sub_id, "status": status if status == "cancelled" else "error",
+                    "error": error or "The reader failed."}
         return {"subagent_id": sub_id, "status": "completed", "fields": values}
 
     async def delegate_many(

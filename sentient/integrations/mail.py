@@ -59,15 +59,15 @@ def reply_targets(headers: Mapping[str, str], *, me: set[str], reply_all: bool) 
 
     Returns ``{to, cc, destinations}``: ``to``/``cc`` as header text, ``destinations`` as
     ``[{address, why, sender}]`` for the second look and the approval card. ``why`` is ``sender`` (the From address),
-    ``reply_to`` (an address the message's Reply-To set instead) or ``thread`` (someone else in the conversation: the
-    recipients of the user's own message, or the others with ``reply_all``)."""
+    ``reply_to`` (an address the message's Reply-To set instead), ``yours`` (the recipients of the user's own message,
+    for a nudge) or ``thread`` (the other people on the conversation, with ``reply_all``)."""
     sender_header = headers.get("from") or ""
     sender = next((a.lower() for _, a in _addresses(sender_header)), "")
     from_me = bool(sender) and sender in me
     to = headers.get("reply-to") or sender_header
     why_to = "reply_to" if headers.get("reply-to") else "sender"
     if from_me:  # replying to your own message (a nudge) goes to its recipients, like Gmail does
-        to, why_to = headers.get("to") or to, "thread"
+        to, why_to = headers.get("to") or to, "yours"
     to_addresses = {a.lower() for _, a in _addresses(to)}
     cc = None
     if reply_all:

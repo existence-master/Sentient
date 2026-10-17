@@ -1393,12 +1393,14 @@ can't act.
   `email_imap_send` (send), `email_imap_reply {message_id, body, reply_all=false, mailbox="INBOX"}` (send; who it goes
   to comes from the email's headers, below) and `email_imap_forward {message_id, to, note="", mailbox="INBOX"}` (send;
   the original's headers and text quoted under the note, attachments kept). Privacy filters like Gmail. Trigger
-  `new_email`.
+  `new_email`. The watcher's cursor per folder is `{uidvalidity, last_uid, searched: true}`; one at `last_uid` 0
+  without `searched` (taken while searches came back empty, before #144) starts again from now, once.
 - **Replies and forwards (#144, ADR 0031).** `gmail_reply`, `email_imap_reply` and `gmail_forward
   {message_id, to, note=""}` work alike. A reply never takes a recipient argument: `integrations.mail.reply_targets`
   reads the original's headers (Reply-To, else From; the To of the user's own message, a nudge; the other To and Cc
   addresses with `reply_all`). The reply tools declare `Tool.destinations_fn(arguments, ctx) ->
-  [{address, why: "sender"|"reply_to"|"thread", sender}]`, which the second look calls before the reply runs
+  [{address, why: "sender"|"reply_to"|"yours"|"thread", sender}]` (`yours`: the recipients of the user's own message;
+  `thread`: the others on a reply-all), which the second look calls before the reply runs
   (section 10). A forward refuses an email hidden by privacy filters, like a read.
 - `webhook` ("Webhooks", builtin, no tools): its `triggers` are computed from the user's hooks,
   `[{event: <hook id>, label: "When \"<name>\" is called"}]`; `integration.updated` is sent when hooks are created or deleted.
@@ -2208,13 +2210,15 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     name match never vouches for it. Its warning names the place: `"... That address came from the text of an email
     from Arjun Mehta <arjun@example.com> (Gmail), not from you."` (`the Cc line of an email from ...` for a header
     line). A tool message the engine wrapped as outside content, or whose result starts with `outside_content`,
-    counts as outside content too.
+    counts as outside content too. Outside content inside a user turn (a group member's message) is never read for
+    senders: it is all text.
   - **Reply destinations.** For a tool with `destinations_fn` (the reply tools), its destinations are checked like
     recipients and copied to the plan, so `approval_request.preview`, `undo_window.preview` and a task's
     `pending_question.preview` get a `To` field. A `reply_to` destination on another domain than the sender, that the
     user never gave, is flagged: `"This reply goes to x@evil.example, the address that email asked replies to go to,
-    not to the person who sent it (arjun@example.com)."` A `destinations_fn` that fails (20 seconds at most) adds
-    nothing; the call itself then reads the same headers.
+    not to the person who sent it (arjun@example.com)."` A `thread` destination (reply-all) is checked like a recipient
+    unless the user's words ask to reply to all ("reply all", "everyone"). A `destinations_fn` that fails (20 seconds
+    at most) flags the call: `"Sentient couldn't read who this reply goes to, so it checks with you first."`
   - **Model** (`second_look.model_check`, only for effective risk `send`/`exec` of tools that are not `internal`,
     `tools.approvals.second_look_model`, default on): when nothing was flagged yet and the call would otherwise run
     without asking, or the run read outside content. One tool-free `fast`-role prompt sees only the user's own words
@@ -2324,7 +2328,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - **Subagent** `{subagent_id, session_id, parent_call_id, goal, kind: "worker"|"reader", status: "running"|"completed"|"error"|"cancelled", background, summary, error, tool_calls, started_at, finished_at, events: [ProgressUpdate]}`.
   A reader (`kind: "reader"`) has `tool_calls: 0`, `goal` `"Read <source> for: <field names>"`, `summary` the JSON of
   the fields returned, and two events: `info` (the fields asked for, with their kinds) and `final_answer` (the fields
-  returned), or `error`.
+  returned), or `error`. `POST /api/subagents/{id}/cancel` stops a running reader (`status: "cancelled"`).
 - `GET /api/sessions/{id}/subagents` → `[Subagent]` newest first; `GET /api/subagents/{id}` → `Subagent`;
   `POST /api/subagents/{id}/cancel` → `Subagent`. Domain event `subagent.updated` → `Subagent` (without `events`).
 - While a foreground subagent runs, the parent emits `tool_progress` with `kind: "subagent"` and `data: {subagent_id, message}`.

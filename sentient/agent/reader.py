@@ -23,6 +23,7 @@ second look treats an address in it like one read in the email itself.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import re
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ _EMAIL = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[
 _URL = re.compile(r"^https?://[^\s<>\"']+$", re.IGNORECASE)
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$")
 _ID = re.compile(r"^(?=.*\d)[A-Za-z0-9._:@<>+=/\-]{1,120}$")
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"'\\]+", re.IGNORECASE)
 _NUMBER = re.compile(r"^-?\d[\d,]*(?:\.\d+)?$")
 _ALIASES = {"bool": "yes_no", "boolean": "yes_no", "yes/no": "yes_no", "yesno": "yes_no", "string": "text",
             "str": "text", "address": "email", "email_address": "email", "link": "url", "int": "number",
@@ -154,12 +156,21 @@ def _one(f: Field, value: Any, document: str) -> Any:
         text = text.strip("<>").lower()
         return text if _EMAIL.match(text) and mentions(document, text) else None
     if f.kind == "url":
-        return text if _URL.match(text) and text.lower() in document.lower() else None
+        written = {u.rstrip(".,;:!?)]}").lower() for u in _URL_IN_TEXT.findall(document)}
+        return text if _URL.match(text) and text.rstrip(".,;:!?").lower() in written else None
     if f.kind == "date":
-        return text if _DATE.match(text) else None
+        return text if _DATE.match(text) and _real_date(text) else None
     if f.kind == "id":
         return text if _ID.match(text) and text in document else None
     return text[:MAX_TEXT]
+
+
+def _real_date(text: str) -> bool:
+    try:
+        dt.datetime.fromisoformat(text.replace(" ", "T"))
+    except ValueError:
+        return False
+    return True
 
 
 def validate(fields: list[Field], data: Any, document: str) -> dict[str, Any]:

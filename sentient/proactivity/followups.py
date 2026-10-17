@@ -59,6 +59,7 @@ _PLACEHOLDER_RE = re.compile(
 _SUBJECT_PREFIX_RE =re.compile(r"^\s*((re|fwd?|aw|wg|sv)\s*:\s*)+", re.IGNORECASE)
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
 _LINK_RE = re.compile(r"\bhttps?://[^\s<>\"')\]]+|\bwww\.[^\s<>\"')\]]+", re.IGNORECASE)
+_BARE_LINK_RE = re.compile(r"(?<![@\w.\-/])[a-z0-9\-]+(?:\.[a-z0-9\-]+)+/[^\s<>\"')\]]*", re.IGNORECASE)
 SOURCE_NAMES = {"gmail": "Gmail", "email_imap": "Email (IMAP)"}
 
 
@@ -233,10 +234,33 @@ def copied_from_them(c: Candidate, draft: str) -> str:
         text = f"{m.get('subject') or ''}\n{m.get('body') or m.get('snippet') or ''}"
         (ours if m.get("from_me") else theirs).append(text)
         ours.append(" ".join(str(m.get(k) or "") for k in ("from", "to", "cc", "sender_email")))
-    their_text, our_text = "\n".join(theirs).lower(), "\n".join(ours).lower()
-    found = [a.lower() for a in _EMAIL_RE.findall(draft or "")]
-    found += [u.rstrip(".,;:!?").lower() for u in _LINK_RE.findall(draft or "")]
-    return next((x for x in found if x in their_text and x not in our_text), "")
+    their_text, our_text = "\n".join(theirs), "\n".join(ours)
+    for address in _EMAIL_RE.findall(draft or ""):
+        if _has_address(their_text, address) and not _has_address(our_text, address):
+            return address.lower()
+    # a link counts in any written form: "https://www.x.example/a", "www.x.example/a" and "x.example/a" are one link
+    their_links, our_links = _link_forms(their_text), _link_forms(our_text)
+    for link in _LINK_RE.findall(draft or "") + _BARE_LINK_RE.findall(draft or ""):
+        key = _link_key(link)
+        if key and key in their_links and key not in our_links:
+            return link.rstrip(".,;:!?").lower()
+    return ""
+
+
+def _has_address(text: str, address: str) -> bool:
+    """``address`` written as a whole in ``text`` ("a@b.example" is not in "aa@b.example")."""
+    return any(a.lower() == address.lower() for a in _EMAIL_RE.findall(text or ""))
+
+
+def _link_key(link: str) -> str:
+    key = re.sub(r"^(?:https?://)?(?:www\.)?", "", link.strip().lower())
+    return key.rstrip(".,;:!?").rstrip("/")
+
+
+def _link_forms(text: str) -> set[str]:
+    """Every link in ``text`` (with a scheme, with www., or a bare host with a path), as one comparable form."""
+    found = _LINK_RE.findall(text or "") + _BARE_LINK_RE.findall(text or "")
+    return {k for k in (_link_key(u) for u in found) if k}
 
 
 @dataclass

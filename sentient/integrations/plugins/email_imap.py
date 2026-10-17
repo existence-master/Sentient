@@ -884,12 +884,12 @@ class EmailImapPlugin(IntegrationPlugin):
             cursors = {"INBOX": cursors}  # pre-#92 shape: one mailbox, always INBOX; keep its progress
         cursor = cursors.get(mailbox) or {}
         validity = session.uidvalidity
-        # last_uid 0: a starting point taken while searches came back empty (fixed in #144), or an empty mailbox. Start
-        # again from now, so a mailbox that was never really watched doesn't send all its mail as new at once.
-        stale = bool(cursor) and str(cursor.get("last_uid")) == "0"
+        # last_uid 0 without the "searched" mark: a starting point taken while searches came back empty (fixed in #144).
+        # Start again from now, once, so a mailbox that was never really watched doesn't send all its mail as new.
+        stale = bool(cursor) and str(cursor.get("last_uid")) == "0" and not cursor.get("searched")
         if not cursor or cursor.get("uidvalidity") != validity or "last_uid" not in cursor or stale:
             last = max(await session.uid_search("UID", "*"), default=0)
-            cursors[mailbox] = {"uidvalidity": validity, "last_uid": last}
+            cursors[mailbox] = {"uidvalidity": validity, "last_uid": last, "searched": True}
             await mgr.feeds.record_success(PID, cursor=json.dumps(cursors),
                                            note=f"Watching {mailbox} for new email from now." if not cursor or stale
                                            else f"{mailbox} was reset on the server, so watching restarted from now.")
@@ -906,7 +906,7 @@ class EmailImapPlugin(IntegrationPlugin):
                 items.append(item)
             kept = await mgr.emit_items(PID, "feed", items, event="new_email")
             last = max(new)
-        cursors[mailbox] = {"uidvalidity": validity, "last_uid": last}
+        cursors[mailbox] = {"uidvalidity": validity, "last_uid": last, "searched": True}
         await mgr.feeds.record_success(PID, cursor=json.dumps(cursors), emitted=len(kept))
         return len(kept)
 

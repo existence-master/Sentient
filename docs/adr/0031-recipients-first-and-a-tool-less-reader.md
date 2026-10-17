@@ -29,6 +29,8 @@ Sentient's own results) and the thread's headers, never from message text:
   the second look checks them and the approval card and undo window show "To". A Reply-To that sends the reply to
   another address than the sender, on another domain, that the user never gave, is flagged ("This reply goes to
   x@evil.example, the address that email asked replies to go to, not to the person who sent it (arjun@example.com).").
+  The others on a reply-all are checked like any recipient unless the user asked to reply to all, and headers that
+  can't be read make the reply ask.
 - Forwards (`gmail_forward`, `email_imap_forward`) take `to` like any send; the second look checks it.
 - Follow-ups already fixed their recipient from the headers before the model saw the thread. The thread now reaches
   the model marked as outside content, and a draft that copies an address or a link only the other person's messages
@@ -37,7 +39,8 @@ Sentient's own results) and the thread's headers, never from message text:
   sender and its `to`, `cc`, `reply_to` are header lines. An address that outside content names anywhere other than
   as a message's sender (its text, its To or Cc line, a web page) passes only when the user's words or trusted records
   have it. A name match no longer vouches for it. The card says where it was: "That address came from the text of an
-  email from Arjun Mehta <arjun@example.com> (Gmail), not from you."
+  email from Arjun Mehta <arjun@example.com> (Gmail), not from you." Only a tool's own JSON names a sender: text inside
+  a user turn (a group member's message) is all text.
 
 **The reader.** `read_with_reader(tool, arguments, fields)` runs one look-up tool in code and hands its result to a
 reader: one model call with no tools at all (on the `fast` role, then the primary; Claude Code only inside a chat
