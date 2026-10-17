@@ -65,6 +65,8 @@ STORAGE_FLAG = "--enable-aggressive-domstorage-flushing"
 STORAGE_FLUSH_S = 1.5
 PAGE_CLOSE_TIMEOUT_S = 5.0
 DOWNLOAD_APPEAR_GRACE_S = 0.3
+# #307: how long a blank tab a click opened gets to turn into a page, a download or nothing
+DOWNLOAD_TAB_WAIT_S = 3.0
 DOWNLOAD_MAX_DURATION_S = 120.0
 DOWNLOAD_CANCEL_TIMEOUT_S = 5.0
 DOWNLOAD_TASK_RETENTION_S = 300.0
@@ -1641,6 +1643,12 @@ class BrowserService(Service):
             if self._context is None:
                 raise BrowserError("The browser window was closed. Call the tool again and it will reopen.")
             active = self._active or page
+            if active is not page and await self._download_only_tab(active, downloads_before):
+                # #307: the tab the click opened only carried a download (or is Edge's downloads hub): the page that
+                # was clicked is still the one to work in, and the one to report
+                active = page
+                if not page.is_closed():
+                    self._active = page
             await self._settle(active)
             await self._enforce_domains(active)
             out = {
@@ -1649,7 +1657,7 @@ class BrowserService(Service):
                 "url": active.url,
                 "message": "Clicked. Call browser_snapshot to see the page now.",
             }
-            if len(self._usable_pages(self._context)) > pages_before:
+            if active is not page and len(self._usable_pages(self._context)) > pages_before:
                 out["new_tab"] = True
                 out["message"] = "Clicked; it opened a new tab, which is now active. Call browser_snapshot to see it."
             await self._after_action(ctx, active)
@@ -1657,6 +1665,22 @@ class BrowserService(Service):
                 out, downloads_before, wait_for_download_start=True
             )
             return self._take_dialogs(out)
+
+    async def _download_only_tab(self, tab: Any, downloads_before: set[asyncio.Task[str]]) -> bool:
+        """True when ``tab``, made active by a click, holds no page: Edge's downloads hub, or a blank tab that a
+        download started from (a link to a file with ``target=_blank``) or that closed again. A blank tab gets
+        ``DOWNLOAD_TAB_WAIT_S`` to show a page instead."""
+        deadline = time.monotonic() + DOWNLOAD_TAB_WAIT_S
+        while True:
+            if tab.is_closed() or tab in self._internal_pages or self._is_downloads_hub(tab.url):
+                return True
+            if str(tab.url or "") not in ("", "about:blank"):
+                return False
+            if self._download_tasks - downloads_before:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
 
     async def type(self, ctx: Any, ref: str, text: str, submit: bool = False) -> dict:
         async with self._lock:

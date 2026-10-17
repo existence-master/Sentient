@@ -2002,3 +2002,32 @@ async def test_candidate_pages_scoped_to_download_page_when_valid(tmp_path, monk
 
     assert rel == "downloads/scoped.txt"
     assert queried_pages == [dl_page]
+
+
+async def test_a_click_that_only_opened_a_download_tab_stays_on_the_page(monkeypatch):
+    """#307: the blank tab a file link opens, or Edge's downloads hub, is not a page to keep working in."""
+    import sentient.browser.service as service
+
+    monkeypatch.setattr(service, "DOWNLOAD_TAB_WAIT_S", 0.3)
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url, closed=False):
+            self.url, self.closed = url, closed
+
+        def is_closed(self):
+            return self.closed
+
+    before: set = set()
+    assert await svc._download_only_tab(Page("", closed=True), before)  # the blank tab closed once the file came
+    assert await svc._download_only_tab(Page("edge://downloads-hub/"), before)
+    assert not await svc._download_only_tab(Page("https://example.com/help"), before)  # a real new page
+    assert not await svc._download_only_tab(Page("about:blank"), before)  # stays blank, no download: kept
+
+    async def save():
+        return "downloads/x.txt"
+
+    task = asyncio.create_task(save())
+    svc._download_tasks.add(task)
+    assert await svc._download_only_tab(Page("about:blank"), before)  # a download started from it
+    await task

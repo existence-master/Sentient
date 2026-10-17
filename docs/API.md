@@ -2339,6 +2339,9 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   - `browser_click(ref)` write; effective risk `send` (via `risk_fn`) when the element's text/aria/value looks like buy,
     pay, place order, checkout, send, post, publish, delete, remove, confirm, subscribe, transfer, or it submits a form
     with payment fields → `{ok, clicked, url, message, new_tab?, dialogs?}`. A link opening a new tab makes it active.
+    A new tab that only carried a download (a file link with `target=_blank`: a blank tab the download starts from,
+    which may close again) or is Edge's downloads hub is not made active, and `url` stays the clicked page (#307); a
+    blank new tab gets 3 s to show a page before it counts as one.
     `confirm()` dialogs are accepted only for clicks approved as `send`; alerts are accepted; `dialogs` lists them.
     Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
     "notify me" reads "Signs up" (normal approval rules) only when the element or the text around it (its card or
