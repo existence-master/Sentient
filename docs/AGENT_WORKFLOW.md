@@ -132,6 +132,8 @@ drive (a full one fails dozens of tests with "disk is full"). Give pytest a fold
   - screenshots or traces **attached to the PR** (drag them into the description), never a path on your computer,
   - anything you could not test, and why.
 - The unit tests and lint you ran, with their results.
+- A changelog entry in `changes/` when people using Sentient will notice the change (see
+  [changes/README.md](../changes/README.md)). Never edit `CHANGELOG.md` itself.
 - No keys, tokens, real names or personal data anywhere in the PR.
 - After opening it, wait for the checks and the CodeRabbit review. Fix the real findings (two rounds at most, then
   ask a maintainer), and leave merging to a maintainer.
