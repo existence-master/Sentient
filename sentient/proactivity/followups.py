@@ -10,6 +10,11 @@ Everything here is deterministic. The service (``ProactiveEngine.run_followups``
 the threads that survive ``classify``, and the draft is sent only when the user clicks Send on the suggestion: that
 creates an already approved task that makes exactly one tool call with the draft unchanged (``send_call``). This
 module never sends anything.
+
+Recipients first (#144, ADR 0031): who a follow-up goes to is fixed by ``classify`` from the thread's headers before
+the model reads any message text, and the model only writes the draft. The thread reaches the model marked as outside
+content, and a draft that copies an email address or a link only the other person's messages have is dropped
+(``copied_from_them``), like a draft with a blank.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from datetime import UTC, datetime
 from email.utils import getaddresses, parseaddr
 from typing import Any
 
+from sentient.agent.prompt import mark_outside
 from sentient.llm.provider import parse_json_loose
 from sentient.proactivity.prefilter import _BULK_LABELS, _CAL_SUBJECTS, _FLUFF
 
@@ -51,6 +57,9 @@ _PLACEHOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 _SUBJECT_PREFIX_RE =re.compile(r"^\s*((re|fwd?|aw|wg|sv)\s*:\s*)+", re.IGNORECASE)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
+_LINK_RE = re.compile(r"\bhttps?://[^\s<>\"')\]]+|\bwww\.[^\s<>\"')\]]+", re.IGNORECASE)
+SOURCE_NAMES = {"gmail": "Gmail", "email_imap": "Email (IMAP)"}
 
 
 @dataclass
@@ -204,13 +213,30 @@ def thread_text(c: Candidate, *, max_messages: int = 3) -> str:
 
 
 def build_messages(c: Candidate, user_name: str, system: str, you_tpl: str, them_tpl: str) -> list[dict]:
+    """The draft prompt. The thread is marked as outside content (ADR 0023): the model reads it as data."""
     user = (user_name or "").strip() or "the user"
     first = user.split()[0] if user != "the user" else "me"
     tpl = you_tpl if c.kind == WAITING_ON_YOU else them_tpl
+    thread = mark_outside(thread_text(c), f"the email conversation ({SOURCE_NAMES.get(c.source, c.source)})")
     return [
         {"role": "system", "content": system.format(user=user, first=first)},
-        {"role": "user", "content": tpl.format(user=user, person=c.person_full, days=_days(c.days), thread=thread_text(c))},
+        {"role": "user", "content": tpl.format(user=user, person=c.person_full, days=_days(c.days), thread=thread)},
     ]
+
+
+def copied_from_them(c: Candidate, draft: str) -> str:
+    """An email address or link in the draft that only the other person's messages have (not the user's own messages
+    or anyone's headers), else "". Such a draft is dropped: what a follow-up says and where it points must not come
+    from text someone else wrote."""
+    theirs, ours = [], []
+    for m in c.thread.get("messages") or []:
+        text = f"{m.get('subject') or ''}\n{m.get('body') or m.get('snippet') or ''}"
+        (ours if m.get("from_me") else theirs).append(text)
+        ours.append(" ".join(str(m.get(k) or "") for k in ("from", "to", "cc", "sender_email")))
+    their_text, our_text = "\n".join(theirs).lower(), "\n".join(ours).lower()
+    found = [a.lower() for a in _EMAIL_RE.findall(draft or "")]
+    found += [u.rstrip(".,;:!?").lower() for u in _LINK_RE.findall(draft or "")]
+    return next((x for x in found if x in their_text and x not in our_text), "")
 
 
 @dataclass

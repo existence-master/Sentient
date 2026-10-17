@@ -10,6 +10,9 @@ those calls come back as refusals the model can relay.
   streamed to the chat as ``tool_progress`` (kind ``subagent``).
 - Background: the tool returns at once; when the subagent finishes, its summary
   is added to the chat as an assistant message and a notification is created.
+- Reader (``read``, the ``read_with_reader`` tool, #144, ADR 0031): no loop and no tools at all. One model call
+  reads an outside document and code keeps only the requested fields (``sentient.agent.reader``). Its row has
+  ``kind = "reader"``, ``tool_calls = 0`` and a trace of the fields asked for and the fields returned.
 
 Every state change is persisted in the ``subagents`` table and published as
 ``subagent.updated``.
@@ -26,6 +29,7 @@ from datetime import datetime
 from typing import Any
 
 from sentient import paths
+from sentient.agent import reader
 from sentient.agent.loop import Budget, LoopResult
 from sentient.llm.events import Error, TextDelta, ToolCallEvent, ToolResultEvent
 from sentient.llm.jobs import detached
@@ -73,6 +77,7 @@ def _row(r: Any, *, events: bool = True) -> dict:
         "session_id": d.get("session_id"),
         "parent_call_id": d.get("parent_call_id"),
         "goal": d["goal"],
+        "kind": d.get("kind") or "worker",
         "status": d["status"],
         "background": bool(d.get("background")),
         "summary": d.get("summary"),
@@ -231,6 +236,54 @@ class SubagentManager(Service):
         if sub.get("error"):
             out["error"] = sub["error"]
         return out
+
+    async def read(
+        self,
+        document: str,
+        fields: list[reader.Field],
+        *,
+        source: str,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        attended: bool = False,
+    ) -> dict:
+        """The reader (#144): one tool-free model call reads ``document`` (outside content from ``source``) and only
+        the requested ``fields`` come back, checked in code. Recorded as a ``kind = "reader"`` subagent whose trace
+        shows the fields asked for and returned, and no tool calls. Returns ``{subagent_id, status, fields}`` or
+        ``{subagent_id, status: "error", error}``."""
+        sub_id = new_id()
+        names = ", ".join(f.name for f in fields)
+        goal = f"Read {source} for: {names}"[:500]
+        events: list[dict] = [{"timestamp": now_iso(), "message": {
+            "type": "info", "content": "Reader started with no tools. Fields asked for: "
+            + ", ".join(f"{f.name} ({f.describe()})" for f in fields)}}]
+        await self.app.store.execute(
+            "INSERT INTO subagents(id, session_id, parent_call_id, goal, kind, tools, status, background, events,"
+            " started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (sub_id, session_id, parent_call_id, goal, "reader", "[]", "running", 0, json.dumps(events), now_iso()),
+        )
+        self._publish(await self.get(sub_id, events=False))
+        status, error, values = "completed", None, None
+        try:
+            values = await reader.read(self.app.llm, document, fields, source=source, attended=attended)
+            events.append({"timestamp": now_iso(), "message": {
+                "type": "final_answer", "content": json.dumps(values, ensure_ascii=False)}})
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except reader.ReaderError as exc:
+            status, error = "error", str(exc)
+            events.append({"timestamp": now_iso(), "message": {"type": "error", "content": error}})
+        finally:
+            await asyncio.shield(self._update(
+                sub_id, status=status, error=error, tool_calls=0, finished_at=now_iso(),
+                summary=json.dumps(values, ensure_ascii=False) if values is not None else None,
+                events=json.dumps(events, default=str),
+            ))
+            self._publish(await self.get(sub_id, events=False))
+        if values is None:
+            return {"subagent_id": sub_id, "status": "error", "error": error or "The reader failed."}
+        return {"subagent_id": sub_id, "status": "completed", "fields": values}
 
     async def delegate_many(
         self,

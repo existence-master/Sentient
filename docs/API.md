@@ -975,7 +975,8 @@ approval). The run's own `ask_user` question still asks. A one-call task (`fixed
 Code, never a model, checks what a call that should change something really did, right after it runs
 (`sentient/agent/outcomes.py`). Checked: tools that declare `Tool.outcome` (`"email"|"message"|"file"|"event"|"home"`)
 or `Tool.verify`, and every MCP tool that is not a look-up (its kind guessed from its name: `send_email` is `email`).
-Today that is `file_write`, `gmail_send`, `gmail_reply`, `email_imap_send`, `gcal_create_event`, `gcal_quick_add`,
+Today that is `file_write`, `gmail_send`, `gmail_reply`, `gmail_forward`, `email_imap_send`, `email_imap_reply`,
+`email_imap_forward`, `gcal_create_event`, `gcal_quick_add`,
 `slack_post_message`, `slack_reply_in_thread`, `discord_send_message`, `whatsapp_send_message`, the Home Assistant
 actions (`home_assistant_turn_on`/`turn_off`/`set_temperature`/`activate_scene`/`run_script`/`open_cover`/`close_cover`/
 `lock`/`unlock`/`set_alarm`) and MCP tools. A call
@@ -1389,7 +1390,16 @@ can't act.
   `starttls`, port 143), `port`, `username`, `password` (app password, secret), `folders` (comma-separated mailbox names
   to watch for new mail, default `INBOX`), optional `smtp_host`, `smtp_port`; connect signs in to IMAP (selecting every
   watched folder) and SMTP when given, before saving. Tools `email_imap_search` (read), `email_imap_read` (read),
-  `email_imap_send` (send). Privacy filters like Gmail. Trigger `new_email`.
+  `email_imap_send` (send), `email_imap_reply {message_id, body, reply_all=false, mailbox="INBOX"}` (send; who it goes
+  to comes from the email's headers, below) and `email_imap_forward {message_id, to, note="", mailbox="INBOX"}` (send;
+  the original's headers and text quoted under the note, attachments kept). Privacy filters like Gmail. Trigger
+  `new_email`.
+- **Replies and forwards (#144, ADR 0031).** `gmail_reply`, `email_imap_reply` and `gmail_forward
+  {message_id, to, note=""}` work alike. A reply never takes a recipient argument: `integrations.mail.reply_targets`
+  reads the original's headers (Reply-To, else From; the To of the user's own message, a nudge; the other To and Cc
+  addresses with `reply_all`). The reply tools declare `Tool.destinations_fn(arguments, ctx) ->
+  [{address, why: "sender"|"reply_to"|"thread", sender}]`, which the second look calls before the reply runs
+  (section 10). A forward refuses an email hidden by privacy filters, like a read.
 - `webhook` ("Webhooks", builtin, no tools): its `triggers` are computed from the user's hooks,
   `[{event: <hook id>, label: "When \"<name>\" is called"}]`; `integration.updated` is sent when hooks are created or deleted.
 - `gcalendar.triggers` are `new_event` ("New event") and `updated_event` ("Changed event").
@@ -1489,7 +1499,10 @@ Follow-up suggestion: `suggestion_type` `follow_up_reply` or `follow_up_nudge`, 
 Approving it (the card's **Send reply** / **Send nudge**, which shows the exact draft) is the approval of that one send:
 it creates an already approved task (`app.tasks.create_approved_call`, section 4) that runs right away, whatever
 `tasks.require_plan_approval` says, and makes exactly one call with the draft unchanged: `gmail_reply {message_id, body}` in
-the same thread, or `email_imap_send {to, subject, body, reply_to_message_id?}`. No model is involved in the send. A lasting
+the same thread, or `email_imap_send {to, subject, body, reply_to_message_id?}`. No model is involved in the send. The
+recipient is fixed from the thread's headers before the model reads the thread (#144); the thread reaches the model
+marked as outside content, and a draft that copies an email address or a link only the other person's messages have is
+dropped and tried again at the next check (`followups.copied_from_them`). A lasting
 Never rule on that tool or its app (`tools.approvals.rules`) still applies: the run fails with the rule's message and
 nothing is sent.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
@@ -2187,6 +2200,21 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     `arjun.mehta@...`; the user's own name counts). Every amount of money (`$1,200`, `500 rupees`, a number in an
     `amount`/`price`/`total`... field) must appear there too. After outside content, a link in the call that came
     from that content is flagged.
+  - **Recipients first** (#144, ADR 0031). Outside tool results are read as JSON (`second_look.read_places`): in an
+    item with a `from`/`sender_email` address and a `subject`, `body`, `snippet` or `to`, the `from` is the message's
+    sender, `to`/`cc`/`bcc`/`reply_to` are its header lines and every other value is its text; non-JSON text (a page,
+    a result cut for length) is text except its `"from": "..."` values. An address that outside content names
+    anywhere other than as a sender passes only when the user's words, trusted records or a saved memory have it: a
+    name match never vouches for it. Its warning names the place: `"... That address came from the text of an email
+    from Arjun Mehta <arjun@example.com> (Gmail), not from you."` (`the Cc line of an email from ...` for a header
+    line). A tool message the engine wrapped as outside content, or whose result starts with `outside_content`,
+    counts as outside content too.
+  - **Reply destinations.** For a tool with `destinations_fn` (the reply tools), its destinations are checked like
+    recipients and copied to the plan, so `approval_request.preview`, `undo_window.preview` and a task's
+    `pending_question.preview` get a `To` field. A `reply_to` destination on another domain than the sender, that the
+    user never gave, is flagged: `"This reply goes to x@evil.example, the address that email asked replies to go to,
+    not to the person who sent it (arjun@example.com)."` A `destinations_fn` that fails (20 seconds at most) adds
+    nothing; the call itself then reads the same headers.
   - **Model** (`second_look.model_check`, only for effective risk `send`/`exec` of tools that are not `internal`,
     `tools.approvals.second_look_model`, default on): when nothing was flagged yet and the call would otherwise run
     without asking, or the run read outside content. One tool-free `fast`-role prompt sees only the user's own words
@@ -2281,7 +2309,22 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     `{subagent_id, status: "running"}` at once; when it finishes, a summary is added to the chat as an assistant message,
     `subagent.updated` fires and a notification is created.
   - `delegate_tasks(tasks: list[{goal, context?}])` runs up to `subagents.max_concurrent` in parallel and returns every summary.
-- **Subagent** `{subagent_id, session_id, parent_call_id, goal, status: "running"|"completed"|"error"|"cancelled", background, summary, error, tool_calls, started_at, finished_at, events: [ProgressUpdate]}`
+  - `read_with_reader(tool, fields: {name: kind}, arguments?: dict)` (risk `read`, internal; #144, ADR 0031) runs the
+    look-up `tool` with `arguments` in code and hands its result to the **reader**: one model call with no tools
+    (`fast` role, then the primary; Claude Code only inside a chat reply), the document marked as outside content and
+    cut to 12,000 characters. Kinds: `text` (one sentence, 300 characters), `email`, `url` (both must be written in the
+    document), `date` (`YYYY-MM-DD`, optional time), `number`, `yes_no`, `id` (no spaces, a digit, written in the
+    document) and choices `"a|b|c"`; at most 12 fields. Code keeps exactly those fields; a value of the wrong kind is
+    `null`. Returns `{source, fields, subagent_id}`, with `outside_content: <source>` first when the tool brings outside
+    content and a `text`, `email` or `url` value came back (the run is then marked, ADR 0018); a result of only dates,
+    numbers, yes or no, ids and choices does not mark it. Refused (`{error}`) for tools that aren't look-ups, that
+    could send data out, whose rule is Ask, Only if I asked or Hand it to me, that are hidden, the subagent tools, and
+    an address that could carry data to a site a marked run hasn't visited. Tool selection offers it with any tool
+    that reads outside content.
+- **Subagent** `{subagent_id, session_id, parent_call_id, goal, kind: "worker"|"reader", status: "running"|"completed"|"error"|"cancelled", background, summary, error, tool_calls, started_at, finished_at, events: [ProgressUpdate]}`.
+  A reader (`kind: "reader"`) has `tool_calls: 0`, `goal` `"Read <source> for: <field names>"`, `summary` the JSON of
+  the fields returned, and two events: `info` (the fields asked for, with their kinds) and `final_answer` (the fields
+  returned), or `error`.
 - `GET /api/sessions/{id}/subagents` → `[Subagent]` newest first; `GET /api/subagents/{id}` → `Subagent`;
   `POST /api/subagents/{id}/cancel` → `Subagent`. Domain event `subagent.updated` → `Subagent` (without `events`).
 - While a foreground subagent runs, the parent emits `tool_progress` with `kind: "subagent"` and `data: {subagent_id, message}`.

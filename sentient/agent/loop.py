@@ -513,6 +513,7 @@ class _CallPlan:
     level: str | None = None  # the lasting rule the call was planned under ("if_asked" before it is applied)
     handed_off: bool = False  # a "Hand it to me" rule: prepared for the user, never run (#140)
     undo: str = ""  # how its undo window ended, when it waited in one (#142)
+    destinations: list[str] = field(default_factory=list)  # who a reply goes to, from its thread's headers (#144)
 
 
 class Agent:
@@ -960,7 +961,7 @@ class Agent:
                     "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
                     "question": question,
                     "preview": preview.build(waiting.tc.name, waiting.tc.arguments, purchase=await is_purchase(
-                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk)),
+                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk), to=waiting.destinations),
                 }
                 if waiting.ask_rule:  # an "ask" rule in a task run: pause and ask, with how wide a yes may be (#139)
                     purchase = await is_purchase(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -1260,7 +1261,7 @@ class Agent:
         hold = broker.open(undo_id, call_id=p.tc.id, name=p.tc.name, session_id=ctx.session_id, channel=ctx.channel,
                            seconds=seconds)
         yield UndoWindow(undo_id=undo_id, call_id=p.tc.id, name=p.tc.name, seconds=seconds, until=hold.until,
-                         preview=preview.build(p.tc.name, p.tc.arguments), **ev)
+                         preview=preview.build(p.tc.name, p.tc.arguments, to=p.destinations), **ev)
         outcome = await broker.wait(undo_id)
         log.info("undo window for %s ended: %s", p.tc.name, outcome)
         p.undo = outcome
@@ -1289,7 +1290,7 @@ class Agent:
             risk_label=wording["risk_label"], target=wording["target"],
             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
             grant_minutes=self.approvals.config.grant_minutes,
-            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase), **ev,
+            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase, to=p.destinations), **ev,
         )
         asked_at = now_iso()
         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)

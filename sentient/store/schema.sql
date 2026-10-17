@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS subagents (
     session_id     TEXT,                          -- chat that spawned it (NULL outside chats)
     parent_call_id TEXT,                          -- tool call id of delegate_task / delegate_tasks
     goal           TEXT NOT NULL,
+    kind           TEXT NOT NULL DEFAULT 'worker',  -- worker (delegate_task) | reader (read_with_reader: no tools, #144)
     context        TEXT,
     tools          TEXT,                          -- JSON list of requested tool names, or NULL
     status         TEXT NOT NULL DEFAULT 'running',   -- running | completed | error | cancelled

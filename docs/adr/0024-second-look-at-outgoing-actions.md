@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-13
-- **Amended by:** [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md) (marked text inside a user turn is outside content)
+- **Amended by:** [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md) (marked text inside a user turn is outside content),
+  [ADR 0031](0031-recipients-first-and-a-tool-less-reader.md) (a name never vouches for an address outside content wrote; reply destinations come from the headers and are checked)
 
 ## Context
 
