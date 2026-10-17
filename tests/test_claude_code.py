@@ -755,7 +755,7 @@ def everywhere(cc_config):
     return cc_config
 
 
-def test_everything_needs_the_experimental_switch(cc_config):
+def test_everything_needs_the_experimental_switch(cc_config, fake_claude):
     cc_config.models.claude_code_everywhere = True
     cc_config.models.experimental_claude_code = False
     assert not claude_code.everywhere(cc_config)
