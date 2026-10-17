@@ -289,3 +289,6 @@ def test_memory_routes_show_sources_and_change_state(client):
     assert client.patch(f"/api/memories/{new}", json={"state": "maybe"}).status_code == 400
     assert client.patch("/api/memories/9999", json={"state": "disputed"}).status_code == 404
     assert client.delete(f"/api/memories/{new}").json() == {"deleted": True}
+    # a new name in Settings reaches memory at once (what it scrubs on a delete depends on it)
+    assert client.patch("/api/config", json={"assistant": {"user_name": "Riya"}}).status_code == 200
+    assert client.core.memory.config.assistant.user_name == "Riya"

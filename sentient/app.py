@@ -178,6 +178,9 @@ class SentientApp:
             self.llm.config = self.config  # type: ignore[attr-defined]
         if self.agent is not None:
             self.agent.config = self.config
+        if self.memory is not None:  # the user's name, recall and dedup settings take effect at once (#152)
+            self.memory.config = self.config
+            self.memory.episodic.config = self.config
         self.approvals.config = self.config.tools.approvals
         self.registry.set_hidden("subagents", not self.config.subagents.enabled)
         self.bus.publish("config.updated", {"sections": list(self.config.model_dump().keys())})
