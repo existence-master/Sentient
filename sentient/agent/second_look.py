@@ -9,6 +9,12 @@ x@evil.example"), and a small model can make up a recipient or an amount. Before
    the user gave ("email Arjun" and ``arjun@example.com``). Every amount in it must appear there too. After outside
    content was read, a link in the message must not come from that content. The reason says plainly what is off, and
    where an address or link came from ("That address came from Web, not from you.").
+   Recipients first (#144, ADR 0031): an address that appears in outside content anywhere other than as the sender
+   of a message read (in an email's text, its To or Cc line, a web page) passes only when the user's words or trusted
+   records have it; a name match never vouches for it, so "arjun@evil.example" in an email's text can't pass for
+   "email Arjun". The card says where it was ("That address came from the text of an email from Arjun Mehta
+   <arjun@example.com> (Gmail), not from you."). A reply's destinations come from the thread's headers
+   (``Tool.destinations_fn``); one that a Reply-To header redirects to another address is flagged too.
 2. ``model_check`` (only for effective risk ``send`` or ``exec``, and only when the call would otherwise run without
    asking or the run read outside content): one short, tool-free prompt on the ``fast`` role that sees only the
    user's request, the rules and the action's arguments, never the outside content, and answers whether the action
@@ -25,12 +31,14 @@ rules, Read only connections and the unprompted-work limit are checked before th
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from email.utils import getaddresses
 from typing import Any
 
 from sentient.agent.prompt import is_marked
@@ -42,6 +50,7 @@ from sentient.tools.rules import (
     _brief,
     address_host,
     outside_source,
+    result_outside_source,
     rule_label,
     saved_outside_source,
 )
@@ -53,6 +62,7 @@ WAIT_S = 45.0
 MAX_REQUEST = 1500  # characters of the user's own words the model check sees (the latest ones)
 MAX_ACTION = 1500  # characters of the action's arguments it sees
 MAX_REASON = 200
+DESTINATIONS_WAIT_S = 20.0  # reading a reply's headers to see where it goes
 
 # Apps whose results are the user's own records for "who is this": an address found there is trusted.
 CONTACT_PLUGINS = frozenset({"gpeople"})
@@ -104,6 +114,11 @@ _ASKED_TO = re.compile(
     r"(?P<name>[A-Za-z][\w'\-]{1,40})",
     re.IGNORECASE,
 )
+# "reply to the latest email from Arjun": the person a reply goes to is the one the email is from
+_ASKED_FROM = re.compile(
+    r"\b(?P<verb>reply|respond|answer|write back)\b[^.?!\n]{0,60}?\bfrom\s+(?P<name>[A-Za-z][\w'\-]{1,40})",
+    re.IGNORECASE,
+)
 _VERB_WORDS = {"e-mail": "email", "mail": "email", "cc": "copy in"}
 _TO_VERBS = {"e-mail": "email", "mail": "email", "email": "email", "send": "send this to", "forward": "forward this to",
              "share": "share this with", "write": "write to", "reply": "reply to"}
@@ -116,6 +131,10 @@ _NOT_NAMES = frozenset({
     "tomorrow", "someone", "somebody", "anyone", "people", "team", "him/her", "them.", "out", "up", "over", "here",
     "there", "his", "its", "their", "some", "any", "no", "not", "so", "then", "also", "just", "i", "we", "he", "she",
     "they", "email", "mail", "message", "text", "note", "notes", "meeting", "reply", "send", "forward", "link",
+    # "his email is ...", "the email has ...": a noun followed by a verb, not a person (#144's real test)
+    "is", "was", "were", "are", "be", "been", "has", "have", "had", "will", "would", "can", "could", "should", "may",
+    "might", "must", "does", "did", "says", "said", "asks", "asked", "address", "addresses", "account", "thread",
+    "inbox", "list", "lists", "body",
 })
 _FREE_MAIL = frozenset({
     "gmail", "googlemail", "outlook", "hotmail", "live", "yahoo", "icloud", "me", "proton", "protonmail", "aol",
@@ -133,6 +152,81 @@ def mentions(text: str, item: str) -> bool:
 
 
 @dataclass
+class Place:
+    """Where a piece of outside content sits: in a message someone sent (``sender`` is its From header) or not."""
+
+    source: str  # the app or person it came from ("Gmail", "another group member (Ravi)")
+    sender: str  # the From header of the email it is part of, "" when it is not part of an email
+    field: str  # "text", or the header line it is in: "To", "Cc", "Bcc", "Reply-To"
+    text: str
+
+    def describe(self) -> str:
+        """Where an address came from, for the approval card."""
+        if not self.sender:
+            return self.source
+        sender = " ".join(self.sender.split())[:80]
+        part = "the text" if self.field == "text" else f"the {self.field} line"
+        return f"{part} of an email from {sender} ({self.source})"
+
+
+# keys of an email item (the mail apps' shape, docs/API.md section 5) that name who sent it, and the header lines
+# that name who else it went to; every other value of the item is the email's text
+SENDER_KEYS = frozenset({"from", "sender_email", "sender"})
+HEADER_LINES = {"to": "To", "cc": "Cc", "bcc": "Bcc", "reply_to": "Reply-To", "delivered_to": "To"}
+_SENDER_FIELD = re.compile(r'"(?:from|sender_email|sender)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_MAX_DEPTH = 8
+
+
+def _is_message(item: dict) -> bool:
+    sender = next((item[k] for k in ("from", "sender_email") if isinstance(item.get(k), str)), "")
+    return "@" in sender and any(k in item for k in ("subject", "body", "snippet", "to"))
+
+
+def _addresses_in(value: str) -> set[str]:
+    return {a.strip().lower() for _, a in getaddresses([value or ""]) if "@" in a}
+
+
+def read_places(source: str, text: str) -> tuple[set[str], list[Place]]:
+    """The sender addresses of the messages in one piece of outside content, and its parts by where they sit. A tool
+    result is read as JSON: its keys come from the tool, never from what someone wrote, so an email's "from" is its
+    sender. Text that isn't JSON (a page, a result cut for length) is all text, except the "from" values in it."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict | list):
+        found = {a for m in _SENDER_FIELD.finditer(text or "") for a in _addresses_in(m.group(1))}
+        rest = _SENDER_FIELD.sub(" ", text or "") if found else text or ""
+        return found, [Place(source, "", "text", rest)]
+    senders: set[str] = set()
+    places: list[Place] = []
+
+    def walk(value: Any, depth: int, sender: str, key: str) -> None:
+        if depth > _MAX_DEPTH:
+            return
+        if isinstance(value, dict):
+            message = _is_message(value)
+            if message:
+                sender = str(value.get("from") or value.get("sender_email") or "")
+                for k in SENDER_KEYS:
+                    if isinstance(value.get(k), str):
+                        senders.update(_addresses_in(value[k]))
+            for k, v in value.items():
+                name = str(k).lower().replace("-", "_")
+                if not (message and name in SENDER_KEYS):
+                    walk(v, depth + 1, sender, name)
+        elif isinstance(value, list | tuple):
+            for v in value:
+                walk(v, depth + 1, sender, key)
+        elif isinstance(value, str | int | float) and not isinstance(value, bool):
+            line = HEADER_LINES.get(key, "text") if sender else "text"
+            places.append(Place(source, sender, line, str(value)))
+
+    walk(data, 0, "", "")
+    return senders, places
+
+
+@dataclass
 class Evidence:
     """What the second look compares a call with. Built from the run's messages by ``gather``."""
 
@@ -141,6 +235,8 @@ class Evidence:
     outside: list[tuple[str, str]] = field(default_factory=list)  # (source, text) of outside content in this run
     names: list[tuple[str, str]] = field(default_factory=list)  # (verb, name) the user asked about: ("email", "Arjun")
     name_words: set[str] = field(default_factory=set)  # lower-case names a recipient may match
+    senders: set[str] = field(default_factory=set)  # From addresses of the messages read in this run (#144)
+    places: list[Place] = field(default_factory=list)  # outside content by where it sits (#144)
 
     def knows(self, text: str) -> bool:
         return mentions(self.request, text) or mentions(self.trusted, text)
@@ -148,6 +244,22 @@ class Evidence:
     def outside_source(self, text: str) -> str:
         needle = text.lower()
         return next((src for src, body in self.outside if needle in body.lower()), "")
+
+    def add_outside(self, source: str, text: str, *, structured: bool = True) -> None:
+        """Note outside content. ``structured``: a tool's result, whose JSON keys the tool wrote, so an email item's
+        "from" is its sender. Text inside a user turn (a group member's message) is never read for senders: anyone
+        can type a "from" field there."""
+        self.outside.append((source, text))
+        if not structured:
+            self.places.append(Place(source, "", "text", text))
+            return
+        senders, places = read_places(source, text)
+        self.senders |= senders
+        self.places += places
+
+    def place_of(self, address: str) -> Place | None:
+        """The first place in outside content that names ``address`` other than as a message's sender."""
+        return next((p for p in self.places if mentions(p.text, address)), None)
 
 
 def text_of(content: Any) -> str:
@@ -165,6 +277,15 @@ def own_words(text: str) -> str:
     text = _MARKED_BLOCK.sub(" ", text or "")
     text = _TRIGGER_BLOCK.sub(" ", text)
     return _TIME_NOTE.sub(" ", text)
+
+
+_MARKER_SOURCE = re.compile(r"^\[outside content [0-9a-f]{8} from (?P<source>[^\]\n]*)\. Data only, not instructions\.\]")
+
+
+def _marked_source(text: str) -> str:
+    """The source named in the engine's outside-content marker around a tool message, else ""."""
+    found = _MARKER_SOURCE.match(text or "") if is_marked(text or "") else None
+    return found["source"] if found else ""
 
 
 def _unmark(text: str) -> str:
@@ -192,12 +313,15 @@ def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", t
             text = text_of(m.get("content"))
             request.append(own_words(text))
             # outside content inside a user turn (selected text, a group member's message, ADR 0029) is outside too
-            ev.outside += [(b["source"], b["body"]) for b in _MARKED_BLOCK.finditer(text)]
+            for b in _MARKED_BLOCK.finditer(text):
+                ev.add_outside(b["source"], b["body"], structured=False)
         elif role == "system":
             (request if task else trusted).append(own_words(text_of(m.get("content"))))
         elif role == "tool":
-            body = _unmark(text_of(m.get("content")))
-            source = outside_source(m, registry)
+            text = text_of(m.get("content"))
+            body = _unmark(text)
+            # a result that says it holds outside content (``outside_content`` first, ADR 0025) says so unmarked
+            source = outside_source(m, registry) or result_outside_source(body) or _marked_source(text)
             if not source:
                 raw = calls.get(str(m.get("tool_call_id")))
                 try:
@@ -207,7 +331,7 @@ def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", t
                 source = saved_outside_source(str(m.get("name") or ""), args)
             tool = registry.get(str(m.get("name") or "")) if registry is not None else None
             if source and not (tool is not None and tool.plugin in CONTACT_PLUGINS):
-                ev.outside.append((source, body))
+                ev.add_outside(source, body)
             else:
                 trusted.append(body)
     ev.request = "\n".join(t for t in request if t.strip())
@@ -226,7 +350,8 @@ def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", t
 def asked_names(request: str) -> list[tuple[str, str]]:
     """(verb, name) pairs the user asked about, in order: "email Arjun the notes" -> [("email", "Arjun")],
     "send the notes to Priya" -> [("send this to", "Priya")]."""
-    found_all = sorted([*_ASKED.finditer(request or ""), *_ASKED_TO.finditer(request or "")], key=lambda m: m.start())
+    found_all = sorted([*_ASKED.finditer(request or ""), *_ASKED_TO.finditer(request or ""),
+                        *_ASKED_FROM.finditer(request or "")], key=lambda m: m.start())
     out: list[tuple[str, str]] = []
     for found in found_all:
         if "@" in (request or "")[found.start("name"):].split(maxsplit=1)[0]:
@@ -238,7 +363,9 @@ def asked_names(request: str) -> list[tuple[str, str]]:
         if name[0].islower() and verb in _WEAK_VERBS:  # "the message says", "call it": not a person
             continue
         verb = _VERB_WORDS.get(verb, verb)
-        if found.re is _ASKED_TO or re.match(r"(forward|send|reply|write|share)\b", verb):
+        if found.re is _ASKED_FROM:
+            verb = "reply to"
+        elif found.re is _ASKED_TO or re.match(r"(forward|send|reply|write|share)\b", verb):
             verb = _TO_VERBS.get(verb.split()[0], verb)
         if all(n.lower() != name.lower() for _, n in out):
             out.append((verb, name))
@@ -349,26 +476,64 @@ def _matches_name(address: str, names: set[str]) -> bool:
     return any(len(n) >= 4 and n in local for n in names)
 
 
-def _recipient_ok(item: str, ev: Evidence, known: set[str]) -> bool:
+def _recipient_check(item: str, ev: Evidence, known: set[str]) -> str:
+    """"" when a recipient is one the user chose, else the warning for the approval card.
+
+    Recipients first (#144): an address that outside content names anywhere but as a sender (an email's text, its
+    To or Cc line, a page) must be in the user's words or trusted records; a name match never vouches for it."""
     if ev.knows(item) or item.lower() in known:
-        return True
+        return ""
     if "@" not in item:  # a phone number: compare the digits
         digits = re.sub(r"\D", "", item)
         said = re.sub(r"\D", "", ev.request + " " + ev.trusted)
-        return len(digits) >= 7 and digits[-9:] in said
-    return _matches_name(item, ev.name_words)
+        return "" if len(digits) >= 7 and digits[-9:] in said else _recipient_warning(item, ev)
+    if item.lower() not in ev.senders:
+        place = ev.place_of(item)
+        if place is not None:
+            return _recipient_warning(item, ev, place)
+    return "" if _matches_name(item, ev.name_words) else _recipient_warning(item, ev)
 
 
-def _recipient_warning(item: str, ev: Evidence) -> str:
+def _recipient_warning(item: str, ev: Evidence, place: Place | None = None) -> str:
     if ev.names:
         verb, name = ev.names[0]
         text = f"You asked to {verb} {name}, but this goes to {item}."
     else:
         text = f"This goes to {item}, which isn't in what you asked, your contacts or your memories."
-    source = ev.outside_source(item)
+    source = place.describe() if place is not None else ev.outside_source(item)
     if source:
         text += f" That address came from {source}, not from you."
     return text
+
+
+_ASKED_ALL = re.compile(r"\b(?:reply|respond|answer|write back)(?:[- ]to)?[- ]all\b|\beveryone\b|\breply[- ]all\b",
+                        re.IGNORECASE)
+DESTINATIONS_UNREAD = "Sentient couldn't read who this reply goes to, so it checks with you first."
+
+
+def destination_check(destinations: Iterable[dict], ev: Evidence, known: Iterable[str] = ()) -> str:
+    """The warning for a reply whose headers send it somewhere the user didn't choose (#144), else "":
+
+    - ``reply_to``: a Reply-To that names another address than the From, on another domain, that the user never gave;
+    - ``thread``: the other people on a reply-all, checked like any recipient unless the user asked to reply to all.
+    ``sender`` and ``yours`` (the recipients of the user's own message) always pass."""
+    known_set = {k.lower() for k in known}
+    everyone = bool(_ASKED_ALL.search(ev.request))
+    for d in destinations:
+        address = str(d.get("address") or "").lower()
+        if d.get("why") == "thread" and address and not everyone:
+            warning = _recipient_check(address, ev, known_set)
+            if warning:
+                return warning
+            continue
+        if d.get("why") != "reply_to" or not address or ev.knows(address) or address in known_set:
+            continue
+        sender = next(iter(_addresses_in(str(d.get("sender") or ""))), "")
+        if sender and sender.rpartition("@")[2] == address.rpartition("@")[2]:
+            continue  # the sender's own organisation (support@ for noreply@)
+        who = f" who sent it ({sender})" if sender else " who sent it"
+        return f"This reply goes to {address}, the address that email asked replies to go to, not to the person{who}."
+    return ""
 
 
 def deterministic(arguments: dict, ev: Evidence, *, untrusted: str = "", known: Iterable[str] = ()) -> str:
@@ -377,8 +542,9 @@ def deterministic(arguments: dict, ev: Evidence, *, untrusted: str = "", known: 
     ``known``: addresses found in trusted records outside this run (saved memories, ``known_addresses``)."""
     known_set = {k.lower() for k in known}
     for item in recipients(arguments):
-        if not _recipient_ok(item, ev, known_set):
-            return _recipient_warning(item, ev)
+        warning = _recipient_check(item, ev, known_set)
+        if warning:
+            return warning
     said = _numbers_in(ev.request) | _numbers_in(ev.trusted)
     for written, value in amounts(arguments):
         if round(value, 2) not in said:
@@ -467,7 +633,7 @@ def parse_verdict(data: Any) -> tuple[bool | None, str]:
     return (value if isinstance(value, bool) else None), reason
 
 
-async def _ask(llm: Any, messages: list[dict], *, attended: bool, model: str | None) -> Any:
+async def ask_without_tools(llm: Any, messages: list[dict], *, attended: bool, model: str | None) -> Any:
     """The model's answer: the fast role, else (when it can't do this job) the primary role or the chat's model.
     Claude Code answers only as part of a chat reply someone is waiting for (ADR 0022)."""
     refusals: list[str] = []
@@ -498,7 +664,7 @@ async def model_check(
     started = time.monotonic()
     try:
         data = await asyncio.wait_for(
-            _ask(llm, check_messages(request, action, arguments), attended=attended, model=model), wait_s
+            ask_without_tools(llm, check_messages(request, action, arguments), attended=attended, model=model), wait_s
         )
     except asyncio.CancelledError:
         raise
@@ -548,6 +714,7 @@ class Look:
         self.messages = messages
         self.attended, self.model_name = attended, model
         self._evidence: Evidence | None = None
+        self._unread = False  # the tool's destinations_fn failed: who it goes to couldn't be read
 
     @property
     def arguments(self) -> dict:
@@ -562,13 +729,38 @@ class Look:
             )
         return self._evidence
 
+    async def destinations(self) -> list[dict]:
+        """Who the call goes to when its arguments don't say (a reply: the thread's headers, #144), also kept on the
+        plan so the approval card and the undo window show it. [] when the tool can't tell; the call itself then
+        reads the same headers and fails the same way."""
+        fn = getattr(self.tool, "destinations_fn", None)
+        if fn is None:
+            return []
+        try:
+            value: Any = fn(self.arguments, self.ctx)
+            if inspect.isawaitable(value):
+                value = await asyncio.wait_for(value, DESTINATIONS_WAIT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.info("second look: couldn't tell where %s goes (%s: %s)", self.tool.name, type(exc).__name__, exc)
+            self._unread = True  # fails closed: the call itself may read the headers fine a moment later
+            return []
+        found = [d for d in value or [] if isinstance(d, dict) and str(d.get("address") or "").strip()]
+        if hasattr(self.plan, "destinations"):
+            self.plan.destinations = [str(d["address"]) for d in found]
+        return found
+
     async def deterministic(self) -> str:
         if Risk(self.plan.risk) >= Risk.exec:  # code and commands: only the model check reads them
             return ""
         ev = self.evidence()
-        unknown = [i for i in recipients(self.arguments) if not ev.knows(i)]
+        dests = await self.destinations()
+        items = recipients(self.arguments) + [str(d["address"]) for d in dests]
+        unknown = [i for i in items if not ev.knows(i)]
         known = await known_addresses(self.agent.store, unknown) if unknown else set()
         warning = deterministic(self.arguments, ev, untrusted=getattr(self.ctx, "untrusted", "") or "", known=known)
+        warning = warning or destination_check(dests, ev, known) or (DESTINATIONS_UNREAD if self._unread else "")
         if warning:
             log.info("second look: %s flagged (rules): %s", self.tool.name, warning)
         return warning

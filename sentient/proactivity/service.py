@@ -930,6 +930,11 @@ class ProactiveEngine(Service):
             # the draft would be sent exactly as written: drop it now, ask again next check
             log.info("follow-up for %s %s: the draft has a placeholder, trying again next check", c.source, c.key)
             return None
+        if decision.needed and (copied := followups.copied_from_them(c, decision.draft)):
+            # an address or a link from the other person's text in the user's own words (#144): drop it, ask again
+            log.info("follow-up for %s %s: the draft copies %s from their message, trying again next check",
+                     c.source, c.key, copied)
+            return None
         await self._mark_followup_checked(c, now)
         if not decision.needed:
             log.info("follow-up for %s %s: the model says no follow-up is needed", c.source, c.key)

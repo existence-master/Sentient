@@ -1216,6 +1216,8 @@ export interface Subagent {
   session_id: string | null
   parent_call_id: string | null
   goal: string
+  /** `reader`: the tool-less reader behind `read_with_reader` (#144); it never makes tool calls. */
+  kind?: 'worker' | 'reader'
   status: SubagentStatus
   background: boolean
   summary: string | null

@@ -165,6 +165,10 @@ UrlFn = Callable[[dict, ToolContext], "str | None"]
 # Reads a call's effect back after it ran (#165): ``verify(arguments, result, ctx) -> {ok, detail?}`` (sync or async);
 # None or an exception means it couldn't tell, and the tool's own result stands. Code only, never a model.
 VerifyFn = Callable[[dict, Any, ToolContext], "dict | Awaitable[dict | None] | None"]
+# Who a call goes to when its arguments don't say (#144): a reply goes to the sender in the thread's headers.
+# ``destinations_fn(arguments, ctx) -> [{"address", "why": "sender"|"reply_to"|"thread", "sender"}]`` (sync or async).
+# Worked out in code from the headers, before the call runs, so the second look and the approval card can show it.
+DestinationsFn = Callable[[dict, ToolContext], "list[dict] | Awaitable[list[dict] | None] | None"]
 
 # Default wording for approval prompts, by effective risk.
 RISK_LABELS = {
@@ -207,6 +211,8 @@ class Tool:
     outcome: str | None = None
     # Reads the effect back after a call that said it worked (see ``VerifyFn``): the file, the Sent folder, the event.
     verify: VerifyFn | None = None
+    # Who a call goes to when its arguments don't name them (a reply: the thread's headers), see ``DestinationsFn``.
+    destinations_fn: DestinationsFn | None = None
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -319,6 +325,7 @@ def tool(
     allow_for_chat: bool = True,
     outcome: str | None = None,
     verify: VerifyFn | None = None,
+    destinations_fn: DestinationsFn | None = None,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -330,6 +337,7 @@ def tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
             risk_fn=risk_fn, describe_fn=describe_fn, untrusted_output=untrusted_output, exfiltrates=exfiltrates,
             url_fn=url_fn, allow_for_chat=allow_for_chat, outcome=outcome, verify=verify,
+            destinations_fn=destinations_fn,
         )
 
     return wrap
