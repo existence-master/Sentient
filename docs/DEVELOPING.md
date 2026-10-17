@@ -173,13 +173,14 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 ## Checks, branches and releases
 
 - Every pull request runs [CI](../.github/workflows/ci.yaml): ruff, the engine tests on Linux and Windows, the
-  desktop typecheck and build, a secret scan, and the changelog check. It needs no secrets, so it runs the same on
-  forks.
+  desktop typecheck and build, and a secret scan, plus the [changelog check](../.github/workflows/changelog.yaml).
+  They need no secrets, so they run the same on forks.
 - **Changelog entries are files, not edits to CHANGELOG.md.** A pull request that changes what people get adds
   `changes/<issue or PR number>.<type>.md` (type `added`, `changed`, `deprecated`, `removed`, `fixed` or
   `security`; details in [changes/README.md](../changes/README.md)). The "Changelog entry" job fails when a pull
   request changes `sentient/`, `desktop/src/` or `packaging/` without one, and its summary says which file to add.
-  Pull requests with the `no changelog` label and Dependabot's are skipped; after adding the label, re-run the job.
+  Pull requests with the `no changelog` label and Dependabot's are skipped; adding or removing the label runs the
+  check again by itself.
 - `main` is the only long-lived branch. Contributors fork, branch from `main` and open pull requests back to it;
   maintainers squash-merge after one approval and green checks. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 - Releases are tags on `main`. First turn the entries into the version's changelog section with
