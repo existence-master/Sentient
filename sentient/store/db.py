@@ -214,13 +214,15 @@ class Store:
         incognito: bool = False,
         model: str | None = None,
         memory_scope: str | None = None,
+        node_id: str | None = None,
     ) -> str:
+        """A new chat. ``node_id``: the paired device it was started on (#153)."""
         sid = new_id()
         ts = now_iso()
         await self.execute(
-            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model, memory_scope)"
-            " VALUES(?,?,?,?,?,?,?,?)",
-            (sid, title, channel, ts, ts, int(bool(incognito)), model or None, memory_scope or None),
+            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model, memory_scope, node_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (sid, title, channel, ts, ts, int(bool(incognito)), model or None, memory_scope or None, node_id or None),
         )
         return sid
 

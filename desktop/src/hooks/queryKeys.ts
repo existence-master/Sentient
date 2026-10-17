@@ -67,6 +67,7 @@ export const qk = {
     personas: ['memories', 'personas'] as const,
     review: ['memories', 'review'] as const,
     scopes: ['memories', 'scopes'] as const,
+    forgetPreview: (source: string) => ['memories', 'forget-preview', source] as const,
     dreams: ['memories', 'dreams'] as const
   },
   userModel: ['user-model'] as const,

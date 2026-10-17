@@ -14,6 +14,7 @@
  *   notification.deleted  -> remove (id null = all)
  *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
  *   memory.updated        -> invalidate ['memories']
+ *   memory.forgotten      -> invalidate ['memories'] and ['sessions'] (a source was forgotten, #153)
  *   skill.updated         -> invalidate ['skills']
  *   mcp.review            -> invalidate ['integrations-mcp'] (an MCP server's tools wait for review, #146)
  *   session.updated       -> rename, set the chat's model or its outside-content mark in ['sessions']
@@ -186,6 +187,12 @@ export function installDomainEvents(qc: QueryClient): () => void {
   // #390: a ringing alarm stopped or snoozed anywhere (a chat, voice, a messaging app) updates the banner
   offs.push(live.onDomain('reminder.updated', (e) => useAlarm.getState().updated(e.data)))
   offs.push(live.onDomain('memory.updated', () => void qc.invalidateQueries({ queryKey: qk.memories.all })))
+  offs.push(
+    live.onDomain('memory.forgotten', () => {
+      void qc.invalidateQueries({ queryKey: qk.memories.all })
+      void qc.invalidateQueries({ queryKey: qk.sessions })
+    })
+  )
   offs.push(live.onDomain('skill.updated', () => void qc.invalidateQueries({ queryKey: qk.skills.all })))
   offs.push(live.onDomain('mcp.review', () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })))
 
@@ -388,6 +395,7 @@ const TIMELINE_EVENTS = new Set<string>([
   'notification.new',
   'notification.updated',
   'memory.updated',
+  'memory.forgotten',
   'skill.updated',
   'dream.updated',
   'backup.updated',

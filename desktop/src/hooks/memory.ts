@@ -1,8 +1,15 @@
 /** React Query hooks for §7 memory. `memory.updated` invalidates `qk.memories.all`. */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api, isNotImplemented, type UploadOptions } from '@/lib/api'
 import type { MemoryQuery, Persona, WorkspaceFileId } from '@/lib/types'
 import { qk } from './queryKeys'
+
+/** After "Also forget what Sentient learned from it" (#153): memories, chats and Activity changed. */
+export function invalidateForgotten(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: qk.memories.all })
+  void qc.invalidateQueries({ queryKey: qk.sessions })
+  void qc.invalidateQueries({ queryKey: qk.timeline.all })
+}
 
 export function useMemories(query: MemoryQuery = {}) {
   return useQuery({ queryKey: qk.memories.list(query), queryFn: () => api.memories.list(query) })

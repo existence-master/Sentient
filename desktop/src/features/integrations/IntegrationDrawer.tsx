@@ -18,6 +18,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, ConfirmDialog, Sheet, Spinner, StatusDot, Tooltip } from '@/components/ui'
+import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
 import { useIntegrationActions } from '@/hooks/integrations'
 import { errorMessage } from '@/lib/api'
 import type { Integration, IntegrationTestResult } from '@/lib/types'
@@ -92,6 +93,7 @@ function DrawerBody({
   const navigate = useNavigate()
   const actions = useIntegrationActions()
   const [confirm, setConfirm] = useState(false)
+  const forget = useForgetChoice()
   const [test, setTest] = useState<IntegrationTestResult | null>(null)
   const [showAllTools, setShowAllTools] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -182,7 +184,10 @@ function DrawerBody({
             </Button>
           )}
           {!builtin && (i.connected || i.status === 'error') && (
-            <Button variant="ghost" className="ml-auto text-danger hover:bg-danger/10 hover:text-danger" leftIcon={<IconPlugConnectedX size={15} />} onClick={() => setConfirm(true)}>
+            <Button variant="ghost" className="ml-auto text-danger hover:bg-danger/10 hover:text-danger" leftIcon={<IconPlugConnectedX size={15} />} onClick={() => {
+              forget.reset()
+              setConfirm(true)
+            }}>
               Disconnect
             </Button>
           )}
@@ -366,17 +371,21 @@ function DrawerBody({
         onOpenChange={setConfirm}
         title={`Disconnect ${i.display_name}?`}
         description={`Sentient will forget the saved sign-in for ${i.display_name} and stop using it. Tasks that depend on ${i.display_name} will be paused until you reconnect.`}
-        confirmLabel="Disconnect"
+        confirmLabel={forget.forget ? 'Disconnect and forget' : 'Disconnect'}
         onConfirm={async () => {
           try {
-            await actions.disconnect.mutateAsync(i.id)
+            const res = await actions.disconnect.mutateAsync({ id: i.id, forget: forget.forget })
             setTest(null)
-            toast.success(`${i.display_name} disconnected`, { description: 'Tasks that used it are paused.' })
+            toast.success(`${i.display_name} disconnected`, {
+              description: forgottenMessage(res.forgotten) ?? 'Tasks that used it are paused.'
+            })
           } catch (e) {
             toast.error(`Couldn't disconnect ${i.display_name}`, { description: errorMessage(e) })
           }
         }}
-      />
+      >
+        <ForgetLearned source={`app:${i.id}`} open={confirm} checked={forget.forget} onCheckedChange={forget.setForget} />
+      </ConfirmDialog>
     </div>
   )
 }

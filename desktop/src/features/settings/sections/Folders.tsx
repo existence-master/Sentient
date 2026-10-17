@@ -16,6 +16,7 @@ import { toast } from 'sonner'
 import { Alert, Badge, Button, ConfirmDialog, EmptyState, FormSection, Input, ProgressBar, Skeleton } from '@/components/ui'
 import { ChatScopeMenu } from '@/features/chat/ChatScopeMenu'
 import { scopeLabel } from '@/features/memory/bits'
+import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
 import { useAddFolder, useFolderIgnore, useFolders, useFolderScope, useRemoveFolder, useRescanFolder } from '@/hooks/folders'
 import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
@@ -118,6 +119,7 @@ function FolderCard({ folder: f }: { folder: WatchedFolder }) {
   const setIgnore = useFolderIgnore()
   const setScope = useFolderScope()
   const [confirm, setConfirm] = useState(false)
+  const forget = useForgetChoice()
   const [ignore, setIgnoreText] = useState(f.ignore.join(', '))
   const progress = f.progress && f.progress.total > 0 ? f.progress.done / f.progress.total : null
   const counts = [
@@ -203,7 +205,12 @@ function FolderCard({ folder: f }: { folder: WatchedFolder }) {
             >
               Check again
             </Button>
-            <Button size="sm" variant="ghost" aria-label={`Remove ${f.name}`} leftIcon={<IconTrash size={14} />} onClick={() => setConfirm(true)}>
+            <Button size="sm" variant="ghost" aria-label={`Remove ${f.name}`} leftIcon={<IconTrash size={14} />}
+              onClick={() => {
+                forget.reset()
+                setConfirm(true)
+              }}
+            >
               Remove
             </Button>
           </div>
@@ -214,17 +221,20 @@ function FolderCard({ folder: f }: { folder: WatchedFolder }) {
         onOpenChange={setConfirm}
         title={`Stop searching ${f.name}?`}
         description="Sentient forgets what it found there. The folder and your files stay exactly as they are."
-        confirmLabel="Remove"
+        confirmLabel={forget.forget ? 'Remove and forget' : 'Remove'}
         onConfirm={async () => {
+          let res
           try {
-            await remove.mutateAsync(f.id)
+            res = await remove.mutateAsync({ id: f.id, forget: forget.forget })
           } catch (err) {
             toast.error(`${f.name} wasn't removed`, { description: errorMessage(err) })
             throw err // keeps the dialog open to try again
           }
-          toast.success(`${f.name} removed`)
+          toast.success(`${f.name} removed`, { description: forgottenMessage(res.forgotten) })
         }}
-      />
+      >
+        <ForgetLearned source={`folder:${f.id}`} open={confirm} checked={forget.forget} onCheckedChange={forget.setForget} />
+      </ConfirmDialog>
     </div>
   )
 }

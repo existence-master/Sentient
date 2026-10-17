@@ -36,6 +36,7 @@ from sentient.channels.formatting import summary_text
 from sentient.channels.store import ChannelStore
 from sentient.channels.telegram import TelegramChannel
 from sentient.channels.whatsapp import WhatsAppChannel
+from sentient.memory.forget import forget as forget_learned
 from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
 from sentient.tasks.delivery import WHATSAPP_SELF
@@ -242,7 +243,9 @@ class ChannelService(Service):
         await self.publish_channel(ch.id)
         return await self.channel_dict(ch.id)
 
-    async def disconnect(self, channel_id: str) -> dict:
+    async def disconnect(self, channel_id: str, *, forget: bool = False) -> dict:
+        """Stop a messaging app. ``forget``: also forget what Sentient learned there (#153): its chats and their
+        messages, summaries and facts; the result then carries ``forgotten``. Paired chats stay paired."""
         ch = self.get(channel_id)
         if not ch.uses_token:
             await ch.unlink()  # type: ignore[attr-defined]
@@ -252,8 +255,10 @@ class ChannelService(Service):
             keychain.delete_secret(ch.secret_name)
         await self.store.clear_code(channel_id)
         await self.store.set_state(channel_id, enabled=0, status="disconnected", error=None, account_label=None)
+        forgotten = await forget_learned(self.app, f"channel:{channel_id}", ch.display_name) if forget else None
         await self.publish_channel(channel_id)
-        return await self.channel_dict(channel_id)
+        out = await self.channel_dict(channel_id)
+        return {**out, "forgotten": forgotten} if forgotten is not None else out
 
     async def create_pairing(self, channel_id: str) -> dict:
         ch = self.get(channel_id)

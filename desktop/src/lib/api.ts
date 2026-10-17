@@ -12,6 +12,8 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  ForgetCounts,
+  Forgotten,
   AwayStatus,
   BackupEntry,
   BackupInspect,
@@ -631,7 +633,9 @@ export const api = {
       http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, access ? { fields, access } : { fields }),
     /** Read only or Read and write (#141). Takes effect at once. */
     setAccess: (id: string, access: ConnectionAccess) => http.put<Integration>(`/api/integrations/${enc(id)}/access`, { access }),
-    disconnect: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/disconnect`),
+    /** ``forget``: also forget what Sentient learned from it (#153). */
+    disconnect: (id: string, forget = false) =>
+      http.post<Integration & Forgotten>(`/api/integrations/${enc(id)}/disconnect`, undefined, forget ? { query: { forget: true } } : undefined),
     /** Abandon a pending browser sign-in so the integration stops showing "connecting". */
     cancel: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/cancel`),
     test: (id: string) => http.post<IntegrationTestResult>(`/api/integrations/${enc(id)}/test`),
@@ -644,7 +648,8 @@ export const api = {
     mcp: {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
-      remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
+      remove: (name: string, forget = false) =>
+        http.delete<OkResponse & Forgotten>(`/api/integrations/mcp/${enc(name)}`, forget ? { query: { forget: true } } : undefined),
       test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
       signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
       signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
@@ -705,7 +710,9 @@ export const api = {
     resetScope: (scope: string) => http.delete<{ deleted: number }>(`/api/memories/scope/${enc(scope)}`),
     update: (id: number, content: string) => http.put<Memory>(`/api/memories/${id}`, { content }),
     delete: (id: number) => http.delete<{ deleted: boolean }>(`/api/memories/${id}`),
-    deleteBySource: (source: string) => http.delete<{ deleted: number }>(`/api/memories/source/${enc(source)}`),
+    deleteBySource: (source: string) => http.delete<{ deleted: number; unlinked: number }>(`/api/memories/source/${enc(source)}`),
+    /** What disconnecting ``source`` with "Also forget" would delete (#153): app:<id>, channel:<id>, device:<id>, folder:<id>. */
+    forgetPreview: (source: string) => http.get<ForgetCounts>('/api/memories/forget-preview', { query: { source } }),
     export: (format: 'markdown' | 'sqlite') => http.post<MemoryExport>('/api/memories/export', { format }),
     import: (file: File, opts?: UploadOptions) =>
       upload<MemoryImportResult>('/api/memories/import', file, file.name, opts),
@@ -813,7 +820,7 @@ export const api = {
     list: () => http.get<DeviceNode[]>('/api/nodes'),
     get: (id: string) => http.get<DeviceNode>(`/api/nodes/${enc(id)}`),
     rename: (id: string, name: string) => http.patch<DeviceNode>(`/api/nodes/${enc(id)}`, { name }),
-    remove: (id: string) => http.delete<OkResponse>(`/api/nodes/${enc(id)}`),
+    remove: (id: string, forget = false) => http.delete<OkResponse & Forgotten>(`/api/nodes/${enc(id)}`, forget ? { query: { forget: true } } : undefined),
     invoke: (id: string, capability: string, params: Record<string, unknown> = {}, timeout_ms?: number) =>
       http.post<DeviceInvokeResult>(`/api/nodes/${enc(id)}/invoke`, { capability, params, timeout_ms }),
     pairing: () => http.post<DevicePairing>('/api/nodes/pairing'),
@@ -824,7 +831,8 @@ export const api = {
   channels: {
     list: () => http.get<Channel[]>('/api/channels'),
     connect: (id: string, fields: Record<string, string>) => http.post<Channel>(`/api/channels/${enc(id)}/connect`, { fields }),
-    disconnect: (id: string) => http.post<Channel>(`/api/channels/${enc(id)}/disconnect`),
+    disconnect: (id: string, forget = false) =>
+      http.post<Channel & Forgotten>(`/api/channels/${enc(id)}/disconnect`, undefined, forget ? { query: { forget: true } } : undefined),
     pairing: (id: string) => http.post<ChannelPairing>(`/api/channels/${enc(id)}/pairing`),
     setDeliver: (id: string, chatId: string, deliver: boolean) =>
       http.patch<Channel>(`/api/channels/${enc(id)}/paired/${enc(chatId)}`, { deliver }),
@@ -884,7 +892,8 @@ export const api = {
     add: (path: string, ignore?: string[]) => http.post<WatchedFolder>('/api/folders', { path, ignore }),
     update: (id: string, ignore: string[]) => http.patch<WatchedFolder>(`/api/folders/${id}`, { ignore }),
     setScope: (id: string, scope: string) => http.patch<WatchedFolder>(`/api/folders/${id}`, { scope }),
-    remove: (id: string) => http.delete<{ removed: boolean }>(`/api/folders/${id}`),
+    remove: (id: string, forget = false) =>
+      http.delete<{ removed: boolean } & Forgotten>(`/api/folders/${id}`, forget ? { query: { forget: true } } : undefined),
     rescan: (id: string) => http.post<{ queued: boolean }>(`/api/folders/${id}/rescan`, {})
   },
 

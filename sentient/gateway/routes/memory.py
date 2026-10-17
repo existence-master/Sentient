@@ -10,6 +10,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from sentient.gateway.deps import AUTH, get_core
 from sentient.memory import export as memory_export
+from sentient.memory import forget as memory_forget
 from sentient.memory import review as memory_review
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
@@ -216,7 +217,22 @@ async def review_discard(request: Request, kind: str, item_id: str):
 
 @router.delete("/source/{source:path}")
 async def delete_by_source(request: Request, source: str):
-    return {"deleted": await _memory(request).forget_source(source)}
+    """Forget the memories from ``source``. One another source backs too only loses this source (#153)."""
+    mem = _memory(request)
+    done = await mem.purge_source(source)
+    if done["deleted"] or done["unlinked"]:
+        mem.publish("DELETE", None, None, source=source, count=done["deleted"], unlinked=done["unlinked"])
+    return done
+
+
+@router.get("/forget-preview")
+async def forget_preview(request: Request, source: str = ""):
+    """What "Also forget what Sentient learned from it" would delete for ``source`` (``app:gmail``,
+    ``channel:telegram``, ``device:<id>``, ``folder:<id>``), before the user disconnects it (#153)."""
+    try:
+        return await memory_forget.preview(get_core(request), source)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("")

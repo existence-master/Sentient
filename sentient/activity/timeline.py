@@ -218,7 +218,7 @@ class Timeline:
         cur = decode_cursor(before)
         sources: list[Source] = [
             self._chat_tools, self._chat_events, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
-            self._reminders_past, self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
+            self._reminders_past, self._facts, self._forgets, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
             self._file_snapshots,
         ]
         results = await asyncio.gather(*(src(cur, limit, query) for src in sources))
@@ -924,6 +924,14 @@ class Timeline:
                 why = "A task found it"
             elif source.startswith("import"):
                 why = "Imported from another assistant"
+            elif source.startswith("channel:"):
+                why = f"You mentioned it in {words.app_label(source[8:], self.app.registry) or source[8:]}"
+            elif source.startswith("device:"):
+                why = "You mentioned it on one of your devices"
+            elif source.startswith("app:"):
+                why = f"From {words.app_label(source[4:], self.app.registry) or source[4:]}"
+            elif source.startswith("folder:"):
+                why = "From your notes"
             else:
                 why = "Sentient learned it"
             pending = row["status"] == "pending"
@@ -937,6 +945,37 @@ class Timeline:
             where=where, params=params, ts="created_at", key="('fact:' || id)", build=build, cur=cur, n=n,
             query=query, filtered=False,
         )
+
+    # -- what was forgotten when a source was disconnected (#153)
+    async def _forgets(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("memory"):
+            return [], None
+        where = ["1"]
+        params: list = []
+        if query.app:
+            where.append("source IN (?, ?)")
+            params += [f"app:{query.app}", f"channel:{query.app}"]
+        if query.q:
+            where.append("label LIKE ? ESCAPE '\\'")
+            params.append(query.like())
+
+        def build(row: Any) -> Item:
+            kind, _, ident = str(row["source"]).partition(":")
+            counts = _loads(row["counts"]) or {}
+            return Item(id=row["_key"], kind="memory", at=row["_at"],
+                        title=f"Forgot what Sentient learned from {row['label']}",
+                        why="You asked for it when you disconnected it", detail=forgot_detail(counts) or None,
+                        status="done", app=ident if kind in {"app", "channel"} else None,
+                        app_label=row["label"] if kind in {"app", "channel"} else None)
+
+        try:
+            return await self._sql(
+                select="SELECT at AS _at, ('forget:' || id) AS _key, * FROM memory_forgets",
+                where=where, params=params, ts="at", key="('forget:' || id)", build=build, cur=cur, n=n,
+                query=query, filtered=False,
+            )
+        except sqlite3.OperationalError:  # no memory_forgets table yet: nothing forgotten
+            return [], None
 
     # -- dreams (nightly memory tidy-up)
     async def _dreams(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -1345,6 +1384,36 @@ class Timeline:
         found -= {"memory", "files", "time", "tasks", "skills"}
         return sorted(({"id": a, "label": words.app_label(a, self.app.registry)} for a in found),
                       key=lambda a: str(a["label"]).lower())
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def forgot_detail(counts: dict) -> str:
+    """"12 memories, 3 chats (40 messages) and 120 saved emails" from a ``memory_forgets`` row's counts."""
+    parts = []
+    n = int(counts.get("memories") or 0)
+    if n:
+        parts.append(_count(n, "memory", "memories"))
+    n = int(counts.get("chats") or 0)
+    if n:
+        parts.append(f"{_count(n, 'chat', 'chats')} ({_count(int(counts.get('messages') or 0), 'message', 'messages')})")
+    n = int(counts.get("items") or 0)
+    if n:
+        noun = "emails" if counts.get("item_noun") == "emails" else "items"
+        parts.append(_count(n, f"saved {noun[:-1]}", f"saved {noun}"))
+    n = int(counts.get("results") or 0)
+    if n:
+        parts.append(_count(n, "result in your chats", "results in your chats"))
+    n = int(counts.get("summaries") or 0)
+    if n:
+        parts.append(_count(n, "chat summary", "chat summaries"))
+    text = ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1] if parts else "Nothing was saved from it"
+    n = int(counts.get("shared") or 0)
+    if n:
+        text += f". {_count(n, 'memory', 'memories')} you also shared elsewhere stayed"
+    return text
 
 
 def _brief(arguments: Any) -> str:

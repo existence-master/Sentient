@@ -19,6 +19,7 @@ import type { Channel, ChannelPairing, PairedChat } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { previewMode } from '@/features/devices/preview'
 import { SchemaForm } from '@/features/settings/SchemaForm'
+import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
 import { useChannelActions, useChannels } from './hooks'
 import { ChannelTile } from './meta'
 import { WhatsAppLinkDialog } from './WhatsAppLink'
@@ -96,6 +97,7 @@ export function MessagingApps() {
 function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConnect: () => void; onPair: () => void }) {
   const actions = useChannelActions()
   const [confirm, setConfirm] = useState(false)
+  const forget = useForgetChoice()
   const status = STATUS[channel.status] ?? STATUS.disconnected
   const connected = channel.status === 'connected'
   const whatsapp = channel.id === 'whatsapp'
@@ -115,7 +117,14 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
           <div className="mt-0.5 text-sm text-fg-subtle">{connected && channel.account_label ? account : BLURB[channel.id] ?? ''}</div>
         </div>
         {connected ? (
-          <Button size="sm" variant="ghost" onClick={() => setConfirm(true)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              forget.reset()
+              setConfirm(true)
+            }}
+          >
             Disconnect
           </Button>
         ) : (
@@ -167,15 +176,18 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
             ? 'Sentient is removed from Linked devices on your phone and stops answering. Your chats and their history stay here. To use WhatsApp again, scan a new code.'
             : 'Sentient stops answering messages there. Your paired chats and their history stay, and come back if you reconnect the same bot.'
         }
-        confirmLabel="Disconnect"
+        confirmLabel={forget.forget ? 'Disconnect and forget' : 'Disconnect'}
         onConfirm={async () => {
           try {
-            await actions.disconnect.mutateAsync(channel.id)
+            const res = await actions.disconnect.mutateAsync({ id: channel.id, forget: forget.forget })
+            if (res.forgotten) toast.success(`${channel.display_name} disconnected`, { description: forgottenMessage(res.forgotten) })
           } catch (e) {
             toast.error("Couldn't disconnect", { description: errorMessage(e) })
           }
         }}
-      />
+      >
+        <ForgetLearned source={`channel:${channel.id}`} open={confirm} checked={forget.forget} onCheckedChange={forget.setForget} />
+      </ConfirmDialog>
     </motion.div>
   )
 }

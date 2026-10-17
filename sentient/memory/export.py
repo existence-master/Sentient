@@ -42,6 +42,14 @@ def source_words(source: str) -> str:
         return rest
     if kind == "task":
         return "a task"
+    if kind == "channel" and rest:
+        return f"a chat in {rest.title()}"
+    if kind == "device" and rest:
+        return "a chat on a device"
+    if kind == "app" and rest:
+        return rest.replace("_", " ").title()
+    if kind == "folder" and rest:
+        return "your notes"
     return _SOURCE_WORDS.get(source, source or "Sentient")
 
 

@@ -88,7 +88,8 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
-| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE). Memory scopes (#155, section 7): a save carries `scope` (where it was kept); moving a memory sends UPDATE with `reason: "moved"`, `scope` and `previous_scope`; resetting a scope sends a bulk DELETE with `reason: "scope_reset"`, `scope` and `count` |
+| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE). Memory scopes (#155, section 7): a save carries `scope` (where it was kept); moving a memory sends UPDATE with `reason: "moved"`, `scope` and `previous_scope`; resetting a scope sends a bulk DELETE with `reason: "scope_reset"`, `scope` and `count`. Forgetting a source (#153) sends a bulk DELETE with `source`, `count` (deleted) and `unlinked` (kept because another source backs them), and `reason: "forgotten"` when it came with a disconnect |
+| `memory.forgotten` | `{id, source, label, counts: ForgetCounts, at}`: "Also forget what Sentient learned from it" ran when a source was disconnected (#153, section 7); the window refreshes memories, chats and Activity |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `mcp.review` | `{server, reason?: "new"\|"changed", tools?: [tool names on the server], needed}`: an MCP server's tools wait for review, or the user answered (section 5) |
 | `session.updated` | `{session_id, title?, model?, memory_scope?, untrusted?}`: only what changed. `title` after a rename or an automatic title; `model` (`null` = the default) after the chat's model was picked; `memory_scope` (the scope it uses now) after its memories were picked (section 2); `untrusted` when the chat's outside-content mark changes (it read outside content, a group member wrote, or the user trusted it again: `""`, section 10) |
@@ -302,7 +303,7 @@ accept or loosen a rule.
   "From your answer on <date>"). An entry is dropped when its rule is changed or removed.
 
 ### Sessions (chats)
-- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model, memory_scope}]` newest first
+- `GET /api/sessions?limit=100` → `[{id, title, channel, created_at, updated_at, untrusted, visited_hosts, incognito, model, memory_scope, node_id}]` newest first (`node_id`: the paired device a voice chat was started on, #153)
   (`untrusted`: the app whose content the chat read, e.g. `"Gmail"`, `""` when clean, `null` before its first turn;
   `visited_hosts`: list of web hosts it loaded, or `null`; section 10; `incognito`: bool, below. The window keeps
   incognito chats out of its chat list; `model`: the chat's own model, `null` when it follows the default, below;
@@ -1235,7 +1236,8 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
   - oauth: `{auth_url, state}`; the desktop opens `auth_url` in the system browser; a loopback listener finishes the flow and emits `integration.updated`
   - github with `integrations.github_oauth_client_id` set and no `token` field: device flow, `{auth_url, state, user_code}`; show `user_code` for the user to type at `auth_url`; completion arrives as `integration.updated`
   - validation failures → HTTP 400 `{detail: "friendly message"}`; the integration's `status`/`error` also update
-- `POST /api/integrations/{id}/disconnect` → `Integration` (also disables tasks that depend on it, v2 behaviour)
+- `POST /api/integrations/{id}/disconnect` → `Integration` (also disables tasks that depend on it, v2 behaviour).
+  `?forget=true` also forgets what Sentient learned from it and adds `forgotten: ForgetCounts` (section 7, #153)
 - `POST /api/integrations/{id}/test` → `{ok, detail}`
 - `PUT /api/integrations/{id}/access` `{access: "read"|"read_write"}` → `Integration` (also emits `integration.updated`;
   404 unknown integration, 422 any other value)
@@ -1276,7 +1278,7 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
     server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
     differs, and an older record without `server_url` is dropped only when this setup had the server at another
     URL. Adding a local (stdio) server with the same name leaves a stored sign-in alone.
-- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain, and its Read only setting)
+- `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain, and its Read only setting). `?forget=true` also forgets what Sentient learned from it (`app:mcp_<name>`) → `{ok, forgotten: ForgetCounts}` (section 7, #153)
 - `POST /api/integrations/mcp/{name}/access` `{access: "read"|"read_write"}` → server object; the server keeps running
   (404 unknown server, 422 any other value)
 - `POST /api/integrations/mcp/{name}/test` → `{ok, tools: [mcp tool names], error?}`
@@ -1618,7 +1620,43 @@ attribute and no word of what it says in common ("a piano recital in July" for "
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `PATCH /api/memories/{id}` `{scope}` → `Memory`: moves it to another scope (below). 400 empty `scope`, 404 if missing.
 - `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing)
-- `DELETE /api/memories/source/{source}` → `{deleted: n}`
+- `DELETE /api/memories/source/{source}` → `{deleted, unlinked}`: forgets the memories learned from `source`. A memory
+  another source backs too is not deleted: it loses this source and keeps the others (`unlinked`), see "Sources and
+  forgetting" below.
+- `GET /api/memories/forget-preview?source=` → **ForgetCounts**: what "Also forget what Sentient learned from it" would
+  delete for `source`, before the user disconnects it. Nothing changes. 400 for a source that can't be disconnected.
+
+**Sources and forgetting (#153).** A fact's `source` is where it was learned first: `conversation` (a chat in the
+window), `channel:<telegram|discord|whatsapp>` (a chat in a messaging app), `device:<node id>` (a voice chat from a
+paired device; `sessions.node_id`), `app:<plugin id>` (an app or MCP server, `app:mcp_<name>`), `folder:<folder id>`,
+`file:<name>`, `manual`, `onboarding`, `import:<app>` and so on. Every other place the same fact is learned again (a
+duplicate skipped, an update, a merge, an approval of the same words) is linked in `fact_sources`. A fact learned in a
+chat is the chat's, plus every added folder whose notes that chat read (its answer sources, section 2); a fact held
+for review because the chat read an app's content (Gmail, Home Assistant, an MCP server...) is that app's instead.
+Forgetting a source deletes the facts no other source backs, with their vectors and merged copies, and takes it off
+the others (the next source becomes a fact's own `source`).
+
+Disconnecting an app (`POST /api/integrations/{id}/disconnect?forget=true`), removing an MCP server
+(`DELETE /api/integrations/mcp/{name}?forget=true`), disconnecting a messaging app
+(`POST /api/channels/{id}/disconnect?forget=true`), removing a device (`DELETE /api/nodes/{id}?forget=true`) or a
+folder (`DELETE /api/folders/{id}?forget=true`) with `forget` also forgets what Sentient learned from it, and the
+response carries `forgotten: ForgetCounts`. Without `forget` nothing more is deleted than before. What goes:
+
+- every source: the facts above;
+- a messaging app or a device: its chats with all their messages, and the chat summaries (and their vectors) made of
+  them. Paired chats stay paired; the next message starts a new chat;
+- an app: what its tools returned in any chat (each result is replaced by
+  `{"forgotten": "This result was forgotten when you disconnected Gmail."}` and the app leaves the replies' sources),
+  summaries of chats that read it, and what proactivity and change feeds kept from it (cached emails and events, seen
+  ids, cursors, past suggestions; a suggestion still waiting keeps its card but loses the notes it was made from);
+- a folder: removing it already drops its index of notes.
+
+Each forget is kept (`memory_forgets`) and shows in Activity as "Forgot what Sentient learned from Telegram" (section
+21), and publishes `memory.forgotten`.
+
+**ForgetCounts** `{source, memories, shared, chats, messages, summaries, results, items, item_noun: "emails"|"items"}`:
+`memories` deleted, `shared` kept because another source backs them, `chats` and their `messages`, chat `summaries`,
+tool `results` in chats, and `items` an app's cached emails or other items.
 - `GET /api/memories/scopes` → `[{name, label, count, built_in}]`: `always`, `personal` and `work` first, then every
   project a memory, chat, task, messaging app or added folder uses, by name; `count` = active memories in it.
 - `DELETE /api/memories/scope/{scope}` → `{deleted: n}`: resets one scope. Every memory in it goes (also ones waiting
@@ -2424,7 +2462,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `qr_svg` is an inline SVG QR code of `web_url`; `fingerprint` is null when the LAN listener is not running.
 - **Node** `{node_id, name, kind, platform, app_version, capabilities, online, connection: "lan"|"local"|null, last_seen_at, battery, charging, worn, created_at}`
 - `GET /api/nodes` → `[Node]` (online first); `GET /api/nodes/{id}` → `Node`; `PATCH /api/nodes/{id}` `{name}` → `Node`;
-  `DELETE /api/nodes/{id}` → `{ok}` (revokes the token and disconnects; 400 for `desktop`);
+  `DELETE /api/nodes/{id}` → `{ok}` (revokes the token and disconnects; 400 for `desktop`; `?forget=true` also forgets
+  its voice chats and what was learned in them → `{ok, forgotten: ForgetCounts}`, section 7, #153);
   `POST /api/nodes/{id}/invoke` `{capability, params, timeout_ms?}` → `{ok, data?, error?, code?}` with `code` `offline`, `unsupported`,
   `timeout`, `not_allowed` (desktop screen capture off), `bad_upload` or the device's own code;
   `GET /api/nodes/lan` → `{enabled, running, port, urls, web_urls, fingerprint, mdns, error}`.
@@ -2462,7 +2501,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   logs) and polling starts. 400 invalid token or channel turned off in Settings; 404 unknown channel; 500 keychain unavailable.
 - `POST /api/channels/{id}/disconnect` → `Channel` (stops receiving, deletes the token, cancels the pairing code;
   paired chats are kept so reconnecting the same bot needs no re-pairing; remove them with DELETE). WhatsApp: logs out
-  (Sentient leaves Linked devices on the phone) and deletes the saved session.
+  (Sentient leaves Linked devices on the phone) and deletes the saved session. `?forget=true` also forgets what
+  Sentient learned there (its chats, their summaries and the facts from them) and adds `forgotten: ForgetCounts`
+  (section 7, #153).
 - `POST /api/channels/{id}/pairing` → `{code, expires_at, instructions}`. 6 digits, valid `channels.pairing_code_minutes`
   (10), single use, one active code per channel (a new code replaces the old one). 409 when the channel is not connected.
 - `PATCH /api/channels/{id}/paired/{chat_id}` `{deliver: bool}` → `Channel` (400 when `deliver` is not a boolean, 404 unknown chat).
@@ -3283,6 +3324,7 @@ What each source gives (past):
 | `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed`, `dry_run_finished` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |
 | `reminders` (section 23) | "Your 10 minute timer went off", "Reminded you: call Ravi", "Cancelled your pasta timer" (`status: "stopped"`); `why` where it was set ("You set it by voice", "You set it on Telegram"); a reminder that went off late says when it was due. The `reminder` notification is not listed again |
 | `facts` | "Remembered something about you" (or "Saved a memory for your review"), `why` from its source |
+| `memory_forgets` (#153) | "Forgot what Sentient learned from Telegram", `why` "You asked for it when you disconnected it", `detail` "12 memories, 1 chat (40 messages) and 2 chat summaries. 3 memories you also shared elsewhere stayed"; `kind` `memory`, `app` the app or messaging app |
 | `dreams`, `evolution_log` | memory tidy-ups; skill changes; profile updates |
 | backup folders | backups and snapshots (`kind` manual, scheduled, snapshot) |
 | `tools.approvals.rule_origins` | "You chose Always allow for ..." |
@@ -3320,8 +3362,8 @@ far it read. Indexes: `idx_messages_tool_time` (`messages(created_at) WHERE role
 `idx_facts_created`, plus the existing ones on notifications, the skills log and dreams.
 
 The window refetches the timeline a moment after the events that change it (`task.*`, `notification.*`,
-`memory.updated`, `skill.updated`, `dream.updated`, `backup.updated`, `approval_grants.updated`, `channel.message`,
-`channel.delivery`,
+`memory.updated`, `memory.forgotten`, `skill.updated`, `dream.updated`, `backup.updated`, `approval_grants.updated`,
+`channel.message`, `channel.delivery`,
 `budget.updated`, and a finished chat reply).
 
 ## 22. Folders and Obsidian vaults as notes (owner: folders, #176)
@@ -3414,6 +3456,8 @@ searched). `progress` counts the new or changed files of the running scan. `scop
 - `PATCH /api/folders/{id}` `{ignore?, scope?}` → Folder. New `ignore` patterns scan it again; a new `scope` (empty
   is `always`) takes effect at once and sends `folders.updated`. 404 when unknown.
 - `DELETE /api/folders/{id}` → `{removed: true}`: forgets the folder and its whole index. 404 when unknown.
+  `?forget=true` also forgets the memories learned from its notes → `{removed: true, forgotten: ForgetCounts}`
+  (section 7, #153).
 - `POST /api/folders/{id}/rescan` → 202 `{queued: true}`. 404 when unknown.
 - `POST /api/folders/search` `{query, folder?, limit?}` → what `folder_search` returns.
 - Event `folders.updated` (section 1).

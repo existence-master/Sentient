@@ -44,6 +44,7 @@ from sentient import paths
 from sentient.folders import notes as notes_mod
 from sentient.folders.scan import MARKDOWN, Ignore, is_obsidian, obsidian_excluded, supported, walk
 from sentient.memory import scopes as memory_scopes
+from sentient.memory.forget import forget as forget_learned
 from sentient.memory.vectors import VecTable, pack
 from sentient.services import Service
 from sentient.store.db import new_id, now_iso
@@ -281,8 +282,9 @@ class FolderService(Service):
             self.enqueue(folder_id)
         return await self.get(folder_id)
 
-    async def remove(self, folder_id: str) -> bool:
-        """Forget a folder and its whole index. The folder itself is not touched."""
+    async def remove(self, folder_id: str, *, forget: bool = False) -> bool | dict:
+        """Forget a folder and its whole index. The folder itself is not touched. ``forget``: also forget the facts
+        learned from its notes (#153); returns what was deleted instead of True."""
         row = await self._row(folder_id)
         if row is None:
             return False
@@ -295,6 +297,8 @@ class FolderService(Service):
         self._watch_changed.set()
         self._publish(folder_id, force=True, removed=True)
         log.info("folder removed: %s", row["path"])
+        if forget:
+            return await forget_learned(self.app, f"folder:{folder_id}", str(row["name"] or "the folder"))
         return True
 
     def enqueue(self, folder_id: str) -> bool:
