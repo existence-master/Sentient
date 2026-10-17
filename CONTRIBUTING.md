@@ -34,9 +34,10 @@ engine on its own and how to capture screenshots, is in [docs/DEVELOPING.md](doc
 
 We use **GitHub flow**:
 
-1. **Find or open an issue.** Look for [`good first issue`](../../labels/good%20first%20issue) and
-   [`help wanted`](../../labels/help%20wanted). For anything bigger than a small fix, comment on the issue first
-   so we can agree on the approach and avoid duplicate work. Small fixes and docs need no issue.
+1. **Find or open an issue, then claim it.** Look for [`good first issue`](../../labels/good%20first%20issue) and
+   [`help wanted`](../../labels/help%20wanted). Comment `/assign` on a free issue and a bot assigns it to you, so
+   nobody else starts the same work. For anything bigger than a small fix, also say how you plan to do it so we
+   can agree on the approach. Small fixes and docs need no issue.
 2. **Fork, then branch from `main`.** Name the branch after what it does, for example
    `fix/telegram-long-messages` or `feat/outlook-integration`.
 3. **Keep the pull request small and focused.** One change per PR is much faster to review.
@@ -46,6 +47,31 @@ We use **GitHub flow**:
 
 There are no long-lived `development` or `staging` branches. `main` is always the latest working version, and
 releases are tags on `main`.
+
+### Claiming an issue
+
+Comment on the issue with just one line:
+
+- `/assign` assigns the issue to you, if nobody has it yet. If someone does, the bot tells you who, so you can
+  pick another issue or offer to team up.
+- `/unassign` hands it back, if it is yours. No explanation needed, and thanks for saying so.
+
+Try to open a pull request (a draft is fine) within a week. If you need longer, just comment on the issue.
+
+### If things go quiet
+
+Life happens, and that's fine. To keep issues moving for everyone, a bot checks once a day:
+
+- **A claimed issue with no pull request and no comment from you for 14 days** gets a friendly ping. After 21
+  days (and at least a week after the ping), you are unassigned so someone else can pick it up. You can
+  `/assign` it again any time while it is free.
+- **A pull request where we asked for changes** and nothing has happened for 7 days gets the
+  `waiting on author` label and one gentle reminder. Pushing a commit or replying removes the label. After 21
+  days (and at least a week after the reminder) we close it with a thank-you, and unassign you from its issue.
+  You can reopen it whenever you have time, or comment and we will reopen it for you.
+
+Draft pull requests are never touched, and the clock only runs while we are waiting on you, never while you
+are waiting on us.
 
 ### PR titles
 

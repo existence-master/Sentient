@@ -1,0 +1,49 @@
+# Daily check of contributor pull requests waiting on their author and of quiet issue claims. The rules are in
+# .github/scripts/stale.js and CONTRIBUTING.md ("If things go quiet").
+#
+# Dry run by default: it only logs what it would do. A manual run with dry_run unticked acts once. Scheduled runs
+# act only when the repository variable STALE_BOT_LIVE is "true" (Settings > Secrets and variables > Actions).
+# A pull request that changes the bot gets a dry run against the real repository as a preview.
+name: Stale pull requests and claims
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only log what would happen, change nothing
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - .github/workflows/stale.yaml
+      - .github/scripts/stale.js
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: stale-bot-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          LIVE: >-
+            ${{ (github.event_name == 'workflow_dispatch' && !inputs.dry_run) ||
+                (github.event_name == 'schedule' && vars.STALE_BOT_LIVE == 'true') }}
+        with:
+          script: |
+            const run = require('./.github/scripts/stale.js');
+            await run({ github, context, core, dryRun: process.env.LIVE !== 'true' });
