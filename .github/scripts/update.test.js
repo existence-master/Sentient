@@ -340,6 +340,7 @@ test('when the merge commit has not shown up yet, the reply says it is on its wa
   fake.github.rest.pulls.get = async () => ({ data: { state: 'open', head: { sha: OLD, repo: { full_name: 'existence-master/Sentient' } }, base: { ref: 'main' } } });
   await runWith(fake);
   assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.updating('main')}`);
+  assert.ok(!fake.names().includes('removeLabel'));
 });
 
 test('clearLabel takes the label off once the branch is up to date, and only then', async () => {

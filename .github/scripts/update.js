@@ -350,7 +350,8 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
     }
   }
 
-  if (action === 'upToDate' || action === 'updated') await removeLabel(github, { owner, repo, issue_number });
+  // Without the new head in sight the branch isn't known to be current yet, so the label stays.
+  if (action === 'upToDate' || (action === 'updated' && newSha)) await removeLabel(github, { owner, repo, issue_number });
   if (['conflicts', 'useButton', 'failed'].includes(action)) await addLabel(github, { owner, repo, issue_number });
 
   const reply = {
