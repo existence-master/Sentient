@@ -10,7 +10,14 @@ released.
 
 <!-- towncrier release notes start -->
 
+## [3.0.0-beta.1] - 2026-10-17
+
 ### Added
+- **Disconnecting can also mean forgetting.** When you disconnect Gmail, IMAP, Home Assistant or another app, remove an
+  MCP server, a device or a folder of notes, or disconnect Telegram, Discord or WhatsApp, you can tick "Also forget what
+  Sentient learned from it". The dialog says how much that is first, then the memories, chats, summaries, saved emails
+  and app results that came from it are deleted, and Activity notes it. A memory you also shared somewhere else stays.
+  Leave the box clear and Sentient keeps what it learned (#153).
 - **Skills can say how to check they work.** A skill can list a file that must exist or a few lines of Python with the
   output they should print. Sentient checks a skill it drafted for itself before it shows it to you, and doesn't
   propose one that fails. A check that runs code waits until you approve the skill (the button says "Approve and run
@@ -444,6 +451,7 @@ released.
   skip. Nothing catches up while Stop everything is on; it happens when you resume.
 
 ### Changed
+- Database changes are now numbered files in `sentient/store/migrations/`, and the schema version is the highest of them, so two changes can no longer silently take the same version. The database moves to version 13, so the first start after updating takes a snapshot first, as with any database update. (#424)
 - **Incognito chats leave nothing behind:** when an incognito chat is deleted, the long results it saved
   while reading pages or files go with it. Files you asked it to write and tasks it created stay.
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
@@ -668,5 +676,6 @@ Sentient v3: a rewrite as a desktop app that runs on your own computer. No accou
 
 The cloud web app. Its history is on the [`v2` branch](https://github.com/existence-master/Sentient/tree/v2).
 
-[Unreleased]: https://github.com/existence-master/Sentient/compare/v2-final...main
+[Unreleased]: https://github.com/existence-master/Sentient/compare/v3.0.0-beta.1...main
+[3.0.0-beta.1]: https://github.com/existence-master/Sentient/releases/tag/v3.0.0-beta.1
 [3.0.0-alpha.0]: https://github.com/existence-master/Sentient/tree/main

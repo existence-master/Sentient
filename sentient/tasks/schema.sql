@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     notepad               TEXT,                       -- recurring tasks: notes the runs keep for the next run (tasks/continuity.py)
     memory_scope          TEXT,                       -- the memories its runs use and save to (#155); NULL: personal
     keep_running          INTEGER NOT NULL DEFAULT 0, -- never paused while the user is away (#163)
+    setup                 TEXT,                       -- JSON (routines): the setup checklist (#161, tasks/checklist.py)
     error                 TEXT,
     next_execution_at     TEXT,                       -- UTC ISO-8601, seconds precision (lexicographically comparable)
     last_execution_at     TEXT,
@@ -38,7 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_next_exec ON tasks(status, enabled, next_ex
 CREATE TABLE IF NOT EXISTS task_runs (
     id            TEXT PRIMARY KEY,
     task_id       TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    status        TEXT NOT NULL,                  -- processing | waiting_for_user | completed | completed_with_errors | error | cancelled
+    status        TEXT NOT NULL,                  -- processing | waiting_for_user | completed | completed_with_errors | error | cancelled | skipped
     plan          TEXT,                           -- JSON plan snapshot (swarm: worker configurations)
     trigger_data  TEXT,                           -- JSON event that started this run (triggered tasks)
     messages      TEXT,                           -- JSON checkpoint of the agent transcript (resumable)
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     dry_run       INTEGER NOT NULL DEFAULT 0,     -- 1: a try run (#142), which only notes what it would send, change or run
     would_do      TEXT,                           -- JSON list (try runs): what a real run would do (sentient/agent/dry_run.py)
     checks        TEXT,                           -- JSON list: outcome checks of the calls it made (#165, sentient/agent/outcomes.py)
+    retry_at      TEXT,                           -- skipped for a missing source: when it is tried again (#161)
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL

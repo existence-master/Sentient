@@ -259,7 +259,7 @@ accept or loosen a rule.
   a deterministic pre-filter (never, don't, do not, must not, always ask, ask me first, without asking...; "don't ask
   me" and "stop asking" never count); then tools whose names or descriptions share a word with the message; then one
   short `fast`-role prompt that returns `{"keys": [...], "rule": "never"|"ask"}`, parsed tolerantly. When every fast
-  model refuses the job (Claude Code only answers chats, ADR 0022), the chat's own model or else the primary model
+  model refuses the job (Claude Code only answers chats, ADR 0022, unless it does everything, ADR 0032), the chat's own model or else the primary model
   answers it, as part of the reply (#311). Claude Code answers it only within the reply's 20 s wait; a slower Claude
   Code check is stopped and makes no card. Keys must be
   tool names or app ids among those candidates (checked in code). The level is decided in code from the words
@@ -332,7 +332,7 @@ accept or loosen a rule.
     before it said anything falls back the same way, once per reply. The chat keeps its model, so it is used again as
     soon as it works. Every reply that the default answered says so.
   - Helpers the chat starts (subagents, section 10) use the chat's model where they would use the primary model
-    (`subagents.role: primary`), except Claude Code, which only answers chats. Background work after a reply (titles,
+    (`subagents.role: primary`), except Claude Code, which only answers chats unless it does everything (ADR 0032). Background work after a reply (titles,
     memory, rule checks, summaries) and tasks keep their own role models.
   - Incognito chats keep a model the same way.
 - `POST /api/sessions/{id}/trust` `{upto?: message id}` → `{ok, was, trusted, untrusted, writer}`: "I've checked it,
@@ -473,7 +473,9 @@ accept or loosen a rule.
   `week` (from Monday) and `month`, on the computer's own clock:
   `CostPeriod = {key, label, since, cost_usd, calls, tokens, paid_calls, unpriced_calls, plan_calls, plan_tokens,
   local_calls, local_tokens, by_model: [{model, billing, calls, prompt_tokens, completion_tokens, cost_usd, unpriced_calls}],
-  by_role: [{role, calls, prompt_tokens, completion_tokens, cost_usd, unpriced_calls, plan_calls, local_calls}]}`.
+  by_role: [{role, calls, prompt_tokens, completion_tokens, cost_usd, unpriced_calls, plan_calls, local_calls}],
+  claude_code_by_role: [{role, calls, prompt_tokens, completion_tokens}]}`. `claude_code_by_role` counts only
+  `claude-code/*` calls, by the role that made them (`other` when none was recorded), most tokens first (#444).
   `billing` is `local` (free), `plan` (Claude Code and ChatGPT plan models: on the user's plan, never in dollars) or
   `paid` (priced per token from LiteLLM's bundled price list; `cost_usd: null` and `unpriced_calls` when the price
   isn't known). A role row's `cost_usd` is `null` when none of its calls had a price.
@@ -567,11 +569,20 @@ accept or loosen a rule.
   engine's `SENTIENT_DEBUG_BATTERY` environment variable fakes the reading: `ac` (plugged in), `battery` (on battery,
   level unknown) or a percent from 0 to 100 (on battery at that level).
   A stream holds the model until its last chunk; cancelling (Stop everything) frees it.
-- `GET /api/models/claude-code` → `{enabled, installed, version, detail, models}`: Claude through the user's own
+- `GET /api/models/claude-code` → `{enabled, installed, version, detail, models, fast_model, everywhere, roles,
+  max_concurrent, running, waiting}`: Claude through the user's own
   Claude Code (experimental, ADR 0022). `enabled` is `models.experimental_claude_code` (default false). `installed`
   means a `claude` program is on PATH; `version` is its `claude --version` line, asked only while `enabled` (null
   otherwise or when it doesn't answer). `detail` is a plain sentence for Settings. `models` are the model names to
-  offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). It never calls a model
+  offer (`CLAUDE_CODE_MODELS` in `config/schema.py`: `claude-code/sonnet`, `claude-code/opus`). `everywhere` is true
+  when Claude Code does everything (`models.claude_code_everywhere` with `enabled`, ADR 0032). `roles` are the roles
+  that may use them with this configuration: the ones that answer chats (`["primary", "voice", "vision"]`), or every
+  role but `embedding` when `everywhere`. `claude_code.accepting_roles(config)` decides it in one place, for this
+  report, the refusals, the check-up and `PUT /api/models/roles`. The window offers Claude Code
+  only for these and warns when another role uses it, its own model or the main model it falls back to (#442), and
+  asks for this report again whenever either switch changes. `max_concurrent` is
+  `models.claude_code_max_concurrent`; `running` and `waiting` count Claude Code processes running now and calls
+  queued for one. It never calls a model
   and never reads Claude's login; `POST /api/models/test` with a `claude-code/` model is the only dry run. `enabled`
   is the saved setting, so a window that has just flipped the switch asks again until it matches.
 - `POST /api/models/checkup` `{roles?: {role: model | null}}` → streams NDJSON while it checks each role's model,
@@ -585,7 +596,9 @@ accept or loosen a rule.
     `hardware` is `GET /api/system/hardware`)
   - `{type: "step", role, label}` progress, e.g. "Trying a tool call"
   - `{type: "role", role, model, provider, local, inherits, status, checks: [Check]}` when a role is finished.
-    `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own.
+    `inherits: "primary"` with `status: "skip"` and no checks for an optional role with no model of its own. When
+    that main model is Claude Code and the role refuses it (planner, executor), the role is checked with it instead:
+    `model` is the main model (in `start` too), `inherits: "primary"`, and its `connection` check fails (#442).
   - `{type: "done", status, roles: [role results]}` (`status` = the worst role)
 
   `Check` = `{id, label, status: "pass"|"warn"|"fail"|"skip", detail, fix?, action?}`. `detail` and `fix` are
@@ -607,7 +620,7 @@ accept or loosen a rule.
   `{kind: "set_context_length", value, role: string|null, label}` (`models.context_length`, or
   `models.context_length_per_role[role]` when `role` is set). Unknown role → 400. `sentient doctor --models` prints
   the same check-up as a table.
-- `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`.
+- `PUT /api/models/roles` `{primary?, fast?, planner?, executor?, embedding?, vision?, voice?}` → updated roles (null = use primary). The `voice` role is used for `channel` voice/glasses turns and defaults to reasoning `none`. A `claude-code/` model for a role that refuses it (not in `roles` of `GET /api/models/claude-code`) is `400` with the plain refusal as `detail` (#442).
 - `PUT /api/models/fallbacks` `{role: [model, ...]}` → `{ok}`
 - `POST /api/models/ollama/pull` `{name}` → streams NDJSON `{status, completed?, total?}`
 - **Model presets** (#212): named setups that switch every role in one step. Three built-ins are generated, never
@@ -621,18 +634,24 @@ accept or loosen a rule.
   out keeps its model, a field left out keeps its value) and the last one applied is `models.active_preset`. Names are
   1 to 40 characters, no slashes, matched without case; built-in names are reserved.
   - **Preset** `{name, builtin, available, reason, provider, description, roles, fallbacks?, reasoning?, context_length?,
-    context_length_per_role?, active}`. `available: false` with a plain `reason` for Cloud and Mixed when no cloud key
-    is set (or when a ChatGPT plan's model list can't be loaded). `provider` is the cloud provider a built-in uses.
+    context_length_per_role?, cloud, blocked_by, active}`. `available: false` with a plain `reason` for Cloud and Mixed
+    when no cloud key is set (or when a ChatGPT plan's model list can't be loaded). `provider` is the cloud provider a
+    built-in uses. `cloud` (#335) is true when a role the preset sets uses a model outside this computer (the
+    `runs_here` rule of Local only). With `models.local_only` on, a `cloud` preset that is otherwise usable is
+    `available: false`, `blocked_by: "local_only"` and a plain `reason`; `blocked_by` is null otherwise.
   - `GET /api/models/presets` → `{active, modified, can_undo, undo_preset, presets: [Preset]}` (built-ins first).
     `modified` is true when a role was changed by hand after `active` was applied.
-  - `POST /api/models/presets/{name}/apply` → `{preset, changed: [{role, from, to}], missing: [Missing], can_undo}`.
-    Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404 unknown preset, 409
-    `available: false`. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
+  - `POST /api/models/presets/{name}/apply` `{local_only?}` → `{preset, changed: [{role, from, to}], missing: [Missing],
+    can_undo, local_only}`. Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404
+    unknown preset, 409 `available: false`. `local_only: true` (#335; the window asks first when Local only is applied
+    with the switch off) also turns `models.local_only` on in the same save, 409 for a `cloud` preset; without it the
+    switch is left as it is. The result's `local_only` is the switch after the call. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
     detail, fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the
     pull route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`),
     no ChatGPT sign-in for a `chatgpt/` model (`sign_in`, `action: null`), or Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.
   - `POST /api/models/presets/undo` → same shape: puts back the roles, fallbacks, reasoning, context lengths and active
-    preset from before the last switch. One step only: 409 when there is nothing to undo.
+    preset from before the last switch, and turns Local only back off when that switch turned it on. One step only:
+    409 when there is nothing to undo.
   - `POST /api/models/presets` `{name, overwrite?}` → Preset: saves the current roles, fallbacks, reasoning and context
     lengths and makes it active. 400 bad or built-in name, 409 name taken (unless `overwrite`).
   - `PATCH /api/models/presets/{name}` `{name}` → Preset (rename; `active_preset` follows). 400 built-in, 404, 409.
@@ -665,8 +684,29 @@ accept or loosen a rule.
   model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
   (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
-  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles other than primary, voice
-  and vision). Stop everything kills every running Claude Code process tree.
+  answers `503` with it as `detail`. The check-up reports a `claude-code/` model without calling it (`fail` for roles that
+  don't accept it, see `roles` above, with that role's refusal and a `use_model` action for a chat model in use that isn't Claude Code, the
+  background model first, else the local model sized for this computer when it is downloaded; an empty planner or
+  executor counts when the main model is Claude Code). Stop everything kills every running Claude Code process tree and
+  drops the calls waiting for one (they fail with "Stop everything ended this before Claude Code started." and no
+  fallback model is tried).
+- **Claude Code for everything** (#444, [ADR 0032](adr/0032-claude-code-for-everything-as-an-opt-in.md)). Config
+  `models.claude_code_everywhere` (bool, default false) counts only while `models.experimental_claude_code` is on.
+  The window turns it on only after a separate warning dialog with an explicit checkbox. When on, the refusals above
+  are lifted for every role but `embedding`: work nobody waits on (tasks, subagents, proactivity, heartbeats,
+  follow-ups, dreaming, briefs, memory notes, titles, summaries, the rules-from-chat check) may use a `claude-code/`
+  model, and `complete_text`/`complete_json` jobs run as a Claude Code reply without tools, parsed with the tolerant
+  JSON reader. `fast_model` (`CLAUDE_CODE_FAST_MODEL`, `claude-code/haiku`) is what the window sets for the `fast` role when the user
+  picks Claude Code for everything. At most `models.claude_code_max_concurrent` (1 to 8, default 2) Claude Code
+  processes run at once; more wait in a queue, served by who waits (a reply someone is waiting for, then tasks, then
+  upkeep, as in the local model queue) and then first come first served. The engine log says
+  `Claude Code queued: <role> on <model> (<kind>) waits; N running, at most M at once ...` and
+  `Claude Code start: ... after waiting Xs`. When the setting goes from on to off (any config save), each role on
+  `claude-code/*` that no longer accepts it (its own model, or for an empty planner or executor the main model it
+  uses) moves to its first model that isn't Claude Code (its fallbacks, then `fallbacks.primary`, then the fast model,
+  then the primary model); a role with no other model stays and is refused as before. One `info` notification says what moved (`payload: {kind: "claude_code_roles", moved: [{role, model, to}]}`,
+  `to` null when the role stayed), titled "Claude Code is back to chats only", or "Claude Code is turned off" when
+  `experimental_claude_code` went off too. Usage is counted per call with its role (`claude_code_by_role` in the cost meter).
 - **Keychain namespaces (#302).** Every secret (API keys, integration tokens, channel bot tokens, MCP headers and
   sign-ins, the ChatGPT sign-in) is an OS keychain entry under one service per data folder. The default data folder
   (`~/.sentient`, used when `SENTIENT_HOME` is unset or points at it) uses the service `sentient`, the entries every
@@ -776,7 +816,7 @@ Routes:
             | {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "..."}
             | {"type": "triggered", "source": "gmail|gcalendar|webhook|...", "event": "new_email|new_event|<hook id>|...", "filter": {}, "timezone": "..."},
   "script": {"code": "...", "condition": "alert|changed|noteworthy|every_run", "then": "notify|run", "last_result": null, "last_run_at": "...|null", "last_error": "...|null",
-             "checks": [{"at": "...", "outcome": "baseline|nothing_new|changed|minor|alert|quiet|reported|failed", "note?": "...", "count?": 3, "last_at?": "..."}]} | null,
+             "checks": [{"at": "...", "outcome": "baseline|nothing_new|changed|minor|alert|quiet|reported|failed|skipped", "note?": "...", "count?": 3, "last_at?": "..."}]} | null,
   "plan": [{"tool": "gmail", "description": "Fetch unread emails from the last 7 days"}],
   "runs": [Run], "chat_history": [{"role": "user|assistant", "content": "...", "timestamp": "..."}],
   "clarifying_questions": [{"question_id": "q1", "text": "...", "answer": null}],
@@ -786,6 +826,7 @@ Routes:
   "enabled": true, "keep_running": false, "model": null, "browser_profile": "x-posting|null", "memory_scope": "personal",
   "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
   "notepad": "...|null",
+  "setup": Setup | null,
   "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
   "error": "...|null",
   "next_execution_at": "...|null", "last_execution_at": "...|null", "created_at": "...", "updated_at": "..."
@@ -797,6 +838,8 @@ Routes:
 chat creates (`create_task_from_prompt`) takes that chat's scope.
 `deliver_to` is where the task's notifications go besides the app (see "Where results go" below).
 `notepad` is the notes a recurring task's runs keep for the next run (see "Recurring tasks remember" below); `null` when empty.
+`setup` is a routine's setup checklist (see "Setup checklist" below); `null` for other tasks (a routine made one-off loses it) and for routines that
+have not been planned or approved since #161.
 `error` holds the last planning/run failure message (v2 `task.error`).
 Each run embeds its most recent 200 progress updates; the full log is at the `/events` endpoint.
 `interval` schedules (every `interval_minutes`, minimum 5; `frequency: "hourly"` is normalized to 60) are additive. The
@@ -812,7 +855,7 @@ task-creation prompt sets it for requests like "every morning"; a window the req
 
 **Run**
 ```json
-{"run_id": "hex", "status": "processing|waiting_for_user|completed|completed_with_errors|error|cancelled", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
+{"run_id": "hex", "status": "processing|waiting_for_user|completed|completed_with_errors|error|cancelled|skipped", "created_at": "...", "execution_start_time": "...", "finished_at": "...",
  "plan": [...], "trigger_event_data": {}|null, "progress_updates": [ProgressUpdate],
  "result": {"summary": "markdown", "links_created": [{"url": "", "description": ""}], "links_found": [...], "files_created": [{"filename": "", "description": ""}], "tools_used": ["gmail"]},
  "error": null, "retry_of": "run id this run retries|null",
@@ -823,8 +866,12 @@ task-creation prompt sets it for requests like "every morning"; a window the req
  "sources": [AnswerSource],
  "dry_run": false,
  "would_do": [TryRunAction],
- "checks": [OutcomeCheck]}
+ "checks": [OutcomeCheck],
+ "retry_at": "...|null"}
 ```
+`skipped` (#161): a routine's run that didn't start because what it reads wasn't there; `error` says why ("Skipped:
+the page example.com/events couldn't be reached.") and `retry_at` is when it is tried again (the "try again later"
+choice), else `null` (see "Setup checklist" below).
 `dry_run` is true for a try run (see "Try it first" below); `would_do` lists what it noted, `[]` for other runs.
 `pending_question` is set only while the run is `waiting_for_user` (see "Tasks that ask you a question", "Limits on a run"
 and "Stuck runs" below). `kind` says why it waits; `reason` is set for `stuck` only. An `approval` question also has
@@ -868,7 +915,8 @@ A run that called no tool and answers nothing still fails. Chat replies (`done.c
 - `GET /api/tasks/{id}` → `Task`
 - `POST /api/tasks` `{prompt, is_swarm?: bool, assignee?: "ai", model?, browser_profile?, memory_scope?}` → `Task` (status `planning`; refinement + planning continue in the background and arrive as `task.updated`)
 - `POST /api/tasks/preview` `{prompt}` → `{name, description, priority, schedule}` (v2 generate-plan)
-- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, memory_scope, deliver_to, notepad, keep_running}` → `Task`
+- `PATCH /api/tasks/{id}` any of `{name, description, priority, schedule, plan, enabled, status, model, script, browser_profile, memory_scope, deliver_to, notepad, keep_running, setup}` → `Task`
+  (`setup`: the routine's checklist answers, see "Setup checklist" below; 400 for a one-off task or a value it can't take)
   (`memory_scope`: the memories its runs recall and save to, section 7 "Memory scopes"; `null` or `""` is personal, 400
   for `always`)
   (`keep_running: true`: never paused while the user is away, see "Routines pause while you are away")
@@ -921,6 +969,7 @@ Behaviour notes:
   (`{"status": "failed"}`) as well as item fields (`name`, `body.status`).
 - Task notification `payload.event` values: `approval_needed`, `clarification_needed`, `planning_failed`, `run_completed`,
   `run_failed` (with `run_id`), `disabled`, `script_alert` (with `result`), `script_failed`, `script_recovered`,
+  `source_missing` (with `reason`, `if_missing` and, for a run, `run_id`; see "Setup checklist"),
   `question` (with `run_id`, `question`, `options`; a stuck run adds `stuck: true` and `reason`; later
   `status: "answered"|"cancelled"` and `answer`), `caught_up` (with `reason`, `ran`, `skipped`; see "Missed runs"),
   `away_check` and `away_paused` (see "Routines pause while you are away").
@@ -977,12 +1026,63 @@ approval). The run's own `ask_user` question still asks. A one-call task (`fixed
   scheduling, and it is not the task's last result (change requests, recurring tasks' memory of earlier runs, the
   self-improvement reviewer and `task.run_finished` all skip it). Its own question, cancel, retry (a try run again)
   and resume after a restart work as for any run.
+- A routine's try run looks at its source first, like a real run (see "Setup checklist"). When it is missing, the try
+  run fails at once with `The page example.com/events couldn't be reached, so a real run would skip that run and tell
+  you. Nothing was sent, changed or run.` (or "skip that run quietly", "skip that run and try again a little later"),
+  and schedules nothing. A routine set to ask first (`setup.approval: "ask"`) notes its sends with `asks: true`.
+
+### Setup checklist (#161)
+A routine (a `recurring` or `triggered` task run by its plan or a check script; not a swarm or a one-call task like
+the Daily Brief) has a short checklist the user confirms. It is filled in by code, never a model, when the plan is
+ready (and when a task becomes a routine, or is approved without one), so the user mostly just confirms it. The
+schedule and its time zone are the task's own `schedule`; the app shows them in the checklist and saves them with it.
+
+**Setup** `{source: {kind: "page|app|folder|none", target, label}, output, approval: "plan|ask", acts: ["Gmail"],
+if_missing: "skip|notify|retry", confirmed_at: "...|null"}`
+- `source`, what it reads: the first web address in the request, plan or check script (`page`); else the app whose
+  event starts a triggered task (`app`, an integration or MCP server id, `label` its name); else a folder named in the
+  request (`folder`, like `C:\Users\maya\Downloads`; for a file it may write, like `...\digest.txt`, the folder it is
+  in); else the first connected app the plan reads; else `none`.
+- `output`, what the user gets: the plan's last step, else the description (at most 300 characters).
+- `approval`, what it may do without asking: `plan` (default) goes ahead with what the approved plan does, as before;
+  `ask` holds every call that sends, posts, buys, deletes or runs something (effective risk `send` or `exec`, or a
+  write marked `exfiltrates` that carries data out; never `internal`) and asks first, like an Ask rule (section 2), with the question `This task wants to use <tool> (...). You
+  set this task to ask you first. OK to go ahead?` and the usual answers. `Allow for this task` lets later runs go
+  ahead. A lasting rule the user set (Allow, Never...) still wins. `acts` lists the plan's apps that can do such
+  things, for the checklist to name.
+- `if_missing`, what happens when the source isn't there: `notify` (default), `skip` or `retry`.
+- `confirmed_at`: when the user confirmed it; `null` until then. Replanning (a change request, Rerun) fills it in again,
+  keeping `approval` and `if_missing`, and it waits for a confirm again. A changed plan updates `acts`.
+
+`PATCH {setup: {source?, output?, approval?, if_missing?, confirm?: true}}` merges the answers; `confirm: true` sets
+`confirmed_at`. A page must be an `http(s)` address, an app a known app id. Approving does not require a confirm: the
+filled-in answers apply.
+
+**A missing source.** Before a routine's run starts (not a resume, an answered question or a Retry that continues a
+transcript), and before each check of a check script, code looks at its source: a page must answer (`GET`, 15 s, a
+status below 400; addresses Sentient never opens itself, like this computer, aren't checked), an app must be
+connected (an event from that same app that started the run counts), a folder must exist. A page's redirects are
+followed by hand, at most 5, and every address on the way must pass the same rules (one that doesn't isn't checked).
+When it isn't there:
+- The run ends `skipped` (a check script's check is a `skipped` entry in `script.checks`, and the script doesn't run),
+  with `error` `Skipped: <reason>.` (also its one `info` update), and the routine waits for its next time (`active`).
+- `skip`: nothing more. `notify`: a notification `kind: "task"`, title `Skipped: <name>`, message `'<name>' didn't
+  run. <Reason>.`, `payload: {event: "source_missing", reason, if_missing, run_id?}` (also to paired chats as a task
+  result).
+- `retry`: `retry_at` is `tasks.source_retry_minutes` (default 15) from now and `error` adds `Trying again at 08:15
+  (try 1 of 3).`. The scheduler then starts a new run with `retry_of` (and the same trigger data), which looks again and
+  opens with `Trying again now: what it reads wasn't there last time.`. After `tasks.source_retries` (default 3) retries
+  in a row the run says `It tried again 3 times, so it waits for its next run.` and the `source_missing` notification
+  is sent. A retry is dropped when the task is paused by then, or (scheduled routines) when a newer run came first. A
+  recurring check script checks again early instead (`next_execution_at` moves up, never later than it was); a
+  triggered one can't, so `retry` tells the user like `notify`.
 
 ### Checking the outcome (#165)
 Code, never a model, checks what a call that should change something really did, right after it runs
 (`sentient/agent/outcomes.py`). Checked: tools that declare `Tool.outcome` (`"email"|"message"|"file"|"event"|"home"`)
 or `Tool.verify`, and every MCP tool that is not a look-up (its kind guessed from its name: `send_email` is `email`).
-Today that is `file_write`, `gmail_send`, `gmail_reply`, `email_imap_send`, `gcal_create_event`, `gcal_quick_add`,
+Today that is `file_write`, `gmail_send`, `gmail_reply`, `gmail_forward`, `email_imap_send`, `email_imap_reply`,
+`email_imap_forward`, `gcal_create_event`, `gcal_quick_add`,
 `slack_post_message`, `slack_reply_in_thread`, `discord_send_message`, `whatsapp_send_message`, the Home Assistant
 actions (`home_assistant_turn_on`/`turn_off`/`set_temperature`/`activate_scene`/`run_script`/`open_cover`/`close_cover`/
 `lock`/`unlock`/`set_alarm`) and MCP tools. A call
@@ -1396,7 +1496,20 @@ can't act.
   `starttls`, port 143), `port`, `username`, `password` (app password, secret), `folders` (comma-separated mailbox names
   to watch for new mail, default `INBOX`), optional `smtp_host`, `smtp_port`; connect signs in to IMAP (selecting every
   watched folder) and SMTP when given, before saving. Tools `email_imap_search` (read), `email_imap_read` (read),
-  `email_imap_send` (send). Privacy filters like Gmail. Trigger `new_email`.
+  `email_imap_send` (send), `email_imap_reply {message_id, body, reply_all=false, mailbox="INBOX"}` (send; who it goes
+  to comes from the email's headers, below) and `email_imap_forward {message_id, to, note="", mailbox="INBOX"}` (send;
+  the original's headers and text quoted under the note, attachments kept). Privacy filters like Gmail. Trigger
+  `new_email`. The watcher's cursor per folder is `{uidvalidity, last_uid, searched: true}`; one at `last_uid` 0
+  without `searched` (taken while searches came back empty, before #144) starts again from now, once.
+- **Replies and forwards (#144, ADR 0031).** `gmail_reply`, `email_imap_reply` and `gmail_forward
+  {message_id, to, note=""}` work alike. A reply never takes a recipient argument: `integrations.mail.reply_targets`
+  reads the original's headers (Reply-To, else From; the To of the user's own message, a nudge; the other To and Cc
+  addresses with `reply_all`). The reply tools declare `Tool.destinations_fn(arguments, ctx) ->
+  [{address, why: "sender"|"reply_to"|"yours"|"thread", sender}]` (`yours`: the recipients of the user's own message,
+  which needs the app's own word that the user sent it: Gmail's `SENT` label, or for IMAP the account's Sent mailbox;
+  a received email that only claims the user's From is answered like any other;
+  `thread`: the others on a reply-all), which the second look calls before the reply runs
+  (section 10). A forward refuses an email hidden by privacy filters, like a read.
 - `webhook` ("Webhooks", builtin, no tools): its `triggers` are computed from the user's hooks,
   `[{event: <hook id>, label: "When \"<name>\" is called"}]`; `integration.updated` is sent when hooks are created or deleted.
 - `gcalendar.triggers` are `new_event` ("New event") and `updated_event` ("Changed event").
@@ -1496,7 +1609,10 @@ Follow-up suggestion: `suggestion_type` `follow_up_reply` or `follow_up_nudge`, 
 Approving it (the card's **Send reply** / **Send nudge**, which shows the exact draft) is the approval of that one send:
 it creates an already approved task (`app.tasks.create_approved_call`, section 4) that runs right away, whatever
 `tasks.require_plan_approval` says, and makes exactly one call with the draft unchanged: `gmail_reply {message_id, body}` in
-the same thread, or `email_imap_send {to, subject, body, reply_to_message_id?}`. No model is involved in the send. A lasting
+the same thread, or `email_imap_send {to, subject, body, reply_to_message_id?}`. No model is involved in the send. The
+recipient is fixed from the thread's headers before the model reads the thread (#144); the thread reaches the model
+marked as outside content, and a draft that copies an email address or a link only the other person's messages have is
+dropped and tried again at the next check (`followups.copied_from_them`). A lasting
 Never rule on that tool or its app (`tools.approvals.rules`) still applies: the run fails with the rule's message and
 nothing is sent.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
@@ -2194,12 +2310,29 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     `arjun.mehta@...`; the user's own name counts). Every amount of money (`$1,200`, `500 rupees`, a number in an
     `amount`/`price`/`total`... field) must appear there too. After outside content, a link in the call that came
     from that content is flagged.
+  - **Recipients first** (#144, ADR 0031). Outside tool results are read as JSON (`second_look.read_places`): in an
+    item with a `from`/`sender_email` address and a `subject`, `body`, `snippet` or `to`, the `from` is the message's
+    sender, `to`/`cc`/`bcc`/`reply_to` are its header lines and every other value is its text; non-JSON text (a page,
+    a result cut for length) is text except its `"from": "..."` values. An address that outside content names
+    anywhere other than as a sender passes only when the user's words, trusted records or a saved memory have it: a
+    name match never vouches for it. Its warning names the place: `"... That address came from the text of an email
+    from Arjun Mehta <arjun@example.com> (Gmail), not from you."` (`the Cc line of an email from ...` for a header
+    line). A tool message the engine wrapped as outside content, or whose result starts with `outside_content`,
+    counts as outside content too. Outside content inside a user turn (a group member's message) is never read for
+    senders: it is all text.
+  - **Reply destinations.** For a tool with `destinations_fn` (the reply tools), its destinations are checked like
+    recipients and copied to the plan, so `approval_request.preview`, `undo_window.preview` and a task's
+    `pending_question.preview` get a `To` field. A `reply_to` destination on another domain than the sender, that the
+    user never gave, is flagged: `"This reply goes to x@evil.example, the address that email asked replies to go to,
+    not to the person who sent it (arjun@example.com)."` A `thread` destination (reply-all) is checked like a recipient
+    unless the user's words ask to reply to all ("reply all", "everyone"). A `destinations_fn` that fails (20 seconds
+    at most) flags the call: `"Sentient couldn't read who this reply goes to, so it checks with you first."`
   - **Model** (`second_look.model_check`, only for effective risk `send`/`exec` of tools that are not `internal`,
     `tools.approvals.second_look_model`, default on): when nothing was flagged yet and the call would otherwise run
     without asking, or the run read outside content. One tool-free `fast`-role prompt sees only the user's own words
     (the last 1500 characters) and the action (its approval wording and arguments) and answers
     `{"match": bool, "reason": str}`, parsed tolerantly. When the fast model refuses the job, the primary model (or the
-    chat's model) answers; Claude Code answers only inside a chat reply (ADR 0022). No usable answer within 45 seconds
+    chat's model) answers; Claude Code answers only inside a chat reply (ADR 0022), or anywhere when it does everything (ADR 0032). No usable answer within 45 seconds
     (an error, a refusal, unreadable JSON) fails closed with
     `"Sentient couldn't double-check this against what you asked, so it checks with you first."`
 - A flagged call is raised to at least `send` and asks whatever the approvals mode, Allow rules, "Allow for this
@@ -2288,7 +2421,22 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     `{subagent_id, status: "running"}` at once; when it finishes, a summary is added to the chat as an assistant message,
     `subagent.updated` fires and a notification is created.
   - `delegate_tasks(tasks: list[{goal, context?}])` runs up to `subagents.max_concurrent` in parallel and returns every summary.
-- **Subagent** `{subagent_id, session_id, parent_call_id, goal, status: "running"|"completed"|"error"|"cancelled", background, summary, error, tool_calls, started_at, finished_at, events: [ProgressUpdate]}`
+  - `read_with_reader(tool, fields: {name: kind}, arguments?: dict)` (risk `read`, internal; #144, ADR 0031) runs the
+    look-up `tool` with `arguments` in code and hands its result to the **reader**: one model call with no tools
+    (`fast` role, then the primary; Claude Code only inside a chat reply), the document marked as outside content and
+    cut to 12,000 characters. Kinds: `text` (one sentence, 300 characters), `email`, `url` (both must be written in the
+    document), `date` (`YYYY-MM-DD`, optional time), `number`, `yes_no`, `id` (no spaces, a digit, written in the
+    document) and choices `"a|b|c"`; at most 12 fields. Code keeps exactly those fields; a value of the wrong kind is
+    `null`. Returns `{source, fields, subagent_id}`, with `outside_content: <source>` first when the tool brings outside
+    content and a `text`, `email` or `url` value came back (the run is then marked, ADR 0018); a result of only dates,
+    numbers, yes or no, ids and choices does not mark it. Refused (`{error}`) for tools that aren't look-ups, that
+    could send data out, whose rule is Ask, Only if I asked or Hand it to me, that are hidden, the subagent tools, and
+    an address that could carry data to a site a marked run hasn't visited. Tool selection offers it with any tool
+    that reads outside content.
+- **Subagent** `{subagent_id, session_id, parent_call_id, goal, kind: "worker"|"reader", status: "running"|"completed"|"error"|"cancelled", background, summary, error, tool_calls, started_at, finished_at, events: [ProgressUpdate]}`.
+  A reader (`kind: "reader"`) has `tool_calls: 0`, `goal` `"Read <source> for: <field names>"`, `summary` the JSON of
+  the fields returned, and two events: `info` (the fields asked for, with their kinds) and `final_answer` (the fields
+  returned), or `error`. `POST /api/subagents/{id}/cancel` stops a running reader (`status: "cancelled"`).
 - `GET /api/sessions/{id}/subagents` → `[Subagent]` newest first; `GET /api/subagents/{id}` → `Subagent`;
   `POST /api/subagents/{id}/cancel` → `Subagent`. Domain event `subagent.updated` → `Subagent` (without `events`).
 - While a foreground subagent runs, the parent emits `tool_progress` with `kind: "subagent"` and `data: {subagent_id, message}`.
@@ -2420,6 +2568,9 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   - `browser_click(ref)` write; effective risk `send` (via `risk_fn`) when the element's text/aria/value looks like buy,
     pay, place order, checkout, send, post, publish, delete, remove, confirm, subscribe, transfer, or it submits a form
     with payment fields → `{ok, clicked, url, message, new_tab?, dialogs?}`. A link opening a new tab makes it active.
+    A new tab that only carried a download (a file link with `target=_blank`: a blank tab the download starts from,
+    which may close again) or is Edge's downloads hub is not made active, and `url` stays the clicked page (#307); a
+    blank new tab gets 3 s to show a page before it counts as one.
     `confirm()` dialogs are accepted only for clicks approved as `send`; alerts are accepted; `dialogs` lists them.
     Its approval `risk_label` is "Purchase" for buy, pay, order, checkout and the like. A subscribe, follow, sign up or
     "notify me" reads "Signs up" (normal approval rules) only when the element or the text around it (its card or
@@ -2584,8 +2735,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   Telegram replies use HTML parse mode (bold, italics, strikethrough, code, code blocks, links, lists, quotes; everything
   else escaped; plain text fallback). While tools run, a short status message ("Searching the web...") is shown and deleted
   when the answer continues (`show_tool_activity`). A typing indicator is sent while the reply runs.
-- `/model` (model presets, section 3): shows the active preset and the chat model, lists presets that need a key with
-  the reason, and offers every usable preset as a button (callback `mp:a:<12 hex of sha1(name)>`; WhatsApp: numbered
+- `/model` (model presets, section 3): shows the active preset and the chat model, lists presets that need a key (or
+  that Local only blocks, #335) with the reason, and offers every usable preset as a button (callback `mp:a:<12 hex of sha1(name)>`; WhatsApp: numbered
   options). Choosing one applies it, settles the message to "Switched to <name>" and sends anything still missing
   ("Still needed: ..."). `/model <number or name>` applies directly (numbers count the usable presets in order),
   `/model undo` undoes the last switch. Paired chats only, like every command.
@@ -2630,7 +2781,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - Delivery (chats with `deliver: true`, from `notification.new`; a task's `deliver_to` can keep its notifications on
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,
-  `script_alert`, `script_failed`, `script_recovered`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
+  `script_alert`, `script_failed`, `script_recovered`, `source_missing`; a completed run adds its result summary), questions from running tasks (`payload.event = "question"`, with `channels.deliver_task_results`; each
   option is a quick-reply button, callback `tq:<option index>:<run_id>:<request tag>`, that answers through
   `app.tasks.answer_question`), plans awaiting approval (**Approve plan** / **Decline** → `app.tasks.approve/decline`), pending proactive
   suggestions (**Approve** / **Dismiss** → same as `POST /api/proactivity/suggestions/{id}`), and notifications with
@@ -2863,7 +3014,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - `checks` is the job's recent history, oldest first, at most 30 entries: `baseline` (first result of a comparing
   job), `nothing_new`, `changed` (acted; `note` is the judge's sentence for `noteworthy`), `minor` (changed, the judge
   said not worth telling; `note` says what changed), `alert` (`note` is its message), `quiet` (no alert, or an
-  `every_run` check that printed nothing), `reported`, `failed` (`note` is the error). A `nothing_new` or `quiet` check
+  `every_run` check that printed nothing), `reported`, `failed` (`note` is the error), `skipped` (what it reads wasn't
+  there, so the script didn't run; `note` says why, section 4 "Setup checklist"). A `nothing_new` or `quiet` check
   right after one with the same outcome folds into it: `count` goes up and `last_at` is that check's time. Changing the
   code or the kind of check resets `last_result`; changing only the condition keeps `checks`. The app shows it under
   Runs.
@@ -3361,7 +3513,7 @@ What each source gives (past):
 | `messages` (assistant replies in channel chats) | "Replied to you on Telegram" |
 | `messages` (role `event`, `name` `trusted`, ADR 0029) | `approvals` item `trust:<id>`: "You trusted the chat "X" again", `why` "It had read content from Gmail. You said you checked it (in Sentient \| with /trust on Telegram), so sending from it stops asking just because of what it read. New outside content asks again." |
 | `channel_deliveries` (section 14) | "Sent to Telegram: Your Daily Brief" or "Couldn't send to Telegram: ..." (`status: "failed"`, `detail` says why); `why` names the chat and why it went there ("To your chat "Maya Rao". The task sends its updates there"); `ref` opens the task, chat or notification it came from |
-| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." |
+| `task_runs` + `tasks` | "Ran X", "X didn't finish", "Made your Daily Brief"; `why` from the schedule, the trigger, Retry or the chat that asked. A try run (#142): "Tried X", `why` "You chose Try it first, ..." A skipped run (#161): "Skipped X: what it reads wasn't there" (`status: "stopped"`, `detail` the reason), and its own retry has `why` "It tried again because what it reads wasn't there last time"; the `source_missing` notification is not listed again |
 | `file_snapshots` (#142) | "A command changed 2 files", "Code changed 1 file", "Wrote over notes.txt", "Put back 2 files"; `kind` `tasks` when a task run did it, else `chat`; `app` `terminal`, `code` or `files`; `detail` the command or script and the file names; `undo` Restore while the copies are kept and not put back yet; `status: "restored"` after |
 | `tasks.script.checks` | "Checked X: nothing new (3 checks)", "X changed. You were told" |
 | `notifications` | questions and approvals from tasks (with the answer), plans waiting, suggestions, routines paused, backup and budget notices. Not shown again: `run_completed`, `run_failed`, `dry_run_finished` and `script_alert` (the run or check is shown), `brief` (the run), `skill` (the skills log) and dream notices (the dream) |

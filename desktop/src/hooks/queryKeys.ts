@@ -30,6 +30,8 @@ export const qk = {
   chatgpt: ['models', 'chatgpt'] as const,
   modelPresets: ['models', 'presets'] as const,
   claudeCode: (enabled: boolean) => ['models', 'claude-code', enabled] as const,
+  /** Every Claude Code status, whichever switch it was asked for (#444: the accepted roles change with "everything"). */
+  claudeCodeAll: ['models', 'claude-code'] as const,
   secrets: ['secrets'] as const,
   /** How many times a secret was saved in this window (see `useSecretSaves`). Never fetched. */
   secretSaves: (name: string) => ['secret-saves', name] as const,

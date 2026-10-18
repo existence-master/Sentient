@@ -117,8 +117,11 @@ def _short(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
 
-def build(name: str, arguments: dict | None, *, purchase: bool = False, app: str | None = None) -> dict | None:
-    """The preview of one call, or None when its arguments say nothing a person would read (a plain look-up)."""
+def build(
+    name: str, arguments: dict | None, *, purchase: bool = False, app: str | None = None, to: list[str] | None = None,
+) -> dict | None:
+    """The preview of one call, or None when its arguments say nothing a person would read (a plain look-up).
+    ``to``: who the call goes to when its arguments don't say, worked out in code (a reply's thread headers, #144)."""
     args = dict(arguments or {})
     kind = "purchase" if purchase else action_kind(name, args)
     if kind != "purchase" and action_kind(name) == "action" and (inner := inner_call(args)) is not None:
@@ -141,6 +144,8 @@ def build(name: str, arguments: dict | None, *, purchase: bool = False, app: str
         if label is None:
             continue
         fields.setdefault(label, []).append(_short(text, MAX_VALUE))
+    if to and "To" not in fields:
+        fields = {"To": [_short(", ".join(to), MAX_VALUE)], **fields}
     if not fields and not body and kind == "action":
         return None
     out: dict[str, Any] = {

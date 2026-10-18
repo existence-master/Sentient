@@ -119,6 +119,7 @@ from sentient.tools.rules import (
     OTHER_ROLE,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
+    TASK_ASKS,
     TRUSTED_EVENT,
     address_carries_data,
     address_host,
@@ -154,6 +155,9 @@ log = logging.getLogger(__name__)
 # ``ToolContext.extra`` flag: this run can pause and ask the user (a single task run), so an "ask" rule holds the
 # call and the run asks instead of stopping (#139)
 CAN_PAUSE_KEY = "can_pause_for_approval"
+# ``ToolContext.extra`` flag: a routine set to ask first (its setup checklist, #161), so a call that sends, posts, buys,
+# deletes or runs something is held like an "ask" rule, unless a rule or a grant already says yes
+ASK_FIRST_KEY = "task_asks_first"
 MAX_ATTACHMENT_CHARS = 60_000
 # A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
 # token is cautious: JSON, ids and escaped text take more tokens per character than prose.
@@ -513,6 +517,7 @@ class _CallPlan:
     level: str | None = None  # the lasting rule the call was planned under ("if_asked" before it is applied)
     handed_off: bool = False  # a "Hand it to me" rule: prepared for the user, never run (#140)
     undo: str = ""  # how its undo window ended, when it waited in one (#142)
+    destinations: list[str] = field(default_factory=list)  # who a reply goes to, from its thread's headers (#144)
 
 
 class Agent:
@@ -960,7 +965,7 @@ class Agent:
                     "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
                     "question": question,
                     "preview": preview.build(waiting.tc.name, waiting.tc.arguments, purchase=await is_purchase(
-                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk)),
+                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk), to=waiting.destinations),
                 }
                 if waiting.ask_rule:  # an "ask" rule in a task run: pause and ask, with how wide a yes may be (#139)
                     purchase = await is_purchase(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -1113,6 +1118,10 @@ class Agent:
             tool, ctx.user_words, self._app_name(tool), plan.risk, self._other_apps(tool)
         )
         rule = applied_rule(rule, asked=asked, risk=plan.risk)
+        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)  # send or exec, or a write that carries data out
+        if rule is None and ctx.extra.get(ASK_FIRST_KEY) and outgoing and not tool.internal:
+            rule = ASK  # this routine asks first (#161); a lasting rule the user set wins either way
+            plan.level = TASK_ASKS  # the hold and the task's question say why it asks
         if chat_rule == "ask" and pending_asks(self.approvals.config.mode, plan.risk):
             # ask first while the user hasn't answered the proposal, whatever else says yes; with approvals off
             # only for calls that change something, so look-ups never wait on a guess from the chat (#306)
@@ -1132,7 +1141,6 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
-        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
         tried = ctx.extra.get(dry_run.KEY) if ctx.extra else None
         if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk, outgoing=outgoing):
             # a try run (#142): anything above a look-up, or that can send data out, is noted instead of done, decided
@@ -1260,7 +1268,7 @@ class Agent:
         hold = broker.open(undo_id, call_id=p.tc.id, name=p.tc.name, session_id=ctx.session_id, channel=ctx.channel,
                            seconds=seconds)
         yield UndoWindow(undo_id=undo_id, call_id=p.tc.id, name=p.tc.name, seconds=seconds, until=hold.until,
-                         preview=preview.build(p.tc.name, p.tc.arguments), **ev)
+                         preview=preview.build(p.tc.name, p.tc.arguments, to=p.destinations), **ev)
         outcome = await broker.wait(undo_id)
         log.info("undo window for %s ended: %s", p.tc.name, outcome)
         p.undo = outcome
@@ -1289,7 +1297,7 @@ class Agent:
             risk_label=wording["risk_label"], target=wording["target"],
             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
             grant_minutes=self.approvals.config.grant_minutes,
-            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase), **ev,
+            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase, to=p.destinations), **ev,
         )
         asked_at = now_iso()
         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
@@ -1981,11 +1989,12 @@ class Agent:
 
     async def helper_model(self, session_id: str | None, role: str) -> str | None:
         """The model a helper started from a chat (a subagent) uses instead of ``role``'s: the chat's own model, where
-        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it."""
+        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it, unless it
+        does everything (ADR 0032)."""
         if role != "primary" or not session_id:
             return None
         picked, _ = await self.chat_model(await self.store.get_session(session_id), role)
-        if picked and picked.split("/", 1)[0] == claude_code.PREFIX:
+        if picked and picked.split("/", 1)[0] == claude_code.PREFIX and not claude_code.everywhere(self.config):
             return None
         return picked
 

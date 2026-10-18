@@ -9,6 +9,7 @@ import { errorMessage } from '@/lib/api'
 import { modelShortName } from '@/lib/models'
 import { recentChatModels, rememberChatModel } from '@/lib/recentModels'
 import { cn } from '@/lib/utils'
+import { LocalOnlyPresetConfirm } from './LocalOnlyPresetConfirm'
 import { PresetFixes } from './PresetFixes'
 import { ProviderKeyDialog } from './ProviderKeyDialog'
 import { usePresetSwitch } from './usePresetSwitch'
@@ -41,7 +42,9 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
   }, [primary])
 
   const list = presets.data
-  const locked = list?.presets.filter((p) => !p.available) ?? []
+  // a missing key can be fixed here; a preset Local only blocks is fixed with the switch above
+  const locked = list?.presets.filter((p) => !p.available && p.blocked_by !== 'local_only') ?? []
+  const blocked = list?.presets.some((p) => p.blocked_by === 'local_only') ?? false
   const others = recent.filter((m) => m !== primary).slice(0, 4)
 
   const go = (path: string) => {
@@ -109,8 +112,16 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
               active={p.active}
               disabled={!p.available || sw.busy}
               busy={sw.pending === p.name}
-              hint={p.available ? (p.active && list.modified ? 'Changed since you picked it' : (p.description ?? summary(p.roles.primary))) : (p.reason ?? undefined)}
-              onClick={() => sw.apply(p.name)}
+              hint={
+                p.blocked_by === 'local_only'
+                  ? 'Uses cloud models, so Local only blocks it'
+                  : p.available
+                    ? p.active && list.modified
+                      ? 'Changed since you picked it'
+                      : (p.description ?? summary(p.roles.primary))
+                    : (p.reason ?? undefined)
+              }
+              onClick={() => sw.apply(p.name) && setOpen(false)}
             >
               {p.name}
             </Row>
@@ -125,6 +136,11 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
                 </button>
               ))}
             </div>
+          )}
+          {blocked && (
+            <p className="px-2.5 pb-1 pt-1 text-2xs leading-relaxed text-fg-subtle">
+              Local only is on, so presets with cloud models can't be picked. Choose May use cloud above to use them.
+            </p>
           )}
           {list?.can_undo && (
             <Row icon={<IconArrowBackUp size={15} />} disabled={sw.busy} onClick={sw.undo} hint={list.undo_preset ?? undefined}>
@@ -165,6 +181,7 @@ export function ModelSwitcher({ primary, tip, children }: { primary: string | un
         </PopoverContent>
       </Popover>
       <ProviderKeyDialog provider={sw.keyFor} open={!!sw.keyFor} onOpenChange={(o) => !o && sw.setKeyFor(null)} />
+      <LocalOnlyPresetConfirm sw={sw} />
     </>
   )
 }

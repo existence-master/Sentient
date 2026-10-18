@@ -324,14 +324,17 @@ def narrow_app_keys(
 
 def candidate_tools(text: str, tools: Iterable[Tool], app_names: dict[str, str]) -> list[Tool]:
     """Tools sharing a word with ``text`` (names, app, description, a few synonyms), best first, at most
-    ``MAX_CANDIDATES``. Actions rank above look-ups on a tie."""
+    ``MAX_CANDIDATES``. A word that names the tool's app counts twice, so an app the user names ("never use Slack")
+    keeps its place however many tools another app has. Actions rank above look-ups on a tie."""
     terms = _terms(text)
     if not terms:
         return []
     scored: list[tuple[int, int, str, Tool]] = []
     for t in tools:
         tokens = _tokens(t, app_names.get(t.plugin, ""))
+        app = {_stem(w) for w in _WORD.findall(_plain(f"{t.plugin.replace('_', ' ')} {app_names.get(t.plugin, '')}"))}
         score = sum(1 for term in terms if any(_match(term, tok) for tok in tokens))
+        score += sum(1 for term in terms if any(_match(term, tok) for tok in app))
         if score:
             scored.append((score, int(Risk(t.risk)), t.name, t))
     scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
