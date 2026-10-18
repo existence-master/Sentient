@@ -502,25 +502,33 @@ def normalize_script(
 # The newest request about updates wins. A question about a page is not a request to change its watch setting;
 # neither is a bare use of "change" as a verb. Requests for every update must say that positively.
 _NOTEWORTHY_REQUEST = re.compile(
-    r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?(?:changes?|updates?|stuff)\b"
+    r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?"
+    r"(?:changes?|updates?|stuff|ones?)\b"
     r"|\b(?:ignore|skip|don't|do not)\s+(?:\w+\s+)?(?:minor|small|little)\s+(?:changes?|updates?)\b",
     re.IGNORECASE,
 )
 _EVERY_CHANGE_REQUEST = re.compile(
     r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
-    r"|\bwhenever\b[^.?!]{0,80}\b(?:changes?|updates?)\b"
-    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^.?!]{0,80}\b(?:changes?|updates?)\b"
-    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^.?!]{0,80}\b(?:anything|everything)\s+(?:at\s+all|new)\b",
+    r"|\b(?:when|whenever|if)\b[^\n]{0,160}?\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?\b"
+    r"(?:anything|everything)\s+(?:at\s+all|new)\b",
     re.IGNORECASE,
+)
+_NEGATED_REQUEST_PREFIX = re.compile(
+    r"\b(?:not|never)\s*$|\b(?:don't|do not)\b[^,.!?;]{0,60}$", re.IGNORECASE,
 )
 
 
 def _change_preference(message: str) -> str | None:
     """``changed`` or ``noteworthy`` when one user message says which updates to report."""
-    if message.rstrip().endswith("?"):
-        return None
     preferences = [(match.start(), "noteworthy") for match in _NOTEWORTHY_REQUEST.finditer(message)]
-    preferences += [(match.start(), "changed") for match in _EVERY_CHANGE_REQUEST.finditer(message)]
+    preferences += [
+        (match.start(), "changed") for match in _EVERY_CHANGE_REQUEST.finditer(message)
+        if not _NEGATED_REQUEST_PREFIX.search(message[:match.start()])
+    ]
+    if message.rstrip().endswith("?") and not preferences:
+        return None
     return max(preferences, default=(0, None), key=lambda preference: preference[0])[1]
 
 

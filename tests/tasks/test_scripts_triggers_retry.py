@@ -426,10 +426,16 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     ("Change of plans", None),
     ("Can you change how often it checks?", None),
     ("Tell me about any change", "changed"),
+    ("Can you tell me about every change?", "changed"),
+    ("Could you notify me of any change?", "changed"),
+    ("Tell me when https://example.org/events changes", "changed"),
+    ("If it changes, let me know", "changed"),
     ("Let me know whenever the page updates", "changed"),
     ("Only important updates", "noteworthy"),
     ("Only tell me about important stuff. Schedule changes are fine", "noteworthy"),
     ("Ignore minor changes, I only care about new events", "noteworthy"),
+    ("Only important changes, not every change", "noteworthy"),
+    ("Not every change, only important ones", "noteworthy"),
 ])
 def test_change_preference_requires_an_explicit_watch_request(message, preference):
     assert scripts._change_preference(message) == preference
