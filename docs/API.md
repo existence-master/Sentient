@@ -1777,7 +1777,11 @@ attribute and no word of what it says in common ("a piano recital in July" for "
   earlier wording, chat summaries made of the message it came from that repeat it (with their vectors), the nightly
   journal's lines about it, the user model's evidence from it (an inferred insight with nothing else behind it goes),
   the memory chips on replies and task runs that had it in mind, its USER.md bullet and the MEMORY.md lines that repeat
-  it. The chats themselves stay. The tidy-up's own merges and contradictions don't count as deletes.
+  it. The chats themselves stay. The tidy-up's own merges and contradictions don't count as deletes. The user model's
+  evidence from a memory is found by the memory's id only. Text found by its words (summaries, journal lines, evidence
+  quotes from chats, USER.md and MEMORY.md lines) stays when a memory still in use says it as well or better, or names
+  that memory's id, so deleting one of two similar memories leaves the other's lines alone (#456). The same holds when
+  a memory becomes disputed or superseded and leaves USER.md and MEMORY.md.
 - Migration 0015 gives memories saved before #153 from a messaging app or a device chat their real source (found from
   the review note of a held memory, the `memory_remember` call that saved it, or the one message in such a chat, up to
   30 minutes before it, that says it), so forgetting that app covers them too.
