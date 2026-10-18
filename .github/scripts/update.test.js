@@ -230,8 +230,8 @@ test('a fork without maintainer edits: points at the button and labels it, no pu
   assert.ok(!fake.names().includes('updateBranch'));
   assert.deepEqual(fake.calls.find((c) => c[0] === 'createLabel')[1], { owner: 'existence-master', repo: 'Sentient', ...LABEL });
   assert.deepEqual(fake.calls.find((c) => c[0] === 'addLabels')[1], ['needs update']);
-  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.useButton('main')}`);
-  assert.match(reply(fake)[0], /click \*\*Update branch\*\*/);
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.useButton('main', false, true)}`);
+  assert.match(reply(fake)[0], /doesn't allow edits by maintainers\. It has no conflicts with `main`, so click \*\*Update branch\*\*/);
 });
 
 test('a fork GitHub refuses to push to falls back to the button', async () => {
@@ -241,7 +241,17 @@ test('a fork GitHub refuses to push to falls back to the button', async () => {
   });
   await runWith(fake);
   assert.ok(fake.names().includes('addLabels'));
-  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.useButton('main')}`);
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.useButton('main', true, true)}`);
+  assert.match(reply(fake)[0], /GitHub refused the update for this fork/);
+  assert.doesNotMatch(reply(fake)[0], /doesn't allow edits/);
+});
+
+test('the button reply claims no conflicts only when they were checked', async () => {
+  const fake = fakeGithub({ pr: { head: { sha: OLD, repo: { full_name: 'maya-rao/Sentient' } } } });
+  await runWith(fake, context(), new Error('fetch failed'));
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.useButton('main', false, false)}`);
+  assert.doesNotMatch(reply(fake)[0], /no conflicts/);
+  assert.match(reply(fake)[0], /Click \*\*Update branch\*\*/);
 });
 
 test('conflicts: lists the files, labels it, says a maintainer will resolve them, never pushes', async () => {
@@ -353,7 +363,8 @@ test('messages are plain: no em-dashes', () => {
     MESSAGES.updated('main', NEW, 'running'), MESSAGES.updated('main', NEW, 'held'), MESSAGES.updated('main', NEW, 'noCla'),
     MESSAGES.updating('main'),
     MESSAGES.upToDate('main'), MESSAGES.conflicts('main', ['a'], true), MESSAGES.conflicts('main', null, false),
-    MESSAGES.useButton('main'), MESSAGES.headMoved, MESSAGES.closed, MESSAGES.notAllowed, MESSAGES.failed('main'),
+    MESSAGES.useButton('main', false, true), MESSAGES.useButton('main', true, false),
+    MESSAGES.headMoved, MESSAGES.closed, MESSAGES.notAllowed, MESSAGES.failed('main'),
   ];
   for (const m of all) assert.ok(!m.includes('—'), m);
 });

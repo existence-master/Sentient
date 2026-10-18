@@ -56,10 +56,13 @@ const MESSAGES = {
         'You are welcome to resolve them yourself instead, if you prefer.'
       : 'A maintainer can resolve them for you once **Allow edits by maintainers** is ticked on this pull ' +
         'request (in the sidebar). Or resolve them yourself, whichever you prefer.'),
-  useButton: (base) =>
-    `I can't push to this branch, because it lives in a fork that doesn't allow edits by maintainers. It has ` +
-    `no conflicts with ${code(base)}, so click **Update branch** near the bottom of this pull request and ` +
-    `GitHub merges it in for you. I have also labelled it ${code(LABEL.name)} so a maintainer can follow up. ` +
+  useButton: (base, canEdit, clean) =>
+    (canEdit
+      ? "I can't push to this branch: GitHub refused the update for this fork. "
+      : "I can't push to this branch, because it lives in a fork that doesn't allow edits by maintainers. ") +
+    (clean ? `It has no conflicts with ${code(base)}, so click` : 'Click') +
+    ' **Update branch** near the bottom of this pull request and GitHub merges it in for you. ' +
+    `I have also labelled it ${code(LABEL.name)} so a maintainer can follow up. ` +
     "There's no rush: the merge queue tests your change against the latest main anyway.",
   headMoved: 'This branch changed while I was updating it, so I left it alone. Comment `/update` again to retry.',
   closed: 'This pull request is closed, so there is nothing to update.',
@@ -354,7 +357,7 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
     upToDate: () => MESSAGES.upToDate(base),
     updated: () => (newSha ? MESSAGES.updated(base, newSha, checks) : MESSAGES.updating(base)),
     conflicts: () => MESSAGES.conflicts(base, conflicts, canEdit),
-    useButton: () => MESSAGES.useButton(base),
+    useButton: () => MESSAGES.useButton(base, canEdit, Array.isArray(conflicts) && conflicts.length === 0),
     headMoved: () => MESSAGES.headMoved,
     failed: () => MESSAGES.failed(base),
   }[action]();
