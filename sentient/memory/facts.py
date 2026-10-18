@@ -42,6 +42,7 @@ from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.scripts import (
+    SOMEONE,
     devanagari_subjects,
     leads_with_devanagari,
     names_match,
@@ -152,7 +153,21 @@ _RELATION_WORDS = {
     "boyfriend", "son", "daughter", "friend", "manager", "boss", "colleague", "cousin", "uncle", "aunt", "grandmother",
     "grandfather", "grandma", "grandpa", "roommate", "cofounder", "co-founder", "fiance", "fiancee", "parents",
     "company", "startup", "team", "dog", "cat",
+    # #463: more people a fact can be about instead of its owner ("Maya's neighbour lives in Pune")
+    "sibling", "siblings", "parent", "child", "children", "kid", "kids", "baby", "niece", "nephew", "grandson",
+    "granddaughter", "grandparents", "stepmother", "stepfather", "sister-in-law", "brother-in-law",
+    "mother-in-law", "father-in-law", "in-laws", "coworker", "co-worker", "teammate", "classmate", "flatmate",
+    "housemate", "neighbour", "neighbor", "mentor", "teacher", "tutor", "coach", "trainer", "doctor", "therapist",
+    "dentist", "landlord", "landlady", "tenant", "client", "assistant", "nanny", "driver", "lawyer", "accountant",
+    "ex", "spouse", "fiancé", "fiancée", "puppy", "pet",
 }
+# words between an owner and a relation: "Maya's younger sister", "my best friend"
+_RELATION_MODIFIERS = frozenset({
+    "best", "close", "old", "older", "oldest", "elder", "eldest", "younger", "youngest", "little", "big", "baby",
+    "twin", "new", "late", "former", "childhood", "college", "school",
+})
+# "her sister", "his colleague": a relation of someone named in another sentence (#463)
+_OWNER_PRONOUNS = frozenset({"her", "his", "their"})
 ATTRIBUTE_FAMILIES: dict[str, re.Pattern[str]] = {
     "residence": re.compile(
         r"\b(lives?|living|lived|moved|moves|moving|relocat\w*|based in|resides?|residing|shifted to|settled in|"
@@ -204,30 +219,66 @@ TIME_WORDING_RE = re.compile(
 
 
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
-    """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for
-    "Maya's sister Riya ...". "I", "my" and "the user" mean ``user_name``. Empty when unclear."""
+    """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for "Maya's sister Riya ..."
+    and for "Maya Rao's younger sister Riya ..." (a person's first name stands for the whole name). "I", "my" and
+    "the user" mean ``user_name``: "my friend Arjun" is {"maya rao's friend", "arjun"}. "Her colleague Ravi" is
+    {"someone's colleague", "ravi"} (:data:`SOMEONE`). "Priya, Maya's sister, ..." is {"priya", "maya's sister"}.
+    Empty when unclear ("She moved to Delhi")."""
     user = user_name.strip().lower() or "user"
     text = (text or "").replace(_RSQUO, "'").strip()
-    text = re.sub(r"^(the user's|my)\b", f"{user}'s", text, flags=re.IGNORECASE)
-    text = re.sub(r"^(the user|i)\b", user, text, flags=re.IGNORECASE)
-    words = _NAME_WORD_RE.findall(text)
+    found = list(_NAME_WORD_RE.finditer(text))
+    words = [m.group() for m in found]
+
+    def joined(j: int) -> bool:  # words j and j + 1 are only a space apart ("Maya Rao", not "Priya, Maya")
+        return j + 1 < len(found) and not text[found[j].end():found[j + 1].start()].strip()
+
+    def name_at(j: int) -> str:  # a name word at j, lowercase without "'s", or ""
+        if j >= len(words):
+            return ""
+        root = words[j].lower().removesuffix("'s")
+        return root if words[j][0].isupper() and root not in _LEAD_SKIP else ""
+
+    def relation(owner: str, j: int) -> set[str] | None:  # "<owner>'s sister" (and her name) for a relation at j
+        if j < len(words) and words[j].lower() in _RELATION_MODIFIERS and j + 1 < len(words) \
+                and words[j + 1].lower() in _RELATION_WORDS:
+            j += 1
+        if j >= len(words) or words[j].lower() not in _RELATION_WORDS:
+            return None
+        aliases = {f"{owner}'s {words[j].lower()}"}
+        if name := name_at(j + 1):
+            aliases.add(name)
+        return aliases
+
     for i, w in enumerate(words[:6]):
         low = w.lower()
         poss = low.endswith("'s")
         root = low[:-2] if poss else low
+        if low in {"my", "i"} or (root == "user" and i and words[i - 1].lower() == "the"):
+            # the user: "I ...", "the user ...", and what they own or who they know: "my ...", "the user's ..."
+            return (relation(user, i + 1) or {user}) if low == "my" or poss else {user}
+        if low in _OWNER_PRONOUNS:
+            return relation(SOMEONE, i + 1) or set()
         is_name = (w[0].isupper() and root not in _LEAD_SKIP) or root == user
         if not is_name:
             if w[0].isupper() or root in _LEAD_SKIP:
                 continue  # sentence starters like "Every", "Since", "Last"
             return set()
-        nxt = words[i + 1].lower() if i + 1 < len(words) else ""
-        if poss and nxt in _RELATION_WORDS:
-            aliases = {f"{root}'s {nxt}"}
-            after = words[i + 2] if i + 2 < len(words) else ""
-            if after[:1].isupper() and after.lower() not in _LEAD_SKIP:
-                aliases.add(after.lower().removesuffix("'s"))
-            return aliases
-        return {root}
+        # a full name, up to the word that owns something: "Maya Rao's sister" is Maya's sister, not Maya
+        end = i
+        while not words[end].lower().endswith("'s") and end - i < 3 and joined(end) and name_at(end + 1):
+            end += 1
+        # the first name stands for the person, except a namesake of the user: "Maya Singh" is not "Maya Rao"
+        run = [x.lower().removesuffix("'s") for x in words[i:end + 1]]
+        mine = user.split()
+        if len(run) > 1 and len(mine) > 1 and run[0] == mine[0] and run != mine:
+            root = " ".join(run)
+        if words[end].lower().endswith("'s"):
+            return relation(root, end + 1) or {root}
+        aliases = {root}
+        if end + 1 < len(words) and not joined(end) and words[end + 1].lower().endswith("'s") \
+                and (owner := name_at(end + 1)):
+            aliases |= relation(owner, end + 2) or set()  # "Priya, Maya's sister, lives in Mumbai"
+        return aliases
     return set()
 
 
@@ -328,16 +379,41 @@ def same_subject(a: str, b: str, user_name: str = "") -> bool:
     "प्रिया" vs "Riya"). Names match across scripts ("माया" is "Maya"). Unclear subjects count as the same, and so
     does "the user" next to a name while the user's name isn't set."""
     sa, sb = subject_aliases(a, user_name), subject_aliases(b, user_name)
-    if not sa or not sb or sa & sb:
+    return not sa or not sb or _aliases_match(sa, sb, user_name)
+
+
+def _aliases_match(sa: set[str], sb: set[str], user_name: str) -> bool:
+    if sa & sb:
         return True
-    users = {"user", "the user", (user_name or "").strip().lower()} - {""}
-    unnamed = not (user_name or "").strip()
+    full = (user_name or "").strip().lower()
+    # the user by full or first name: "I" (Maya Rao) is "Maya" (#463)
+    users = {"user", "the user", full, full.split()[0] if full else ""} - {""}
+    unnamed = not full
     ka, kb = _subject_keys(sa, users), _subject_keys(sb, users)
     for oa, ra in ka:
         for ob, rb in kb:
-            if ra == rb and (names_match(oa, ob) or (unnamed and "user" in (oa, ob))):
+            if ra != rb:
+                continue
+            # "her sister" may be anyone's sister, but never a person herself (#463)
+            if names_match(oa, ob) or (ra and SOMEONE in (oa, ob)) or (unnamed and "user" in (oa, ob)):
                 return True
     return False
+
+
+def same_person(a: str, b: str, user_name: str = "") -> bool:
+    """Both facts say who they are about, and it is the same person or thing (:func:`same_subject`). What Sentient
+    decides in code, without the model (a correction, a new home), needs this: "She moved to Delhi" says nobody, and
+    "Maya Rao's sister Priya lives in Mumbai" is never about Maya (#463). "Her sister" names no owner either, so it
+    only counts by a name it shares ("her sister Priya" and "Priya")."""
+    unknown_owner = f"{SOMEONE}'s "
+    sa = {s for s in subject_aliases(a, user_name) if not s.startswith(unknown_owner)}
+    sb = {s for s in subject_aliases(b, user_name) if not s.startswith(unknown_owner)}
+    return bool(sa) and bool(sb) and _aliases_match(sa, sb, user_name)
+
+
+def relation_of_someone(text: str, user_name: str = "") -> bool:
+    """The fact is about "her sister", "his colleague" or "उसकी बहन" ("her sister Priya" too): whose it is is unclear."""
+    return any(a.startswith(f"{SOMEONE}'s ") for a in subject_aliases(text, user_name))
 
 
 def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
@@ -417,9 +493,14 @@ def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | No
         return None
     if bool(PAST_RE.search(core)) != bool(PAST_RE.search(existing)):
         return None
-    if not same_thing(core, existing, user_name):
-        return None
-    new_vals, old_vals = _values(core), _values(existing)
+    if not same_person(core, existing, user_name) or not same_thing(core, existing, user_name):
+        return None  # decided in code, so both facts must clearly be about one person (#463)
+    # the user's surname is who, not a value ("Maya moved to Mumbai" loses no "Rao"), and an old fact's own replaced
+    # value is history ("moved from Pune to Bengaluru" only states Bengaluru now) (#463)
+    names = set(_TOKEN_RE.findall((user_name or "").lower()))
+    old_core = _REPLACED_RE.sub(" ", existing)
+    new_vals = {k: v for k, v in _values(core).items() if k not in names}
+    old_vals = {k: v for k, v in _values(old_core).items() if k not in names}
     core_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(core)}
     old_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(existing)}
     gained = {k: v for k, v in new_vals.items() if k not in old_words}
@@ -428,14 +509,14 @@ def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | No
         return None
     subjects = subject_aliases(core, user_name) | subject_aliases(existing, user_name)
     drop = {w for s in subjects for w in _TOKEN_RE.findall(s)} | set(new_vals) | set(old_vals)
-    drop |= {"user", (user_name or "").strip().lower()}
-    frame_new, frame_old = _frame(core, drop), _frame(existing, drop)
+    drop |= {"user", (user_name or "").strip().lower()} | names
+    frame_new, frame_old = _frame(core, drop), _frame(old_core, drop)
     tight = attribute_families(core) & attribute_families(existing) & TIGHT_FAMILIES
     union = frame_new | frame_old
     alike = bool(frame_old) and (frame_old <= frame_new or len(frame_new & frame_old) / len(union) >= 0.6)
     if not (alike or tight):
         return None
-    if len(gained) == 1 and len(lost) == 1 and frame_new <= frame_old:
+    if len(gained) == 1 and len(lost) == 1 and frame_new <= frame_old and old_core == existing:
         [(old_key, _)] = lost.items()
         [new_value] = gained.values()
         swapped, n = re.subn(rf"\b{re.escape(old_key)}\b", new_value, existing, count=1, flags=re.IGNORECASE)
@@ -1306,13 +1387,10 @@ class FactMemory:
         user = self.config.assistant.user_name
         if PAST_RE.search(fact) or "residence" not in attribute_families(fact):
             return None
-        subjects = fact_subjects(fact, user)
-        if not subjects:
-            return None
         peers = [
             n for n in candidates
             if "residence" in attribute_families(n["content"])
-            and subjects & fact_subjects(n["content"], user)
+            and same_person(fact, n["content"], user)  # never someone else's home (#463)
             and not PAST_RE.search(n["content"])
             and new_details(fact, n["content"])
         ]
@@ -1545,10 +1623,12 @@ class FactMemory:
             if matched and not (
                 same_thing(fact, matched, user) and same_thing(content, matched, user)
                 and not says_something_else(fact, matched, user)
+                and (not relation_of_someone(content, user) or same_person(content, matched, user))
             ):
                 # a different person or action ("files written" vs "files deleted"), in the new fact or in the
                 # model's rewrite that would be stored, or something unrelated about the same person ("a piano
-                # recital in July" vs "starts school in July"): both facts hold
+                # recital in July" vs "starts school in July"): both facts hold. The model may tell whose "her
+                # sister" it is, by naming her in what it stores ("Maya's sister lives in Delhi") (#463)
                 log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
                 action, content, topics = "ADD", fact, None
             elif dropped and not (

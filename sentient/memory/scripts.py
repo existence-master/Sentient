@@ -36,6 +36,9 @@ HINDI_PRONOUNS = frozenset({
 HINDI_FIRST_PERSON = frozenset({"मैं", "मैंने", "मुझे", "मुझको", "हम", "हमने", "हमें"})
 HINDI_MY = frozenset({"मेरा", "मेरी", "मेरे", "हमारा", "हमारी", "हमारे"})
 HINDI_POSSESSIVE = frozenset({"का", "की", "के"})
+SOMEONE = "someone"  # the owner of "her sister", "उसकी बहन": matches any owner with the same relation (#463)
+# "her", "his", "their": with a relation after it, someone else's relative ("उसकी बहन", her sister)
+HINDI_THEIR = frozenset({"उसका", "उसकी", "उसके", "उनका", "उनकी", "उनके", "इसका", "इसकी", "इसके"})
 # relation words, in English so "माया की बहन" and "Maya's sister" have the same relation
 HINDI_RELATIONS = {
     "बहन": "sister", "दीदी": "sister", "भाई": "brother", "भैया": "brother", "माँ": "mother", "मां": "mother",
@@ -136,20 +139,27 @@ def devanagari_subjects(text: str, user_name: str = "") -> set[str]:
     The first word that isn't a time word or pronoun, within the first four. Empty when unclear."""
     user = (user_name or "").strip().lower() or "user"
     words = _WORD.findall(unicodedata.normalize("NFC", text or ""))
+
+    def at(j: int) -> str:
+        return words[j] if j < len(words) else ""
+
     for i, w in enumerate(words[:4]):
         if w in HINDI_FIRST_PERSON:
             return {user}
-        nxt = words[i + 1] if i + 1 < len(words) else ""
+        nxt = at(i + 1)
         if w in HINDI_MY:
             return {f"{user}'s {HINDI_RELATIONS[nxt]}"} if nxt in HINDI_RELATIONS else {user}
+        if w in HINDI_THEIR and nxt in HINDI_RELATIONS:
+            return {f"{SOMEONE}'s {HINDI_RELATIONS[nxt]}"}  # "उसकी बहन", her sister: never a person herself (#463)
         if w in HINDI_PRONOUNS:
             return set()
         if w in HINDI_SKIP:
             continue
         name = w if has_devanagari(w) else w.lower().replace(chr(0x2019), "'").removesuffix("'s")
-        rel = words[i + 2] if i + 2 < len(words) else ""
-        if nxt in HINDI_POSSESSIVE and rel in HINDI_RELATIONS:
-            return {f"{name}'s {HINDI_RELATIONS[rel]}"}
+        # "माया की बहन", and with a surname "माया राव की बहन": Maya's sister, not Maya (#463)
+        for owner_end in (i, i + 1):
+            if at(owner_end + 1) in HINDI_POSSESSIVE and at(owner_end + 2) in HINDI_RELATIONS:
+                return {f"{name}'s {HINDI_RELATIONS[at(owner_end + 2)]}"}
         return {name}
     return set()
 
