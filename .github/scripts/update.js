@@ -3,10 +3,21 @@
 // The PR author, or anyone with write access, comments exactly "/update". The bot then:
 //   - already up to date      -> says so, and takes the "needs update" label off
 //   - main conflicts with it  -> lists the files, adds "needs update" and says a maintainer will resolve them
-//   - it can push the branch  -> merges main in with GitHub's update-branch API (a merge, never a rebase)
-//   - it can't push the branch (a fork) -> points the author at GitHub's own "Update branch" button and adds the
-//                                label so a maintainer can do it instead
+//   - it may push the branch  -> merges main in with GitHub's update-branch API (a merge, never a rebase). That
+//                                works for forks too, when "Allow edits by maintainers" is on.
+//   - it may not (a fork without maintainer edits, or GitHub refuses) -> points the author at GitHub's own
+//                                "Update branch" button and adds the label so a maintainer can follow up
 // When the branch is pushed again and is up to date, the label comes off by itself (clearLabel).
+//
+// After its own merge commit the bot restarts the checks, because GitHub treats a commit made with the workflow
+// token differently from a person's push: the pull_request runs (CI, Changelog) wait for approval, and
+// pull_request_target workflows (the CLA check) don't run at all. So the bot
+//   - approves the waiting runs, but only when GitHub had already run the checks on the commit before its merge
+//     (otherwise, for example for a first-time contributor, a maintainer still approves them by hand), and
+//   - copies the CLAAssistant result from that commit, which is exactly what the CLA action would decide again:
+//     the merge adds no commit of anyone else's (main's commits aren't part of the PR) and its own author,
+//     github-actions[bot], is on the CLA allowlist.
+// Both happen only for a commit GitHub itself made: verified, committed by web-flow, its first parent the old head.
 //
 // It only compares the comment with a fixed string, and never checks out or runs the pull request's code. To find
 // conflicting files it fetches the two commits' history into an empty bare repository and asks git to merge them
@@ -19,18 +30,20 @@ const LABEL = {
 };
 // author_association values for people with write access (the PR author may always use the command too).
 const WRITERS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+const CLA_CHECK = 'CLAAssistant';
 const POLL = { tries: 12, ms: 5000 };
 
 const code = (s) => `\`${s}\``;
 
 const MESSAGES = {
-  updated: (base, sha) =>
-    `Merged the latest ${code(base)} into this branch` + (sha ? ` (${sha.slice(0, 7)})` : '') + '. ' +
-    'Nothing else changed. GitHub does not start checks for a commit made by a bot, so they run again with ' +
-    'your next push.',
+  updated: (base, sha, checks) =>
+    `Merged the latest ${code(base)} into this branch (${sha.slice(0, 7)}). Nothing else changed. ` +
+    (checks === 'running'
+      ? 'The checks are running again.'
+      : 'GitHub holds the checks for a commit made by a bot, so a maintainer will start them.'),
   updating: (base) =>
-    `GitHub is merging the latest ${code(base)} into this branch now; the new commit shows up here in a minute. ` +
-    'GitHub does not start checks for a commit made by a bot, so they run again with your next push.',
+    `GitHub is merging the latest ${code(base)} into this branch now, and the new commit shows up here in a ` +
+    'minute. GitHub holds the checks for a commit made by a bot, so a maintainer will start them.',
   upToDate: (base) => `This branch already has everything from ${code(base)}. Nothing to do.`,
   conflicts: (base, files, canEdit) =>
     `${code(base)} has changes that conflict with this branch` +
@@ -42,10 +55,10 @@ const MESSAGES = {
       : 'A maintainer can resolve them for you once **Allow edits by maintainers** is ticked on this pull ' +
         'request (in the sidebar). Or resolve them yourself, whichever you prefer.'),
   useButton: (base) =>
-    `I can't push to this branch from here, because it lives in your fork. It has no conflicts with ` +
-    `${code(base)}, so click **Update branch** near the bottom of this pull request and GitHub merges it in ` +
-    `for you. I have also labelled it ${code(LABEL.name)}, so a maintainer can do it if you'd rather not. ` +
-    'You don\'t have to: the merge queue tests your change against the latest main anyway.',
+    `I can't push to this branch, because it lives in a fork that doesn't allow edits by maintainers. It has ` +
+    `no conflicts with ${code(base)}, so click **Update branch** near the bottom of this pull request and ` +
+    `GitHub merges it in for you. I have also labelled it ${code(LABEL.name)} so a maintainer can follow up. ` +
+    "There's no rush: the merge queue tests your change against the latest main anyway.",
   headMoved: 'This branch changed while I was updating it, so I left it alone. Comment `/update` again to retry.',
   closed: 'This pull request is closed, so there is nothing to update.',
   notAllowed:
@@ -164,10 +177,76 @@ async function waitForNewHead(github, { owner, repo, pull_number, oldSha, sleep,
   return null;
 }
 
+/** True when newSha is GitHub's own merge commit on top of oldSha (not something pushed meanwhile). */
+async function isOurMerge(github, { owner, repo, oldSha, newSha }) {
+  const { data } = await github.rest.repos.getCommit({ owner, repo, ref: newSha });
+  const parents = (data.parents || []).map((p) => p.sha);
+  return (
+    parents.length === 2 &&
+    parents[0] === oldSha &&
+    !!(data.committer && data.committer.login === 'web-flow') &&
+    !!(data.commit && data.commit.verification && data.commit.verification.verified)
+  );
+}
+
+/** Copies the CLA check's result from the old head to the merge commit (see the top of this file). */
+async function carryClaCheck(github, { owner, repo, oldSha, newSha, core }) {
+  const latest = async (ref) =>
+    (await github.rest.checks.listForRef({ owner, repo, ref, check_name: CLA_CHECK, filter: 'latest' })).data
+      .check_runs[0];
+  if (await latest(newSha)) return core.info('The CLA check already ran on the merge commit.');
+  const old = await latest(oldSha);
+  if (!old || old.status !== 'completed') return core.info('No finished CLA check on the old head to copy.');
+  await github.rest.checks.create({
+    owner,
+    repo,
+    name: CLA_CHECK,
+    head_sha: newSha,
+    status: 'completed',
+    conclusion: old.conclusion,
+    details_url: old.html_url,
+    output: {
+      title: `Same as ${oldSha.slice(0, 7)}`,
+      summary:
+        `Copied from ${oldSha.slice(0, 7)} by /update: this commit only merges the base branch in, so it adds ` +
+        'no new contributor.',
+    },
+  });
+  core.info(`Copied the CLA check (${old.conclusion}) from ${oldSha.slice(0, 7)}.`);
+}
+
+/**
+ * Approves the pull_request runs GitHub holds on the merge commit, if it had already run them on the old head.
+ * Returns "running" or "held" (a maintainer approves them).
+ */
+async function approveHeldRuns(github, { owner, repo, oldSha, newSha, sleep, poll, core }) {
+  const runs = async (head_sha, status) =>
+    (await github.rest.actions.listWorkflowRunsForRepo({ owner, repo, head_sha, event: 'pull_request', status }))
+      .data.workflow_runs;
+  const before = await runs(oldSha);
+  if (!before.length || before.some((r) => r.conclusion === 'action_required')) {
+    core.info('The old head\'s checks were not run without approval, so the new ones wait for a maintainer.');
+    return 'held';
+  }
+  let held = [];
+  for (let i = 0; i < poll.tries && !held.length; i++) {
+    await sleep(poll.ms);
+    held = await runs(newSha, 'action_required');
+  }
+  if (!held.length) return 'running';
+  await sleep(poll.ms); // let GitHub finish creating the rest of them
+  held = await runs(newSha, 'action_required');
+  for (const r of held) {
+    await github.rest.actions.approveWorkflowRun({ owner, repo, run_id: r.id });
+    core.info(`Approved ${r.name} (${r.id}).`);
+  }
+  return 'running';
+}
+
 /**
  * Entry point for actions/github-script:
  * `await require('./.github/scripts/update.js')({ github, context, core })`.
- * `findConflicts` and `sleep` are swapped out by the tests.
+ * `findConflicts`, `sleep` and `poll` are swapped out by the tests.
  */
 async function run({ github, context, core, findConflicts, sleep, poll = POLL, workDir }) {
   const { issue, comment } = context.payload;
@@ -175,6 +254,7 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
   if (!issue.pull_request) return core.info('Comment is on an issue, not a pull request: ignored.');
   if (comment.user.type === 'Bot') return core.info('Comment is from a bot: ignored.');
   if (!parseCommand(comment.body)) return core.info('Not a command.');
+  sleep = sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
 
   const { owner, repo } = context.repo;
   const issue_number = issue.number;
@@ -190,6 +270,7 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
   const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
   if (pr.state !== 'open') return say(MESSAGES.closed);
   const base = pr.base.ref;
+  const oldSha = pr.head.sha;
   const fork = isFork(pr, owner, repo);
   const canEdit = !fork || !!pr.maintainer_can_modify;
 
@@ -215,26 +296,30 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
   );
 
   let newSha = null;
+  let checks = 'held';
   if (action === 'updateBranch') {
     try {
-      await github.rest.pulls.updateBranch({ owner, repo, pull_number: issue_number, expected_head_sha: pr.head.sha });
-      newSha = await waitForNewHead(github, {
-        owner,
-        repo,
-        pull_number: issue_number,
-        oldSha: pr.head.sha,
-        sleep: sleep || ((ms) => new Promise((r) => setTimeout(r, ms))),
-        poll,
-      });
+      await github.rest.pulls.updateBranch({ owner, repo, pull_number: issue_number, expected_head_sha: oldSha });
       action = 'updated';
     } catch (err) {
       const message = String(err.message || '');
       core.info(`update-branch answered ${err.status}: ${message}`);
       if (err.status === 422 && /expected head sha/i.test(message)) action = 'headMoved';
       else if (err.status === 422 && /conflict/i.test(message)) action = 'conflicts';
-      // The workflow's token may not push to a fork, even with maintainer edits allowed.
+      // GitHub may still refuse to push to a fork (for example one owned by an organisation).
       else if (fork && [403, 404, 422].includes(err.status)) action = 'useButton';
       else action = 'failed';
+    }
+  }
+  if (action === 'updated') {
+    newSha = await waitForNewHead(github, { owner, repo, pull_number: issue_number, oldSha, sleep, poll });
+    if (newSha && (await isOurMerge(github, { owner, repo, oldSha, newSha }))) {
+      try {
+        await carryClaCheck(github, { owner, repo, oldSha, newSha, core });
+        checks = await approveHeldRuns(github, { owner, repo, oldSha, newSha, sleep, poll, core });
+      } catch (err) {
+        core.warning(`Could not restart the checks: ${err.message}`);
+      }
     }
   }
 
@@ -243,13 +328,13 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
 
   const reply = {
     upToDate: () => MESSAGES.upToDate(base),
-    updated: () => (newSha ? MESSAGES.updated(base, newSha) : MESSAGES.updating(base)),
+    updated: () => (newSha ? MESSAGES.updated(base, newSha, checks) : MESSAGES.updating(base)),
     conflicts: () => MESSAGES.conflicts(base, conflicts, canEdit),
     useButton: () => MESSAGES.useButton(base),
     headMoved: () => MESSAGES.headMoved,
     failed: () => MESSAGES.failed(base),
   }[action]();
-  core.info(`Result: ${action}`);
+  core.info(`Result: ${action}${action === 'updated' ? `, checks ${checks}` : ''}`);
   return say(reply);
 }
 

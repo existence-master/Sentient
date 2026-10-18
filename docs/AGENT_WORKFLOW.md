@@ -142,3 +142,12 @@ drive (a full one fails dozens of tests with "disk is full"). Give pytest a fold
 - No keys, tokens, real names or personal data anywhere in the PR.
 - After opening it, wait for the checks and the CodeRabbit review. Fix the real findings (two rounds at most, then
   ask a maintainer), and leave merging to a maintainer.
+
+## Someone else's pull request
+
+When you work for the maintainers on a contributor's pull request, do the chores and leave the substance to them
+([CONTRIBUTING.md](../CONTRIBUTING.md#we-do-the-chores)). Merging `main`, resolving conflicts, the `changes/`
+file, lint fixes, re-running checks and tiny fixes a review asked for are yours to push, as merge commits and
+only when "Allow edits by maintainers" is on; never force-push, and comment with exactly what you pushed. Anything
+that changes behaviour or design goes back to them as a review. Pull requests labelled `needs update` are the
+ones whose conflicts are waiting for you; the `/update` bot takes the label off once the branch is up to date.

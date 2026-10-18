@@ -25,10 +25,15 @@ jobs:
     concurrency:
       group: update-pr-${{ github.event.issue.number }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
+    # Each one was tried for real (#464): update-branch needs both contents and pull-requests write, also for a fork
+    # with maintainer edits on. GitHub holds the checks of a commit made with this token, so restarting them needs
+    # the other two (see update.js).
     permissions:
       contents: write # update-branch writes the merge commit to the pull request's branch
-      pull-requests: write # the reply and the "needs update" label
+      pull-requests: write # update-branch, the reply and the "needs update" label
+      actions: write # approve the held CI runs on the bot's own merge commit
+      checks: write # copy the CLA check to that merge commit, as pull_request_target doesn't run for it
     steps:
       # issue_comment always runs on the default branch, so this is our own script, never a contributor's.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
