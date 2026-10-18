@@ -178,18 +178,21 @@ async def test_one_task_per_email_whichever_app_brings_it(make_app, turn_on):
     assert len(await app.tasks.list()) == 1
 
 
-async def test_allowed_senders_replace_the_default(make_app, turn_on):
+async def test_allowed_senders_add_to_your_own_addresses(make_app, turn_on):
     picked = EmailTasksConfig(enabled=True, address=SENTIENT, allowed_senders=["Arjun@Example.com; priya@example.com"])
     assert picked.allowed_senders == ["arjun@example.com", "priya@example.com"]
     turn_on.tasks.email = picked
-    llm = FakeProvider(json_replies=[dict(PLAN)])
+    llm = FakeProvider(json_replies=[dict(PLAN), dict(PLAN)])
     app = await make_app(llm)
     await app.tasks.handle_source_items(items(email("Arjun Mehta <arjun@example.com>")))
-    await app.tasks.handle_source_items(items(email(mid="<me@example.com>")))  # Maya isn't on the list now
+    await app.tasks.handle_source_items(items(email(mid="<me@example.com>")))  # Maya's own address, not on the list
+    await app.tasks.handle_source_items(items(email("Sam <sam@example.com>", mid="<sam@example.com>")))
     await app.tasks.drain()
-    assert len(await app.tasks.list()) == 1
+    assert len(await app.tasks.list()) == 2
     codes = {r["sender"]: r["code"] for r in await app.store.fetchall("SELECT * FROM task_email_log")}
-    assert codes == {"arjun@example.com": None, ME: "not_allowed"}
+    assert codes == {"arjun@example.com": None, ME: None, "sam@example.com": "not_allowed"}
+    allowed = (await app.tasks.inbox.status())["allowed"]
+    assert allowed == [ME, "arjun@example.com", "priya@example.com"]  # your own first, then the ones you added
 
 
 async def test_at_most_ten_tasks_an_hour(make_app, turn_on):

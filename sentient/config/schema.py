@@ -569,8 +569,8 @@ class EmailTasksConfig(BaseModel):
     )
     allowed_senders: list[str] = Field(
         default_factory=list,
-        description="Who may give Sentient tasks by email, by their real address. Empty means only your own "
-        "addresses (the email accounts you connected). The name shown next to an address never counts.",
+        description="Other people who may give Sentient tasks by email, by their real address. Your own addresses "
+        "(the email accounts you connected) can always send tasks. The name shown next to an address never counts.",
     )
 
     @field_validator("address", "label")

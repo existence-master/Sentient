@@ -98,14 +98,13 @@ export function EmailTasksSection({ query }: { query?: string }) {
             stack
             description={
               <>
-                Sentient checks the real email address, never the name shown next to it.{' '}
-                {cfg.allowed_senders.length ? 'Only these addresses can send tasks.' : own.length ? `Empty means only your own addresses: ${own.join(', ')}.` : 'Empty means only your own addresses.'}
+                Your own addresses can always send tasks{own.length ? ` (${own.join(', ')})` : ''}. Add others here. Sentient checks the real email address, never the name shown next to it.
               </>
             }
           >
             <CommitInput
               value={cfg.allowed_senders.join(', ')}
-              placeholder={own.join(', ') || 'you@example.com, a.colleague@example.com'}
+              placeholder="a.colleague@example.com, a.friend@example.com"
               onCommit={(v) => set({ allowed_senders: parseAddresses(v) })}
               aria-label="Who can send tasks"
             />

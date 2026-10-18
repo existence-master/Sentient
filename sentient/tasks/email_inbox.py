@@ -127,9 +127,10 @@ class EmailInbox:
         return list(found)
 
     async def allowed(self) -> list[str]:
+        """Who may send tasks: the user's own addresses always, plus the ones they added (``allowed_senders``)."""
         listed = [a.strip().lower() for item in self.settings().allowed_senders or []
                   for a in str(item).replace(";", ",").split(",") if a.strip()]
-        return list(dict.fromkeys(listed)) if listed else await self.own_addresses()
+        return list(dict.fromkeys([*await self.own_addresses(), *listed]))
 
     # ------------------------------------------------------------------ source.items
     async def handle(self, data: Any) -> list[str]:

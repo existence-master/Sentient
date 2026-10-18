@@ -1318,9 +1318,9 @@ in Settings > Tasks (`tasks.email`):
 - `enabled` (default false); `address`, the Sentient address, usually a plus-address such as `you+sentient@gmail.com`
   (most services deliver it to the normal inbox); `label` (optional), a Gmail label or IMAP folder whose mail counts
   too (over IMAP the folder must also be one the account watches; Gmail mail must stay in the inbox);
-  `allowed_senders`, real addresses that may send tasks (comma or semicolon separated values are split and
-  lower-cased). Empty means the user's own addresses: the connected Gmail and IMAP accounts and the address the
-  plus-address is built on.
+  `allowed_senders`, other real addresses that may send tasks (comma or semicolon separated values are split and
+  lower-cased). The user's own addresses can always send tasks, whatever the list holds: the connected Gmail and IMAP
+  accounts and the address the plus-address is built on. The list adds to them; it never replaces them.
 - New mail arrives through the push feeds as `source.items` (section 16). The tasks package looks at every `gmail` and
   `email_imap` item first: one sent to the address (its To, Cc, `headers.delivered-to` or `headers.x-original-to`) or
   in the label is handled here, once per email whichever app brings it (keyed by Message-ID), and proactivity makes no
@@ -1345,7 +1345,7 @@ in Settings > Tasks (`tasks.email`):
 - `GET /api/tasks/email?limit=20` → **EmailTasksStatus** `{enabled, active, address, label, allowed_senders, allowed,
   own_addresses, accounts, suggested_address, watching, recent: [{at, app, sender, from, subject, outcome:
   "task"|"ignored", reason, code: null|"not_allowed"|"unclear_sender"|"failed_check"|"automated"|"too_many",
-  task_id}]}`. `active` is `enabled` with an address or label; `allowed` is who may send tasks now; `accounts` are the
+  task_id}]}`. `active` is `enabled` with an address or label; `allowed` is who may send tasks now (your own addresses, then `allowed_senders`); `accounts` are the
   connected email accounts; `suggested_address` is a plus-address on the first one; `watching` lists the connected
   mail apps (`gmail`, `email_imap`); `from` is the From line as written. Settings change through `PATCH /api/config`.
 

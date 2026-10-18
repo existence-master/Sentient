@@ -305,7 +305,7 @@ export interface EmailTasksConfig {
   enabled: boolean
   address: string
   label: string
-  /** Real addresses that may send tasks; empty means your own addresses. */
+  /** Other real addresses that may send tasks; your own addresses always can. */
   allowed_senders: string[]
 }
 

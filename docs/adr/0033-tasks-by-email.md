@@ -26,7 +26,7 @@ address in its plan would pass the second look as if the user had typed it.
 - **The real address, decided in code.** An email to that address becomes a task only when its From line names exactly
   one address clearly (two parsers must agree, and the display name never counts), the email service didn't find it
   forged (DMARC fail, or SPF fail with no DKIM pass), it isn't automatic or list mail, and the address is allowed. The
-  allowlist defaults to the user's own addresses. Everything else is ignored and logged with its reason, never read by
+  user's own addresses are always allowed, and the addresses the user adds extend that list; they never replace it. Everything else is ignored and logged with its reason, never read by
   a model, and at most 10 tasks an hour are made this way. Normalized email items carry the same real address as
   `sender_email`, so privacy filters, triggers and the second look can't be fooled by a display name either.
 - **The email is outside content.** The task is named in code; there is no refining step that would read the email as
