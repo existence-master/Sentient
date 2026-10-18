@@ -213,18 +213,18 @@ class Erased:
 
     Called with a line of derived text (a MEMORY.md bullet, a journal line, a summary, an evidence quote), it says
     whether the line repeats a deleted wording (:func:`says`) and so goes. A line stays when a remaining current
-    memory says it as well or better, or when it names a remaining memory's id ("(memory 7)"): then it is that memory's line, not
-    the deleted one's. Each quoted part of a line is weighed on its own as well, so a journal line like
-    ``I used to remember "A", but now "B"`` goes when A (or B) is deleted, even though B (or A) remains."""
+    memory says it as well or better, or when it names a remaining memory's id ("(memory 7)", unless the deleted
+    wording it repeats says that number itself): then it is that memory's line, not the deleted one's. Each quoted
+    part of a line is weighed on its own as well, so a journal line like ``I used to remember "A", but now "B"`` goes
+    when A (or B) is deleted, even though B (or A) remains."""
 
     def __init__(self, texts: list[str], remaining: list[tuple[int, str]], user_name: str = "") -> None:
         self.user = _words(user_name)
         self.texts = [t for t in dict.fromkeys(texts) if t]
-        self._gone = [_words(t) - self.user for t in self.texts]
+        self._gone = [(_words(t) - self.user, set(_NUMBER.findall(t))) for t in self.texts]
         self._left = [_words(c) - self.user for _, c in remaining]
         self._ids = {str(i) for i, _ in remaining}
         self._held = {" ".join(str(c).lower().split()) for _, c in remaining}
-        self._own = {n for t in self.texts for n in _NUMBER.findall(t)}  # a number the deleted words say is no reference
 
     @property
     def wordings(self) -> list[str]:
@@ -234,13 +234,17 @@ class Erased:
 
     def _repeats(self, part: str) -> bool:
         have = _words(part)
-        best = max((_share(w, have) for w in self._gone), default=0.0)
-        return best > 0 and not any(_share(w, have) >= best for w in self._left)
+        said = [(_share(w, have), nums) for w, nums in self._gone]
+        best = max((share for share, _ in said), default=0.0)
+        if best == 0:
+            return False
+        own = {n for share, nums in said if share for n in nums}  # numbers the matching deleted words say
+        if any(m.group(1) in self._ids and m.group(1) not in own for m in _NAMES_ID.finditer(part)):
+            return False
+        return not any(_share(w, have) >= best for w in self._left)
 
     def __call__(self, text: str) -> bool:
         text = str(text or "")
-        if any(m.group(1) in self._ids and m.group(1) not in self._own for m in _NAMES_ID.finditer(text)):
-            return False
         return any(self._repeats(p) for p in (text, *(a or b for a, b in _QUOTED.findall(text))))
 
 

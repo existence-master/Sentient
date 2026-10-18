@@ -44,6 +44,11 @@ def test_a_line_a_remaining_memory_says_as_well_stays():
     assert gone("- Maya drives a red Honda City, memory 7 of her notes")
     phone = origins.Erased(["Maya's phone has memory 7 GB"], [(7, "Maya likes filter coffee")], "Maya")
     assert phone("- Maya's phone has memory 7 GB") and phone("- Maya's phone (memory 7) has 7 GB")
+    # a number only says nothing for the deleted wording that says it
+    two = origins.Erased([HONDA, "Maya's flat is number 7"], [(7, ATHER)], "Maya")
+    assert not two("- Maya drives a red Honda City (memory 7)")
+    # naming a remaining memory never keeps a quote of the deleted one
+    assert gone(f'- (memory 7) is new; I used to remember "{HONDA}"')
     # a tie goes to the remaining memory
     pune = origins.Erased([PUNE], [(3, MOVED)], "Maya")
     assert not pune("- Maya moved from Pune to Bengaluru and lives there now")
