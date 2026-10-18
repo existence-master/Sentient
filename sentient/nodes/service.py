@@ -264,12 +264,19 @@ class NodeService(Service):
         cfg = self.cfg
         lan = self.lan
         running = bool(lan and lan.running)
+        if running and not cfg.lan_bind_all:
+            # Loopback-only: never advertise network addresses devices could not (and should not) reach.
+            urls = [f"wss://127.0.0.1:{cfg.lan_port}/ws/node"]
+            web_urls = [f"https://127.0.0.1:{cfg.lan_port}/node/"]
+        else:
+            urls = lan.ws_urls() if running and lan else []
+            web_urls = lan.web_urls() if running and lan else []
         return {
             "enabled": bool(cfg.enabled and cfg.lan_enabled),
             "running": running,
             "port": cfg.lan_port,
-            "urls": lan.ws_urls() if running and lan else [],
-            "web_urls": lan.web_urls() if running and lan else [],
+            "urls": urls,
+            "web_urls": web_urls,
             "fingerprint": lan.fingerprint if lan else None,
             "mdns": bool(lan and lan.mdns),
             "bind_all": bool(cfg.lan_bind_all),

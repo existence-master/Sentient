@@ -91,7 +91,7 @@ function AddDeviceBody({ close }: { close: () => void }) {
   const setLan = async (enabled: boolean) => {
     setSavingLan(true)
     try {
-      if (!previewMode()) await api.config.patch({ nodes: { lan_enabled: enabled } })
+      if (!previewMode()) await api.config.patch({ nodes: { lan_enabled: enabled, lan_bind_all: enabled } })
       await qc.invalidateQueries({ queryKey: deviceKeys.lan })
       newCode()
     } catch (e) {

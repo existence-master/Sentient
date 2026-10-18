@@ -13,7 +13,7 @@ class below and may add fields to it. Do not edit another package's section.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -1058,6 +1058,15 @@ class NodesConfig(BaseModel):
         True,
         description="Announce Sentient on your network (mDNS) so glasses and phones find it without typing an address.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_lan_bind_all(cls, data: Any) -> Any:
+        # Configs saved before nodes.lan_bind_all existed bound the LAN listener to every
+        # interface, so an existing lan_enabled opt-in keeps working until the user chooses otherwise.
+        if isinstance(data, dict) and "lan_bind_all" not in data and data.get("lan_enabled") is True:
+            data = {**data, "lan_bind_all": True}
+        return data
     camera_requires_approval: bool = Field(
         True, description="Ask before the assistant takes a photo or captures a screen with one of your devices."
     )
