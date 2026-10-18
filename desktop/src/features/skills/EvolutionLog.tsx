@@ -155,6 +155,13 @@ function Entry({ entry, onOpenSkill }: { entry: EvolutionLogEntry; onOpenSkill: 
           <>You archived <SkillLink name={name} onOpenSkill={onOpenSkill} /></>
         )
       break
+    case 'skill_learned':
+      title = (
+        <>
+          Sentient learned <SkillLink name={name} pending onOpenSkill={onOpenSkill} /> from {str(d.origin) || 'your docs'} and asked for your review
+        </>
+      )
+      break
     case 'skill_reset':
       title = <>You put <SkillLink name={name} onOpenSkill={onOpenSkill} /> back to its original version</>
       break

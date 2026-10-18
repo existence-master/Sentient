@@ -1957,10 +1957,20 @@ facts). Saying a memory isn't right or is publishes UPDATE with `state` and `rea
 
 ## 8. Skills & self-evolution
 
-**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool, browser_profile: "<name>"|null, validate: [SkillCheck], check: CheckReport|null}`
+**Skill** `{name, description, author: "user|assistant|community", state: "active|pending_review|stale|archived", tags, requires_tools, version, use_count, view_count, patch_count, last_used_at, success_count, failure_count, last_failure_at, created_by_review: bool, browser_profile: "<name>"|null, validate: [SkillCheck], check: CheckReport|null, references: ["references/<file>"]}`
 (`browser_profile` comes from the skill's frontmatter; once `skill_view` reads that skill, the run's browser tools use
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
+
+**Reference files (#167).** A skill may keep text files in a `references/` folder next to its SKILL.md (`.md`, `.txt`,
+`.rst`, `.csv`, `.json`, `.yaml`; dotfiles and links are left out; at most 50). `references` lists them. They stay out
+of the prompt: the `skill_view` tool `{name, file?}` returns the steps plus `references`, and with `file` (a path from
+that list, or just its file name) returns `{name, file, content, truncated?}` for that one file (at most 40,000
+characters, or what the model's tool-result limit allows), logging "skill <name>: read its reference file <file>". A
+path outside the list returns `{error, references}`. For a skill from outside (it has a `skill_imports` record: learned,
+added from a link or brought over from Hermes) the result starts with `outside_content: "<site or file>, through the
+skill <name>"`, so reading it marks the run as having read outside content (section 10, ADR 0018) and anything that
+sends data out asks first.
 
 **Skill checks (#386, ADR 0010 amendment).** A skill can say how to check it works, under `validate` in its header:
 one check or a list of up to five. **SkillCheck** `{file: "<path>", expect?}` (the file exists, in the skill's
@@ -1996,7 +2006,7 @@ text pushed out of view. `outbound` (a `warning`): it always sends to one fixed 
 **Safety check of skills from outside (#146, ADR 0027).** Skills brought over from Hermes and skills added from a link
 wait in pending with **Vetting** `{verdict: "high|check|clear", summary, findings: [Lint finding & {file}], files,
 programs, hash, scanner, source: "link|hermes", origin, imported_at, decision: "approved"|null, changed_since_import,
-changed_since_approval}`: the `danger`, `hidden` and `outbound` rules on the SKILL.md and every text file in its folder
+changed_since_approval}` (`source: "learn"` for a skill learned from docs, `origin` then the page, file or folder): the `danger`, `hidden` and `outbound` rules on the SKILL.md and every text file in its folder
 (`file` says which; dotfiles and `auth.json` are never opened), plus a `programs` warning listing the scripts it brings.
 `high` = any `error` finding; `check` = only warnings. It is computed again from the files every time it is returned.
 The lock record (`skill_imports` table: source, origin, folder hash, scanner version, verdict, approved hash) is kept
@@ -2019,6 +2029,26 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
   kept byte for byte. The name comes from its header (else the link) and is made unique with `-imported`. 400 with a
   plain reason: not http(s), not found, an error from the site, too large, or not a skill. Evolution log
   `skill_imported {name, source: "link", origin, verdict, pending: true}`.
+- `POST /api/skills/learn` `{source}` → `Skill & {body, lint, vetting}` (#167, `/learn` in chat and in the messaging apps).
+  Drafts a skill from docs or a written workflow and stages it in pending, like a self-evolved skill. `source` is a web
+  address (http or https; a page on this computer works too, since the user typed it: at most 5 MB, 30 s, 5 redirects;
+  HTML is reduced to its readable text, PDF and text are read), a file on this computer (Markdown, text, HTML, PDF,
+  Word), a folder (those files inside it, at most 60 files and 400,000 characters; dotfiles, `auth.json` and key files
+  are never read, nor are they on their own), or a name in Sentient's files folder (`uploads/notes.md`). A source of at
+  most 12,000 characters is drafted from in full and keeps no reference files. A longer one becomes a knowledge skill:
+  its text goes into at most 8 reference files (`references/<title>.md`, each starting `# <title>` and `Source: <where>`,
+  at most 60,000 characters), the model drafts from an outline of them, Sentient adds a "## Reference files" section
+  that lists them, and it drafts `validate` itself: a `file` check per reference file (up to five) that expects its
+  `# <title>` line. The source reaches the model (role `fast`) marked as outside content with the rule that text
+  speaking to an assistant never becomes a step. The skill gets `author: "assistant"`, the tag `learned` and a
+  `skill_imports` record with `source: "learn"`, so it waits with its Vetting (a `high` verdict needs `accept_risk` to
+  approve, and code checks never run). Its checks run at once (file checks only). Evolution log `skill_learned {name,
+  pending: true, reason: "Learned from <where>", source: "link"|"file"|"folder", origin, verdict, references: [path],
+  via: "app"|<channel id>}`, a `skill.updated` event and a `skill` notification "I read <site or file> and drafted the
+  skill **<name>**: <description> Review it in Skills." with `payload: {skill, action: "create", origin: {learned:
+  <where>}}`. A name already in use gets `-2`, `-3`... 400 with a plain reason: no source, nothing at that path, a site
+  error, too large, a format that can't be read, nothing readable in the folder, the model failed, or its draft had no
+  description or no Procedure.
 - `POST /api/skills` `{name, description, body, tags?, requires_tools?}` → `Skill` (author `user`, active immediately; 400 invalid name, 409 exists)
 - `PUT /api/skills/{name}` `{description?, body?, tags?, requires_tools?}` → `Skill & {body, lint}` (edits the active skill, else the pending proposal; bumps `version` of active skills; an edit to the active skill makes it `user_edited`)
 - `POST /api/skills/{name}/reset` → `Skill & {body, lint}` (puts back the original, undoing the user's edits; 404 no active skill or no original, 409 nothing to undo; evolution log `skill_reset {name, by: "user"}`)
@@ -2031,7 +2061,7 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
 - `DELETE /api/skills/{name}` → `{ok}`
 - `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed, user_edited, changed_since_proposal}`
 - `POST /api/skills/review-now` `{session_id?}` → `{reviewed, proposed: [name]}` (with `session_id`: review that chat now; without: every chat with enough tool calls not yet reviewed, plus completed task runs seen on the bus)
-- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_check_failed|skill_archived|skill_reset|skill_imported|skill_import_declined|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
+- `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_check_failed|skill_archived|skill_reset|skill_imported|skill_import_declined|skill_learned|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
 
 Skills proposed by the background reviewer or curator always land in pending with a `skill` notification `payload: {skill, action: "create"|"patch", origin}`.
 Repair proposals (section 15) send `payload: {skill, action: "patch", origin: "repair", reason, session_id?, turn_id?, task_id?, run_id?}` with title "Skill fix to review".
@@ -2731,7 +2761,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   paired as a direct chat is ignored.
 - A paired chat is a normal Sentient chat (`channel` = channel id, so the desktop shows a badge). Commands: `/new` starts a
   fresh chat (new session), `/stop` cancels the reply (the partial text is kept with "(stopped)"), `/stopall` (or
-  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/scope`, `/help`,
+  `/stop all`) is Stop everything and `/resume` undoes it (section 17; source `telegram` or `discord`), `/model`, `/scope`, `/learn`, `/help`,
   `/trust` (says what the chat read and why sending asks, and remembers the newest message then; `/trust yes` trusts
   the chat up to that message, `Agent.trust_chat` with `via` = the channel id, section 10: anything from outside that
   arrived after the owner's `/trust`, also a member's message still waiting for a reply to end, keeps it marked and the
@@ -2755,6 +2785,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   projects. `/scope always` is refused with a plain reason. `/new` keeps the chat's scope. Paired chats only, like
   every command, and in a group only its owner (ADR 0029): another member's `/scope` is stored as their message and
   changes nothing.
+- `/learn <link|file|folder>` (#167), or a file sent with `/learn` as its caption (saved to `uploads/` first), drafts a
+  skill with `POST /api/skills/learn`'s logic (`via` = the channel id). It answers "Reading it now..." at once and
+  drafts in the background, then says "Done. I drafted the skill **<name>**: <description>", how many reference files
+  it keeps, a high-risk warning when the safety check found one, and that it waits for review in Skills; or "I couldn't
+  learn from that. <reason>". `/learn` alone explains how. Paired chats only, and in a group only its owner (ADR 0029).
 - `/model chat <provider/model>` (#312) keeps a model for this conversation only (its `sessions.model`, section 2;
   publishes `session.updated`); presets and other chats are untouched. It is refused with the plain reason when the
   model can't answer right now (no key, Claude Code off, not downloaded). `/model chat default` follows the default

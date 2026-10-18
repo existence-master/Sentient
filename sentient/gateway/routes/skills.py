@@ -91,6 +91,24 @@ async def import_skill(request: Request, body: dict):
     return await _skill(s, name)
 
 
+@router.post("/learn")
+async def learn_skill(request: Request, body: dict):
+    """``/learn``: draft a skill from a web page, a document or a folder of notes (#167). It waits in pending with the
+    safety check of skills from outside until the user approves it."""
+    from sentient.skills.learn import LearnError
+
+    s = get_core(request)
+    source = str(body.get("source") or "").strip()
+    if not source:
+        raise HTTPException(400, "Give a web address, a file or a folder to learn from.")
+    try:
+        res = await s.evolution.learn_skill(source, via="app")
+    except LearnError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    s.skills.reload(s._available_tools())
+    return await _skill(s, res["name"])
+
+
 @router.get("/evolution-log")
 async def evolution_log(request: Request, limit: int = 100):
     return await read_log(get_core(request).store, max(1, min(limit, 1000)))

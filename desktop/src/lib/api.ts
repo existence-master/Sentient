@@ -764,6 +764,8 @@ export const api = {
       http.post<Skill>(`/api/skills/${enc(name)}/approve`, acceptRisk ? { accept_risk: true } : undefined),
     /** Add a skill from a web address; it waits in pending with its safety check (#146). */
     importUrl: (url: string) => http.post<SkillDetail>('/api/skills/import', { url }),
+    /** `/learn` (#167): draft a skill from a web page, a file or a folder; it waits in pending. */
+    learn: (source: string) => http.post<SkillDetail>('/api/skills/learn', { source }),
     reject: (name: string) => http.post<OkResponse>(`/api/skills/${enc(name)}/reject`),
     archive: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/archive`),
     restore: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/restore`),

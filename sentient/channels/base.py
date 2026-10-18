@@ -516,6 +516,9 @@ class Channel:
         if cmd == "trust":
             await self._trust_command(rt, chat, arg)
             return
+        if cmd == "learn":
+            await self._learn_command(chat, arg, msg)
+            return
         if cmd == "stop":
             rt.queued.clear()
             if await self.cancel_turn(chat_id):
@@ -737,6 +740,7 @@ class Channel:
             "/model chat <model> - use a model in this chat only (/model chat default to go back)",
             "/scope - which memories this chat uses: /scope work, /scope personal or /scope <project>",
             "/trust - see why sending asks first here, and trust this chat again after you've checked it",
+            "/learn <link> - turn a web page or a workflow into a skill for you to review (or send a file with /learn)",
             "/help - show this message",
         ]
         if chat and chat.get("is_group"):
@@ -1136,6 +1140,57 @@ class Channel:
             await self.reply(chat_id, f"This chat follows your default model again, {default}.")
         else:
             await self.reply(chat_id, f"This chat now uses {availability.label(model)}. Send /model chat default to go back.")
+
+    # ------------------------------------------------------------------ /learn
+    async def _learn_command(self, chat: dict, arg: str, msg: Incoming) -> None:
+        """``/learn <link|file|folder>``, or a file sent with ``/learn`` as its caption: draft a skill from it (#167).
+        Only the chat's owner gets here (a group's other members are outside content). Drafting takes a while, so it
+        runs in the background and the chat hears back when the skill waits for review in Skills."""
+        chat_id = str(chat["chat_id"])
+        source = " ".join(arg.split())
+        if not source and msg.files:
+            try:
+                data, name = await msg.files[0]()
+                source = await save_upload(name, data, self.app.store)
+            except ChannelError as exc:
+                await self.reply(chat_id, exc.message)
+                return
+            except Exception as exc:
+                log.warning("%s: download for /learn failed: %s", self.id, self.redact(str(exc)))
+                await self.reply(chat_id, "I couldn't download that file. Please try sending it again.")
+                return
+        if not source:
+            await self.reply(chat_id, "Send /learn followed by a link to a page, or send a file with /learn as its "
+                                      "caption. I'll turn it into a skill for you to review.")
+            return
+        evolution = getattr(self.app, "evolution", None)
+        if evolution is None:
+            await self.reply(chat_id, "Learning skills isn't available right now.")
+            return
+        await self.reply(chat_id, "Reading it now. I'll tell you here when the skill is ready for you to review.")
+        self.spawn(self._learn(chat_id, source))
+
+    async def _learn(self, chat_id: str, source: str) -> None:
+        from sentient.skills.learn import LearnError
+
+        try:
+            res = await self.app.evolution.learn_skill(source, via=self.id)
+        except LearnError as exc:
+            await self.reply(chat_id, f"I couldn't learn from that. {exc}")
+            return
+        except Exception as exc:
+            log.warning("%s: /learn failed: %s", self.id, self.redact(str(exc)))
+            await self.reply(chat_id, "Something went wrong while I was drafting the skill. Please try again.")
+            return
+        lines = [f"Done. I drafted the skill **{res['name']}**: {res['description']}"]
+        if res.get("references"):
+            n = len(res["references"])
+            lines.append(f"It keeps the full text in {n} reference file{'s' if n != 1 else ''}, read only when the "
+                         "skill is used.")
+        if res.get("verdict") == "high":
+            lines.append("The safety check found high-risk problems in it, so read it carefully before you approve it.")
+        lines.append("It waits for your review in Sentient under **Skills** and isn't used until you approve it.")
+        await self.reply(chat_id, "\n\n".join(lines))
 
     # ------------------------------------------------------------------ /scope
     async def _scope_command(self, chat: dict, value: str) -> None:
