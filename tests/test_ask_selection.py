@@ -7,6 +7,7 @@ marked as outside content (ADR 0023) and marks the chat, so nothing is sent with
 from __future__ import annotations
 
 import json
+import re
 
 from fastapi.testclient import TestClient
 
@@ -66,8 +67,8 @@ def test_selected_text_is_marked_and_marks_the_chat(config, isolated_home, monke
         up = client.post(
             "/api/files", files={"file": ("Notepad.txt", TEXT.encode(), "text/plain")}, data={"source": "selection"}
         ).json()
-        assert up["name"] == "selections/Notepad.txt"
-        assert (isolated_home / "files" / "selections" / "Notepad.txt").read_text(encoding="utf-8") == TEXT
+        assert re.fullmatch(r"selections/Notepad [0-9a-f]{6}\.txt", up["name"])  # a random part (#458)
+        assert (isolated_home / "files" / up["name"]).read_text(encoding="utf-8") == TEXT
         r = client.post("/api/chat", json={"text": "Explain the selected text.", "attachments": [up["name"]]})
         sid = json.loads(r.text.splitlines()[0])["session_id"]
         content = _user_content(llm)

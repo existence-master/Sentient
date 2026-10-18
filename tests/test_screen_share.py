@@ -7,6 +7,7 @@ someone else wrote."""
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,18 +64,19 @@ def test_screen_upload_goes_to_screens_and_others_stay_in_uploads(config, isolat
         shot = client.post(
             "/api/files", files={"file": ("Inbox - Mail.png", PNG, "image/png")}, data={"source": "screen"}
         ).json()
-        assert shot["name"] == "screens/Inbox - Mail.png" and shot["mime"] == "image/png"
+        # named after the window, with a short random part (#458)
+        assert re.fullmatch(r"screens/Inbox - Mail [0-9a-f]{6}\.png", shot["name"]) and shot["mime"] == "image/png"
         again = client.post(
             "/api/files", files={"file": ("Inbox - Mail.png", PNG, "image/png")}, data={"source": "screen"}
         ).json()
-        assert again["name"] == "screens/Inbox - Mail (1).png"
+        assert again["name"] != shot["name"] and again["name"].startswith("screens/Inbox - Mail ")
         plain = client.post("/api/files", files={"file": ("photo.png", PNG, "image/png")}).json()
         assert plain["name"] == "uploads/photo.png"
         bad = client.post("/api/files", files={"file": ("x.png", PNG, "image/png")}, data={"source": "elsewhere"})
         assert bad.status_code == 422
         # deletable like any other file
         assert client.delete(f"/api/files/{shot['name']}").json() == {"ok": True}
-        assert not (isolated_home / "files" / "screens" / "Inbox - Mail.png").exists()
+        assert not (isolated_home / "files" / shot["name"]).exists()
 
 
 @pytest.mark.parametrize("vision", ["ollama_chat/qwen2.5vl:7b", None])
@@ -98,7 +100,7 @@ def test_a_screen_capture_goes_to_the_vision_role_and_marks_the_chat(config, iso
         assert image_url.startswith("data:image/png;base64,")
         assert any(
             block.get("type") == "text"
-            and "Screen capture attached: screens/Inbox - Mail.png" in block.get("text", "")
+            and f"Screen capture attached: {shot['name']}" in block.get("text", "")
             for block in content
         )
         listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
