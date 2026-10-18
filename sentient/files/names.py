@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,9 @@ from sentient import paths
 
 
 def _norm(name: str) -> str:
-    return str(name or "").replace("\\", "/").lstrip("/").casefold()  # case-insensitive, like Windows and macOS
+    # one form for the same name: composed accents (macOS may store them decomposed) and any letter case, like
+    # Windows and macOS file systems
+    return unicodedata.normalize("NFC", str(name or "")).replace("\\", "/").lstrip("/").casefold()
 
 
 def _variants(name: str, *, unique: bool) -> Iterator[str]:
