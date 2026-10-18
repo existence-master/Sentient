@@ -523,6 +523,16 @@ export const api = {
     list: () => http.get<FileEntry[]>('/api/files'),
     contentUrl: (name: string) => authedUrl(`/api/files/content/${encPath(name)}`),
     download: (name: string) => http.blob('GET', `/api/files/content/${encPath(name)}`),
+    /** False when the file is gone (deleted, or went with an incognito chat), so a chat never shows another file (#458). */
+    exists: async (name: string) => {
+      try {
+        await send('HEAD', `/api/files/content/${encPath(name)}`)
+        return true
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return false
+        throw err
+      }
+    },
     delete: (name: string) => http.delete<OkResponse>(`/api/files/${encPath(name)}`)
   },
 

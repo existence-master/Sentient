@@ -91,6 +91,7 @@ export const qk = {
   usage: (days: number) => ['usage', days] as const,
   usageCost: ['usage', 'cost'] as const,
   files: ['files'] as const,
+  fileExists: (name: string) => ['files', 'exists', name] as const,
   tools: ['tools'] as const,
 
   /** The activity timeline (§21). Invalidated by most domain events (lib/events.ts). */
