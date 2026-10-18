@@ -1070,6 +1070,9 @@ class Channel:
         listing = await model_presets.listing(self.app)
         usable = [p for p in listing["presets"] if p["available"]]
         arg = arg.strip()
+        confirmed = arg.lower().endswith(" yes")  # "/model Local only yes" answers the question below (#446)
+        if confirmed:
+            arg = arg[:-4].rstrip()
         if arg.lower() == "undo":
             await self.reply(chat_id, await self._preset_outcome(None))
             return
@@ -1080,7 +1083,13 @@ class Channel:
             if pick is None:
                 await self.reply(chat_id, f"I don't have a model setup called {arg!r}. Send /model to see them.")
                 return
-            await self.reply(chat_id, await self._preset_outcome(pick["name"]))
+            # the window asks before Local only goes on with its preset (#335); a chat has no dialog, so it asks here
+            wants_switch = pick["name"] == model_presets.LOCAL_PRESET and not self.app.config.models.local_only
+            if wants_switch and pick["available"] and not confirmed:
+                await self.reply(chat_id, "Turn on Local only too, so nothing leaves this computer? "
+                                          f"Reply /model {pick['name']} yes")
+                return
+            await self.reply(chat_id, await self._preset_outcome(pick["name"], local_only=wants_switch))
             return
         primary = self.app.config.models.roles.primary
         if listing["active"]:
@@ -1178,16 +1187,20 @@ class Channel:
             lines.append(f"{now} is a new project, so it has no memories yet.")
         await self.reply(chat_id, "\n".join(lines))
 
-    async def _preset_outcome(self, name: str | None) -> str:
-        """Apply a preset (None = undo the last switch) and describe the result in plain words."""
+    async def _preset_outcome(self, name: str | None, *, local_only: bool = False) -> str:
+        """Apply a preset (None = undo the last switch) and describe the result in plain words. ``local_only`` also
+        turns the Local only switch on in the same save (#446)."""
         try:
-            result = await (model_presets.undo(self.app) if name is None else model_presets.apply(self.app, name))
+            result = await (model_presets.undo(self.app) if name is None
+                            else model_presets.apply(self.app, name, local_only=local_only))
         except model_presets.PresetError as exc:
             return exc.message
         if name is None:
             head = f"Back to {result['preset']}." if result["preset"] else "Back to your previous models."
         else:
             head = f"Switched to {result['preset']}." if result["changed"] else f"Already using {result['preset']}."
+            if local_only and result["local_only"]:  # the switch itself may be the only thing that changed
+                head = f"Switched to {result['preset']}, and Local only is on."
         lines = [head] + [f"Still needed: {item['detail']} {item['fix']}" for item in result["missing"]]
         if result["missing"]:
             lines.append("You can do that in Sentient on your computer.")
