@@ -17,9 +17,8 @@ export function AttachmentChip({ a, className }: { a: AttachmentView; className?
   const src = a.previewUrl ?? (image ? api.files.contentUrl(a.name) : undefined)
   const base = a.name.split('/').pop() ?? a.name
   // an attachment from the chat's history can be gone (deleted, or it went with an incognito chat): say so (#458)
-  const saved = !a.previewUrl && a.size === undefined
   const [failed, setFailed] = useState(false)
-  const exists = useFileExists(a.name, saved && (!image || failed))
+  const exists = useFileExists(a.name, !!a.saved && (!image || failed))
   if (exists.data === false) {
     return (
       <div

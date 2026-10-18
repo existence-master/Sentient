@@ -38,30 +38,38 @@ def _variants(name: str, *, unique: bool) -> Iterator[str]:
         i += 1
 
 
-async def referenced(store: Any, name: str) -> bool:
-    """True when any message has ``name`` (a Files API name) attached, also when its file is gone."""
-    # a broad filter on the base name as JSON stores it (a name may be stored with a backslash); then compare exactly
-    needle = json.dumps(Path(name.replace("\\", "/")).name)[1:-1]
-    rows = await store.fetchall("SELECT attachments FROM messages WHERE attachments LIKE ?", (f"%{needle}%",))
-    want = _norm(name)
+async def attached(store: Any, folder: str) -> set[str]:
+    """Every name under ``folder`` (``uploads``) that a message has attached, also when its file is gone, normalized:
+    forward slashes and case-folded."""
+    # the folder name is plain ASCII, so it matches however JSON stored the rest of the name (non-ASCII is escaped)
+    rows = await store.fetchall("SELECT attachments FROM messages WHERE attachments LIKE ?", (f"%{folder}%",))
+    prefix = _norm(folder) + "/"
+    out: set[str] = set()
     for row in rows:
         try:
             items = json.loads(row["attachments"] or "[]")
         except ValueError:
             continue
-        if isinstance(items, list) and any(isinstance(n, str) and _norm(n) == want for n in items):
-            return True
-    return False
+        if isinstance(items, list):
+            out |= {n for n in (_norm(i) for i in items if isinstance(i, str)) if n.startswith(prefix)}
+    return out
+
+
+async def referenced(store: Any, name: str) -> bool:
+    """True when any message has ``name`` (a Files API name) attached, also when its file is gone."""
+    norm = _norm(name)
+    return norm in await attached(store, norm.split("/", 1)[0])
 
 
 async def create(folder: Path, name: str, *, store: Any = None, unique: bool = False) -> Path:
     """Create an empty file in ``folder`` (under ``files/``) for ``name`` and return its path. The name is one no file
     there has and, with ``store``, no message has attached. ``unique`` always adds a short random part."""
     folder.mkdir(parents=True, exist_ok=True)
-    root = paths.files_dir().resolve()
+    rel = folder.resolve().relative_to(paths.files_dir().resolve()).as_posix()
+    taken = await attached(store, rel) if store is not None else set()
     for candidate in _variants(name, unique=unique):
         target = folder / candidate
-        if store is not None and await referenced(store, target.resolve().relative_to(root).as_posix()):
+        if _norm(f"{rel}/{candidate}") in taken:
             continue
         try:
             with target.open("xb"):  # claims the name at once, so two uploads at the same moment can't share it
