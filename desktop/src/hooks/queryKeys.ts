@@ -7,6 +7,7 @@ import type { MemoryQuery, TimelineFilters } from '@/lib/types'
 export const qk = {
   bootstrap: ['bootstrap'] as const,
   stop: ['stop'] as const,
+  sensors: ['sensors'] as const,
   config: ['config'] as const,
   backups: ['backups'] as const,
   folders: ['folders'] as const,

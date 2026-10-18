@@ -71,6 +71,8 @@ export type AppCommand =
   | { type: 'push-to-talk'; text: string }
   /** Share this window / Share a region: open a new chat with the picture attached (nothing is sent yet). */
   | { type: 'share-screen'; share: ScreenShare }
+  /** The tray was clicked while a microphone or camera is live: show the title bar's details (#170). */
+  | { type: 'show-sensors' }
 
 /** A picture taken with the share shortcuts. The chat uploads it with `source: "screen"` (docs/API.md section 2). */
 export interface ScreenShare {

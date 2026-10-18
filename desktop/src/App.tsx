@@ -244,6 +244,9 @@ function GlobalCommands() {
               .then(({ route, state }) => navigate(route, { state }))
               .catch((err) => toast.error("Couldn't send what you said", { description: errorMessage(err) }))
             break
+          case 'show-sensors':
+            useUI.getState().setSensorsOpen(true) // the tray: which microphone or camera is on, and Turn off
+            break
           case 'share-screen':
             // a new chat with the picture attached; the user asks and sends (nothing is sent before that)
             holdScreenShare(cmd.share)

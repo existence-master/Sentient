@@ -77,7 +77,7 @@ class WakeListener {
     ws.onopen = () => ws.send(JSON.stringify({ type: 'start', mode: 'wake', sample_rate: TARGET_RATE }))
     ws.onmessage = (ev) => {
       if (typeof ev.data !== 'string') return
-      let msg: { type?: string; state?: string; phrase?: string; message?: string; recoverable?: boolean }
+      let msg: { type?: string; state?: string; phrase?: string; message?: string; recoverable?: boolean; code?: string }
       try {
         msg = JSON.parse(ev.data)
       } catch {
@@ -90,6 +90,9 @@ class WakeListener {
         useWakeStore.setState({ phrase: msg.phrase ?? null })
         this.stop('paused')
         window.location.hash = '#/voice?wake=1'
+      } else if (msg.type === 'error' && msg.code === 'mic_stopped') {
+        // turned off from the microphone indicator (#170): stop listening for good, not just until a reconnect
+        setAlwaysListening(false)
       } else if (msg.type === 'error' && msg.recoverable === false) {
         useWakeStore.setState({ status: 'error', error: msg.message ?? 'Wake word listening stopped.' })
       }

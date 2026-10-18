@@ -13,12 +13,15 @@ interface UIState {
   accent: AccentName
   paletteOpen: boolean
   notificationsOpen: boolean
+  /** The title bar's microphone and camera details (#170); the tray opens it too. */
+  sensorsOpen: boolean
   toggleSidebar: () => void
   setSidebarCollapsed: (v: boolean) => void
   setTheme: (theme: ThemePreference) => void
   setAccent: (accent: string) => void
   setPaletteOpen: (open: boolean) => void
   setNotificationsOpen: (open: boolean) => void
+  setSensorsOpen: (open: boolean) => void
 }
 
 export const useUI = create<UIState>()(
@@ -29,6 +32,7 @@ export const useUI = create<UIState>()(
       accent: 'sentient',
       paletteOpen: false,
       notificationsOpen: false,
+      sensorsOpen: false,
       toggleSidebar: () => set({ sidebarCollapsed: !get().sidebarCollapsed }),
       setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
       setTheme: (theme) => {
@@ -41,7 +45,8 @@ export const useUI = create<UIState>()(
         set({ accent: a })
       },
       setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
-      setNotificationsOpen: (notificationsOpen) => set({ notificationsOpen })
+      setNotificationsOpen: (notificationsOpen) => set({ notificationsOpen }),
+      setSensorsOpen: (sensorsOpen) => set({ sensorsOpen })
     }),
     {
       name: 'sentient.ui',

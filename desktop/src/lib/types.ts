@@ -56,6 +56,36 @@ export interface UIConfig {
 }
 
 /** §17 Stop everything. `source`: desktop | tray | hotkey | telegram | discord | device. */
+/** §24 A microphone or camera that is live right now, here or on a paired device (#170). */
+export interface SensorUse {
+  id: string
+  sensor: 'mic' | 'camera'
+  device_id: string
+  /** "This computer" for the desktop app itself, else the device's name. */
+  device: string
+  device_kind: string
+  /** What it is on for, in plain words: "Voice chat", "Push to talk", "Taking a photo". */
+  purpose: string
+  since: ISODate
+  can_stop: boolean
+}
+
+export interface SensorState {
+  mic: boolean
+  camera: boolean
+  active: SensorUse[]
+  /** Devices whose camera is switched off on the device itself. */
+  camera_off: Array<{ device_id: string; device: string }>
+}
+
+export interface SensorStopResult {
+  /** Off now. */
+  stopped: string[]
+  /** The device was asked; it stays shown until the device says it is off. */
+  asked: string[]
+  state: SensorState
+}
+
 export interface StopState {
   stopped: boolean
   stopped_at: ISODate | null
@@ -1236,6 +1266,8 @@ export interface DomainEventMap {
   'source.items': SourceItemsData
   // §17
   'stop.updated': StopState
+  // §24
+  'sensors.updated': SensorState
   // #149
   'model.busy': ModelBusy
   // §20
@@ -1449,6 +1481,8 @@ export interface DeviceNode {
   /** `lan` = over the home network, `local` = on this computer (gateway). */
   connection?: 'lan' | 'local' | null
   worn?: boolean | null
+  /** The camera is switched off on the device itself; Sentient can't turn it on (#170). null while offline. */
+  camera_off?: boolean | null
 }
 
 export interface DevicePairing {
@@ -2635,6 +2669,25 @@ export interface VoiceStatus {
   }
   /** Wake-word engine (§16). */
   wake?: WakeStatus
+  /** Where the sound from each microphone goes (#170). */
+  privacy?: VoicePrivacy
+}
+
+/** One way Sentient hears you, and where that sound goes (`GET /api/voice/status` → `privacy`, #170). */
+export interface VoicePrivacyItem {
+  id: 'dictation' | 'wake' | 'voice' | 'voice_notes' | string
+  label: string
+  /** True when the recording stays on this computer. */
+  local: boolean
+  where: string
+}
+
+export interface VoicePrivacy {
+  /** No recording leaves this computer. */
+  audio_local: boolean
+  items: VoicePrivacyItem[]
+  /** Spoken replies: what goes out for them is text, not your voice. */
+  replies: { local: boolean; where: string }
 }
 
 export interface TranscribeResult {
@@ -2690,7 +2743,8 @@ export type VoiceServerMessage =
   /** Followed by one binary frame: a complete PCM16 mono WAV for this sentence. */
   | { type: 'audio'; format: 'wav'; sentence_index: number; text: string; session_id?: string }
   | { type: 'audio_end'; session_id?: string; sentences?: number; metrics?: VoiceAudioMetrics; interrupted?: boolean; reason?: 'client' | 'barge_in' | 'cancelled' }
-  | { type: 'error'; message: string; recoverable?: boolean; session_id?: string }
+  /** `code: "mic_stopped"`: the microphone was turned off from the indicator (#170); the socket closes next. */
+  | { type: 'error'; message: string; recoverable?: boolean; session_id?: string; code?: string }
   | ApprovalAckEvent
   | PongEvent
   | AgentEvent
