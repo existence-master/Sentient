@@ -28,7 +28,7 @@ const LABEL = {
   color: 'fbca04',
   description: 'Behind main or has conflicts; a maintainer will bring it up to date',
 };
-// author_association values for people with write access (the PR author may always use the command too).
+// author_association values that may come with write access; the permission itself is checked too (mayUpdate).
 const WRITERS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
 const CLA_CHECK = 'CLAAssistant';
 const POLL = { tries: 12, ms: 5000 };
@@ -79,10 +79,22 @@ function parseCommand(body) {
   return String(body || '').trim() === '/update';
 }
 
-/** The PR author or someone with write access may update a branch. */
-function mayUpdate({ association, commenter, author }) {
-  if (WRITERS.includes(String(association || '').toUpperCase())) return true;
-  return !!commenter && String(commenter).toLowerCase() === String(author || '').toLowerCase();
+/**
+ * The PR author, or someone with write access, may update a branch. An association of OWNER, MEMBER or
+ * COLLABORATOR doesn't prove write access (an organisation member or a read-only collaborator has one too), so for
+ * them the repository permission is looked up as well.
+ */
+async function mayUpdate(github, { owner, repo, association, commenter, author }) {
+  if (!commenter) return false;
+  if (String(commenter).toLowerCase() === String(author || '').toLowerCase()) return true;
+  if (!WRITERS.includes(String(association || '').toUpperCase())) return false;
+  try {
+    const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: commenter });
+    return ['admin', 'maintain', 'write'].includes(data.permission);
+  } catch (err) {
+    if (err.status === 404) return false;
+    throw err;
+  }
 }
 
 /** True when the branch lives in another repository (a fork), or the fork is gone. */
@@ -286,7 +298,8 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
   const commenter = comment.user.login;
   const say = (text) => github.rest.issues.createComment({ owner, repo, issue_number, body: `@${commenter} ${text}` });
 
-  if (!mayUpdate({ association: comment.author_association, commenter, author: issue.user && issue.user.login })) {
+  const author = issue.user && issue.user.login;
+  if (!(await mayUpdate(github, { owner, repo, association: comment.author_association, commenter, author }))) {
     core.info(`/update by ${commenter} (${comment.author_association}) on #${issue_number}: not allowed`);
     return say(MESSAGES.notAllowed);
   }

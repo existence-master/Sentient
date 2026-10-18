@@ -65,6 +65,7 @@ function fakeGithub(opts = {}) {
           return { data: { ahead_by: behind } };
         },
         getCommit: async () => ({ data: merge }),
+        getCollaboratorPermissionLevel: async () => ({ data: { permission: opts.permission || 'read' } }),
       },
       checks: {
         listForRef: async ({ ref }) => ({
@@ -142,14 +143,37 @@ test('only an exact /update counts', () => {
   assert.equal(parseCommand(undefined), false);
 });
 
-test('the author and people with write access may update, nobody else', () => {
-  assert.equal(mayUpdate({ association: 'CONTRIBUTOR', commenter: 'Maya-Rao', author: 'maya-rao' }), true);
-  for (const association of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
-    assert.equal(mayUpdate({ association, commenter: 'ravi', author: 'maya-rao' }), true);
+test('the author and people with write access may update, nobody else', async () => {
+  const lookups = [];
+  const github = {
+    rest: {
+      repos: {
+        getCollaboratorPermissionLevel: async ({ username }) => {
+          lookups.push(username);
+          const permission = { ravi: 'write', ana: 'admin', mei: 'maintain', ola: 'read', kim: 'none' }[username];
+          if (!permission) throw httpError(404, 'Not Found');
+          return { data: { permission } };
+        },
+      },
+    },
+  };
+  const may = (association, commenter) =>
+    mayUpdate(github, { owner: 'o', repo: 'r', association, commenter, author: 'maya-rao' });
+  assert.equal(await may('CONTRIBUTOR', 'Maya-Rao'), true);
+  assert.equal(await may('NONE', 'maya-rao'), true);
+  for (const [association, login] of [['COLLABORATOR', 'ravi'], ['OWNER', 'ana'], ['MEMBER', 'mei']]) {
+    assert.equal(await may(association, login), true, login);
   }
+  // An organisation member or a collaborator without write access may not.
+  for (const [association, login] of [['MEMBER', 'ola'], ['COLLABORATOR', 'kim'], ['MEMBER', 'ghost']]) {
+    assert.equal(await may(association, login), false, login);
+  }
+  // Nobody else is even looked up.
+  lookups.length = 0;
   for (const association of ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'NONE', undefined]) {
-    assert.equal(mayUpdate({ association, commenter: 'ravi', author: 'maya-rao' }), false);
+    assert.equal(await may(association, 'ravi'), false);
   }
+  assert.deepEqual(lookups, []);
 });
 
 test('isFork and decide', () => {
@@ -177,10 +201,19 @@ test('comments on issues, from bots, and other text are ignored', async () => {
 });
 
 test('someone else on the pull request is told who can use it, and nothing changes', async () => {
-  const fake = fakeGithub();
-  await runWith(fake, context({ login: 'ravi', association: 'CONTRIBUTOR' }));
-  assert.deepEqual(fake.names(), ['createComment']);
-  assert.equal(reply(fake)[0], `@ravi ${MESSAGES.notAllowed}`);
+  for (const association of ['CONTRIBUTOR', 'MEMBER']) {
+    const fake = fakeGithub({ permission: 'read' });
+    await runWith(fake, context({ login: 'ravi', association }));
+    assert.deepEqual(fake.names(), ['createComment']);
+    assert.equal(reply(fake)[0], `@ravi ${MESSAGES.notAllowed}`);
+  }
+});
+
+test("a maintainer with write access may update someone else's pull request", async () => {
+  const fake = fakeGithub({ permission: 'write' });
+  await runWith(fake, context({ login: 'ravi', association: 'MEMBER' }));
+  assert.ok(fake.names().includes('updateBranch'));
+  assert.match(reply(fake)[0], /^@ravi Merged the latest `main`/);
 });
 
 test('a branch that is already up to date: says so and clears the label', async () => {
