@@ -133,6 +133,8 @@ def read_only_message(tool: Tool, registry: Any = None) -> str:
 
 # not a rule a user sets: why a call that opens the home is held (ADR 0028), for the hold and question wording
 OPENS_HOME = "opens_home"
+# not a rule either: a routine whose setup checklist says to ask before it sends, buys, deletes or runs anything (#161)
+TASK_ASKS = "task_asks"
 
 
 def _set_to(rule: str | None) -> str:
@@ -141,6 +143,8 @@ def _set_to(rule: str | None) -> str:
         return "set to \"Only if I asked\", which only the user's own chat message can ask for"
     if rule == OPENS_HOME:
         return "something that opens the user's home, which always asks first"
+    if rule == TASK_ASKS:
+        return "something this task is set to ask about first"
     return "set to Ask"
 
 
@@ -164,6 +168,8 @@ def approval_question(label: str, arguments: dict, target: str | None = None, ru
         why = "You've set it to go ahead only when you ask for it in a chat."
     elif rule == OPENS_HOME:
         why = "It opens your home, so Sentient always asks first."
+    elif rule == TASK_ASKS:
+        why = "You set this task to ask you first."
     else:
         why = "You've set it to ask first."
     return f"This task wants to use {label}{f' ({detail})' if detail else ''}. {why} OK to go ahead?"

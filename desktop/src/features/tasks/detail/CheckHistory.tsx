@@ -1,5 +1,5 @@
 /** Script jobs (docs/API.md §16): the quiet history of recent checks, newest first. */
-import { IconAlertCircle, IconArrowsDiff, IconBellRinging, IconCircleCheck, IconFlag, IconMinus, IconRadar, type Icon } from '@tabler/icons-react'
+import { IconAlertCircle, IconArrowsDiff, IconBellRinging, IconCircleCheck, IconFlag, IconMinus, IconPlayerSkipForward, IconRadar, type Icon } from '@tabler/icons-react'
 import type { ScriptCheck, ScriptCheckOutcome, TaskScript } from '@/lib/types'
 import { cn, parseDate } from '@/lib/utils'
 import { SectionHeading } from '../parts'
@@ -26,6 +26,8 @@ function describe(outcome: ScriptCheckOutcome, then: TaskScript['then']): { icon
       return { icon: IconBellRinging, text: `Reported. ${told}`, tone: 'news' }
     case 'failed':
       return { icon: IconAlertCircle, text: 'The check didn’t work', tone: 'danger' }
+    case 'skipped': // what it reads wasn't there, so the check didn't run (#161); the note says why
+      return { icon: IconPlayerSkipForward, text: 'Skipped: what it reads wasn’t there', tone: 'danger' }
     default:
       return { icon: IconCircleCheck, text: 'Checked', tone: 'quiet' }
   }

@@ -667,7 +667,7 @@ class FactMemory:
         self.episodic = EpisodicMemory(store, llm, config)
         self._qcache: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
         # set by the app: also scrub the words of erased memories from the workspace files and the user model's
-        # caches (#152); called with the texts that went
+        # caches (#152); called with an ``origins.Erased``: the texts that went, and which lines repeat them (#456)
         self.on_erase: Any = None
 
     async def ensure_schema(self) -> None:
@@ -921,7 +921,9 @@ class FactMemory:
         merged copies and source links (:meth:`forget`), the chat summaries made of the messages it came from that
         repeat it, the nightly journal's lines about it, the user model's evidence from it (an inferred insight with
         nothing else behind it goes), the memory chips on replies and task runs that had it in mind, and (through
-        ``on_erase``) the lines of USER.md and MEMORY.md that say it. Its own previous wording goes with it."""
+        ``on_erase``) the lines of USER.md and MEMORY.md that say it. Its own previous wording goes with it. Text found
+        by its words is left alone when a memory still in use says it as well or better (#456): deleting one of two
+        similar memories never strips the other's lines or evidence."""
         await self.ensure_schema()
         row = await self.store.fetchone(
             "SELECT id, content, previous_content, source_ref FROM facts WHERE id = ?", (fid,)
@@ -948,11 +950,17 @@ class FactMemory:
             log.exception("cleaning up after memory %s failed", fid)
         return True
 
-    async def _cascade(self, ids: list[int], texts: list[str], refs: list[dict]) -> None:
-        store, user = self.store, self.config.assistant.user_name
+    async def _erased(self, texts: list[str], ids: list[int]) -> origins.Erased:
+        """What ``texts`` said, against every memory still in use (#456): what derived data repeats them goes,
+        unless a remaining memory says it as well or better (:class:`origins.Erased`)."""
+        rows = await self.store.fetchall(f"SELECT id, content FROM facts WHERE {IN_USE}")
+        gone = set(ids)
+        remaining = [(int(r["id"]), str(r["content"])) for r in rows if int(r["id"]) not in gone]
+        return origins.Erased(texts, remaining, self.config.assistant.user_name)
 
-        def repeats(text: str) -> bool:
-            return any(origins.says(t, text or "", user) for t in texts)
+    async def _cascade(self, ids: list[int], texts: list[str], refs: list[dict]) -> None:
+        store = self.store
+        repeats = await self._erased(texts, ids)
 
         # chat summaries made of the messages it came from, that repeat it, and their vectors
         said_in = {str(r["message_id"]) for r in refs if r.get("message_id")}
@@ -972,7 +980,7 @@ class FactMemory:
                     for line in lines]
             if kept != lines:
                 await store.execute("UPDATE dreams SET journal_md = ? WHERE id = ?", ("\n".join(kept), r["id"]))
-        # the user model's evidence from it
+        # the user model's evidence from it: a memory's by its id only, a quote of a chat or summary when it says it
         wanted = {str(i) for i in ids}
         try:
             insights = await store.fetchall("SELECT rid, id, source, evidence FROM user_insights")
@@ -986,7 +994,7 @@ class FactMemory:
             if not isinstance(evidence, list):
                 continue
             kept = [e for e in evidence if not (isinstance(e, dict) and (
-                (e.get("kind") == "fact" and str(e.get("ref")) in wanted) or (e.get("quote") and repeats(e["quote"]))
+                str(e.get("ref")) in wanted if e.get("kind") == "fact" else bool(e.get("quote")) and repeats(e["quote"])
             ))]
             if len(kept) == len(evidence):
                 continue
@@ -1017,17 +1025,17 @@ class FactMemory:
                             f"UPDATE {table} SET memory_sources = ? WHERE rowid = ?", (json.dumps(kept), r["rowid"])
                         )
         if self.on_erase is not None:
-            res = self.on_erase(texts)
+            res = self.on_erase(repeats)
             if hasattr(res, "__await__"):
                 await res
 
-    async def _out_of_prompts(self, texts: list[str]) -> None:
+    async def _out_of_prompts(self, texts: list[str], ids: list[int]) -> None:
         """A memory left the prompts (disputed or superseded): its lines leave USER.md and MEMORY.md too, which go
-        into every prompt (``on_erase``)."""
+        into every prompt (``on_erase``), unless a memory still in use says them as well (#456)."""
         if self.on_erase is None:
             return
         try:
-            res = self.on_erase(texts)
+            res = self.on_erase(await self._erased(texts, ids))
             if hasattr(res, "__await__"):
                 await res
         except Exception:
@@ -1055,7 +1063,7 @@ class FactMemory:
             await self.store.execute(
                 "UPDATE facts SET state = 'disputed', updated_at = ? WHERE id = ?", (now_iso(), fid)
             )
-            await self._out_of_prompts([row["content"]])
+            await self._out_of_prompts([row["content"]], [fid])
         if row["state"] != state:
             self.publish("UPDATE", fid, row["content"], state=state, reason="confirmed" if state == "current" else "disputed")
         fact = await self.get_fact(fid)
@@ -2104,7 +2112,7 @@ class FactMemory:
             (keep_id, ts, drop_id),
         )
         await self.vec.delete(drop_id)
-        await self._out_of_prompts([drop["content"]])
+        await self._out_of_prompts([drop["content"]], [drop_id])
         self.publish("DELETE", drop_id, drop["content"], reason="contradicted", superseded_by=keep_id)
         return True
 

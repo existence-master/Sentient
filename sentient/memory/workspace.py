@@ -12,6 +12,7 @@ model call).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -171,20 +172,19 @@ class Workspace:
             self.user.write_text("\n".join(out) + "\n", encoding="utf-8")
         return removed
 
-    def scrub(self, facts: list[str], user_name: str = "") -> int:
+    def scrub(self, facts: list[str], user_name: str = "", repeats: Callable[[str], bool] | None = None) -> int:
         """A memory was deleted (#152): its bullet goes from USER.md's Learned section, and every bullet of MEMORY.md
-        (written from memories by the nightly upkeep) that repeats it (``origins.says``). The user's own text in
-        USER.md is never touched. Returns how many lines went."""
+        (written from memories by the nightly upkeep) that repeats it: ``repeats`` (an ``origins.Erased``, which spares
+        a remaining memory's similar lines, #456), else ``origins.says``. The user's own text in USER.md is never
+        touched. Returns how many lines went."""
         from sentient.memory import origins
 
         removed = self.remove_learned(facts)
-        if not facts or not self.memory.exists():
+        if not self.memory.exists() or not (facts or repeats is not None):
             return removed
+        said = repeats or (lambda line: any(origins.says(f, line, user_name) for f in facts))
         lines = self.memory.read_text(encoding="utf-8", errors="replace").splitlines()
-        kept = [
-            line for line in lines
-            if not (line.lstrip().startswith(("- ", "* ")) and any(origins.says(f, line, user_name) for f in facts))
-        ]
+        kept = [line for line in lines if not (line.lstrip().startswith(("- ", "* ")) and said(line))]
         if len(kept) != len(lines):
             self.memory.write_text("\n".join(kept) + "\n", encoding="utf-8")
         return removed + len(lines) - len(kept)

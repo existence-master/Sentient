@@ -137,3 +137,30 @@ async def test_model_says_when_local_only_blocks_a_preset(tg, keychain):
     assert [b["text"] for b in keyboard(msg)] == ["Local only"]
     await tg.say(42, "/model cloud")
     assert "Local only is on" in tg.api.screen()[-1] and app.config.models.active_preset is None
+
+
+async def test_local_only_preset_asks_before_turning_the_switch_on(tg):
+    """``/model Local only`` (#446) asks first, like the window, and ``yes`` switches the models and Local only together."""
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model Local only")
+    assert "Turn on Local only too" in tg.api.screen()[-1] and "/model Local only yes" in tg.api.screen()[-1]
+    assert app.config.models.active_preset is None and not app.config.models.local_only  # nothing changed yet
+
+    await tg.say(42, "/model Local only yes")
+    assert tg.api.screen()[-1].startswith("Switched to Local only, and Local only is on.")
+    assert app.config.models.active_preset == "Local only" and app.config.models.local_only
+
+    await tg.say(42, "/model undo")  # undo puts the switch back too
+    assert not app.config.models.local_only
+
+
+async def test_local_only_preset_by_number_asks_and_skips_the_question_when_already_on(tg):
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model 1")
+    assert "Turn on Local only too" in tg.api.screen()[-1] and not app.config.models.local_only
+    app.config.models.local_only = True
+    await tg.say(42, "/model Local only")  # the switch is already on: nothing to ask
+    assert tg.api.screen()[-1].startswith("Already using Local only.")  # no question, and nothing left to turn on
+    assert app.config.models.local_only

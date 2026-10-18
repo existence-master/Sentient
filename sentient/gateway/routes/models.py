@@ -20,7 +20,7 @@ from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
 from sentient.llm import claude_code, connect, presets
 from sentient.llm.presets import PresetError
-from sentient.llm.provider import provider_config
+from sentient.llm.provider import CLAUDE_CODE, provider_config
 
 router = APIRouter(prefix="/api", tags=["models"], dependencies=AUTH)
 
@@ -184,11 +184,13 @@ async def model_busy(request: Request):
 
 @router.get("/models/claude-code")
 async def claude_code_status(request: Request):
-    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version. Runs
-    ``claude --version`` only while it is turned on; never a model call, never reads Claude's login."""
-    from sentient.config.schema import CLAUDE_CODE_MODELS
+    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version, the roles
+    that may use it, and whether it does everything (ADR 0032). Runs ``claude --version`` only while it is turned on; never a model call, never reads
+    Claude's login."""
+    from sentient.config.schema import CLAUDE_CODE_FAST_MODEL, CLAUDE_CODE_MODELS
 
-    return {**await claude_code.status(get_core(request).config), "models": list(CLAUDE_CODE_MODELS)}
+    return {**await claude_code.status(get_core(request).config), "models": list(CLAUDE_CODE_MODELS),
+            "roles": list(claude_code.accepting_roles(get_core(request).config)), "fast_model": CLAUDE_CODE_FAST_MODEL}
 
 
 class EmbedTestBody(BaseModel):
@@ -240,6 +242,8 @@ async def set_roles(request: Request, body: dict):
             raise HTTPException(400, f"unknown role {k}")
         if k in {"primary", "fast", "embedding"} and not v:
             raise HTTPException(400, f"role {k} cannot be empty")
+        if isinstance(v, str) and v.startswith(f"{CLAUDE_CODE}/") and not claude_code.accepts(s.config, k):
+            raise HTTPException(400, claude_code.background_refusal(k))  # it only answers chats (ADR 0022, #442)
         roles[k] = v or None
     cfg.models.roles = type(cfg.models.roles).model_validate(roles)
     s.save_config(cfg)

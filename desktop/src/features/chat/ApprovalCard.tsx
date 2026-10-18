@@ -29,8 +29,8 @@ import type { ApprovalDecision } from '@/lib/types'
 import { cn, humanize, truncate } from '@/lib/utils'
 import { ActionPreview } from './ActionPreview'
 import { hostOf, refLabel } from './cards/bits'
-import { toolMeta } from './toolMeta'
-import { approvalCardReason, resolveWording, type RiskLabel } from './approvalRisk'
+import { askingLabel } from './toolMeta'
+import { approvalCardReason, resolveWording, waitingSmallPrint, type RiskLabel } from './approvalRisk'
 
 const STATUS_TEXT: Partial<Record<ApprovalView['status'], string>> = {
   allow: 'You allowed this once',
@@ -152,7 +152,6 @@ export function ApprovalCard({
   onRespond?: (approvalId: string, decision: ApprovalDecision) => void
 }) {
   const risk = effectiveRisk(approval)
-  const meta = toolMeta(approval.name)
 
   if (approval.status !== 'pending') {
     const allowed = approval.status !== 'deny' && approval.status !== 'expired'
@@ -193,11 +192,7 @@ export function ApprovalCard({
     (command && 'It runs on this computer with your permissions, in this folder:') ||
     purpose ||
     reason ||
-    (meta.done ? (
-      <>
-        {meta.done} using <span className="font-mono text-xs">{approval.name}</span>
-      </>
-    ) : null)
+    waitingSmallPrint(action, askingLabel(approval.name))
 
   return (
     <motion.div

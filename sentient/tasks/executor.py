@@ -28,13 +28,13 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from sentient.agent import dry_run, outcomes, preview, rule_levels
-from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
+from sentient.agent.loop import ASK_FIRST_KEY, CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.sources import MemorySources
-from sentient.tasks import ask, continuity, limits, stuck
+from sentient.tasks import ask, checklist, continuity, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -281,6 +281,7 @@ async def _executor_system_prompt(
         earlier=earlier,
         mark_outside_content=app.config.chat.mark_outside_content,
         trigger_source=_trigger_source(app, task, run),
+        confirmed=checklist.prompt_lines(task),
     ), facts, kickoff
 
 
@@ -405,6 +406,8 @@ async def execute_single(
                 ctx.extra[continuity.PLUGIN_ID] = True
             if run.get("dry_run"):  # a try run: calls that change something are noted, saved on the run as they come
                 ctx.extra[dry_run.KEY] = trying(svc, run)
+            if checklist.asks_first(task):  # the routine's checklist says ask before sending or running anything (#161)
+                ctx.extra[ASK_FIRST_KEY] = True
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
                 if svc.holding(run_id):  # paused before an approved call ran: it runs once the task is resumed

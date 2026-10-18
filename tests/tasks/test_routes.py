@@ -12,12 +12,12 @@ TASK_KEYS = {
     "task_id", "name", "description", "status", "priority", "assignee", "task_type", "schedule", "plan", "runs",
     "chat_history", "clarifying_questions", "swarm_details", "enabled", "model", "original_context", "error",
     "next_execution_at", "last_execution_at", "created_at", "updated_at", "script", "browser_profile", "deliver_to", "notepad",
-    "keep_running", "memory_scope",
+    "keep_running", "memory_scope", "setup",
 }
 RUN_KEYS = {
     "run_id", "status", "created_at", "execution_start_time", "finished_at", "plan", "trigger_event_data",
     "progress_updates", "result", "error", "retry_of", "pending_question", "last_activity_at",
-    "memory_sources", "sources", "dry_run", "would_do", "checks",
+    "memory_sources", "sources", "dry_run", "would_do", "checks", "retry_at",
 }
 
 

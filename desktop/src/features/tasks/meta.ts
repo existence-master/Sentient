@@ -12,6 +12,7 @@ import {
   IconMessageQuestion,
   IconPlayerPlay,
   IconPlayerPause,
+  IconPlayerSkipForward,
   IconRepeat,
   IconShieldCheck,
   IconSparkles,
@@ -59,7 +60,9 @@ export const RUN_STATUS_META: Record<RunStatus, StatusMeta> = {
   completed: STATUS_META.completed,
   completed_with_errors: STATUS_META.completed_with_errors,
   error: STATUS_META.error,
-  cancelled: STATUS_META.cancelled
+  cancelled: STATUS_META.cancelled,
+  // what it reads wasn't there, so it didn't start (#161)
+  skipped: { label: 'Skipped', tone: 'warning', icon: IconPlayerSkipForward }
 }
 
 const UNKNOWN: StatusMeta = { label: 'Unknown', tone: 'neutral', icon: IconClock }

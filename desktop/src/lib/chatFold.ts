@@ -107,6 +107,8 @@ export interface AttachmentView {
   mime?: string
   /** Object URL for a local image preview. */
   previewUrl?: string
+  /** From the chat's history: its file may be gone since, so the chip checks (#458). */
+  saved?: boolean
 }
 
 export interface UserMessageView {
@@ -228,7 +230,7 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
         kind: 'user',
         id: row.id,
         text: row.content ?? '',
-        attachments: (row.attachments ?? []).map((name) => ({ name })),
+        attachments: (row.attachments ?? []).map((name) => ({ name, saved: true })),
         createdAt: row.created_at
       })
     } else if (row.role === 'assistant') {
