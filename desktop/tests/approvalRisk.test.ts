@@ -366,3 +366,18 @@ test('a waiting approval card never says what already happened or names the tool
   assert.equal(waitingSmallPrint(null, null), null)
   assert.equal(waitingSmallPrint('  ', '  '), null)
 })
+
+// #450 review: a known tool without `would` wording left a waiting card with only its heading
+// (a browser_screenshot under an Ask rule). Every known tool now says what it would do. toolMeta.ts imports
+// through the `@/` alias, which node's test runner can't load, so this reads its table as text.
+test('every known tool says what it would do while it waits', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/features/chat/toolMeta.ts', import.meta.url), 'utf8')
+  const lines = src.slice(src.indexOf('export const KNOWN')).split(/\r?\n/)
+  const table = lines.slice(1, lines.findIndex((line) => line === '}'))
+  const entries = table.filter((line) => /^ {2}[a-z_]+: \{/.test(line))
+  assert.ok(entries.length > 40, 'found the tool table')
+  const missing = entries.filter((line) => !/would: '/.test(line)).map((line) => line.trim().split(':')[0])
+  assert.deepEqual(missing, [])
+  assert.ok(entries.some((line) => line.includes("browser_screenshot") && line.includes("would: 'Would take a screenshot'")))
+})
