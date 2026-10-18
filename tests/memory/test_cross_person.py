@@ -218,3 +218,25 @@ async def test_a_namesake_moving_leaves_the_users_home_alone(config, isolated_ho
         assert (await mem.get_fact(home))["content"] == "Maya Rao lives in Bengaluru."
     finally:
         await store.close()
+
+
+@pytest.mark.parametrize(
+    ("content", "action"),
+    [
+        ("Her sister lives in Delhi.", "ADD"),  # whose sister is unclear: never stored over Maya's sister's home
+        ("Maya's sister lives in Delhi.", "UPDATE"),  # the model named her: it is Maya's sister
+    ],
+)
+async def test_the_model_must_name_whose_relation_it_updates(config, isolated_home, content, action):
+    # CodeRabbit on #471: "Her sister" may be offered next to "Maya's sister", but stored over it only when named
+    store, llm, mem = await _memory(config, isolated_home, "her.db")
+    config.memory.duplicate_similarity = 1.01  # this embedder scores everything 1.0: no near-duplicate skip
+    try:
+        [sister] = await _seed(mem, "Maya's sister lives in Pune.")
+        llm.json_replies.extend([_cud("UPDATE", content, sister)] + [ANALYSIS] * 3)
+        out = await mem.remember("Her sister lives in Delhi.")
+        assert out["action"] == action
+        stored = (await mem.get_fact(sister))["content"]
+        assert stored == (content if action == "UPDATE" else "Maya's sister lives in Pune.")
+    finally:
+        await store.close()

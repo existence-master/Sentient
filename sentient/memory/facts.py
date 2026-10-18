@@ -411,6 +411,12 @@ def same_person(a: str, b: str, user_name: str = "") -> bool:
     return bool(sa) and bool(sb) and _aliases_match(sa, sb, user_name)
 
 
+def only_relation_of_someone(text: str, user_name: str = "") -> bool:
+    """The fact is about "her sister", "his colleague" or "उसकी बहन" and names nobody else: whose it is is unclear."""
+    aliases = subject_aliases(text, user_name)
+    return bool(aliases) and all(a.startswith(f"{SOMEONE}'s ") for a in aliases)
+
+
 def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
     """True when ``new_fact`` may replace ``existing``: the same subject and, where both name one, the same action.
     "does not want their files deleted" and "does not want files to be written" are two preferences, and so are
@@ -1611,10 +1617,12 @@ class FactMemory:
             if matched and not (
                 same_thing(fact, matched, user) and same_thing(content, matched, user)
                 and not says_something_else(fact, matched, user)
+                and (not only_relation_of_someone(content, user) or same_person(content, matched, user))
             ):
                 # a different person or action ("files written" vs "files deleted"), in the new fact or in the
                 # model's rewrite that would be stored, or something unrelated about the same person ("a piano
-                # recital in July" vs "starts school in July"): both facts hold
+                # recital in July" vs "starts school in July"): both facts hold. The model may tell whose "her
+                # sister" it is, by naming her in what it stores ("Maya's sister lives in Delhi") (#463)
                 log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
                 action, content, topics = "ADD", fact, None
             elif dropped and not (
