@@ -61,7 +61,9 @@ _OTHER_PERSON_BROWSER_CLICK = re.compile(
 _ASSISTANT_BROWSER_CLICK = re.compile(
     r"\b(?:i(?:'ve)?|we|sentient)\s+(?:(?:have|had|just|only)\s+)?clicked\b", re.I
 )
-_HYPOTHETICAL_BROWSER_CLICK = re.compile(r"\b(?:if|would|could|might|may)\s+(?:i\s+)?(?:have\s+)?clicked\b", re.I)
+_HYPOTHETICAL_BROWSER_CLICK = re.compile(
+    r"\b(?:if|would|could|might|may)\b[^.!?]{0,50}\b(?:clicked|was clicked|were clicked)\b", re.I
+)
 
 # an MCP tool's kind from its name (servers declare nothing like it)
 _NAME_KINDS: list[tuple[str, re.Pattern, re.Pattern]] = [
@@ -306,13 +308,25 @@ def claimed(text: str, kind: str | None) -> bool:
 
 
 def _claimed_click_target(text: str) -> str:
-    """The named target in an explicit assistant claim, or empty for ``clicked it``."""
+    """The named target in an assistant or passive click claim, or empty for ``clicked it``."""
     match = _ASSISTANT_BROWSER_CLICK.search(text)
-    if match is None:
-        return ""
-    tail = re.split(r"\b(?:on|and|but)\b|[,;.!?]", text[match.end():], maxsplit=1, flags=re.I)[0]
+    if match is not None:
+        tail = re.split(r"\b(?:on|and|but)\b|[,;.!?]", text[match.end():], maxsplit=1, flags=re.I)[0]
+    else:
+        passive = re.search(r"(?P<target>.+?)\s+was clicked\b", text, re.I)
+        if passive is None:
+            return ""
+        tail = passive.group("target")
     target = re.sub(r"^\s*(?:only|just|the|a|an)\s+", "", tail, flags=re.I).strip()
-    return "" if target.lower() in {"", "it", "that", "this"} else target
+    return "" if target.lower() in {"", "it", "that", "this", "button", "link"} else target
+
+
+def _target_words(value: str) -> set[str]:
+    """Meaningful target words, without generic element labels."""
+    return {
+        word for word in re.findall(r"[a-z0-9]+", value.lower())
+        if word not in {"a", "an", "the", "button", "link", "only", "just"} and not re.fullmatch(r"e\d+", word)
+    }
 
 
 def _matches_click_target(claim: str, click: dict) -> bool:
@@ -320,14 +334,31 @@ def _matches_click_target(claim: str, click: dict) -> bool:
     if not claim:
         return True
 
-    def words(value: str) -> set[str]:
-        """Meaningful target words, without generic element labels."""
-        return {
-            word for word in re.findall(r"[a-z0-9]+", value.lower())
-            if word not in {"a", "an", "the", "button", "link", "only", "just"}
-        }
+    claim_words = _target_words(claim)
+    return bool(claim_words) and claim_words <= _target_words(str(click.get("target") or ""))
 
-    return bool(words(claim) & words(str(click.get("target") or "")))
+
+def _click_note(clicks: list[dict], target: str) -> str:
+    """The correction for a click claim after selecting evidence for its named target."""
+    matches = [click for click in clicks if not target or _matches_click_target(target, click)]
+    if target and not matches:
+        # A declined call may retain only its transient ref; it is still evidence that the named action was not made.
+        matches = [
+            click for click in clicks
+            if not click.get("ok") and not _target_words(str(click.get("target") or ""))
+        ]
+    if target and not matches:
+        return "I didn't click it, so nothing changed on the page."
+    if not matches:
+        return "I didn't click it, so nothing changed on the page."
+    click = matches[-1]
+    if click.get("ok"):
+        return ""
+    if click.get("declined"):
+        return "I didn't click it: you declined, so nothing changed on the page."
+    if click.get("uncertain"):
+        return "I couldn't confirm whether it was clicked."
+    return "I couldn't click it, so nothing changed on the page."
 
 
 def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] | None = None) -> str:
@@ -341,26 +372,20 @@ def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] 
     current_clicks = [call for call in calls if call.get("name") == "browser_click"]
     previous_clicks = [call for call in history or [] if call.get("name") == "browser_click"]
     claims = re.split(r"(?<=[.!?])\s+", text or "")
-    has_claim = any(
-        (_ASSISTANT_BROWSER_CLICK.search(claim) and not _HYPOTHETICAL_BROWSER_CLICK.search(claim))
-        or (
-            (current_clicks or previous_clicks)
+    clicks = current_clicks or previous_clicks
+    for claim in claims:
+        if _HYPOTHETICAL_BROWSER_CLICK.search(claim):
+            continue
+        explicit = _ASSISTANT_BROWSER_CLICK.search(claim)
+        passive = (
+            clicks
             and _BROWSER_CLICK_CLAIM.search(claim)
             and not _NEGATED_BROWSER_CLICK.search(claim)
             and not _OTHER_PERSON_BROWSER_CLICK.search(claim)
         )
-        for claim in claims
-    )
-    if not has_claim:
-        return ""
-    clicks = current_clicks or previous_clicks
-    if clicks and clicks[-1].get("ok"):
-        return "" if current_clicks or _matches_click_target(_claimed_click_target(text), clicks[-1]) else "I didn't click it, so nothing changed on the page."
-    if clicks and clicks[-1].get("declined"):
-        return "I didn't click it: you declined, so nothing changed on the page."
-    if clicks and clicks[-1].get("uncertain"):
-        return "I couldn't confirm whether it was clicked."
-    return "I couldn't click it, so nothing changed on the page." if clicks else "I didn't click it, so nothing changed on the page."
+        if (explicit or passive) and (note := _click_note(clicks, _claimed_click_target(claim))):
+            return note
+    return ""
 
 
 def _settled(failed: dict, later: list[dict]) -> bool:

@@ -206,6 +206,28 @@ def test_browser_click_correction_uses_the_latest_call():
     ) == "I didn't click it: you declined, so nothing changed on the page."
     assert outcomes.unmade_browser_click_note("If I clicked it, you would be charged $19.", []) == ""
     assert outcomes.unmade_browser_click_note("I've clicked the button.", []) == "I didn't click it, so nothing changed on the page."
+    subscribe_then_declined_delete = [
+        {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+        {"name": "browser_click", "declined": True, "target": 'button "Delete account"'},
+    ]
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", subscribe_then_declined_delete
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.", subscribe_then_declined_delete
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", [], subscribe_then_declined_delete
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.", [], subscribe_then_declined_delete
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the account settings button.", [{"name": "browser_click", "ok": True, "target": 'button "Delete account"'}]
+    ) == "I didn't click it, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "If it were clicked, you would be charged $19.", [{"name": "browser_click", "declined": True}]
+    ) == ""
 
 
 async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, isolated_home):
