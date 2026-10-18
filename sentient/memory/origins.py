@@ -183,14 +183,62 @@ def quote(text: str, fact: str) -> str:
     return best if len(best) <= QUOTE_CHARS else best[: QUOTE_CHARS - 1].rstrip() + "…"
 
 
+def _share(want: set[str], have: set[str]) -> float:
+    if len(want) < 2:
+        return 0.0
+    shared = len(want & have)
+    return shared / len(want) if shared >= max(2, -(-len(want) * 3 // 5)) else 0.0
+
+
+def match(fact: str, text: str, user_name: str = "") -> float:
+    """How fully ``text`` repeats ``fact``: the share of the fact's words it has (besides the user's own name) when
+    it :func:`says` the fact, else 0."""
+    return _share(_words(fact) - _words(user_name), _words(text))
+
+
 def says(fact: str, text: str, user_name: str = "") -> bool:
     """Whether ``text`` repeats ``fact``: most of its words (three in five, at least two), besides the user's own
-    name. Stricter than :func:`backs`: it decides what is scrubbed when a memory is deleted."""
-    want = _words(fact) - _words(user_name)
-    if len(want) < 2:
-        return False
-    have = _words(text)
-    return len(want & have) >= max(2, -(-len(want) * 3 // 5))
+    name. Stricter than :func:`backs`: it decides what is scrubbed when a memory is deleted (with :class:`Erased`)."""
+    return match(fact, text, user_name) > 0
+
+
+_QUOTED = re.compile(r'"([^"\n]+)"|“([^”\n]+)”')
+_NAMES_ID = re.compile(r"\b(?:id|memory|fact)\s*[:#]?\s*(\d+)\b", re.IGNORECASE)
+
+
+class Erased:
+    """What deleted memories said, weighed against the memories that remain (#456).
+
+    Called with a line of derived text (a MEMORY.md bullet, a journal line, a summary, an evidence quote), it says
+    whether the line repeats a deleted wording (:func:`says`) and so goes. A line stays when a remaining current
+    memory says it as well or better, or when it names a remaining memory's id: then it is that memory's line, not
+    the deleted one's. Each quoted part of a line is weighed on its own as well, so a journal line like
+    ``I used to remember "A", but now "B"`` goes when A (or B) is deleted, even though B (or A) remains."""
+
+    def __init__(self, texts: list[str], remaining: list[tuple[int, str]], user_name: str = "") -> None:
+        self.user = _words(user_name)
+        self.texts = [t for t in dict.fromkeys(texts) if t]
+        self._gone = [_words(t) - self.user for t in self.texts]
+        self._left = [_words(c) - self.user for _, c in remaining]
+        self._ids = {str(i) for i, _ in remaining}
+        self._held = {" ".join(str(c).lower().split()) for _, c in remaining}
+
+    @property
+    def wordings(self) -> list[str]:
+        """The deleted wordings no remaining memory says word for word (an exact USER.md line of one of those is
+        the remaining memory's line too)."""
+        return [t for t in self.texts if " ".join(t.lower().split()) not in self._held]
+
+    def _repeats(self, part: str) -> bool:
+        have = _words(part)
+        best = max((_share(w, have) for w in self._gone), default=0.0)
+        return best > 0 and not any(_share(w, have) >= best for w in self._left)
+
+    def __call__(self, text: str) -> bool:
+        text = str(text or "")
+        if any(m.group(1) in self._ids for m in _NAMES_ID.finditer(text)):
+            return False
+        return any(self._repeats(p) for p in (text, *(a or b for a, b in _QUOTED.findall(text))))
 
 
 def confidence(source: str, *, held: bool = False) -> float:
