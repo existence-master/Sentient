@@ -106,7 +106,7 @@ async def test_a_file_from_a_messaging_app_never_takes_a_name_a_chat_has(config,
         # a non-ASCII name is stored escaped in JSON; another letter case is still the same file
         await s.store.add_message(sid, "user", "And this.", attachments=["uploads/Été.png"])
         assert await names.referenced(s.store, "uploads/été.png")
-        assert await names.referenced(s.store, "uploads/été.png")  # the same name with decomposed accents
+        assert await names.referenced(s.store, "uploads/e\u0301te\u0301.png")  # the same name with decomposed accents
         assert (await names.create(isolated_home / "files" / "uploads", "été.png", store=s.store)).name == "été (1).png"
         name = await save_upload("photo.jpg", SECOND, s.store)
         assert name == "uploads/photo (1).jpg"
