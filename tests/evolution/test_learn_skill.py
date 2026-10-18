@@ -146,12 +146,14 @@ def test_learn_a_folder_keeps_reference_files_that_load_only_when_used(client, t
     for i, topic in enumerate(["Visas", "Expenses", "Hotels"]):
         (notes / f"{i}-{topic.lower()}.md").write_text(f"# {topic}\n\n" + f"{topic} detail line.\n" * 600, encoding="utf-8")
     (notes / "3-agency.md").write_text(f"# Agency\n\n{INJECTION}\n", encoding="utf-8")
-    client.core.llm.json_replies = [{**DRAFT, "name": "travel-handbook", "description": "Company travel rules."}]
+    client.core.llm.json_replies = [{**DRAFT, "name": "travel-handbook", "description": "Company travel rules.",
+                                     "tags": ["short", "labels", "Travel"]}]  # a small model copying the example
     r = client.post("/api/skills/learn", json={"source": str(notes)})
     assert r.status_code == 200, r.text
     skill = r.json()
     assert skill["references"] == ["references/agency.md", "references/expenses.md", "references/hotels.md",
                                    "references/visas.md"]
+    assert skill["tags"] == ["travel", "learned"]
     assert "## Reference files" in skill["body"] and "`references/visas.md`: Visas" in skill["body"]
     # the model saw an outline, not the whole text
     prompt = _prompt(client.core)

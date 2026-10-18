@@ -59,7 +59,7 @@ export function SafetyReport({ vetting: v, className }: { vetting: SkillVetting;
         <div className="mt-2.5 space-y-2 pl-7">
           {(files.length ? files : ['']).map((file) => (
             <div key={file}>
-              {files.length > 1 && (
+              {(files.length > 1 || (files.length === 1 && files[0] !== 'SKILL.md')) && (
                 <div className="mb-0.5 inline-flex items-center gap-1 font-mono text-2xs text-fg-subtle">
                   <IconFileCode size={11} /> {file}
                 </div>

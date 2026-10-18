@@ -49,6 +49,7 @@ STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
 # the memory scopes the profile files (MEMORY.md, USER.md) are built from (#155); work and project chats leave them out
 PROFILE_SCOPES = "COALESCE(scope, 'personal') IN ('personal', 'always')"
 DONE_STATUSES = {"completed", "completed_with_errors"}
+PLACEHOLDER_TAGS = {"short", "labels", "learned"}
 FAILED_RUN_STATUSES = {"error", "failed", "completed_with_errors"}
 REPAIR_TRANSCRIPT_BUDGET = 6_000
 MAX_TRACKED_TURNS = 200
@@ -611,7 +612,8 @@ class EvolutionService(Service):
         # itself; checks a model drafts from outside text aren't kept (their code would never run anyway, ADR 0027)
         validate = [{"file": r.path, "expect": f"# {r.text.splitlines()[0].lstrip('# ').strip()}"}
                     for r in refs[: skill_checks.MAX_CHECKS]]
-        tags = [*[str(t) for t in raw.get("tags") or [] if str(t).strip()][:7], "learned"]
+        tags = [str(t).strip().lower() for t in raw.get("tags") or [] if str(t).strip()]
+        tags = [*[t for t in tags if t not in PLACEHOLDER_TAGS][:7], "learned"]  # small models copy the example
         path = lib.write(name, description, body, author="assistant", tags=tags, pending=True, validate=validate)
         folder = path.parent
         for r in refs:

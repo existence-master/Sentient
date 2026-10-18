@@ -229,7 +229,12 @@ def references(src: Source) -> list[Reference]:
         used.add(slug)
         parts = []
         for d in group:
-            parts.append(f"# {d.title}\n\nSource: {d.origin}\n\n{d.text.strip()}\n")
+            text = d.text.strip()
+            first, _, rest = text.partition("\n")
+            if first.startswith("# "):  # the document's own title line comes first, then where it came from
+                parts.append(f"{first}\n\nSource: {d.origin}\n\n{rest.strip()}\n")
+            else:
+                parts.append(f"# {d.title}\n\nSource: {d.origin}\n\n{text}\n")
         text = "\n\n".join(parts)
         if len(text) > MAX_REFERENCE_CHARS:
             text = text[:MAX_REFERENCE_CHARS].rstrip() + "\n\n[... the rest of the source was left out ...]\n"
