@@ -25,6 +25,7 @@ import inspect
 import json
 import logging
 import re
+import shutil
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -616,13 +617,20 @@ class EvolutionService(Service):
         tags = [*[t for t in tags if t not in PLACEHOLDER_TAGS][:7], "learned"]  # small models copy the example
         path = lib.write(name, description, body, author="assistant", tags=tags, pending=True, validate=validate)
         folder = path.parent
-        for r in refs:
-            target = folder / r.path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(r.text, encoding="utf-8")
-        report = await skill_checks.run(self.app, name, validate, [folder], run_code=False, outside=True)
-        vetting = vet.vet_folder(folder, source="learn", origin=src.where)
-        await vet.record_import(self.app.store, name, vetting)
+        try:
+            for r in refs:
+                target = folder / r.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(r.text, encoding="utf-8")
+            report = await skill_checks.run(self.app, name, validate, [folder], run_code=False, outside=True)
+            vetting = vet.vet_folder(folder, source="learn", origin=src.where)
+            await vet.record_import(self.app.store, name, vetting)
+        except BaseException:
+            # never leave a draft without its safety record: approving it would skip the check of skills from outside
+            shutil.rmtree(folder, ignore_errors=True)
+            with contextlib.suppress(Exception):
+                await vet.forget(self.app.store, name)
+            raise
         await lib.record_patch(name, "pending_review", self.app.store)
         await lib.record_check(name, report, self.app.store, pending=True)
         reason = f"Learned from {src.where}"

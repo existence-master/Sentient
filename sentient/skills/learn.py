@@ -20,7 +20,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from sentient import paths
-from sentient.files.extract import extract_text
+from sentient.files.extract import TEXT_SUFFIXES, extract_text
 from sentient.skills.loader import slugify
 from sentient.skills.vet import _files as skill_folder_files
 
@@ -35,6 +35,7 @@ MAX_REFERENCE_CHARS = 60_000
 OUTLINE_BUDGET = 9_000     # what the drafting model sees of a long source
 FOLDER_SUFFIXES = {".md", ".markdown", ".txt", ".rst", ".html", ".htm", ".pdf", ".docx"}
 SECRET_NAMES = {"auth.json", "id_rsa", "id_ed25519", "credentials", "wallet.dat"}
+READABLE = TEXT_SUFFIXES | {".pdf", ".docx"}
 _HEADING = re.compile(r"^#{1,4}\s+\S.*$", re.MULTILINE)
 
 
@@ -116,13 +117,15 @@ def _read_text(path: Path) -> tuple[str, str]:
 def _read_file(path: Path, where: str) -> Source:
     if _secret(path):
         raise LearnError("Sentient doesn't read hidden files or files that hold passwords and keys.")
+    if path.suffix.lower() not in READABLE:
+        raise LearnError(f"Sentient can't read {path.suffix or 'this kind of'} files. Use a text, Markdown, PDF, "
+                         "Word or web page file.")
     try:
         title, text = _read_text(path)
-    except ValueError as exc:
-        raise LearnError(f"Sentient can't read {path.suffix or 'this kind of'} files. Use a text, Markdown, PDF, "
-                         "Word or web page file.") from exc
     except OSError as exc:
         raise LearnError(f"Sentient couldn't open {path.name} ({exc.strerror or exc}).") from exc
+    except Exception as exc:  # a damaged PDF or Word file (pypdf, python-docx and zip errors)
+        raise LearnError(f"Sentient couldn't read {path.name}. The file may be damaged.") from exc
     if not text.strip():
         raise LearnError(f"{path.name} has no text to learn from.")
     return Source("file", where, path.name, [Doc(title, path.name, text)])
@@ -187,7 +190,10 @@ async def _fetch(url: str, *, transport=None) -> Source:
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "page.pdf"
             p.write_bytes(body)
-            text = await asyncio.to_thread(extract_text, p, MAX_FILE_CHARS)
+            try:
+                text = await asyncio.to_thread(extract_text, p, MAX_FILE_CHARS)
+            except Exception as exc:  # a damaged PDF
+                raise LearnError("Sentient couldn't read the PDF at that address. It may be damaged.") from exc
     elif ctype.startswith("text/") or "json" in ctype or "xml" in ctype or "markdown" in ctype:
         text = raw
     else:

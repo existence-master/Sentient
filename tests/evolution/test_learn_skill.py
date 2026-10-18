@@ -214,3 +214,35 @@ async def test_skill_view_lists_references_and_reads_one_as_outside_content(clie
     core.skills.reload()
     mine = await view.fn(ctx, name="my-notes", file="references/a.md")
     assert "outside_content" not in mine and mine["content"] == "# A\nmine"
+
+
+async def test_damaged_documents_and_unknown_formats_are_plain_errors(tmp_path: Path):
+    pdf = tmp_path / "broken.pdf"
+    pdf.write_bytes(b"%PDF-1.4 not really a pdf")
+    with pytest.raises(learn.LearnError, match="may be damaged"):
+        await learn.collect(str(pdf))
+    docx = tmp_path / "broken.docx"
+    docx.write_bytes(b"not a zip")
+    with pytest.raises(learn.LearnError, match="may be damaged"):
+        await learn.collect(str(docx))
+    with pytest.raises(learn.LearnError, match=r"can.t read .zip files"):
+        (tmp_path / "x.zip").write_bytes(b"PK")
+        await learn.collect(str(tmp_path / "x.zip"))
+
+
+def test_a_draft_is_removed_when_its_safety_check_fails_to_run(client, tmp_path: Path, monkeypatch):
+    from sentient.skills import vet
+
+    f = tmp_path / "packing.md"
+    f.write_text(PACKING, encoding="utf-8")
+    client.core.llm.json_replies = [DRAFT]
+
+    def broken(*_a, **_k):
+        raise RuntimeError("scanner broke")
+
+    monkeypatch.setattr(vet, "vet_folder", broken)
+    with pytest.raises(RuntimeError):
+        client.post("/api/skills/learn", json={"source": str(f)})
+    # no draft is left behind to be approved without its check
+    assert client.core.skills.get_pending("work-trip-packing") is None
+    assert not (client.core.skills.pending_dir / "work-trip-packing").exists()

@@ -51,3 +51,26 @@ async def test_in_a_group_only_the_owner_can_learn(tg, llm, tmp_path: Path):
     llm.json_replies = [DRAFT]
     await say(tg, OWNER, f"/learn {f}")
     assert "work-trip-packing" in tg.api.screen()[-1]
+
+
+async def test_stop_everything_stops_a_learn_draft(tg, llm, tmp_path: Path):
+    import asyncio
+
+    f = tmp_path / "packing.md"
+    f.write_text(PACKING, encoding="utf-8")
+    await tg.pair(42)
+    gate = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow_json(role, messages, *, model=None):
+        started.set()
+        await gate.wait()
+        return DRAFT
+
+    llm.complete_json = slow_json
+    tg.ch.dispatch(__import__("tests.channels.conftest", fromlist=["update"]).update(42, f"/learn {f}"))
+    await asyncio.wait_for(started.wait(), 10)
+    assert await tg.ch.stop_all_turns() == 1
+    await tg.ch.wait_idle()
+    assert tg.api.screen()[-1] == "Stopped. I didn't finish drafting the skill, so nothing was saved."
+    assert tg.app.skills.list_pending() == []

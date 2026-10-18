@@ -281,6 +281,7 @@ class Channel:
         self.sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep
         self._chats: dict[str, ChatRuntime] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._learning: dict[asyncio.Task, str] = {}  # /learn drafts running, and the chat waiting for each
         self._runtime: asyncio.Task | None = None
         self._button_text: dict[tuple[str, str], str] = {}
         # approval id -> the chat its request was sent to; only that chat may answer it (#139)
@@ -706,6 +707,15 @@ class Channel:
             if dropped:
                 await self.reply(chat_id, "Stopped. Your queued message wasn't sent." if dropped == 1
                                  else f"Stopped. Your {dropped} queued messages weren't sent.")
+        for task, chat_id in list(self._learning.items()):  # a /learn draft stops too, and nothing is saved
+            self._learning.pop(task, None)
+            if task.done():
+                continue
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            stopped += 1
+            await self.reply(chat_id, "Stopped. I didn't finish drafting the skill, so nothing was saved.")
         return stopped
 
     async def cancel_turn(self, chat_id: str) -> bool:
@@ -1168,7 +1178,9 @@ class Channel:
             await self.reply(chat_id, "Learning skills isn't available right now.")
             return
         await self.reply(chat_id, "Reading it now. I'll tell you here when the skill is ready for you to review.")
-        self.spawn(self._learn(chat_id, source))
+        task = self.spawn(self._learn(chat_id, source))
+        self._learning[task] = chat_id
+        task.add_done_callback(lambda t: self._learning.pop(t, None))
 
     async def _learn(self, chat_id: str, source: str) -> None:
         from sentient.skills.learn import LearnError

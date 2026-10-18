@@ -175,8 +175,13 @@ export function Composer({
         )
         return true
       case 'learn': {
-        // a file attached to the message works too: /learn on its own learns from it
-        const source = arg || (!streaming && attachments.ready > 0 ? (attachments.take()[0]?.name ?? '') : '')
+        // a file attached to the message works too: /learn on its own learns from it (one file at a time, so no
+        // other attachment is taken from the composer)
+        if (!arg && !streaming && attachments.ready > 1) {
+          toast.message('Attach one file at a time', { description: 'Sentient learns one skill from one file, link or folder.' })
+          return false
+        }
+        const source = arg || (!streaming && attachments.ready === 1 && !attachments.uploading ? (attachments.take()[0]?.name ?? '') : '')
         if (!source) {
           toast.message('What should Sentient learn from?', {
             description: 'Type a link, a file or a folder after /learn, or attach a file. For example: /learn https://docs.example.com/setup'
