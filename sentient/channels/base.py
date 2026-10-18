@@ -28,6 +28,7 @@ from sentient.agent import preview as previews
 from sentient.agent import undo as undo_rules
 from sentient.agent.grants import decision_label
 from sentient.channels.store import PairingResult
+from sentient.files import names as file_names
 from sentient.llm import availability
 from sentient.llm import presets as model_presets
 from sentient.llm.events import (
@@ -162,17 +163,11 @@ def safe_filename(name: str) -> str:
     return base[:160]
 
 
-def save_upload(name: str, data: bytes) -> str:
-    """Save bytes under files/uploads and return the Files API name (``uploads/<name>``)."""
-    folder = paths.files_dir() / "uploads"
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / safe_filename(name)
-    stem, suffix = target.stem, target.suffix
-    i = 1
-    while target.exists():
-        target = folder / f"{stem} ({i}){suffix}"
-        i += 1
-    target.write_bytes(data)
+async def save_upload(name: str, data: bytes, store: Any = None) -> str:
+    """Save bytes under files/uploads and return the Files API name (``uploads/<name>``). A name a chat still has
+    attached is never reused (#458)."""
+    target = await file_names.create(paths.files_dir() / "uploads", safe_filename(name), store=store)
+    await asyncio.to_thread(target.write_bytes, data)
     return f"uploads/{target.name}"
 
 
@@ -540,7 +535,7 @@ class Channel:
         for fetch in msg.files:
             try:
                 data, name = await fetch()
-                attachments.append(await asyncio.to_thread(save_upload, name, data))
+                attachments.append(await save_upload(name, data, self.app.store))
             except ChannelError as exc:
                 await self.reply(chat_id, exc.message)
             except Exception as exc:

@@ -313,3 +313,13 @@ export function approvalCardReason(reason?: string | null, badgeLabel?: string |
   }
   return trimmed
 }
+
+/**
+ * The small print of a waiting approval card that has no reason of its own. Nothing has happened yet, so never
+ * past tense and never the tool's developer name: nothing when the action line above already says what will happen
+ * ("Click “Subscribe”"), else the tool's plain "would" wording ("Would write file", "Would use Gmail: send email").
+ */
+export function waitingSmallPrint(actionLine?: string | null, would?: string | null): string | null {
+  if (actionLine?.trim()) return null
+  return would?.trim() || null
+}

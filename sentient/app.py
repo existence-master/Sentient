@@ -319,11 +319,11 @@ class SentientApp:
             log.exception("removing the selected text of chat %s failed", session_id)
         self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
 
-    def _after_memory_erased(self, texts: list[str]) -> None:
-        """A memory was deleted (#152): its words leave USER.md and MEMORY.md, and the user model reads its insights
-        again (some may be gone with it)."""
+    def _after_memory_erased(self, erased: Any) -> None:
+        """A memory was deleted (#152): its words leave USER.md and MEMORY.md (not a remaining memory's similar lines,
+        #456), and the user model reads its insights again (some may be gone with it)."""
         try:
-            self.workspace.scrub(texts, self.config.assistant.user_name)
+            self.workspace.scrub(erased.wordings, self.config.assistant.user_name, repeats=erased)
         except OSError:
             log.exception("removing a deleted memory from the workspace files failed")
         model = getattr(self, "user_model", None)
