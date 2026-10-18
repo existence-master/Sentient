@@ -55,7 +55,7 @@ _DIARY = re.compile(
 _DANGER: list[tuple[re.Pattern[str], str, bool]] = [
     (
         re.compile(
-            r"\b(?:ignore|disregard|forget)\b[^.\n]{0,30}\b(?:previous|prior|earlier|other|all|system)\b[^.\n]{0,20}"
+            r"\b(?:ignore|disregard|forget)\b[^.\n]{0,30}\b(?:previous|prior|earlier|other|all|system|your|its|any)\b[^.\n]{0,20}"
             r"\b(?:instructions|rules|prompt)",
             re.IGNORECASE,
         ),

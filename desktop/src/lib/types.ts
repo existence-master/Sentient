@@ -2426,6 +2426,8 @@ export interface Skill {
   validate?: SkillCheck[]
   /** The last run of those checks, or null when it declares none or they haven't run. */
   check?: SkillCheckReport | null
+  /** Reference files in its `references` folder (#167), read one at a time only when the skill is used. */
+  references?: string[]
 }
 
 /** One check in a skill's `validate` header: a file that must exist, or Python run in the code sandbox. */
@@ -2469,8 +2471,8 @@ export interface SkillVetting {
   programs: string[]
   hash: string
   scanner: string
-  source: 'link' | 'hermes' | string | null
-  /** The web address or Hermes folder it came from. */
+  source: 'link' | 'hermes' | 'learn' | string | null
+  /** The web address or Hermes folder it came from (for `learn`: the page, file or folder it was learned from). */
   origin: string | null
   imported_at?: ISODate
   decision?: 'approved' | null
@@ -2530,6 +2532,7 @@ export type EvolutionKind =
   | 'skill_patched'
   | 'skill_archived'
   | 'skill_reset'
+  | 'skill_learned'
   | 'profile_updated'
   | 'curator_run'
   | 'summary_created'
