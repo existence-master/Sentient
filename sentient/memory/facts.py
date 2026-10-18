@@ -68,6 +68,7 @@ _UNKNOWN_RE = re.compile(
     re.IGNORECASE,
 )
 _USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
+_USER_POSSESSIVE_RE = re.compile(r"\b(the user|user|USERNAME)['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
@@ -216,6 +217,15 @@ TIME_WORDING_RE = re.compile(
     r"since|started|starting|moved|switched|new|anymore|no longer)\b",
     re.IGNORECASE,
 )
+
+
+def name_the_user(text: str, user_name: str) -> str:
+    """"Priya, the user's sister" is "Priya, Maya Rao's sister": a saved fact says the user's name (#475)."""
+    name = user_name.strip()
+    if not name:
+        return text
+    text = _USER_POSSESSIVE_RE.sub(lambda _: f"{name}'s", text)
+    return _USER_REF_RE.sub(lambda _: name, text)
 
 
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
@@ -1420,6 +1430,7 @@ class FactMemory:
         ``memory.updated`` event, so that chat can show "Remembered: ... Undo". Duplicates, updates and corrections
         only look at facts in ``scope`` and always: a save never changes a memory in another scope."""
         user = self.config.assistant.user_name
+        fact = name_the_user(fact, user)  # the memory tool and the Memory screen save words as given (#475)
         scope = memory_scopes.normalize(scope, memory_scopes.PERSONAL) or memory_scopes.PERSONAL
         refs: dict[str, dict] = {source: ref} if ref else {}
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
@@ -1713,10 +1724,7 @@ class FactMemory:
         text = " ".join(str(fact).split()).strip(" -*•")
         if len(text) < 6:
             return None
-        name = username.strip()
-        if name:
-            text = re.sub(r"\b(the user|USERNAME)'s\b", f"{name}'s", text, flags=re.IGNORECASE)
-            text = _USER_REF_RE.sub(name, text)
+        text = name_the_user(text, username)
         text = text[:1].upper() + text[1:]
         if _REQUEST_RE.search(text) or _NOISE_RE.search(text) or _UNKNOWN_RE.search(text) or _TAUTOLOGY_RE.match(text):
             return None
