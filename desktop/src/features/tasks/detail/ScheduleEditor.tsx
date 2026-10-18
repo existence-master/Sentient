@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router'
 import { Alert, Button, Combobox, IconButton, Input, SegmentedControl, Select, Textarea } from '@/components/ui'
 import { useIntegrations } from '@/hooks/integrations'
 import { useHooks } from '@/hooks/automations'
-import type { OnceSchedule, RecurringSchedule, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
+import type { OnceSchedule, RecurringSchedule, ScheduleWindow, TaskSchedule, TriggeredSchedule, Weekday } from '@/lib/types'
 import { cn, listTimezones } from '@/lib/utils'
 import {
   FIELD_LABELS,
@@ -13,6 +13,7 @@ import {
   SOURCE_FIELDS,
   SOURCE_LABELS,
   WEEKDAYS,
+  WINDOW_LABELS,
   filterRules,
   intervalMinutes,
   isIntervalSchedule,
@@ -147,6 +148,11 @@ function ZonePicker({ value, onChange }: { value: string; onChange: (z: string) 
   )
 }
 
+const WHEN_OPTIONS = [
+  { value: 'exact', label: 'At a set time' },
+  ...(Object.entries(WINDOW_LABELS) as Array<[ScheduleWindow, { label: string }]>).map(([value, w]) => ({ value, label: w.label }))
+]
+
 const INTERVAL_PICKS = [5, 15, 30, 60, 180, 360, 720, 1440]
 
 function RecurringFields({ schedule, tz, onChange }: { schedule: RecurringSchedule; tz: string; onChange: (s: TaskSchedule) => void }) {
@@ -243,12 +249,19 @@ function RecurringDayFields({
     const next = days.includes(d) ? days.filter((x) => x !== d) : [...days, d]
     onChange({ ...schedule, frequency: 'weekly', days: WEEKDAYS.filter((w) => next.includes(w)) })
   }
+  const setWhen = (v: string) => {
+    const { window: _drop, ...rest } = schedule
+    void _drop
+    onChange(v in WINDOW_LABELS ? { ...rest, window: v as ScheduleWindow } : rest)
+  }
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <RecurringPresets preset={preset} onChange={setPreset} />
-        <span className="text-sm text-fg-subtle">at</span>
-        <Input type="time" size="sm" value={schedule.time} onChange={(e) => onChange({ ...schedule, time: e.target.value || '09:00' })} wrapperClassName="w-32" aria-label="Time" />
+        <Select size="sm" className="w-60" aria-label="Time of day" value={schedule.window ?? 'exact'} onValueChange={setWhen} options={WHEN_OPTIONS} />
+        {!schedule.window && (
+          <Input type="time" size="sm" value={schedule.time} onChange={(e) => onChange({ ...schedule, time: e.target.value || '09:00' })} wrapperClassName="w-32" aria-label="Time" />
+        )}
         <ZonePicker value={tz} onChange={(z) => onChange({ ...schedule, timezone: z })} />
       </div>
       {schedule.frequency === 'weekly' && (

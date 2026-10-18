@@ -1,8 +1,9 @@
-import { IconCheck, IconChevronRight, IconShieldQuestion, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconCheck, IconChevronRight, IconClockHour4, IconHandFinger, IconShieldQuestion, IconX } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { JsonView, Spinner } from '@/components/ui'
 import type { ApprovalView, ToolCallView } from '@/lib/chatFold'
+import type { ApprovalDecision } from '@/lib/types'
 import { cn, formatDuration } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { ApprovalCard } from './ApprovalCard'
@@ -10,17 +11,22 @@ import { asRecord, DeclinedText, StatusGlyph } from './cards/bits'
 import { CodeRunCard } from './cards/CodeRunCard'
 import { isSubagentTool, SubagentCard } from './cards/SubagentCard'
 import { TerminalCard } from './cards/TerminalCard'
+import { asHandOff, HandOffCard } from './HandOffCard'
+import { UndoCard } from './UndoCard'
 import { IMAGE_FILE_RE, openOutputFile, outputPath } from './files'
 import { argsPreview, toolMeta } from './toolMeta'
 
 function GenericToolCard({
   tool,
   approval,
-  onApprove
+  onApprove,
+  problem
 }: {
   tool: ToolCallView
   approval?: ApprovalView
-  onApprove?: (approvalId: string, decision: 'allow' | 'allow_session' | 'deny') => void
+  onApprove?: (approvalId: string, decision: ApprovalDecision) => void
+  /** What a check found didn't happen (#165): the call said it worked, but it didn't (fully). */
+  problem?: string
 }) {
   const [open, setOpen] = useState(false)
   const meta = toolMeta(tool.name)
@@ -29,6 +35,7 @@ function GenericToolCard({
   const denied = tool.status === 'denied'
   const preview = argsPreview(tool.arguments)
   const hasResult = tool.result !== undefined && tool.result !== null && tool.result !== ''
+  const handOff = asHandOff(tool.result)
 
   return (
     <div className="space-y-2">
@@ -52,7 +59,9 @@ function GenericToolCard({
             <DeclinedText tool={tool} approval={approval} className="min-w-0 flex-1 font-medium" />
           ) : (
             <>
-              <span className={cn('shrink-0 font-medium', running ? 'text-fg-muted' : 'text-fg')}>{running ? meta.running : meta.done}</span>
+              <span className={cn('shrink-0 font-medium', running ? 'text-fg-muted' : 'text-fg')}>
+                {running ? meta.running : handOff ? 'Prepared for you' : meta.done}
+              </span>
               {preview && <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-subtle">{preview}</span>}
               {!preview && <span className="flex-1" />}
             </>
@@ -61,7 +70,9 @@ function GenericToolCard({
             <span className="shrink-0 text-2xs tabular-nums text-fg-faint">{formatDuration(tool.durationMs)}</span>
           )}
           <span className="flex size-4 shrink-0 items-center justify-center">
-            {running ? (
+            {running && tool.undo?.status === 'waiting' ? (
+              <IconClockHour4 size={14} className="text-accent" />
+            ) : running ? (
               <Spinner size={13} className="text-fg-subtle" />
             ) : tool.status === 'awaiting_approval' ? (
               <IconShieldQuestion size={14} className="text-warning" />
@@ -69,6 +80,12 @@ function GenericToolCard({
               <IconX size={14} className="text-danger" />
             ) : denied ? (
               <StatusGlyph status="denied" />
+            ) : handOff ? (
+              <IconHandFinger size={14} className="text-accent" />
+            ) : problem ? (
+              <span title={problem} className="flex">
+                <IconAlertTriangle size={14} className="text-warning" />
+              </span>
             ) : (
               <IconCheck size={14} className="text-success" />
             )}
@@ -119,14 +136,16 @@ function GenericToolCard({
         </AnimatePresence>
       </div>
       {approval && <ApprovalCard approval={approval} onRespond={onApprove} />}
+      {tool.undo && <UndoCard undo={tool.undo} />}
+      {handOff && <HandOffCard handOff={handOff} />}
     </div>
   )
 }
 
-type ApproveFn = (approvalId: string, decision: 'allow' | 'allow_session' | 'deny') => void
+type ApproveFn = (approvalId: string, decision: ApprovalDecision) => void
 
 /** Picks a dedicated card for code runs, commands, helpers and device photos; everything else uses the generic row. */
-export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView; approval?: ApprovalView; onApprove?: ApproveFn }) {
+export function ToolCallCard({ tool, approval, onApprove, problem }: { tool: ToolCallView; approval?: ApprovalView; onApprove?: ApproveFn; problem?: string }) {
   const special =
     tool.name === 'execute_code' ? (
       <CodeRunCard tool={tool} />
@@ -140,12 +159,14 @@ export function ToolCallCard({ tool, approval, onApprove }: { tool: ToolCallView
       <div className="space-y-2">
         {special}
         {approval && <ApprovalCard approval={approval} onRespond={onApprove} />}
+        {tool.undo && <UndoCard undo={tool.undo} />}
+        {asHandOff(tool.result) && <HandOffCard handOff={asHandOff(tool.result)!} />}
       </div>
     )
   }
   return (
     <div className="space-y-2">
-      <GenericToolCard tool={tool} approval={approval} onApprove={onApprove} />
+      <GenericToolCard tool={tool} approval={approval} onApprove={onApprove} problem={problem} />
       <DeviceMedia tool={tool} />
     </div>
   )

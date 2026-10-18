@@ -68,8 +68,53 @@ def freeze(clean: bool) -> None:
         raise SystemExit(f"PyInstaller failed with exit code {result.returncode}")
 
 
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _serve_check(exe: Path) -> None:
+    """Start `serve` on a throwaway data folder and wait for GET /api/health.
+
+    `version` never imports the app, so a frozen engine missing a runtime module still passes it; v3.0.0-beta.1's
+    first build crashed on start for want of numpy that way.
+    """
+    import tempfile
+    import urllib.request
+
+    port = _free_port()
+    with tempfile.TemporaryDirectory(prefix="sentient-verify-") as home:
+        env = {**os.environ, "SENTIENT_HOME": home, "SENTIENT_GATEWAY_TOKEN": os.urandom(16).hex()}
+        proc = subprocess.Popen([str(exe), "serve", "--host", "127.0.0.1", "--port", str(port)], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    raise SystemExit(f"frozen engine exited during `serve` (code {proc.returncode}):\n"
+                                     f"{proc.stdout.read() if proc.stdout else ''}")
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=5) as r:
+                        if r.status == 200:
+                            log(f"frozen engine serves: {r.read().decode(errors='replace').strip()}")
+                            return
+                except OSError:
+                    pass
+                time.sleep(2)
+            raise SystemExit("frozen engine did not answer /api/health within 180 s")
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
 def verify() -> None:
-    """The frozen engine must at least import and answer `version`."""
+    """The frozen engine must answer `version`, import everything it needs at runtime, and really serve."""
     exe = BUNDLE / EXE_NAME
     if not exe.exists():
         raise SystemExit(f"expected {exe} to exist")
@@ -77,6 +122,11 @@ def verify() -> None:
     if out.returncode != 0 or "sentient" not in out.stdout.lower():
         raise SystemExit(f"frozen engine failed `version`:\n{out.stdout}\n{out.stderr}")
     log(f"frozen engine says: {out.stdout.strip()}")
+    out = subprocess.run([str(exe), "selfcheck"], capture_output=True, text=True, timeout=300)
+    if out.returncode != 0:
+        raise SystemExit(f"frozen engine failed `selfcheck`:\n{out.stdout}\n{out.stderr}")
+    log(out.stdout.strip())
+    _serve_check(exe)
 
 
 def stage() -> None:

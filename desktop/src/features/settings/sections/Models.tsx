@@ -50,7 +50,8 @@ import {
   StatusDot,
   Switch
 } from '@/components/ui'
-import { ClaudeCodeSection } from '@/features/models/ClaudeCodeSection'
+import { ClaudeCodeRoleWarning } from '@/features/models/ClaudeCodeSection'
+import { ConnectClaudeSection } from '@/features/models/ConnectClaude'
 import { ConnectPlansSection } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
@@ -58,6 +59,7 @@ import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
 import { PresetFixes } from '@/features/models/PresetFixes'
 import { ProviderKeyDialog } from '@/features/models/ProviderKeyDialog'
+import { LocalOnlyPresetConfirm } from '@/features/models/LocalOnlyPresetConfirm'
 import { usePresetSwitch } from '@/features/models/usePresetSwitch'
 import { useConfigEditor } from '@/hooks/config'
 import {
@@ -78,6 +80,7 @@ import { getBridge } from '@/lib/bridge'
 import { localModelValue, looksLikeEmbedding, modelShortName, REASONING_LEVELS, ROLE_META } from '@/lib/models'
 import { ROLE_NAMES, type Provider, type RoleName, type SentientConfig } from '@/lib/types'
 import { cn, formatBytes } from '@/lib/utils'
+import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
 
 const ROLE_ICON: Record<RoleName, Icon> = {
@@ -89,6 +92,18 @@ const ROLE_ICON: Record<RoleName, Icon> = {
   embedding: IconBrain,
   vision: IconEye
 }
+
+/** #149: one local model job at a time, your chats first. */
+const MODEL_QUEUE_KEYS = [
+  'models.local_queue',
+  'models.background_quiet_s',
+  'models.background_on_battery',
+  'models.battery_min_percent',
+  'models.battery_critical_percent',
+  'models.battery_idle_s',
+  'models.battery_upkeep_every_s',
+  'models.battery_max_wait_s'
+]
 
 export function ModelsSection({ query }: SectionProps) {
   const { config } = useConfigEditor()
@@ -113,6 +128,10 @@ export function ModelsSection({ query }: SectionProps) {
 
   return (
     <div className="space-y-10">
+      <ClaudeCodeRoleWarning />
+      {(!q || 'local only cloud privacy offline where ai runs'.includes(q)) && (
+        <SchemaForm section="models" title="Where AI runs" include={['models.local_only']} />
+      )}
       {(!q || 'presets preset local cloud mixed switch setup'.includes(q)) && <PresetsPanel />}
       {(!q || 'check my models check-up checkup test tools gpu graphics card'.includes(q)) && <ModelCheckup autoStart={autoCheck} />}
       <section className="space-y-3">
@@ -121,10 +140,13 @@ export function ModelsSection({ query }: SectionProps) {
           <RoleCard key={r} role={r} config={config} />
         ))}
       </section>
-      {(!q || 'plan claude max anthropic credits chatgpt openai plus pro openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
-      {(!q || 'claude code experimental subscription plan sign in'.includes(q)) && <ClaudeCodeSection />}
+      {(!q || 'connect claude code anthropic api key max team plan credits experimental subscription everything'.includes(q)) && <ConnectClaudeSection />}
+      {(!q || 'plan chatgpt openai plus pro openrouter nous portal connect sign in subscription'.includes(q)) && <ConnectPlansSection />}
       <ProvidersPanel />
       <OllamaPanel />
+      {(!q || 'one job at a time queue busy background wait battery local model sharing'.includes(q)) && (
+        <SchemaForm section="models" title="Sharing your local model" include={MODEL_QUEUE_KEYS} />
+      )}
     </div>
   )
 }
@@ -226,6 +248,7 @@ function PresetsPanel() {
         </Card>
       )}
       <ProviderKeyDialog provider={sw.keyFor} open={!!sw.keyFor} onOpenChange={(o) => !o && sw.setKeyFor(null)} />
+      <LocalOnlyPresetConfirm sw={sw} />
       <Dialog
         open={!!naming}
         onOpenChange={(o) => !o && setNaming(null)}
@@ -345,6 +368,7 @@ function RoleCard({ role, config }: { role: RoleName; config: SentientConfig }) 
           <ModelPicker
             value={value}
             onChange={changeModel}
+            role={role}
             embedding={meta.embedding}
             noneLabel={meta.required ? undefined : `Use ${ROLE_META[meta.fallsBackTo ?? 'primary'].label.toLowerCase()} (${modelShortName(config.models.roles.primary)})`}
             className="min-w-72 flex-1"
@@ -425,7 +449,7 @@ function FallbackEditor({ role, chain, embedding }: { role: RoleName; chain: str
       {items.map((m, i) => (
         <div key={`${i}-${m}`} className="flex items-center gap-2">
           <span className="w-5 text-center text-xs tabular-nums text-fg-subtle">{i + 1}</span>
-          <ModelPicker size="sm" embedding={embedding} value={m} onChange={(v) => commit(items.map((x, j) => (j === i ? v : x)))} className="flex-1" />
+          <ModelPicker size="sm" role={role} embedding={embedding} value={m} onChange={(v) => commit(items.map((x, j) => (j === i ? v : x)))} className="flex-1" />
           <IconButton size="sm" label="Move up" disabled={i === 0} icon={<IconArrowUp size={14} />} onClick={() => move(i, -1)} />
           <IconButton size="sm" label="Move down" disabled={i === items.length - 1} icon={<IconArrowDown size={14} />} onClick={() => move(i, 1)} />
           <IconButton size="sm" label="Remove" icon={<IconTrash size={14} />} onClick={() => commit(items.filter((_, j) => j !== i))} />

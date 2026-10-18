@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from typing import Any
@@ -161,10 +162,99 @@ def normalize_days(days: Any) -> list[str]:
 
 MIN_INTERVAL_MINUTES = 5
 
+# Fuzzy windows (#157): a daily or weekly schedule with ``window`` runs at a random minute inside that part of the
+# day instead of at ``time``, local time, ``[start, end)`` in minutes after midnight.
+WINDOWS: dict[str, tuple[int, int]] = {
+    "morning": (7 * 60, 10 * 60),
+    "afternoon": (12 * 60, 16 * 60),
+    "evening": (17 * 60, 20 * 60),
+    "night": (20 * 60, 23 * 60),
+}
+_window_random = random.Random()  # tests may seed it
+
+
+# Words that name each window in a request; a model-proposed window the user never said is dropped.
+WINDOW_WORDS: dict[str, tuple[str, ...]] = {
+    "morning": ("morning", "mornings"),
+    "afternoon": ("afternoon", "afternoons"),
+    "evening": ("evening", "evenings"),
+    "night": ("night", "nights", "tonight"),
+}
+
+
+def spoken_window(schedule: dict, prompt: str) -> dict:
+    """Keep a model-proposed ``window`` only when the request names that part of the day (small models add one to
+    requests like "every 5 minutes")."""
+    window = schedule.get("window") if isinstance(schedule, dict) else None
+    if not window:
+        return schedule
+    words = set(re.findall(r"[a-z]+", str(prompt or "").lower()))
+    if words & set(WINDOW_WORDS.get(window, ())):
+        return schedule
+    return {k: v for k, v in schedule.items() if k != "window"}
+
+
+# "every 10 minutes", "every hour", "every 2 hours", "every 30 min" (#305): a request that repeats within a day is
+# an interval, whatever a small model wrote (they turn these into a daily 09:00 schedule).
+_NUMBER_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+    "nine": 9, "ten": 10, "twelve": 12, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40, "forty-five": 45,
+    "forty five": 45, "sixty": 60, "ninety": 90,
+}
+_UNIT_MINUTES = {"s": 1 / 60, "m": 1, "h": 60}
+_EVERY_N_RE = re.compile(
+    r"\b(?:every|each)\s+(\d+(?:\.\d+)?|" + "|".join(sorted(map(re.escape, _NUMBER_WORDS), key=len, reverse=True))
+    + r")[\s-]*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b"
+)
+_EVERY_UNIT_RE = re.compile(r"\b(?:every|each)\s+(?:(other|single)\s+)?(minute|hour)\b")  # not "every second Friday"
+_EVERY_PART_RE = re.compile(r"\bevery\s+(half|quarter)[\s-]+(?:of\s+)?(?:an\s+)?hour\b")
+_HOURLY_RE = re.compile(r"\bhourly\b")
+_DAY_LEVEL_RE = re.compile(r"\b(?:daily|weekly|every\s+(?:day|week|weekday|morning|evening|night)|weekdays?)\b")
+
+
+def spoken_interval(prompt: str) -> int | None:
+    """Minutes between runs when the request says so ("every 10 minutes", "every hour", "hourly"), else None.
+    At least ``MIN_INTERVAL_MINUTES``."""
+    text = str(prompt or "").lower()
+    minutes: float | None = None
+    if m := _EVERY_N_RE.search(text):
+        raw = m.group(1)
+        count = float(raw) if raw[0].isdigit() else _NUMBER_WORDS[raw]
+        minutes = count * _UNIT_MINUTES[m.group(2)[0]]
+    elif m := _EVERY_PART_RE.search(text):
+        minutes = 30 if m.group(1) == "half" else 15
+    elif m := _EVERY_UNIT_RE.search(text):
+        minutes = _UNIT_MINUTES[m.group(2)[0]] * (2 if m.group(1) == "other" else 1)
+    elif _HOURLY_RE.search(text) and not _DAY_LEVEL_RE.search(text):  # "weekly hourly" is weekly
+        minutes = 60
+    if minutes is None or minutes <= 0:
+        return None
+    return max(MIN_INTERVAL_MINUTES, round(minutes))
+
+
+def spoken_schedule(schedule: dict, prompt: str) -> dict:
+    """The refined schedule checked against the request's own words: an interval the user said wins over the
+    model's daily or one-off guess, and a ``window`` the user never named is dropped. Triggered schedules stay."""
+    minutes = spoken_interval(prompt)
+    if minutes is not None and isinstance(schedule, dict) and schedule.get("type") != "triggered":
+        keep = {k: schedule[k] for k in ("timezone", "catch_up") if k in schedule}
+        return {"type": "recurring", "frequency": "interval", "interval_minutes": minutes, **keep}
+    return spoken_window(schedule, prompt)
+
+
+def window_of(schedule: dict | None) -> tuple[int, int] | None:
+    """``(start, end)`` minutes of a daily/weekly schedule's ``window``, or None."""
+    if not isinstance(schedule, dict) or str(schedule.get("frequency") or "").lower() == "interval":
+        return None
+    return WINDOWS.get(str(schedule.get("window") or "").strip().lower())
+
 
 def interval_minutes(schedule: dict) -> int:
     """Minutes between runs of an ``interval`` schedule (``interval_minutes``; ``every_minutes``/``hours`` accepted)."""
-    raw: Any = schedule.get("interval_minutes") or schedule.get("every_minutes") or schedule.get("minutes")
+    raw: Any = (
+        schedule.get("interval_minutes") or schedule.get("every_minutes") or schedule.get("minutes")
+        or schedule.get("interval")
+    )
     try:
         minutes = int(float(raw)) if raw is not None else 0
         if not minutes and schedule.get("hours") is not None:
@@ -188,7 +278,8 @@ def calculate_next_run(schedule: dict | None, after: datetime | None = None) -> 
     # rrule arithmetic on naive wall-clock times; the zone is re-applied afterwards so
     # daylight-saving transitions keep the user's local HH:MM.
     naive_start = start_local.replace(tzinfo=None)
-    hour, minute = parse_time(schedule.get("time"))
+    window = window_of(schedule)
+    hour, minute = divmod(window[0], 60) if window else parse_time(schedule.get("time"))
     dtstart = naive_start.replace(hour=hour, minute=minute, second=0, microsecond=0)
     until = naive_start + timedelta(days=366)
     frequency = str(schedule.get("frequency") or "").lower()
@@ -204,6 +295,10 @@ def calculate_next_run(schedule: dict | None, after: datetime | None = None) -> 
         else:
             return None
         nxt = rule.after(naive_start)
+        if nxt is not None and window:
+            # the next window that has not started yet (so a run inside today's window is not repeated today),
+            # at a random minute inside it
+            nxt += timedelta(minutes=_window_random.randrange(window[1] - window[0]))
     except Exception as exc:
         log.error("could not calculate next run for %s: %s", schedule, exc)
         return None
@@ -250,13 +345,16 @@ def normalize_schedule(schedule: Any, tz_name: str, *, override_timezone: bool =
         out["frequency"] = freq
         if freq == "interval":  # additive: every N minutes (used by script jobs)
             out["interval_minutes"] = interval_minutes(out)
-            for key in ("days", "time", "every_minutes", "minutes", "hours"):
+            for key in ("days", "time", "window", "every_minutes", "minutes", "hours", "interval"):
                 out.pop(key, None)
             if override_timezone or not out.get("timezone"):
                 out["timezone"] = tz_name
             return out
         hour, minute = parse_time(out.get("time"))
         out["time"] = f"{hour:02d}:{minute:02d}"
+        window = str(out.pop("window", None) or "").strip().lower()
+        if window in WINDOWS:  # a fuzzy window replaces the exact time (``time`` is kept for the editor)
+            out["window"] = window
         if freq == "weekly":
             out["days"] = normalize_days(out.get("days")) or ["Monday"]
         else:

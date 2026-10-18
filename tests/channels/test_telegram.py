@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import itertools
 import json
 import logging
 import wave
@@ -14,6 +13,7 @@ import respx
 
 from sentient import paths
 from sentient.channels import ChannelError
+from sentient.channels.base import ReplyStream
 from sentient.llm.provider import StreamChunk
 from tests.channels.conftest import (
     TOKEN,
@@ -82,7 +82,7 @@ async def test_pairing_flow(tg):
     await tg.say(42, "/pair@sentient_test_bot " + code)
     assert "Paired!" in api.screen()[-1]
     chat = await app.channels.store.chat("telegram", "42")
-    assert chat["label"] == "Sarthak (@sk)" and chat["deliver"] is True
+    assert chat["label"] == "Maya (@maya)" and chat["deliver"] is True
     session = await app.store.get_session(chat["session_id"])
     assert session["channel"] == "telegram"
     # single use: the same code no longer works for another chat
@@ -195,18 +195,29 @@ class ClockProvider(FakeProvider):
         yield StreamChunk(done=True, model="fake")
 
 
-async def test_streaming_edits_are_throttled(tg):
+async def test_streaming_edits_are_throttled(tg, monkeypatch):
+    """The throttle's own decisions on a fake clock (#355): it updates the message at once when a second has passed
+    since the last update, and otherwise only schedules a later update for when the second is up. That later update
+    sleeps in real time, so this test records the decision instead of letting it fire at a moment the clock doesn't
+    know about (a slow runner could fire it mid-stream)."""
     await tg.pair(42)
     clock = [0.0]
     tg.ch.clock = lambda: clock[0]
     tg.app.agent.llm = ClockProvider(clock, "abcde" * 40, step=0.25)  # 40 deltas over 10 simulated seconds
+    later: list[float] = []
+
+    async def flush_later(stream: ReplyStream, wait: float) -> None:
+        later.append(clock[0] + wait)  # when the update would come
+        await asyncio.Event().wait()  # cancelled by the next immediate update or by finish()
+
+    monkeypatch.setattr(ReplyStream, "_flush_later", flush_later)
     times: list[tuple[str, float]] = []
     tg.api.on_call = lambda method, params: times.append((method, clock[0])) if method in {"sendMessage", "editMessageText"} else None
     await tg.say(42, "stream please")
-    updates = [t for m, t in times]
-    assert 6 <= len(updates) <= 12
-    gaps = [b - a for a, b in itertools.pairwise(updates[:-1])]  # the final flush may come sooner
-    assert all(g >= 1.0 - 1e-9 for g in gaps[1:]), updates
+    # the first delta sends the message, then one edit per simulated second, then the final edit at the end
+    assert times == [("sendMessage", 0.25), *(("editMessageText", t + 0.25) for t in range(1, 10)), ("editMessageText", 10.0)]
+    # after each update, the next delta planned one later update for exactly one second after it
+    assert later == [t + 0.25 for t in range(1, 11)], later
     assert tg.api.screen()[-1] == "abcde" * 40
 
 
@@ -288,7 +299,9 @@ async def test_message_while_running_is_queued_without_steer(tg, gated, monkeypa
     gated.gate.set()
     await tg.ch.wait_idle()
     assert gated.stream_calls == 2
-    assert gated.calls[-1]["messages"][-1]["content"] == "two"
+    content = gated.calls[-1]["messages"][-1]["content"]
+    assert "[Current time:" in content
+    assert content.endswith("two")
     assert tg.api.screen()[-1] == "second reply"
 
 
@@ -364,7 +377,9 @@ async def test_voice_note_is_transcribed_and_answered(tg, llm, monkeypatch):
     await tg.say(42, None, **VOICE)
     assert voice.received == [(b"OggS-voice", "telegram-voice-u1.ogg")]
     assert any("<i>Heard:</i> what&#x27;s the weather" in t or "<i>Heard:</i> what's the weather" in t for t in tg.api.screen())
-    assert llm.calls[-1]["messages"][-1]["content"] == "what's the weather in Pune"
+    content = llm.calls[-1]["messages"][-1]["content"]
+    assert "[Current time:" in content
+    assert content.endswith("what's the weather in Pune")
     assert tg.api.screen()[-1] == "It's sunny."
     voices = [kwargs for method, kwargs in sent if method == "sendVoice"]
     assert len(voices) == 1
@@ -424,7 +439,13 @@ async def test_photo_and_document_become_attachments(tg, llm):
     saved = paths.files_dir() / "uploads" / "telegram-photo-big.jpg"
     assert saved.read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
     content = llm.calls[-1]["messages"][-1]["content"]
-    assert isinstance(content, list) and "what is this" in content[0]["text"]
+    assert isinstance(content, list)
+    assert "[Current time:" in content[0]["text"]
+    assert any(
+        block.get("type") == "text" and "what is this" in block.get("text", "")
+        for block in content
+    )
+    assert any(block.get("type") == "image_url" for block in content)
     doc = {"document": {"file_id": "d1", "file_unique_id": "doc", "file_name": "notes.txt", "mime_type": "text/plain", "file_size": 22}}
     await tg.say(42, None, **doc)
     assert "hello from a text file" in llm.calls[-1]["messages"][-1]["content"]
@@ -444,7 +465,9 @@ async def test_approval_buttons_allow(tg, llm):
     await until(lambda: bool(tg.api.button_messages()))
     msg = tg.api.button_messages()[-1]
     keyboard = msg["reply_markup"]["inline_keyboard"]
-    assert [b["text"] for row in keyboard for b in row] == ["Allow", "Allow for this chat", "Deny"]
+    assert [b["text"] for row in keyboard for b in row] == [
+        "Allow", "Allow for this chat", "Allow for 1 hour", "Always allow", "Deny",
+    ]
     assert "Approval needed" in msg["text"] and "current datetime" in msg["text"]
     tg.ch.dispatch(callback(42, msg["_id"], keyboard[0][0]["callback_data"]))
     await tg.ch.wait_idle()
@@ -461,7 +484,7 @@ async def test_approval_buttons_deny_and_stale(tg, llm):
     tg.ch.dispatch(update(42, "what time is it"))
     await until(lambda: bool(tg.api.button_messages()))
     msg = tg.api.button_messages()[-1]
-    deny = msg["reply_markup"]["inline_keyboard"][1][0]["callback_data"]
+    deny = msg["reply_markup"]["inline_keyboard"][-1][0]["callback_data"]
     tg.ch.dispatch(callback(42, msg["_id"], deny))
     await tg.ch.wait_idle()
     assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "Denied"
@@ -480,6 +503,7 @@ async def test_approval_buttons_deny_and_stale(tg, llm):
 # ---------------------------------------------------------------------------- polling
 
 
+@pytest.mark.flaky(reruns=2)  # 5 s wall-clock budget, timed out on Windows CI: #420
 async def test_polling_backoff_recovery_and_revoked_token(tg):
     app, ch, api = tg.app, tg.ch, tg.api
     waits: list[float] = []

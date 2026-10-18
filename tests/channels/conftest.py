@@ -110,7 +110,7 @@ def update(chat_id: int, text: str | None = None, **extra: Any) -> dict:
     message: dict[str, Any] = {
         "message_id": uid,
         "chat": {"id": chat_id, "type": "private"},
-        "from": {"id": chat_id, "is_bot": False, "first_name": "Sarthak", "username": "sk"},
+        "from": {"id": chat_id, "is_bot": False, "first_name": "Maya", "username": "maya"},
         **extra,
     }
     if text is not None:

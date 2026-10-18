@@ -1,5 +1,6 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import {
+  IconActivity,
   IconBell,
   IconDeviceMobile,
   IconDevices,
@@ -15,6 +16,7 @@ import {
   IconSearch,
   IconSettings,
   IconSparkles,
+  IconSpy,
   IconSun,
   type Icon
 } from '@tabler/icons-react'
@@ -90,6 +92,14 @@ function PaletteBody({ close }: { close: () => void }) {
           <Item icon={IconEdit} onSelect={() => go('/chat', { fresh: Date.now() })} shortcut={`${modKey}+N`}>
             New chat
           </Item>
+          <Item
+            icon={IconSpy}
+            onSelect={() => go('/chat', { fresh: Date.now(), incognito: true })}
+            shortcut={`${modKey}+Shift+N`}
+            keywords={['incognito', 'private', 'secret', 'forget']}
+          >
+            New incognito chat
+          </Item>
           <Item icon={IconListCheck} onSelect={() => go('/tasks?compose=1')} keywords={['task', 'schedule', 'recurring', 'automation']}>
             New task
           </Item>
@@ -130,6 +140,9 @@ function PaletteBody({ close }: { close: () => void }) {
           <Item icon={IconListCheck} onSelect={() => go('/tasks')}>
             Tasks
           </Item>
+          <Item icon={IconActivity} onSelect={() => go('/activity')} keywords={['timeline', 'history', 'log', 'what did it do']}>
+            Activity
+          </Item>
           <Item icon={IconBrain} onSelect={() => go('/memory')}>
             Memory
           </Item>
@@ -160,7 +173,7 @@ function PaletteBody({ close }: { close: () => void }) {
 
         {!!sessions.data?.length && (
           <Command.Group heading="Recent chats">
-            {sessions.data.slice(0, 30).map((s) => (
+            {sessions.data.filter((s) => !s.incognito).slice(0, 30).map((s) => (
               <Item key={s.id} icon={IconMessageCircle} value={`chat ${s.id} ${s.title ?? 'New chat'}`} onSelect={() => go(`/chat/${s.id}`)}>
                 {s.title?.trim() || 'New chat'}
               </Item>

@@ -1,0 +1,62 @@
+[
+  {
+    "uuid": "0199a1b2-1111-7000-8000-c1c1c1c1c1c1",
+    "name": "Portfolio case study outline",
+    "summary": "",
+    "created_at": "2026-09-05T08:12:44.123456Z",
+    "updated_at": "2026-09-05T08:30:02.654321Z",
+    "account": {"uuid": "0199a000-0000-7000-8000-a0a0a0a0a0a0"},
+    "chat_messages": [
+      {
+        "uuid": "0199a1b2-1111-7000-8000-000000000001",
+        "text": "I'm rewriting my portfolio around the Northwind design system work. I want it live before my Japan trip in April.",
+        "content": [
+          {"start_timestamp": "2026-09-05T08:12:44.200000Z", "stop_timestamp": "2026-09-05T08:12:44.200000Z", "flags": null, "type": "text",
+           "text": "I'm rewriting my portfolio around the Northwind design system work. I want it live before my Japan trip in April.", "citations": []}
+        ],
+        "sender": "human",
+        "created_at": "2026-09-05T08:12:44.200000Z",
+        "updated_at": "2026-09-05T08:12:44.200000Z",
+        "attachments": [],
+        "files": [],
+        "parent_message_uuid": "00000000-0000-4000-8000-000000000000"
+      },
+      {
+        "uuid": "0199a1b2-1111-7000-8000-000000000002",
+        "text": "Great idea. Here's an outline...",
+        "content": [
+          {"start_timestamp": null, "stop_timestamp": null, "flags": null, "type": "thinking", "thinking": "Maya wants an outline.", "summaries": [], "cut_off": false, "truncated": false, "hidden": false, "alternative_display_type": null, "signature": null},
+          {"start_timestamp": null, "stop_timestamp": null, "flags": null, "type": "text", "text": "Great idea. Here's an outline...", "citations": []}
+        ],
+        "sender": "assistant",
+        "created_at": "2026-09-05T08:12:58.000000Z",
+        "updated_at": "2026-09-05T08:12:58.000000Z",
+        "attachments": [],
+        "files": [],
+        "parent_message_uuid": "0199a1b2-1111-7000-8000-000000000001"
+      },
+      {
+        "uuid": "0199a1b2-1111-7000-8000-000000000003",
+        "text": "",
+        "content": [
+          {"start_timestamp": null, "stop_timestamp": null, "flags": null, "type": "text", "text": "Can you tighten this paragraph?", "citations": []}
+        ],
+        "sender": "human",
+        "created_at": "2026-09-05T08:20:00.000000Z",
+        "updated_at": "2026-09-05T08:20:00.000000Z",
+        "attachments": [{"file_name": "draft.txt", "file_size": 120, "file_type": "txt", "extracted_content": "Kavya's resume: senior engineer at Acme."}],
+        "files": [{"file_uuid": "f-1", "file_name": "draft.txt"}],
+        "parent_message_uuid": "0199a1b2-1111-7000-8000-000000000002"
+      }
+    ]
+  },
+  {
+    "uuid": "0199a1b2-2222-7000-8000-c2c2c2c2c2c2",
+    "name": "",
+    "summary": "",
+    "created_at": "2026-09-20T17:01:00.000000Z",
+    "updated_at": "2026-09-20T17:01:00.000000Z",
+    "account": {"uuid": "0199a000-0000-7000-8000-a0a0a0a0a0a0"},
+    "chat_messages": []
+  }
+]

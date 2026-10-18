@@ -15,32 +15,40 @@ def _json_calls(llm) -> int:
 
 def test_helpers():
     assert parse_hhmm("03:00") == (3, 0) and parse_hhmm("7:45") == (7, 45) and parse_hhmm("bad") == (3, 0)
-    assert covers("Sarthak plays chess with Riya", ["Sarthak plays chess"])
-    assert not covers("Sarthak plays chess", ["Sarthak plays chess with Riya"])
-    assert DreamingService.contradiction_candidate("Sarthak lives in Pune", "Sarthak lives in Mumbai")
-    assert DreamingService.contradiction_candidate("Sarthak eats meat", "Sarthak no longer eats meat")
-    assert not DreamingService.contradiction_candidate("Sarthak lives in Pune", "Riya lives in Mumbai")
-    assert not DreamingService.contradiction_candidate("Sarthak's sister lives in Pune", "Sarthak lives in Mumbai")
-    assert DreamingService.contradiction_candidate("I live in Pune", "Sarthak moved to Bengaluru", "Sarthak")
+    assert covers("Maya plays chess with Riya", ["Maya plays chess"])
+    assert not covers("Maya plays chess", ["Maya plays chess with Riya"])
+    assert DreamingService.contradiction_candidate("Maya lives in Pune", "Maya lives in Mumbai")
+    assert DreamingService.contradiction_candidate("Maya eats meat", "Maya no longer eats meat")
+    assert not DreamingService.contradiction_candidate("Maya lives in Pune", "Riya lives in Mumbai")
+    assert not DreamingService.contradiction_candidate("Maya's sister lives in Pune", "Maya lives in Mumbai")
+    assert DreamingService.contradiction_candidate("I live in Pune", "Maya moved to Bengaluru", "Maya")
 
 
 def test_subjects_and_families():
-    assert fact_subjects("Sarthak moved to Bengaluru last month") == {"sarthak"}
-    assert fact_subjects("Sarthak's sister Riya works at Infosys") == {"sarthak's sister", "riya"}
-    assert fact_subjects("Every morning Sarthak drinks black coffee") == {"sarthak"}
-    assert fact_subjects("My manager is Jane", "Sarthak") == {"sarthak's manager"}
-    assert fact_subjects("The user lives in Pune", "Sarthak") == {"sarthak"}
+    assert fact_subjects("Maya moved to Bengaluru last month") == {"maya"}
+    assert fact_subjects("Maya's sister Riya works at Infosys") == {"maya's sister", "riya"}
+    assert fact_subjects("Every morning Maya drinks black coffee") == {"maya"}
+    assert fact_subjects("My manager is Jane", "Maya") == {"maya's manager"}
+    assert fact_subjects("The user lives in Pune", "Maya") == {"maya"}
     assert fact_subjects("likes tea") == set()
     assert attribute_families("Riya got a job at Google") == {"job"}
-    assert attribute_families("Sarthak started eating fish") == {"diet"}
-    assert "residence" in attribute_families("Sarthak moved to Bengaluru last month")
+    assert attribute_families("Maya started eating fish") == {"diet"}
+    assert "residence" in attribute_families("Maya moved to Bengaluru last month")
 
 
 EXAMPLES = [
-    ("Sarthak lives in Pune", "Sarthak moved to Bengaluru last month"),
-    ("Sarthak's sister Riya works at Infosys", "Riya got a job at Google"),
-    ("Sarthak is vegetarian", "Sarthak started eating fish"),
+    ("Maya lives in Pune", "Maya moved to Bengaluru last month"),
+    ("Maya's sister Riya works at Infosys", "Riya got a job at Google"),
+    ("Maya is vegetarian", "Maya started eating fish"),
 ]
+
+
+async def superseded(mem, fid: int, *, by: int) -> bool:
+    """A contradiction's loser stays as history (#152): superseded by the winner, and recall never finds it."""
+    old, new = await mem.get_fact(fid), await mem.get_fact(by)
+    hits = await mem.recall(old["content"], top_k=10, min_similarity=0.0, track=False)
+    return (old["state"] == "superseded" and old["superseded_by"] == by and new["state"] == "current"
+            and fid not in [h["id"] for h in hits])
 
 
 @pytest.mark.parametrize(("old_text", "new_text"), EXAMPLES)
@@ -50,11 +58,11 @@ async def test_contradictions_found_without_shared_wording(app, old_text, new_te
     app.config.dreaming.contradiction_similarity = 0.99  # tight families are checked regardless of similarity
     old = await add_fact(mem, old_text, updated_at="2025-01-01T00:00:00+00:00")
     new = await add_fact(mem, new_text)
-    await add_fact(mem, "Sarthak's manager is Jane")
+    await add_fact(mem, "Maya's manager is Jane")
     llm.json_replies.append({"conflict": True, "current": "B", "change": "it changed"})
     dream = await app.dreaming.run()
     assert dream["stats"]["contradictions_resolved"] == 1
-    assert await mem.get_fact(old) is None and await mem.get_fact(new) is not None
+    assert await superseded(mem, old, by=new)  # kept as history, out of every prompt (#152)
     assert _json_calls(llm) == 1
     prompt = llm.calls[-1]["messages"][1]["content"]
     assert prompt.index(old_text) < prompt.index(new_text)  # A is the older memory
@@ -63,25 +71,25 @@ async def test_contradictions_found_without_shared_wording(app, old_text, new_te
 async def test_older_fact_wins_only_with_explicit_recent_wording(app):
     mem, llm = app.memory, app.fake
     app.config.user_model.enabled = False
-    older = await add_fact(mem, "Sarthak moved back to Pune this month", updated_at="2026-09-01T00:00:00+00:00")
-    stale = await add_fact(mem, "Sarthak lives in Bengaluru")  # e.g. re-imported from an old document
+    older = await add_fact(mem, "Maya moved back to Pune this month", updated_at="2026-09-01T00:00:00+00:00")
+    stale = await add_fact(mem, "Maya lives in Bengaluru")  # e.g. re-imported from an old document
     llm.json_replies.append({"conflict": True, "current": "A"})
     await app.dreaming.run()
-    assert await mem.get_fact(stale) is None and await mem.get_fact(older) is not None
+    assert await superseded(mem, stale, by=older)
 
     a = await add_fact(mem, "Riya works at Infosys", updated_at="2025-01-01T00:00:00+00:00")
     b = await add_fact(mem, "Riya works at Google now")
     llm.json_replies.append({"conflict": True, "current": "A"})  # no recent wording on A: newer still wins
     await app.dreaming.run()
-    assert await mem.get_fact(a) is None and await mem.get_fact(b) is not None
+    assert await superseded(mem, a, by=b)
 
 
 async def test_pure_duplicates_merge_without_model(app):
     mem, llm = app.memory, app.fake
     app.config.user_model.enabled = False
-    a = await add_fact(mem, "Sarthak drinks black coffee every morning", topics=["Personal Identity"])
-    b = await add_fact(mem, "Every morning Sarthak drinks black coffee.", topics=["Interests & Lifestyle"])
-    await add_fact(mem, "Sarthak's manager is Jane")
+    a = await add_fact(mem, "Maya drinks black coffee every morning", topics=["Personal Identity"])
+    b = await add_fact(mem, "Every morning Maya drinks black coffee.", topics=["Interests & Lifestyle"])
+    await add_fact(mem, "Maya's manager is Jane")
     dream = await app.dreaming.run()
     assert dream["status"] == "completed" and dream["trigger"] == "manual"
     assert dream["stats"]["merged"] == 1 and dream["stats"]["facts_reviewed"] == 3
@@ -96,45 +104,45 @@ async def test_model_merge_keeps_details_and_ids(app):
     mem, llm = app.memory, app.fake
     app.config.user_model.enabled = False
     app.config.dreaming.merge_similarity = 0.75
-    a = await add_fact(mem, "Sarthak plays chess every weekend")
-    b = await add_fact(mem, "Sarthak plays chess every weekend with Riya")
-    llm.json_replies.append({"keep_id": a, "fact": "Sarthak plays chess with Riya every weekend."})
+    a = await add_fact(mem, "Maya plays chess every weekend")
+    b = await add_fact(mem, "Maya plays chess every weekend with Riya")
+    llm.json_replies.append({"keep_id": a, "fact": "Maya plays chess with Riya every weekend."})
     dream = await app.dreaming.run()
     assert dream["stats"]["merged"] == 1
     kept = await mem.get_fact(a)
-    assert kept["content"] == "Sarthak plays chess with Riya every weekend."
-    assert kept["previous_content"] == "Sarthak plays chess every weekend"
+    assert kept["content"] == "Maya plays chess with Riya every weekend."
+    assert kept["previous_content"] == "Maya plays chess every weekend"
     assert await mem.get_fact(b) is None
-    assert "Sarthak plays chess" in llm.calls[-1]["messages"][1]["content"]
+    assert "Maya plays chess" in llm.calls[-1]["messages"][1]["content"]
 
 
 async def test_model_merge_that_drops_a_detail_is_rejected(app):
     mem, llm = app.memory, app.fake
     app.config.user_model.enabled = False
     app.config.dreaming.merge_similarity = 0.75
-    a = await add_fact(mem, "Sarthak plays chess every weekend")
-    b = await add_fact(mem, "Sarthak plays chess every weekend with Riya")
-    llm.json_replies.append({"keep_id": b, "fact": "Sarthak plays chess every weekend."})  # lost "Riya"
+    a = await add_fact(mem, "Maya plays chess every weekend")
+    b = await add_fact(mem, "Maya plays chess every weekend with Riya")
+    llm.json_replies.append({"keep_id": b, "fact": "Maya plays chess every weekend."})  # lost "Riya"
     await app.dreaming.run()
     # fallback: the fact that already carries every detail wins, the oldest id is kept
     kept = await mem.get_fact(a)
-    assert kept["content"] == "Sarthak plays chess every weekend with Riya" and await mem.get_fact(b) is None
+    assert kept["content"] == "Maya plays chess every weekend with Riya" and await mem.get_fact(b) is None
 
 
 async def test_contradiction_latest_wins_after_model_confirms(app):
     mem, llm = app.memory, app.fake
     app.config.user_model.enabled = False
     app.config.dreaming.contradiction_similarity = 0.5
-    old = await add_fact(mem, "Sarthak lives in Pune", updated_at="2025-01-01T00:00:00+00:00")
-    new = await add_fact(mem, "Sarthak lives in Mumbai")
+    old = await add_fact(mem, "Maya lives in Pune", updated_at="2025-01-01T00:00:00+00:00")
+    new = await add_fact(mem, "Maya lives in Mumbai")
     llm.json_replies.append({"conflict": "true", "change": "moved from Pune to Mumbai"})
     async with app.bus.subscribe() as q:
         dream = await app.dreaming.run()
         events = drain(q)
     assert dream["stats"]["contradictions_resolved"] == 1
-    assert await mem.get_fact(old) is None
-    assert (await mem.get_fact(new))["previous_content"] == "Sarthak lives in Pune"
-    assert 'I used to remember "Sarthak lives in Pune", but now "Sarthak lives in Mumbai"' in dream["journal_md"]
+    assert await superseded(mem, old, by=new)
+    assert (await mem.get_fact(new))["previous_content"] == "Maya lives in Pune"
+    assert 'I used to remember "Maya lives in Pune", but now "Maya lives in Mumbai"' in dream["journal_md"]
     assert "moved from Pune to Mumbai" in dream["journal_md"]
     assert [e["data"]["status"] for e in events if e["type"] == "dream.updated"] == ["running", "completed"]
     assert any(e["type"] == "memory.updated" and e["data"].get("reason") == "contradicted" for e in events)
@@ -146,8 +154,8 @@ async def test_contradiction_not_confirmed_or_malformed_keeps_both(app):
     mem, llm = app.memory, app.fake
     app.config.user_model.enabled = False
     app.config.dreaming.contradiction_similarity = 0.5
-    a = await add_fact(mem, "Sarthak lives in Pune", updated_at="2025-01-01T00:00:00+00:00")
-    b = await add_fact(mem, "Sarthak lives in Mumbai")
+    a = await add_fact(mem, "Maya lives in Pune", updated_at="2025-01-01T00:00:00+00:00")
+    b = await add_fact(mem, "Maya lives in Mumbai")
     llm.json_replies.append("garbage")
     await app.dreaming.run()
     assert _json_calls(llm) == 1
@@ -160,7 +168,7 @@ async def test_contradiction_not_confirmed_or_malformed_keeps_both(app):
     # a pair the model cleared is not asked about again while neither fact changes
     await app.dreaming.run()
     assert _json_calls(llm) == 2
-    await mem.update_content(b, "Sarthak lives in Mumbai near Bandra", use_llm=False)
+    await mem.update_content(b, "Maya lives in Mumbai near Bandra", use_llm=False)
     app.config.dreaming.max_model_calls = 0  # and the cap holds
     await app.dreaming.run()
     assert _json_calls(llm) == 2
@@ -169,16 +177,16 @@ async def test_contradiction_not_confirmed_or_malformed_keeps_both(app):
 async def test_promotion_purge_user_model_and_journal(app):
     mem, llm, store = app.memory, app.fake, app.store
     app.config.dreaming.promote_min_recalls = 2
-    hot = await add_fact(mem, "Sarthak is preparing for a marathon in December", memory_type="short-term")
+    hot = await add_fact(mem, "Maya is preparing for a marathon in December", memory_type="short-term")
     await store.execute(
         "UPDATE facts SET expires_at = ?, recall_count = 3 WHERE id = ?",
         ((datetime.now(UTC) + timedelta(days=2)).isoformat(), hot),
     )
-    stale = await add_fact(mem, "Sarthak has a dentist appointment on Friday", memory_type="short-term")
+    stale = await add_fact(mem, "Maya has a dentist appointment on Friday", memory_type="short-term")
     await store.execute("UPDATE facts SET expires_at = '2000-01-01T00:00:00+00:00' WHERE id = ?", (stale,))
     llm.json_replies.append(
-        {"operations": [{"op": "add", "dimension": "goals", "statement": "Sarthak trains for endurance events.",
-                         "evidence": [f"f{hot}"]}], "summary": "Sarthak is training hard."}
+        {"operations": [{"op": "add", "dimension": "goals", "statement": "Maya trains for endurance events.",
+                         "evidence": [f"f{hot}"]}], "summary": "Maya is training hard."}
     )
     dream = await app.dreaming.run()
     s = dream["stats"]
@@ -189,15 +197,15 @@ async def test_promotion_purge_user_model_and_journal(app):
     journal = dream["journal_md"]
     assert journal.startswith("Tonight I kept 1 short-term memory for the long run")
     assert "let go of 1 expired memory" in journal and "keeps coming up" in journal
-    assert "My picture of Sarthak: 1 new." in journal
-    assert (await app.user_model.get_state())["insights"][0]["statement"] == "Sarthak trains for endurance events."
+    assert "My picture of Maya: 1 new." in journal
+    assert (await app.user_model.get_state())["insights"][0]["statement"] == "Maya trains for endurance events."
     listed = await app.dreaming.list()
     assert listed[0]["id"] == dream["id"] and (await app.dreaming.get(dream["id"]))["journal_md"] == journal
 
 
 async def test_recall_counts_feed_promotion(app):
     mem = app.memory
-    fid = await add_fact(mem, "Sarthak is reading Dune this month", memory_type="short-term")
+    fid = await add_fact(mem, "Maya is reading Dune this month", memory_type="short-term")
     for _ in range(3):
         await mem.recall("reading Dune", min_similarity=0.0)
     promoted = await mem.promote_recalled(3)

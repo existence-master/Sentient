@@ -11,13 +11,13 @@ def test_defaults_load_without_file():
 
 def test_roundtrip(isolated_home):
     cfg = SentientConfig()
-    cfg.assistant.user_name = "Sarthak"
+    cfg.assistant.user_name = "Maya"
     cfg.models.roles.primary = "anthropic/claude-sonnet-5"
     cfg.models.fallbacks["primary"] = ["ollama_chat/qwen3:8b"]
     path = save_config(cfg)
     assert path == paths.config_file()
     loaded = load_config()
-    assert loaded.assistant.user_name == "Sarthak"
+    assert loaded.assistant.user_name == "Maya"
     assert loaded.models.fallbacks["primary"] == ["ollama_chat/qwen3:8b"]
 
 

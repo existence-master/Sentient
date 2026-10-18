@@ -21,7 +21,7 @@ import httpx
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
 from sentient.llm import chatgpt, claude_code
-from sentient.llm.provider import CLAUDE_CODE, ToolCall, provider_config
+from sentient.llm.provider import CLAUDE_CODE, PlainProviderError, ToolCall, provider_config
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
 TOOL_ROLES = {"primary", "fast", "executor", "vision", "voice"}  # roles that run the agent loop with tools
@@ -32,6 +32,9 @@ LOCAL = OLLAMA | {"lm_studio"}
 SUGGESTED_LOCAL = ModelRoles.model_fields["primary"].default.split("/", 1)[1]  # the default local model
 STEP_TIMEOUT_S = 60.0
 MIN_CONTEXT = 8192
+# the share of the model that must be on the graphics card for the setup sized for this computer to pass: qwen3:8b at
+# 8,192 tokens keeps about 89 to 91% there on an 8 GB card (Ollama 0.9, 2026-10-10); only 5,120 tokens or fewer fit fully
+EXPECTED_ON_GPU = 0.85
 SMALL_QWEN = re.compile(r"^qwen3:(0\.6|1\.7|4)b")
 LABELS = {
     "ollama": "Ollama", "ollama_chat": "Ollama", "lm_studio": "LM Studio", "anthropic": "Anthropic",
@@ -175,6 +178,8 @@ class _RoleCheck:
         if isinstance(exc, TimeoutError):
             return (f"No reply within {int(self.run.timeout_s)} seconds. The model may be too big for this "
                     "computer: try a smaller model, or a shorter context length.")
+        if isinstance(exc, PlainProviderError):
+            return ""  # the reason already says what to do
         msg = str(exc).lower()
         if any(k in msg for k in ("401", "403", "api key", "api_key", "authentication", "unauthorized")):
             return f"{self.label} turned the key down. Check your {self.label} key under Providers."
@@ -202,6 +207,16 @@ class _RoleCheck:
             return text, {"kind": "use_model", "role": self.role, "model": f"ollama_chat/{suggested}",
                           "label": f"Use {suggested}"}
         return text, {"kind": "pull_model", "name": suggested, "label": f"Download {suggested}"}
+
+    async def _other_model(self) -> str | None:
+        """A model for work Claude Code refuses: another chat model in use, else the local model sized for this
+        computer when it is downloaded."""
+        if self.run.other_model:
+            return self.run.other_model
+        suggested = self.run.suggested_local
+        if suggested in await self.run.ollama.installed(self.run.ollama_base("ollama_chat")):
+            return f"ollama_chat/{suggested}"
+        return None
 
     def _status(self, cid: str) -> str | None:
         return next((c["status"] for c in self.checks if c["id"] == cid), None)
@@ -241,9 +256,15 @@ class _RoleCheck:
         if self.prefix == CLAUDE_CODE:
             # never a model call here: a reply through Claude Code uses the user's plan, so only Test runs one
             reason = claude_code.refusal(self.run.config, self.role)
-            if reason:
-                fix = "Pick another model for this role." if reason == claude_code.CHATS_ONLY else None
-                self.add("connection", "Connection", "fail", reason, fix)
+            if reason and not claude_code.accepts(self.run.config, self.role):
+                # background work: the role needs another model whatever the switch says (#442)
+                reason = claude_code.background_refusal(self.role)
+                other = await self._other_model() if self.role != "embedding" else None
+                action = ({"kind": "use_model", "role": self.role, "model": other,
+                           "label": f"Use {other.split('/', 1)[-1]}"} if other else None)
+                self.add("connection", "Connection", "fail", reason, None, action)
+            elif reason:
+                self.add("connection", "Connection", "fail", reason)
             else:
                 self.add("connection", "Connection", "pass", "Claude Code is on this computer. The check-up doesn't "
                          "use your plan: press Test next to the model to try a reply.")
@@ -406,6 +427,14 @@ class _RoleCheck:
         if vram >= size * 0.99:
             self.add("gpu", "Graphics card", "pass", f"Runs fully on the graphics card ({_gb(size)}).")
             return
+        rec = self.run.recommendation
+        if (vram >= size * EXPECTED_ON_GPU and rec and rec["runs_on"] == "graphics" and rec["name"] == self.name
+                and in_use and in_use <= int(rec["context_length"])):
+            # the setup Sentient recommends for this card: a small part on the processor is expected, and the only
+            # change that would fit fully is a context below 8,192 tokens, which cuts off long tasks
+            self.add("gpu", "Graphics card", "pass",
+                     f"Runs mostly on the graphics card ({_gb(vram)} of {_gb(size)}), as expected for this computer.")
+            return
         action = None
         shorter = self.run.fitting_context(self.name) or MIN_CONTEXT
         if in_use and in_use > shorter:
@@ -418,7 +447,6 @@ class _RoleCheck:
             detail = (f"Ollama is running {round(100 * (size - vram) / size)}% of this model on the processor "
                       f"({_gb(vram)} of {_gb(size)} fits on the graphics card).")
         fix = "It will be slow. Pick a smaller model or a shorter context length."
-        rec = self.run.recommendation
         if rec and rec["runs_on"] == "graphics":
             fix += f" For this computer Sentient suggests {rec['summary']}."
         self.add("gpu", "Graphics card", "warn", detail, fix, action)
@@ -476,6 +504,7 @@ class CheckupRun:
         self.ollama = _Ollama(client)
         self.timeout_s = timeout_s
         self.events: asyncio.Queue[dict] = asyncio.Queue()
+        self.other_model: str | None = None  # a chat model other than Claude Code, for roles that refuse it
         self.shared: dict[tuple, dict[str, tuple[str, list[dict], bool]]] = {}  # settings key -> group -> result
         rec = (hardware or {}).get("recommendation")
         self.recommendation: dict | None = rec if rec and rec.get("tier") != "unknown" else None
@@ -502,15 +531,34 @@ class CheckupRun:
 
 
 def plan(config: SentientConfig, roles: dict[str, str | None] | None = None) -> list[tuple[str, str | None]]:
-    """``[(role, model)]`` to check, in display order. ``model`` is None for an optional role that uses the main model.
+    """``[(role, model)]`` to check, in display order. ``model`` is None for an optional role that uses the main model,
+    unless the main model is Claude Code and the role refuses it: then it is the main model, to be checked.
 
     ``roles`` checks only these roles with these models (onboarding checks its picks before they are saved); an
     empty mapping checks nothing. ``None`` checks every role in the saved config.
     """
     configured = config.models.roles
     if roles is not None:
-        return [(r, roles[r] or None) for r in ROLES if r in roles]
-    return [(r, getattr(configured, r, None) or None) for r in ROLES]
+        todo = [(r, roles[r] or None) for r in ROLES if r in roles]
+        primary = roles.get("primary") or configured.primary
+    else:
+        todo = [(r, getattr(configured, r, None) or None) for r in ROLES]
+        primary = configured.primary
+    # an optional role with no model of its own uses the main model; when that is Claude Code, which refuses the
+    # role's work, the role is checked with it so the check-up says so (#442)
+    inherits_refusal = primary.split("/", 1)[0] == CLAUDE_CODE if primary else False
+    return [(r, m or (primary if inherits_refusal and not claude_code.accepts(config, r) else None)) for r, m in todo]
+
+
+def other_model(config: SentientConfig, roles: dict[str, str | None] | None = None) -> str | None:
+    """A chat model in use that isn't Claude Code (the background model first), to offer a role that refuses it."""
+    configured = config.models.roles
+    picked = roles or {}
+    candidates = [picked.get(r) for r in ("fast", "executor", "planner", "primary", "voice", "vision")]
+    candidates += [getattr(configured, r, None) for r in ("fast", "executor", "planner", "primary", "voice", "vision")]
+    for role in ("fast", "primary"):
+        candidates += config.models.fallbacks.get(role) or []
+    return next((m for m in candidates if m and m.split("/", 1)[0] != CLAUDE_CODE), None)
 
 
 async def run_checkup(
@@ -521,6 +569,7 @@ async def run_checkup(
     time so local models are not loaded side by side. ``hardware`` (``HardwareProbe.get()``) is shown in ``start``
     and sizes the fix hints for this computer."""
     todo = plan(config, roles)
+    picked = roles if roles is not None else config.models.roles.model_dump()
     start: dict[str, Any] = {"type": "start", "roles": [{"role": r, "model": m} for r, m in todo]}
     if hardware is not None:
         start["hardware"] = hardware
@@ -528,6 +577,7 @@ async def run_checkup(
     results: list[dict] = []
     async with httpx.AsyncClient(timeout=5) as client:
         run = CheckupRun(config, llm, client, timeout_s, hardware)
+        run.other_model = other_model(config, roles)
         for role, model in todo:
             if not model:
                 result = {"role": role, "model": None, "provider": None, "local": None, "inherits": "primary",
@@ -547,6 +597,8 @@ async def run_checkup(
                 finally:
                     task.cancel()  # the window went away mid-check: stop calling the model
                 result = task.result()
+                if not picked.get(role):  # no model of its own: the main model it uses was checked (#442)
+                    result["inherits"] = "primary"
             results.append(result)
             yield {"type": "role", **result}
     yield {"type": "done", "status": _worst([{"status": r["status"]} for r in results]), "roles": results}

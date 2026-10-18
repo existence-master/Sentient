@@ -20,8 +20,9 @@ from typing import Any
 from sentient.config.schema import SentientConfig
 from sentient.llm.provider import LLMProvider
 from sentient.memory import prompts
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.vectors import VecTable, pack
-from sentient.store.db import Store, new_id, now_iso
+from sentient.store.db import NOT_INCOGNITO, Store, new_id, now_iso
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ class EpisodicMemory:
     async def _embed(self, texts: list[str]) -> list[list[float]]:
         vecs = await self.llm.embed(texts)
         if vecs:
-            await self.vec.ensure(len(vecs[0]), self.reindex)
+            await self.vec.ensure(len(vecs[0]), self.reindex, self.llm.model_for("embedding"))
         return vecs
 
     async def reindex(self) -> int:
@@ -81,7 +82,8 @@ class EpisodicMemory:
         rows = await self.store.fetchall(
             "SELECT id, session_id, role, content, attachments, created_at FROM messages"
             " WHERE summarized = 0 AND role IN ('user', 'assistant') AND content IS NOT NULL AND content != ''"
-            " AND created_at < ? ORDER BY session_id, created_at, rowid",
+            f" AND created_at < ? AND {NOT_INCOGNITO.format(col='messages.session_id')}"  # never summarized (#154)
+            " ORDER BY session_id, created_at, rowid",
             (cutoff,),
         )
         by_session: dict[str, list[dict]] = {}
@@ -127,12 +129,16 @@ class EpisodicMemory:
         sid = new_id()
         ids = [m["id"] for m in chunk]
         start_at, end_at = chunk[0]["created_at"], chunk[-1]["created_at"]
-        session = await self.store.fetchone("SELECT untrusted FROM sessions WHERE id = ?", (session_id,))
+        session = await self.store.fetchone(
+            "SELECT untrusted, channel, memory_scope FROM sessions WHERE id = ?", (session_id,)
+        )
         untrusted = (session["untrusted"] or "") if session else ""
+        # the chat's memory scope (#155), kept so the summary stays out of the personal profile after the chat is gone
+        scope = memory_scopes.of_session(self.config, dict(session)) if session else memory_scopes.PERSONAL
         cur = await self.store.execute(
-            "INSERT INTO summaries(id, session_id, content, start_at, end_at, message_ids, created_at, untrusted)"
-            " VALUES(?,?,?,?,?,?,?,?)",
-            (sid, session_id, content, start_at, end_at, json.dumps(ids), now_iso(), untrusted),
+            "INSERT INTO summaries(id, session_id, content, start_at, end_at, message_ids, created_at, untrusted, scope)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (sid, session_id, content, start_at, end_at, json.dumps(ids), now_iso(), untrusted, scope),
         )
         try:
             [vec] = await self._embed([content])
@@ -214,7 +220,8 @@ class EpisodicMemory:
             "SELECT m.session_id, m.role, m.content, m.created_at, s.title FROM messages m"
             " LEFT JOIN sessions s ON s.id = m.session_id"
             " WHERE m.created_at >= ? AND m.created_at <= ? AND m.role IN ('user', 'assistant')"
-            " AND m.content IS NOT NULL AND m.content != '' ORDER BY m.created_at LIMIT ?",
+            " AND m.content IS NOT NULL AND m.content != ''"
+            f" AND {NOT_INCOGNITO.format(col='m.session_id')} ORDER BY m.created_at, m.rowid LIMIT ?",
             (s, e, limit),
         )
         return [dict(r) for r in rows]

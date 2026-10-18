@@ -17,8 +17,9 @@ from sentient.app import SentientApp
 from sentient.config.loader import load_config
 from sentient.config.schema import SentientConfig
 from sentient.gateway.app import create_app
+from sentient.llm import claude_code
 from sentient.llm.events import ApprovalRequest, ToolCallEvent, ToolResultEvent
-from sentient.llm.provider import ProviderError
+from sentient.llm.provider import ModelRefused, ProviderError
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider, tool_call
 
@@ -176,6 +177,145 @@ async def test_a_failing_model_makes_no_card_and_the_turn_goes_on(config, isolat
         await s.stop()
 
 
+class _FastRefuses(FakeProvider):
+    """The fast model is Claude Code: it refuses every text and JSON job (ADR 0022)."""
+
+    def __init__(self, *args, primary: str = "fake/primary", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.primary = primary
+        self.attended: list[bool] = []
+
+    def model_for(self, role: str) -> str:
+        return self.primary if role == "primary" else f"fake/{role}"
+
+    async def complete_json(self, role, messages, *, model=None):
+        if role == "fast":
+            raise ModelRefused(claude_code.background_refusal(role))
+        self.calls.append({"role": role, "messages": messages, "json": True, "model": model})
+        return self.json_replies.pop(0)
+
+    async def stream(self, role, messages, tools=None, *, model=None):
+        self.attended.append(claude_code.is_attended())
+        async for chunk in super().stream(role, messages, tools, model=model):
+            yield chunk
+
+
+async def test_a_fast_model_that_refuses_hands_the_check_to_the_primary_model(config, isolated_home):
+    """#311: the check is part of answering the chat, so the chat's model does it when the fast one can't."""
+    llm = _FastRefuses(replies=["Got it."], json_replies=[NEVER_DELETE])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "From now on, never delete my emails.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["mail_delete_email"]
+        [check] = _json_calls(llm)
+        assert check["role"] == "primary" and check["model"] is None
+    finally:
+        await s.stop()
+
+
+async def test_the_chats_own_model_does_the_check_when_the_fast_model_refuses(config, isolated_home, monkeypatch):
+    llm = _FastRefuses(replies=["Got it."], json_replies=[NEVER_DELETE])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        async def chat_model(session, role="primary"):
+            return "ollama/llama3.2", None
+
+        monkeypatch.setattr(s.agent, "chat_model", chat_model)
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "never delete my emails")
+        assert len(await s.chat_rules.list(sid)) == 1
+        [check] = _json_calls(llm)
+        assert check["model"] == "ollama/llama3.2"
+    finally:
+        await s.stop()
+
+
+async def test_claude_code_answers_the_check_as_part_of_the_chat(config, isolated_home):
+    """Every role on Claude Code: the check is a reply the user waits for, so it is streamed as attended work."""
+    reply = json.dumps(NEVER_DELETE)
+    llm = _FastRefuses(replies=[reply, "Got it."], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        _, events = await _turn(s, sid, "From now on, never delete my emails.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["mail_delete_email"] and proposal["rule"] == "never"
+        check = llm.calls[0]
+        assert check["tools"] is None and "mail_delete_email" in check["messages"][1]["content"]
+        assert llm.attended[0] is True
+        assert events[-1].type == "done" and events[-1].content == "Got it."
+    finally:
+        await s.stop()
+
+
+async def test_claude_code_check_with_unusable_text_makes_no_card(config, isolated_home):
+    llm = _FastRefuses(replies=["I can't help with that.", "ok"], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "never delete my emails")
+        assert await s.chat_rules.list(sid, None) == []
+    finally:
+        await s.stop()
+
+
+async def test_a_slow_claude_code_check_stops_instead_of_running_on(config, isolated_home):
+    """ADR 0022: Claude Code works on the check only while the reply waits for it, never in the background."""
+    import asyncio
+
+    started: list[bool] = []
+    stopped: list[bool] = []
+
+    class Slow(_FastRefuses):
+        async def stream(self, role, messages, tools=None, *, model=None):
+            if tools is None:  # the check
+                started.append(True)
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    stopped.append(True)
+                    raise
+            async for chunk in super().stream(role, messages, tools, model=model):
+                yield chunk
+
+    llm = Slow(replies=["Got it."], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    # long enough to reach Claude Code on a busy CI machine; a check that runs out before it starts is fine too
+    s.chat_rules.attended_s = 0.5
+    try:
+        sid = await s.store.create_session(channel="cli")
+        _, events = await _turn(s, sid, "never delete my emails")
+        assert stopped == started and not s.chat_rules._checking  # every check Claude Code started was stopped
+        assert events[-1].type == "done" and await s.chat_rules.list(sid, None) == []
+    finally:
+        await s.stop()
+
+
+async def test_the_claude_code_deadline_counts_from_when_the_check_started(config, isolated_home, monkeypatch):
+    """Time spent before Claude Code is asked (the refusing fast model, the chat's model) comes off its time."""
+    import asyncio
+
+    llm = _FastRefuses(replies=["Got it."], primary="claude-code/sonnet")
+    s = await _start(config, isolated_home, llm, [])
+    s.chat_rules.attended_s = 0.2
+    try:
+        slow_lookup = s.agent.chat_model
+
+        async def chat_model(session, role="primary"):
+            await asyncio.sleep(0.3)  # past the deadline before Claude Code would start
+            return await slow_lookup(session, role)
+
+        monkeypatch.setattr(s.agent, "chat_model", chat_model)
+        sid = await s.store.create_session(channel="cli")
+        assert await s.chat_rules.check(sid, None, "never delete my emails") is None
+        assert llm.attended == []  # Claude Code was never started
+        assert await s.chat_rules.list(sid, None) == []
+    finally:
+        await s.stop()
+
+
 def test_parse_detection_checks_keys_in_code():
     log: list[str] = []
     tools = _mail(log).tools
@@ -185,6 +325,71 @@ def test_parse_detection_checks_keys_in_code():
     # an app key covers its tools; a made-up level is dropped (the caller decides)
     assert parse_detection('{"keys": ["mail_delete_email", "mail"], "rule": "maybe"}', tools) == (["mail"], None)
     assert parse_detection("no json here", tools) == ([], None)
+
+
+def test_prefilter_skips_everyday_dont_phrases():
+    """#250: "if you don't know, say so" is no prohibition and never reaches the model."""
+    assert standing_text("What is my favourite tea? If you don't know, say so.") == ""
+    assert standing_text("I don\u2019t know what to cook tonight.") == ""
+    assert standing_text("Don't worry about the format.") == ""
+    # a real instruction in the same sentence still counts
+    assert standing_text("If you don't know, never guess my address.") == "If you don't know, never guess my address."
+    assert standing_text("Never write files for me.") == "Never write files for me."
+
+
+def test_a_tool_key_needs_an_action_the_app_or_the_tool_in_the_words():
+    @tool("device_speak", risk=Risk.send)
+    async def device_speak(ctx: ToolContext, text: str) -> dict:
+        """Say something out loud on a device."""
+        return {}
+
+    @tool("device_take_photo", risk=Risk.read)
+    async def device_take_photo(ctx: ToolContext) -> dict:
+        """Take a photo with a device camera."""
+        return {}
+
+    @tool("file_write", risk=Risk.write)
+    async def file_write(ctx: ToolContext, name: str) -> dict:
+        """Write a file."""
+        return {}
+
+    device_speak.plugin = device_take_photo.plugin = "nodes"
+    file_write.plugin = "files"
+    tools = [device_speak, device_take_photo, file_write]
+    names = {"nodes": "Devices", "files": "Files"}
+    loose = ["device_speak", "device_take_photo"]
+    assert narrow_app_keys(loose, "never say you don't know", tools, names) == []
+    assert narrow_app_keys(loose, "If you don't know, say so.", tools, names) == []
+    assert narrow_app_keys(["file_write"], "Never write files for me.", tools, names) == ["file_write"]
+    assert narrow_app_keys(["device_take_photo"], "never take photos", tools, names) == ["device_take_photo"]
+    assert narrow_app_keys(loose, "don't use my devices", tools, names) == loose
+
+
+async def test_if_you_dont_know_say_so_proposes_nothing(config, isolated_home):
+    """#250: the exact message from the real run makes no card and no model call."""
+    reply = {"keys": ["device_speak", "device_capture_screen", "device_take_photo", "history_semantic_search"],
+             "rule": "never"}
+    llm = FakeProvider(replies=["I don't know yet."], json_replies=[reply])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "What is my favourite colour, and what is my favourite tea? If you don't know, say so.")
+        assert await s.chat_rules.list(sid, None) == []
+        assert _json_calls(llm) == []
+    finally:
+        await s.stop()
+
+
+async def test_never_write_files_still_proposes_file_write(config, isolated_home):
+    llm = FakeProvider(replies=["ok"], json_replies=[{"keys": ["file_write"], "rule": "never"}])
+    s = await _start(config, isolated_home, llm, [])
+    try:
+        sid = await s.store.create_session(channel="cli")
+        await _turn(s, sid, "From now on, never write files for me.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["file_write"] and proposal["rule"] == "never"
+    finally:
+        await s.stop()
 
 
 @pytest.mark.parametrize(
@@ -220,6 +425,19 @@ def test_narrow_app_keys_is_deterministic():
     assert narrow_app_keys(["mail_search", "mail"], "don't archive my emails", tools) == ["mail_search"]
     # an object that could be a verb ("messages") is not a second action
     assert narrow_app_keys(["mail"], "never delete my email messages", tools) == ["mail_delete_email"]
+    # a tool named exactly is that tool, never its whole app (#306: "Do not call browser_open." was all of Browser)
+    assert narrow_app_keys(["mail"], "Do not call mail_search.", tools) == ["mail_search"]
+
+
+def test_prefilter_leaves_out_limits_on_this_request_only():
+    """#306: "do not call browser_open again in part A" is an instruction for this reply, not a standing rule."""
+    assert standing_text("Then click Next (but do not call browser_open again in part A).") == ""
+    assert standing_text("Send the invite, but don't cc Maya this time.") == ""
+    assert standing_text("Don't archive anything for now.") == ""
+    assert standing_text("Do not call browser_open.") == "Do not call browser_open."
+    # a standing instruction next to a one-off limit in the same sentence is kept, the limit is not
+    assert standing_text("Never delete my emails, but don't cc Maya this time.") == "Never delete my emails, but"
+    assert standing_text("Never delete my emails, not even old ones.") == "Never delete my emails, not even old ones."
 
 
 @pytest.mark.parametrize(
@@ -450,6 +668,76 @@ async def test_a_slow_check_fails_closed_until_it_finishes(config, isolated_home
         await s.stop()
 
 
+NEVER_MAIL = {"keys": ["mail"], "rule": "never"}
+
+
+async def test_with_approvals_off_a_pending_proposal_lets_look_ups_run(config, isolated_home):
+    """#306: approvals "off" means no questions for reading. A pending proposal is a guess the user has not confirmed,
+    so it no longer makes a look-up wait; a call that changes something still asks until the user answers."""
+    log: list[str] = []
+    llm = FakeProvider(
+        replies=[
+            [tool_call("mail_search", query="invoices")], "Searched.",
+            [tool_call("mail_delete_email", message_id="m1")], "Not deleted.",
+        ],
+        json_replies=[NEVER_MAIL],
+    )
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        assert s.config.tools.approvals.mode == "off"
+        sid = await s.store.create_session(channel="cli")
+        asked, _ = await _turn(s, sid, "Never use my mail. Look for invoices.")
+        [proposal] = await s.chat_rules.list(sid)
+        assert proposal["keys"] == ["mail"] and asked == [] and log == ["search:invoices"]
+        asked, _ = await _turn(s, sid, "delete m1", decision="deny")
+        assert [a.name for a in asked] == ["mail_delete_email"] and log == ["search:invoices"]
+    finally:
+        await s.stop()
+
+
+async def test_with_approvals_on_a_pending_proposal_still_asks_before_look_ups(config, isolated_home):
+    log: list[str] = []
+    config.tools.approvals.mode = "ask"
+    llm = FakeProvider(replies=[[tool_call("mail_search", query="invoices")], "Not searched."], json_replies=[NEVER_MAIL])
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="cli")
+        asked, _ = await _turn(s, sid, "Never use my mail. Look for invoices.", decision="deny")
+        assert [a.name for a in asked] == ["mail_search"] and log == []
+    finally:
+        await s.stop()
+
+
+async def test_with_approvals_off_a_slow_check_lets_look_ups_run(config, isolated_home, monkeypatch):
+    import asyncio
+
+    import sentient.agent.loop as loop_mod
+
+    monkeypatch.setattr(loop_mod, "RULE_CHECK_WAIT_S", 0.05)
+    release = asyncio.Event()
+
+    class Slow(FakeProvider):
+        async def complete_json(self, role, messages, *, model=None):
+            await release.wait()
+            return NEVER_MAIL
+
+    log: list[str] = []
+    llm = Slow(replies=[
+        [tool_call("mail_search", query="invoices")],
+        [tool_call("mail_delete_email", message_id="m1")], "Done.",
+    ])
+    s = await _start(config, isolated_home, llm, log)
+    try:
+        sid = await s.store.create_session(channel="cli")
+        asked, _ = await _turn(s, sid, "Never use my mail. Look for invoices, then delete m1.", decision="deny")
+        # the check is still weighing both tools: the look-up runs, the delete asks
+        assert [a.name for a in asked] == ["mail_delete_email"] and log == ["search:invoices"]
+        release.set()
+        await s.agent.drain()
+    finally:
+        await s.stop()
+
+
 async def test_a_steer_message_is_checked_before_the_next_round(config, isolated_home):
     log: list[str] = []
     llm = FakeProvider(
@@ -565,3 +853,14 @@ def test_rest_lists_and_decides_proposals(client):
     # changing the rule in Settings drops the origin note
     patched = client.patch("/api/config", json={"tools": {"approvals": {"rules": {"mail_delete_email": "ask"}}}}).json()
     assert patched["config"]["tools"]["approvals"]["rule_origins"] == {}
+
+
+def test_the_ndjson_chat_carries_the_rule_card(client):
+    """#311: a client on POST /api/chat sees the card (in the /ws envelope) before the reply ends."""
+    lines = [json.loads(x) for x in client.post("/api/chat", json={"text": "never delete my emails"}).text.splitlines()]
+    cards = [i for i, x in enumerate(lines) if x["type"] == "rule_proposal.updated"]
+    assert len(cards) == 1
+    card = lines[cards[0]]["data"]
+    assert card["status"] == "pending" and card["keys"] == ["mail_delete_email"]
+    assert card["session_id"] == lines[0]["session_id"]
+    assert cards[0] < next(i for i, x in enumerate(lines) if x["type"] == "done")

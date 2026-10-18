@@ -78,7 +78,7 @@ async def _turn(s: SentientApp, sid: str, text: str, decision: str = "allow") ->
         events.append(ev)
         if isinstance(ev, ApprovalRequest):
             asked.append(ev)
-            s.approvals.resolve(ev.approval_id, decision)
+            assert s.approvals.resolve(ev.approval_id, decision)
     return asked, events
 
 
@@ -123,8 +123,11 @@ async def test_allow_still_asks_for_purchases(config, isolated_home):
         assert [a.risk_label for a in asked] == ["Purchase"]
         res = next(e for e in events if isinstance(e, ToolResultEvent))
         assert res.is_error and log == ["Next", "Post review"]
-        # "Allow for this chat" never covers a purchase either
-        assert len((await _turn(s, sid, "buy", decision="allow_session"))[0]) == 1
+        # "Allow for this chat" (or any wider answer) is never offered for a purchase; one sent anyway is "once" (#139)
+        async for ev in s.agent.run_turn(sid, "buy", channel="cli"):
+            if isinstance(ev, ApprovalRequest):
+                assert ev.choices == ["allow", "deny"]
+                assert s.approvals.resolve(ev.approval_id, "allow_session")  # counts as "Allow once"
         assert len((await _turn(s, sid, "buy again", decision="allow"))[0]) == 1
         assert log == ["Next", "Post review", "Place order", "Place order"]
     finally:
@@ -199,7 +202,7 @@ async def test_ask_in_unattended_runs_is_refused(config, isolated_home):
         events = [e async for e in s.agent.run_loop(messages, ctx, result=result, use_approvals=False, source="task")]
         assert not any(isinstance(e, ApprovalRequest) for e in events)
         res = next(e for e in events if isinstance(e, ToolResultEvent))
-        stopped = "Postcards is set to Ask, and tasks can't ask yet. Change it in Settings > Approvals & safety."
+        stopped = "Postcards is set to Ask, and this work can't stop to ask. Change it in Settings > Approvals & safety."
         assert res.is_error and res.result["error"] == stopped
         assert result.stopped_by_rule == result.error == stopped  # the run ends at the refused call
         assert len(llm.calls) == 1 and log == []
@@ -349,3 +352,42 @@ def test_tools_catalog_keeps_never_tools_for_settings(client):
     client.patch("/api/config", json={"tools": {"approvals": {"rules": {"current_datetime": "never"}}}})
     names = {t["name"] for p in client.get("/api/tools").json() for t in p["tools"]}
     assert "current_datetime" in names
+
+
+async def test_allow_rule_lets_a_free_signup_through_but_a_paid_subscribe_still_asks(config, isolated_home):
+    """#378: "Signs up" follows the normal rules; a subscribe that shows a price stays a purchase and always asks."""
+    from sentient.browser import safety
+    from tests.browser.test_signup_label import PAID_BUTTON
+
+    log: list[str] = []
+
+    def describe(arguments, ctx):
+        label = str(arguments.get("label", ""))
+        return {"risk_label": safety.risk_label_for(label, "click"), "target": label}
+
+    @tool("signup_click", risk=Risk.send, describe_fn=describe)
+    async def signup_click(ctx: ToolContext, label: str) -> dict:
+        """Click a button on the newsletter page."""
+        log.append(label)
+        return {"clicked": label}
+
+    class Signup(ToolPlugin):
+        id = "signup"
+        display_name = "Signup"
+        tools = [signup_click]
+
+    config.tools.approvals.mode = "ask"
+    config.tools.approvals.rules = {"signup": "allow"}
+    llm = FakeProvider(replies=[
+        [tool_call("signup_click", label="Subscribe to newsletter")], "ok1",
+        [tool_call("signup_click", label=PAID_BUTTON)], "ok2",
+    ])
+    s = await _start(config, isolated_home, llm, "signup", Signup())
+    try:
+        sid = await s.store.create_session(channel="cli")
+        assert (await _turn(s, sid, "subscribe me"))[0] == []
+        asked, _ = await _turn(s, sid, "subscribe to pro", decision="deny")
+        assert [a.risk_label for a in asked] == ["Purchase"] and asked[0].choices == ["allow", "deny"]
+        assert log == ["Subscribe to newsletter"]
+    finally:
+        await s.stop()

@@ -254,7 +254,8 @@ class VoiceSession:
         if sid and await store.get_session(str(sid)) is None:
             await self.send({"type": "error", "message": f"unknown session {sid}; starting a new one", "recoverable": True})
             sid = None
-        self.session_id = str(sid) if sid else await store.create_session(channel=self.channel)
+        node_id = str((self.node or {}).get("node_id") or "") or None  # a device's chats can be forgotten with it (#153)
+        self.session_id = str(sid) if sid else await store.create_session(channel=self.channel, node_id=node_id)
         self.vad = self.service.make_vad(rate)
         ready: dict[str, Any] = {
             "type": "ready",
@@ -575,7 +576,8 @@ class VoiceSession:
                 elif etype == "approval_request":
                     enqueue(splitter.flush())
                     self._approvals[event.call_id] = event.approval_id
-                    why = f" {event.untrusted}" if getattr(event, "untrusted", None) else ""
+                    said = (getattr(event, "warning", None), getattr(event, "untrusted", None))  # #143, ADR 0018
+                    why = "".join(f" {text}" for text in said if text)
                     enqueue([f"I need your approval to use {event.name.replace('_', ' ')}.{why} Say yes or no."])
                 elif etype == "tool_result":
                     self._approvals.pop(event.call_id, None)

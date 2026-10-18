@@ -47,6 +47,38 @@ def version():
     console.print(f"sentient {__version__}")
 
 
+# Modules the engine imports lazily or only on first use (a model call, voice, a migration). An installer whose
+# frozen engine misses one of them still starts and answers `version`, then fails the first real request, which is
+# how v3.0.0-beta.1's first build shipped without numpy and tokenizers. packaging/build_engine.py runs this.
+_SELFCHECK_MODULES = (
+    "sentient.app",
+    "sentient.gateway.app",
+    "sentient.store.migrations",
+    "litellm",
+    "numpy",
+)
+
+
+@app.command("selfcheck", hidden=True)
+def selfcheck():
+    """Import everything the engine needs at runtime and fail loudly if anything is missing."""
+    import importlib
+
+    missing = []
+    for name in _SELFCHECK_MODULES:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:  # any import-time failure counts, not only ModuleNotFoundError
+            missing.append(f"{name}: {type(exc).__name__}: {exc}")
+    if missing:
+        console.print("selfcheck failed:\n" + "\n".join(missing))
+        raise typer.Exit(1)
+    # the schema version is derived from the migration files, so this also proves they were bundled
+    from sentient.store.db import SCHEMA_VERSION
+
+    console.print(f"selfcheck ok ({len(_SELFCHECK_MODULES)} modules, database version {SCHEMA_VERSION})")
+
+
 @app.command()
 def serve(
     host: str | None = typer.Option(None, help="Override gateway.host"),
@@ -104,6 +136,45 @@ def claude_code_tools(tools_file: str):
     from sentient.llm.claude_code_tools import main
 
     raise typer.Exit(main([tools_file]))
+
+
+@app.command()
+def backup(
+    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups)."),
+):
+    """Back up the data folder (database, config, workspace, skills, files) to one zip file."""
+    from sentient.backup import archive
+
+    folder = to or Path(load_config().backups.folder or archive.default_folder()).expanduser()
+    made = archive.create_archive(archive.new_backup_path(folder), kind="manual")
+    console.print(f"[green]backed up[/green] {made['path']} ({made['size']:,} bytes)")
+    console.print("API keys and sign-ins stay in this computer's keychain and are not in the backup.")
+
+
+@app.command()
+def restore(
+    archive_path: Path = typer.Argument(..., help="A backup or snapshot zip."),
+    now: bool = typer.Option(False, "--now", help="Replace the data at once. Only while Sentient is closed."),
+):
+    """Restore a backup. It replaces the data the next time Sentient starts (or at once with --now)."""
+    from sentient.backup import BackupError, apply_pending_restore, archive
+
+    try:
+        staged = archive.stage_restore(archive_path)
+    except BackupError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    console.print(f"backup from {staged.get('created_at')} checked: {', '.join(staged['contents'])}")
+    if not now:
+        console.print("It replaces your current data the next time Sentient starts.")
+        return
+    result = apply_pending_restore() or {}
+    if result.get("error"):
+        console.print(f"[red]{result['error']}[/red]")
+        raise typer.Exit(1)
+    kept = f"; your data from before is in snapshot {result['snapshot']}" if result.get("snapshot") else ""
+    console.print(f"[green]restored[/green]{kept}")
+    console.print("API keys and sign-ins are not in backups: sign in again to anything that asks.")
 
 
 @app.command()

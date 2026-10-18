@@ -27,9 +27,12 @@ export function useSkillActions() {
     create: useMutation({ mutationFn: (body: SkillCreate) => api.skills.create(body), onSuccess: invalidate }),
     update: useMutation({ mutationFn: ({ name, body }: { name: string; body: SkillUpdate }) => api.skills.update(name, body), onSuccess: invalidate }),
     approve: useMutation({ mutationFn: (name: string) => api.skills.approve(name), onSuccess: invalidate }),
+    approveAnyway: useMutation({ mutationFn: (name: string) => api.skills.approve(name, true), onSuccess: invalidate }),
+    importUrl: useMutation({ mutationFn: (url: string) => api.skills.importUrl(url), onSuccess: invalidate }),
     reject: useMutation({ mutationFn: (name: string) => api.skills.reject(name), onSuccess: invalidate }),
     archive: useMutation({ mutationFn: (name: string) => api.skills.archive(name), onSuccess: invalidate }),
     restore: useMutation({ mutationFn: (name: string) => api.skills.restore(name), onSuccess: invalidate }),
+    reset: useMutation({ mutationFn: (name: string) => api.skills.reset(name), onSuccess: invalidate }),
     remove: useMutation({ mutationFn: (name: string) => api.skills.delete(name), onSuccess: invalidate }),
     reviewNow: useMutation({ mutationFn: (sessionId?: string) => api.skills.reviewNow(sessionId), onSuccess: invalidate })
   }

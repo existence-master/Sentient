@@ -55,3 +55,37 @@ CREATE TABLE IF NOT EXISTS dreams (
     error       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_dreams_started ON dreams(started_at);
+
+-- What an import from another assistant has already read (issue #156): a conversation, note or memory summary is
+-- read once, so importing a newer export of the same account only reads what's new.
+CREATE TABLE IF NOT EXISTS memory_import_seen (
+    app         TEXT NOT NULL,                        -- chatgpt | claude | openclaw
+    item        TEXT NOT NULL,                        -- the export's own key: conv:<id>:<messages>, note:<file>:<hash>
+    imported_at TEXT NOT NULL,
+    PRIMARY KEY (app, item)
+);
+
+-- Every other place a fact came from (#153). A fact's own ``facts.source`` is its first source; a fact learned again
+-- somewhere else (a duplicate skipped, an update, a merge) gets that place here, so forgetting one source keeps a fact
+-- another source still backs. Sources: conversation | manual | file:<name> | channel:<id> | device:<node id> |
+-- app:<plugin id> | folder:<folder id> | ...
+CREATE TABLE IF NOT EXISTS fact_sources (
+    fact_id    INTEGER NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    source     TEXT NOT NULL,
+    linked_at  TEXT NOT NULL,
+    merged_from INTEGER,                  -- the fact whose merge brought this link (#353): undoing that merge removes it
+    ref        TEXT,                      -- JSON: exactly where this source said it (#152), as facts.source_ref
+    PRIMARY KEY (fact_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_sources_source ON fact_sources(source);
+
+-- "Also forget what Sentient learned from it" (#153): one row per source forgotten when it was disconnected, for the
+-- Activity timeline. ``counts`` is JSON {memories, shared, chats, messages, summaries, items, results}.
+CREATE TABLE IF NOT EXISTS memory_forgets (
+    id         TEXT PRIMARY KEY,
+    source     TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    counts     TEXT NOT NULL,
+    at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_forgets_at ON memory_forgets(at);

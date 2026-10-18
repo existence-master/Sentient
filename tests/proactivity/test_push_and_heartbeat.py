@@ -124,7 +124,7 @@ async def test_no_duplicate_suggestions_for_the_same_item_or_action(app):
 
 async def test_scratchpad_carries_user_model_and_recent_suggestions(app):
     pro, llm = app.proactivity, app.fake
-    app.user_model.context = "Sarthak prefers afternoon meetings."
+    app.user_model.context = "Maya prefers afternoon meetings."
     script_pipeline(llm, ACTIONABLE)
     await pro.process_event("gmail", "new_email", MEETING_EMAIL)
     script_pipeline(llm, {"actionable": False})
@@ -184,7 +184,7 @@ async def test_heartbeat_skips_quiet_hours_and_respects_daily_cap(app, fake_task
 
 async def test_heartbeat_context_and_no_reply(app, fake_tasks):
     pro, llm = app.proactivity, app.fake
-    app.user_model.context = "Sarthak likes a short prep note before design meetings."
+    app.user_model.context = "Maya likes a short prep note before design meetings."
     start = datetime.now(UTC) + timedelta(hours=2)
     await pro._mark_seen("gcalendar", {"id": "ev-1", "summary": "Design review", "status": "confirmed",
                                         "start": start.isoformat(), "attendees": [{"email": "jane@acme.com"}]})

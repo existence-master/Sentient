@@ -5,7 +5,277 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+New entries wait in [`changes/`](changes/), one file per change, and are added here when a version is
+released.
+
+<!-- towncrier release notes start -->
+
+## [3.0.0-beta.1] - 2026-10-17
+
 ### Added
+- **Disconnecting can also mean forgetting.** When you disconnect Gmail, IMAP, Home Assistant or another app, remove an
+  MCP server, a device or a folder of notes, or disconnect Telegram, Discord or WhatsApp, you can tick "Also forget what
+  Sentient learned from it". The dialog says how much that is first, then the memories, chats, summaries, saved emails
+  and app results that came from it are deleted, and Activity notes it. A memory you also shared somewhere else stays.
+  Leave the box clear and Sentient keeps what it learned (#153).
+- **Skills can say how to check they work.** A skill can list a file that must exist or a few lines of Python with the
+  output they should print. Sentient checks a skill it drafted for itself before it shows it to you, and doesn't
+  propose one that fails. A check that runs code waits until you approve the skill (the button says "Approve and run
+  check"), then runs in the code sandbox without your keys, and the skill is only saved if it passes. The Skills
+  screen shows each check and how it went (#386).
+- **Home Assistant devices are checked after Sentient changes them.** A moment after it turns on a light, locks a
+  door, opens the blinds, arms the alarm or sets the thermostat, Sentient asks Home Assistant for the device's state
+  again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly
+  ("Hallway light still reports off."), in chat, in quick commands and in task runs, and never a success. You can
+  change how long it waits in Settings (#386).
+- **Folders and chat apps follow your memory places too.** In Settings, Folders, each folder or Obsidian vault now has
+  a **Used in** choice: every chat (as before, and what your folders already have), Personal, Work or a project. A
+  folder kept for Work only comes up in work chats, so a personal chat never brings up your work notes unless you ask.
+  In Telegram, Discord and WhatsApp, send `/scope work`, `/scope personal` or `/scope` followed by a project's name to
+  pick which memories that chat uses, or `/scope` to see which it uses now. On the Memory page, where a memory is
+  kept now reads "Used in Work" next to its source, so it no longer looks like a topic such as "Work & Learning".
+- **Say "stop" or "snooze" to a ringing alarm.** While a Sentient alarm rings, typing or saying "stop", "stop the
+  alarm", "turn it off", "snooze" or "snooze for 5 minutes" in a chat, by voice or in Telegram, Discord or WhatsApp
+  stops or snoozes it at once, with no model ("Alarm stopped.", "Snoozed until 7:39 AM."). A snooze is 9 minutes
+  unless you say how long or change "Snooze length" in Settings. The banner has a Snooze button too, and after a
+  snooze it shows until when, with Turn off. When no alarm is ringing, these words go to the assistant as before, so
+  "turn off the alarm" can still mean your house alarm (#390).
+- **Sentient in group chats, safely.** You can now pair a Telegram group or a Discord server channel with the same
+  `/pair` code. Sentient answers only you there, when you mention it, reply to it or send a command. What other people
+  write is treated like an email from a stranger: Sentient can read it, but never takes orders from it, and after
+  someone else writes, anything it would send checks with you first, naming who wrote it ("That address came from
+  another group member (Ravi), not from you."). Only you can press its buttons, and task results stay out of a group
+  unless you turn them on.
+- **Trust a chat again after you've checked it.** A chat that read an email, a web page or a group member's message
+  shows a bar saying so above the message box. If you've looked at it and it's fine, click **I've checked it** (or
+  send `/trust`, then `/trust yes`, in Telegram, Discord or WhatsApp) and sending from that chat follows your usual approval settings
+  again. It covers only what you've seen: if someone writes while you decide, the chat keeps asking and says who
+  wrote. It's noted in the chat and in Activity, and anything new from outside makes it ask again.
+- **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
+  or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
+  top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
+  and leaves out your personal memories (like family or health) unless you ask about them; what Sentient learns
+  there is kept for work too. How you like things done (your answer style and other preferences it has picked up)
+  still applies in every chat. Tasks a chat creates keep its memories, and each messaging app can be set to one in
+  Settings. On the Memory page you can show one place at a time, move a memory to another place, and forget
+  everything kept for one place without touching the rest. Everything you had before is in Personal.
+- **Sentient checks what really happened, not what the model says happened.** After it writes a file, sends an
+  email or a message, creates a calendar event or runs a Home Assistant action, Sentient checks the result itself: the app said it worked, and
+  where it can, it reads it back (the file holds what was written, the email is in your Gmail Sent folder, the event
+  is on your calendar). MCP tools are checked too, including a send that worked for some people but not others. When
+  something didn't happen, a task run is marked **Needs attention** instead of done and says so plainly ("Sentient
+  said it sent the email, but mailer reported a problem: it couldn't do it for bad@example.com (mailbox not
+  found)."), and so does a chat reply. A clean run shows "Checked: file written, email sent."
+- **Home Assistant, your smart home.** Connect it with your Home Assistant address and a long-lived access token (kept
+  in your system keychain), then choose which devices Sentient may use. Sentient finds the devices it needs by room,
+  kind or name, turns lights and switches on and off, sets brightness and thermostats, and runs scenes and scripts.
+  Locks, alarms, garage doors and gates always ask you first, with a plain warning and only "Allow once"; unlocking,
+  turning off the alarm and opening a garage door or gate ask even when approvals are off. Tasks can
+  start when a device changes, like "when the front door unlocks". Quick commands now work for lights too: "turn off
+  the living room lights" happens at once, with no model, when it is clear which lights you mean (#175).
+- **Alarms, "what's next on my calendar", and reminders on your phone.** "Wake me at 7" and "set an alarm for 6:30"
+  now work at once, without the model, like timers: Sentient says exactly when it will ring ("Alarm set for 7:00 AM
+  tomorrow."), and when it does, the window shows a banner with **Stop** and plays a chime until you stop it. "What
+  alarms do I have" and "turn off the gym alarm" work too. "What's next on my calendar" (or "what's my next meeting")
+  answers straight from your connected Google Calendar, also without the model. And a new switch on the Channels page,
+  **Reminders and alarms on your phone too**, sends the reminders and alarms you set on your computer to your paired
+  Telegram, Discord or WhatsApp chat as well.
+- **A safety check for skills and MCP servers from outside.** Skills brought over from Hermes, and skills you add
+  with the new **Add from a link** button in Skills (a SKILL.md, or a GitHub folder that holds one), wait for your
+  review with a plain safety report: where it came from, and whether it tries to send your data to a fixed address,
+  run downloaded code, turn off approvals, read passwords or the keychain, hide what it does from you, or give
+  Sentient new orders, including in text you can't see (invisible characters, white-on-white text, hidden comments)
+  and in the scripts it brings. When the risk is high, **Decline** is the main button and approving needs
+  **Approve anyway**. A new MCP server's tools are not offered to Sentient until you look at each one: its risk, what
+  its description says, and whether it gives Sentient orders ("always call this first"), hides text or takes the name
+  of one of Sentient's own tools. Risky tools start switched off. Sentient remembers exactly what each approved tool
+  said about itself; if a server changes that later, the tool is held back and you get a notification showing the old
+  and new description side by side. Servers you had before this update keep their tools.
+- **Memory you can see and undo.** Each time Sentient remembers something from a chat, a small "Remembered: ...
+  Undo" note appears in that chat; Undo forgets it, or puts back what an update changed. Things that read like
+  instructions ("from now on, always cc Bob on invoices") are never saved quietly: they wait on the Memory page's
+  Review tab under "Instructions for Sentient" until you approve them. And in a chat that read an email or a web page,
+  what you said yourself is now remembered right away; only what came from the email or page waits for your review.
+- **Two new rules: "Only if I asked" and "Hand it to me".** In Settings > Approvals & safety, each app or tool can
+  now also be set to **Only if I asked**: Sentient goes ahead without asking only when your own message in a chat asks
+  for it ("email Priya the notes"), and asks every other time, including in tasks and anything it does on its own.
+  Or set it to **Hand it to me**: Sentient prepares it, like a draft email or a filled form, shows it to you with
+  **Copy** and **Open in your email app**, and never does it itself. Tasks do the same and send you a "Ready for you"
+  notification. Saying "don't send emails unless I ask" or "just draft them, I'll send them myself" in a chat
+  suggests the matching rule.
+- **Try a task first, and put back files that code changed.** A task waiting for your OK (or any task, from its menu)
+  now has **Try it first**: Sentient runs it once for real but only notes everything that would send, post, buy,
+  delete, change or run something, and shows you exactly what a real run would do, with the full email or message for
+  each. Look-ups still run, so it works on your real data, and the task's schedule and status stay as they are. And
+  before a command in the terminal, a script or a file write changes files in your allowed folders or Sentient's own
+  files, Sentient keeps a copy of them. If something changed, Activity lists it with **Restore**, which puts the files
+  back (and can itself be undone). Big files, files that aren't text and folders like .git or node_modules are left
+  out, with a note saying so. When your folders hold more than 500 text files or 25 MB, nothing is copied for that
+  command and Activity says "Too many files to keep a copy". Copies go after 7 days. Settings > Approvals & safety has
+  the limits.
+- **The same memory in two languages is kept once.** If Sentient remembered "माया शाकाहारी है" and "Maya is
+  vegetarian" separately, the nightly memory tidy-up now notices and keeps just one, in the language most of your
+  memories are in. It only does this when the model is sure they say exactly the same thing: never when one adds a
+  detail or they disagree. Each merge shows up in Memory > Review under "Tidied up overnight", with **Undo**, and a
+  pair you split again is never merged again. Turn it off in Settings > Knowing you.
+- **Answers from your notes, even with small models.** When a message clearly matches something in your folders or
+  Obsidian vault, the two or three best matching pieces now go along with it, so local models like qwen3:8b answer
+  "when does my insurance renew?" from your notes without having to search them. Only short pieces go in, so replies
+  stay quick on small models, and the notes a reply used show as chips under it. Turn it off or change how many pieces
+  go along in Settings > Folders.
+- **Timers and reminders, instantly.** "Set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "remind me in
+  20 minutes", "what timers do I have" and "cancel the pasta timer" now happen at once, in the chat, by voice and
+  in Telegram, Discord and WhatsApp, without waiting for the model, with a short confirmation. When a timer or
+  reminder is due you get a notification at the right time in your timezone, and one set in a messaging app goes off
+  in that chat too. Activity lists the ones coming up, with **Cancel**, and the ones that went off. Anything that could
+  mean two things ("remind me at 6", "every day at 6") still goes to the model, and nothing quick ever sends, buys or
+  deletes. English for now; turn it off in Settings > General > Conversations ("Quick timers and reminders"). There are no smart-home
+  commands yet, since Sentient has no lights integration.
+- **Undo a send, see exactly what goes out, and the trash by default.** When Sentient sends an email, a message or a
+  post from a chat, it now waits 10 seconds first and shows what goes out, with **Undo** and **Send now**, in the chat
+  and as a toast (and as buttons in Telegram, Discord and WhatsApp). Undo and nothing is sent. Approval cards for
+  emails, messages, posts, deletions and purchases show who it goes to, the subject and the full text the way you'd
+  read them, with the raw details one click away; task approvals show the same. When an app can move something to
+  the trash, "delete it" now moves it there instead of deleting it for good, unless you say "permanently", and
+  Activity offers **Restore**. Purchases, code and tasks running on their own never wait. Change the wait (0 turns it
+  off) or the trash default in Settings > Approvals & safety.
+- **Your notes and Obsidian vaults, searchable.** In Settings > Folders, add a folder of notes or documents, or an
+  Obsidian vault, and Sentient searches it when you ask about something you wrote down: "what did I note about the
+  orchard budget?". Markdown, text, PDF and Word files are read; hidden folders like .obsidian, .git and .trash are
+  left out, along with the vault's own excluded files and any patterns you add. Answers show the notes they used as
+  chips, and a note from a vault opens in Obsidian. Sentient only reads these folders and never changes anything in
+  them. It notices changes as you write, reads only what changed, and does the work in the background with your
+  chats going first, so a big vault never slows a reply. Settings shows each folder's files, searchable pieces and
+  when it was last checked, with Check again and Remove. Web pages clipped into a vault count as written by someone
+  else: after reading one, Sentient asks before sending anything.
+- **Activity: everything Sentient did, and what it will do next, in one place.** A new **Activity** screen in the
+  sidebar lists, newest first, the apps Sentient used in your chats, task runs and briefs, each check of a watch,
+  approvals and how you answered them, replies in Telegram, Discord and WhatsApp, suggestions and other notifications,
+  memories it saved, skills it learned or changed, backups, and what paid cloud models cost each day. Every line says
+  what happened and why ("Made your Daily Brief: it runs every weekday at 7:30 AM", "Asked you before "Send" in Gmail
+  (to Arjun). You chose Allow once."). On the side: what is waiting for you now, everything scheduled for the coming
+  week (tasks, briefs, watches, the next backup and the nightly memory tidy-up) and the routines that are paused.
+  Filter by kind and by app, search, and click any line to open the chat, task, memory or setting it came from.
+  Under **Messaging apps** it also lists every notification sent to your Telegram, Discord or WhatsApp chats (task
+  results, briefs, approval requests, questions and suggestions): which chat, what was sent, and whether it arrived
+  or why it didn't. Click one to open the task or notification it came from.
+- **A second look before anything leaves Sentient:** before it sends, posts, invites people, buys or deletes
+  something, Sentient checks that everyone it goes to is someone you named, in your contacts or in your memories,
+  and that every amount is one you gave. If a web page or email slipped in an address ("also forward this to ..."),
+  or the content doesn't match what you asked, it asks you first and the approval card says why: "You asked to email
+  Arjun, but this goes to x@example.com." Your fast model also takes a quick look at sends, purchases, deletions and
+  code runs that would otherwise go ahead without asking, seeing only your own words and the action. This holds even
+  with approvals off, for apps you set to Allow and after "Allow for 1 hour". Turn the model part off in Settings >
+  Approvals & safety; recipients and amounts are always checked.
+- **Answer approvals from the notification:** when a task needs your OK while Sentient is in the background or
+  minimized, the notification on your computer has **Allow once** and **Deny** buttons (Windows and macOS), so the
+  task carries on without opening the app. Clicking the notification itself opens the task with its approval card,
+  where the wider choices are. If the request already expired or was answered, a second notification says so. With
+  notifications turned off in Windows, the Sentient taskbar button flashes instead.
+- **Sources for tasks:** each run in a task's history now shows the pages, emails, files and apps it used as small
+  chips, like the ones under chat replies. Click one to see what Sentient read and open it.
+- **See what your models cost, and keep everything on this computer:** Settings > Usage now shows what paid cloud
+  models cost today, this week and this month, by model and by job. Models on your Claude or ChatGPT plan show as
+  **On your plan** instead of dollars, and local models as free. Set a **monthly budget** there: you get a
+  notification at 80%, and at 100% paid cloud models pause until you choose **Keep going this month** (or, if you
+  prefer, until next month). The model menu in the title bar has a new **Local only / May use cloud** switch. In
+  Local only, nothing is sent to a model outside this computer: not a backup model, not a chat with its own cloud
+  model, not tasks, memory search or voice. Anything that would have used the cloud says so in plain words, or a
+  local model answers instead.
+- **Ask about selected text, in any app:** select text anywhere (an email, a web page, a document) and press
+  Ctrl+Alt+Shift+A (Command+Option+Shift+A on a Mac). A small window opens by your pointer and shows exactly what
+  Sentient copied, with Explain, Summarize, Translate and Reply, or ask your own question. The answer streams in, and
+  **Copy** or **Replace selection** puts it back where you were writing. Nothing is read until you press the
+  shortcut, your clipboard is put back right away, a password box is never copied, and nothing goes to Sentient
+  until you pick an action. The text counts as outside content, so Sentient never follows instructions in it and
+  asks before sending anything. Turn it off or change the shortcut in Settings > General.
+- **Approve from your phone, and choose how far a yes goes:** when a task needs your OK and you're away from the
+  app, the request goes to your paired Telegram, Discord or WhatsApp chat with buttons (or reply with once, task,
+  hour, always or no). Only the chat it was sent to can answer it, and a request that waits too long (4 hours by
+  default) stops the task instead of being approved late. Every approval now lets you pick **Allow once**, **Allow
+  for this chat** or **Allow for this task**, **Allow for 1 hour**, or **Always allow** (which saves an Allow rule).
+  Purchases, running code and anything after Sentient read an email or web page still ask every time. Settings >
+  Approvals & safety lists what you allowed for a task or for a while, with **Revoke**. Tasks that reach a tool you set to
+  Ask now pause and ask you instead of failing.
+- **Routines pause while you're away:** when you haven't used Sentient for a week (the app or a chat), or 20 results
+  have piled up since you were last around, Sentient asks once whether to keep your recurring tasks and briefs
+  running. If you don't come back within a day, it pauses them and tells you in one notification. Any sign of you,
+  in the app or a paired chat, keeps them running. **Resume routines** in that notification, in your chat app or on
+  the Tasks page brings them all back. Turn on **Keep running while I'm away** on a task that should never pause.
+  The day counts and the waiting time are in Settings > Tasks.
+- **Sentient never overwrites a skill you edited:** when you change a skill, in Skills or in any text editor, Sentient
+  notices and leaves your version alone. When it has a better idea it drafts the change for you to compare and
+  approve, and says plainly that your version is untouched. A proposal drafted before your edit warns that approving
+  would undo your changes. **Reset to original** puts back the version from before your edits.
+- **Skill checks:** Skills now point out problems in plain words: a missing or unreadable header, no description or
+  steps, a skill that is too long, links to files that aren't there, tools that aren't installed, a skill that reads
+  like a diary of past runs instead of a lesson, and risky instructions (skip approvals, ignore other instructions,
+  wipe folders, run a downloaded script, send passwords or keys). They show on each skill, on proposals, on skills
+  coming from Hermes, and a skill file that can't load at all is listed with what is wrong. A skill Sentient writes
+  with a risky instruction always waits for your review.
+- **Bring your memory from ChatGPT, Claude or OpenClaw:** Memory > Import > From another assistant reads a ChatGPT or
+  Claude data export (the zip they email you) or your OpenClaw workspace folder, right on your computer. Nothing is
+  uploaded and the export is never changed. You first see what's in it (saved memories, conversations, Claude's
+  memory and project instructions, OpenClaw's MEMORY.md, USER.md and daily notes) and pick what to bring over. Saved
+  memories come over as they are; for conversations and notes your fast AI model picks out lasting facts about you
+  in small batches. Everything waits in Memory > Review, and each card says which app, conversation and day it came
+  from. Things Sentient already knows are skipped, also across apps, and importing a newer export later only reads
+  what's new. You can stop an import, and remove everything from one app in one click.
+- **Export your memory:** Memory > ... > Export saves everything Sentient remembers about you as a readable Markdown
+  file or a SQLite database file in Sentient's files folder, grouped by topic and saying where each memory came
+  from. Nothing leaves your computer.
+- **Each chat remembers its model:** pick a model in a chat's message box and that chat keeps it, also after you
+  reopen it or restart Sentient. Other chats keep following your default model, and switching the default (or a
+  preset) in the title bar only changes those. **Use the default** puts a chat back on the default. The chat list
+  shows a small label on chats with their own model. If a chat's model can't answer (Claude Code is turned off or not
+  signed in, a local model was removed, a key is missing), the default model answers instead and the reply says so in
+  one plain line. Helpers a chat starts use its model too. In Telegram, Discord and WhatsApp, `/model chat <model>`
+  does the same for one conversation.
+- **Backups and restore:** Settings > Backups backs up everything Sentient keeps (chats, memory, tasks, settings,
+  skills and files) to one file, by hand or every day or week. Backups go to Sentient Backups in your Documents
+  folder (the one Windows really uses, also when it lives in OneDrive), apart from your data, or to a folder you
+  pick. Settings says when that folder syncs to OneDrive, Dropbox, Google Drive or iCloud, since the backups are
+  then copied to the cloud too. A backup holds the certificate your devices trust, so keep
+  backups somewhere private. Restore one from the list or from
+  a file: you see what is in it and confirm, Sentient keeps a snapshot of what you have now, then restarts with the
+  backup. Passwords, API keys and sign-ins stay in your computer's keychain and are never in a backup; after a restore
+  Sentient lists the ones to sign in to again. Sentient also takes a snapshot on its own before it updates its
+  database, before a Hermes import and before a restore, keeps the last five, and any of them can be restored.
+- **Recurring tasks remember their last runs:** each run of a recurring task now reads a short note of what its last
+  three runs found, sent or decided, plus the task's own notes, so it tells you only what is new instead of repeating
+  yesterday's news. Runs keep those notes up to date themselves; see, edit or clear them under **Notes between runs**
+  on the task.
+- **Watches that only speak up when something important changed:** a check script can now **Tell me when something
+  important changes**. Each check is compared with the last one without any AI, so an unchanged page costs nothing
+  and stays silent; only when something changed does your fast AI model decide whether it matters, and then you get
+  one notification that says what changed. Every watch also keeps a quiet list of its recent checks ("Checked,
+  nothing new", "Something changed. You were told") under Runs. When you ask Sentient to watch a page, a feed or the
+  news, it now uses this kind of check by default, so a view counter or a new timestamp no longer sends you a message.
+- **Fuzzy times for repeating tasks:** a daily or weekly task can run "in the morning", "afternoon", "evening" or "at
+  night" instead of at an exact time; Sentient picks a time inside that part of the day. Say it in your request
+  ("every weekday morning") or pick it in the schedule editor.
+- **Sources under answers:** when Sentient used the web, your email, a file or a connected app to answer, small
+  chips under the reply show what it used: the page, the email's subject, the file or the app, next to the memories
+  it had in mind. Click a chip to see the part Sentient read and open the page, email or file. Answers that used
+  nothing show no chips.
+- **Incognito chats:** start one from the button next to New chat, the command palette or Ctrl+Shift+N
+  (Cmd+Shift+N on a Mac). Nothing you say in it is remembered: Sentient saves no memories from it, learns no skills
+  from it, leaves it out of what it learns about you and of chat search, and deletes it when you leave it or close
+  Sentient (or after 30 minutes without a message). The chat has a tinted header and an Incognito label so you always
+  know. It can still use what Sentient already knows about you; turn that off in Settings > General > Conversations.
+- **One local model job at a time, your chats first:** a local Ollama model now works on one thing at a time, so
+  background work no longer pushes it off the graphics card and slows your chat to a crawl. Your chat always goes
+  next; tasks, suggestions, memory upkeep and chat titles wait while you are chatting (and for 30 seconds after), and
+  while your laptop runs on battery. A small "Model busy" sign in the title bar says what the model is working on and
+  what waits. Change the wait, allow background work on battery or turn the queue off in Settings > Models. Cloud
+  models never wait.
+- **Read only or Read and write for each connection:** when you connect Gmail, Calendar, GitHub or any other app,
+  and on every custom MCP server, pick **Read only** or **Read and write**. Read only lets Sentient look things up
+  there but never change, send, delete or run anything: those abilities are hidden from the model and refused if
+  it tries anyway, in chats, tasks, helpers and scripts alike, even with an Allow rule or approvals turned off. Switch
+  any time from the app's panel in Integrations (or the server's row); it applies at once, no restart. For a server
+  that runs other apps' actions by name (Composio's multi-execute), Read only still allows the look-ups and refuses
+  the rest, and those look-ups no longer ask for approval. Fewer tools also helps small local models pick the right one.
 - **Claude through your own Claude Code (experimental):** if Claude Code is installed and signed in on your computer,
   your chats can use Claude through it (Settings > Models, off until you turn it on). Sentient never reads or keeps
   your Claude login, and leaves API keys and other sign-in settings in your environment out, so Claude Code always
@@ -13,6 +283,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   approvals and rules, and Stop everything stops it. It only answers your chats: tasks, suggestions and other
   background work keep using your other models, and it can't be the memory search model. Anthropic may change how
   this is counted or allowed.
+- **Browser downloads:** files Sentient downloads while using a website are saved to `downloads/` in your Files
+  folder, and the browser result says where. In an attached browser, only downloads from Sentient's own tabs and
+  their popups (including `target="_blank"`) are saved, while downloads from other user tabs remain in the browser's
+  native Downloads folder. Sentient's own downloads briefly pass through the browser's download folder before being moved to the downloads directory. When attached, if a download cannot be matched to a confirmed browser download record,
+  it returns a clear error rather than falsely reporting success.
 - **Push to talk and dictation into any app:** hold Ctrl+Alt+Shift+T (Cmd+Option+Shift+T on a Mac) anywhere, speak,
   and let go: what you said goes to Sentient as a chat message, and the answer is read aloud. Press Ctrl+Alt+Shift+D,
   speak, and press it again (or just pause): your words are typed where your cursor is, in any app. A small bar at the
@@ -28,13 +303,16 @@ and versions follow [Semantic Versioning](https://semver.org/).
   your vision model when you set one. Both shortcuts are also in the tray menu and can be changed or turned off in
   Settings > General. Since a screen can show other people's text, a chat with a shared picture checks with you
   before sending anything. On a Mac, Sentient explains how to allow Screen Recording the first time.
-- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan): use your ChatGPT Plus or
-  Pro plan for chat, tasks and background work. Click **Continue with ChatGPT**, sign in in your browser and allow
-  Sentient; your plan's models then show up in every model picker, and **Use ChatGPT for every job** switches the
-  main and background models in one click (the Cloud preset uses your plan when you have no other cloud key). The
-  sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your
-  ChatGPT usage settings, and reaching your plan's limit says so plainly. Memory search keeps its own model, because
-  ChatGPT plans don't include one for it.
+- **Sign in with ChatGPT** (Settings > Models > Use a plan you already have > ChatGPT plan, or **ChatGPT plan** in
+  first-run setup's cloud step): use your ChatGPT Plus or Pro plan for chat, tasks and background work. Click
+  **Continue with ChatGPT** (with OpenAI's ChatGPT logo), sign in in your browser and allow Sentient; your plan's
+  models then show up in every model picker, and **Use ChatGPT for every job** switches the main and background
+  models in one click (the Cloud preset uses your plan when you have no other cloud key). Main and background jobs
+  use the everyday model OpenAI ranks first on your plan, background jobs with the lightest thinking it allows, so
+  nothing is guessed from model names. After your first sign-in Sentient says once that you're using your ChatGPT
+  plan, and while your next message goes to a plan model the chat box shows **Using ChatGPT plan** with a **Manage
+  usage** link. The sign-in stays in your system keychain, renews on its own, and **Sign out** removes it. **Manage usage** opens your ChatGPT usage settings, and reaching
+  your plan's limit says so plainly. Memory search keeps its own model, because ChatGPT plans don't include one for it.
 - **Models sized for your computer:** Sentient checks how much memory and graphics memory this computer has before
   anything is installed and recommends a local model and how much text it reads at once (for example qwen3:8b reading
   8,192 tokens on an 8 GB graphics card, qwen3:14b reading 16,384 on a 16 GB one). A computer with less than 8 GB of
@@ -173,9 +451,154 @@ and versions follow [Semantic Versioning](https://semver.org/).
   skip. Nothing catches up while Stop everything is on; it happens when you resume.
 
 ### Changed
+- Database changes are now numbered files in `sentient/store/migrations/`, and the schema version is the highest of them, so two changes can no longer silently take the same version. The database moves to version 13, so the first start after updating takes a snapshot first, as with any database update. (#424)
+- **Incognito chats leave nothing behind:** when an incognito chat is deleted, the long results it saved
+  while reading pages or files go with it. Files you asked it to write and tasks it created stay.
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Pausing a task stops it now.** Before, pausing a task while it was working only stopped its next runs, and the
+  run already going carried on and could finish while the task showed Paused. Now the run stops before its next step
+  (a step already in progress finishes first, so nothing is cut off halfway), shows "Paused before it finished.
+  Resume the task to continue.", and Resume carries it on from where it stopped without redoing earlier steps. An
+  approval it was waiting on is withdrawn and asked again on Resume. A task whose agents work side by side, and a
+  one-step action that already started, can't be stopped part-way: the task page says so, and they finish (#408).
+- **Approval cards name browser clicks the way the engine sees them.** A browser tool's label reads the clicked
+  element, so clicking an ordinary button reads as a click and "Send feedback" reads as sending, while clicking
+  "Place order" still reads as a purchase.
+- **A paused task stays paused when Sentient restarts.** Before, a task you paused while it was working carried on
+  by itself the next time Sentient started, and one still being planned was planned. Now it waits: the task shows
+  "Paused before it finished. Resume the task to continue.", and nothing runs for it. An approval it was waiting on
+  is withdrawn the same way. When you resume the task, it carries on from where it stopped instead of starting
+  over, and asks for the approval again if it still needs it (#304).
+- **Approval cards no longer show Sentient's notes to itself.** When the browser (or another built-in app) asked
+  before clicking, the card's small print showed the instructions written for the model, cut off mid-word ("browser:
+  Click the element with this ref ..."). It now shows a short plain label when there is one, like "Purchase" or
+  "Unlocks a door", and otherwise the card's own line (#398).
+- **A page watch always checks the page.** "Track this page and tell me when a new event is added" could be set to
+  start only when something arrived in your calendar or smart home, so it never looked at the page. A check that reads
+  a page, a search or the news now runs on a timer: every hour, or as often as you asked (#389).
+- **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
+  its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
+  sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.
+- **Watching a page means watching all of it.** When you ask Sentient to watch, track or monitor something, or to
+  tell you when something happens, the plan no longer reports on every check, and its check no longer looks at only
+  the page's heading or first line (so an event added at the bottom is noticed). If the plan does either, the planner
+  is told why in plain words and writes it again. Asking for "a report every hour" or "the headline" still works.
+- **A free "Subscribe" button no longer reads as a purchase.** When Sentient asks before clicking a newsletter,
+  follow or "notify me" button with no price nearby, the card now says it wants to sign you up, instead of "Make a
+  purchase" with "Yes, buy it". It still asks under your usual rules. A button with a price, a plan, a trial, an
+  upgrade or "/month" on it or next to it, or a plain "Subscribe" with nothing saying it is free, still reads as a
+  purchase and always asks.
+- **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
+  school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
+  same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about
+  the same person ("Mira has a piano recital in July") are kept as their own memories.
+- **Page watches read the page.** When you ask Sentient to watch a web page, the check script it writes now reads
+  the page's text. Small local models used to read a part of the page that doesn't exist, so the watch saw nothing
+  on every check and never told you about a change. Sentient now tells the model what a page, a web search and the
+  news give back, and sends a script that reads something they never give back to be rewritten.
+- **Approvals from Telegram, Discord and WhatsApp answer only the request they were sent for.** When a task asks
+  about one step and then another, a button or reply from the earlier message can no longer answer the newer request:
+  the chat says the message is for an earlier request, and the newer one keeps waiting for its own answer.
+- **Memories in Hindi stay with the right person:** a Hindi memory is no longer merged into, or skipped as a copy
+  of, a memory about someone else ("प्रिया पुणे में रहती है" next to "Riya lives in Pune", a Karan memory next to a
+  Kabir one). Names written in Devanagari are recognized and matched across scripts, so "माया" is still you when
+  your name is Maya. For people who write in Hindi or another language besides English, setup now suggests the
+  bge-m3 memory search model (1.2 GB), which finds those memories much better. Changing the memory search model
+  re-reads every memory once, also between two models of the same size.
+- **Sentient can now read a long result to its end:** when a web page or another result is too long to read at
+  once, Sentient reads the rest of the saved copy part by part instead of seeing only its start again. Reading a
+  file you downloaded, or that saved copy, now also counts as reading outside content, so Sentient asks before
+  sending anything afterwards in that chat.
+- **A reply that fails no longer looks stuck:** when the model can't answer (it is unreachable, out of credits or
+  turns the request down), the chat shows the error and goes back to ready at once, instead of showing "replying"
+  and the stop button until your next message.
+- **The approval card no longer calls an email "posting publicly":** a send like `send_email` is now named from
+  the tool's name and declared risk ("Sentient wants to send an email"). The card's word guessing never reads the
+  arguments' content, so an email body mentioning "post", "publish" or "tweet" cannot be misread: the only
+  exception is multi-execute tools (Composio), where the `tool_slug`/`action_slug`/`slug` keys name the action
+  being run (e.g. `GMAIL_DELETE_MESSAGE`) and are treated like tool names.
+- A long web or email result that Sentient saved to read later, and files you downloaded, are now marked as
+  outside content when Sentient reads them back, so instructions hidden in them are treated as plain text.
+- Learning about you and skill reviews no longer skip a message or fact saved at the same moment as the last one
+  they read.
+- **Tasks no longer fail with "no final answer" after looking something up:** small local models sometimes went
+  quiet after a memory look-up. Sentient now asks once more for the answer, and if there still is none, the run
+  completes with a short list of what it found instead of failing. Chat replies do the same instead of staying empty.
+- Editing, approving or importing a skill that needs a particular tool (for example `file_read`) no longer hides it
+  from Sentient until the next restart.
+- **Watch requests no longer fail when a check script can't be written:** if the AI's check script is rejected twice
+  (it loops, sleeps or uses memory, as small local models sometimes do), the task is saved as an ordinary recurring
+  task that the AI runs each time, with a short note on the task saying so, instead of ending in an error.
+- **Rules from chat work with Claude Code for every model:** when your fast model is Claude Code, "From now on,
+  never delete my emails" proposes a rule again. The check now uses the chat's own model or your main model, since
+  it is part of answering your message. Apps that chat through `POST /api/chat` also get the "Make this a rule?" card.
+- With approvals set to **Never ask**, Sentient no longer stops to ask before just looking something up (a web page,
+  a snapshot of the browser, a search) because something you said in the chat sounded like a "never" it offered to
+  turn into a rule. Until you answer that suggestion it still checks with you before changing, sending, deleting or
+  running anything it covers. It also reads your words more carefully: naming one tool ("don't call browser_open")
+  suggests a rule for that tool only, never the whole app, and a limit on the request at hand ("don't cc her this
+  time", "in part A") is no longer taken as a lasting rule. Settings now lists what Never ask still checks: purchases,
+  apps you set to Ask, sending anything once a chat has read an email or web page, and a change you just told it never
+  to make until you answer its suggested rule.
+- "Every 10 minutes", "every hour", "every 2 hours" and "every 30 min" now really repeat that often. Before, a local
+  model could save these as once a day at 09:00. Repeats are at least 5 minutes apart.
+- Check scripts written by the AI that can't work are sent back with the reason and rewritten once: scripts that use
+  packages that are not installed, loop forever, wait or sleep, use memory, or raise an alert where Sentient should
+  compare results. Scripts you edit yourself are not limited this way.
+- A second Sentient data folder (a test or demo profile set with `SENTIENT_HOME`) no longer shares the keychain with
+  your own: it gets its own place for API keys, tokens and sign-ins, so it can't use, change or remove yours, and a
+  seeded demo can't message anyone through your Telegram bot. Your own data folder (`~/.sentient`) keeps every key
+  and sign-in as it is, with nothing to redo. `SENTIENT_KEYCHAIN_NAMESPACE=default` shares yours on purpose. The demo
+  seed scripts and `scripts/smoke.mjs` now pause the seeded tasks and turn off messaging deliveries unless given
+  `--keep-live`.
+- Chats using Claude through your own Claude Code now show the context meter and the "getting long" warning at
+  85%: the context length is read from the matching Anthropic model, which LiteLLM knows, instead of nothing.
+- **Background work on a laptop that stays on battery:** Sentient's own upkeep (memory, what it learns about you,
+  dreams, suggestions, skill review, chat titles) used to wait for the charger, so a laptop used all day on battery
+  never ran it. It now runs on battery too, gently: while the battery is above 40%, after you have not chatted for
+  five minutes, in short bursts at most every 30 minutes, and never held more than two hours. At 15% or below it
+  waits. Tasks you scheduled always run on time, whatever the battery, and so does Dream now unless the battery is
+  low. The title bar says "Waiting: on battery" (or
+  "Waiting: battery low") while upkeep waits, and every limit is in Settings > Models > Sharing your local model.
+- Messages and memories saved at the same moment now always keep their order, and the daily upkeep of MEMORY.md and
+  USER.md no longer misses a memory saved while it was reading. Summarizing a long chat no longer skips messages
+  saved at the same moment as the last summary.
+- When a cloud model says no, chat and tasks now say why in a plain sentence and what to do, instead of showing the
+  provider's raw reply. For example: "OpenRouter's free models have reached today's limit. Add credits on
+  openrouter.ai, wait until tomorrow, or pick another model in Settings > Models." This covers rate limits, an
+  account out of credits, a key that was mistyped or revoked, a free model OpenRouter keeps for coding tools, a model
+  that doesn't exist or isn't downloaded, and a provider that is down or too slow. The raw reply stays in the log.
+- One long tool result no longer fills a local model's whole context. A result may now take about a quarter of what
+  the model reads at once (Settings > General > Conversations), so on an 8,192-token model a 13,000-character Composio
+  search no longer triggers "This chat is getting long" after a single step. The model is told plainly when a result
+  was cut, and the full result is still saved. Composio's tool search keeps its useful part instead of its first
+  characters: the recommended plan, the tool names, which apps are connected and the main tool's settings. A connected
+  tool server that sends its answer twice (as text and as data) is now read once.
+- Turning on "Use my Claude Code for chats" now shows the Claude Code version straight away, instead of sometimes
+  showing nothing until you came back to the page. Settings also says that its replies take a few seconds to start
+  and arrive in larger pieces than with your other models.
+- Claude Code no longer leaves empty scratch folders behind on Windows. Each reply's folder is removed once Claude
+  Code has fully exited, and folders left by earlier runs are cleared when Sentient starts.
+- A task that can't be planned because Claude Code is your main model now says so and what to do ("Pick a
+  planner model in Settings > Models"), instead of saying the AI model is unavailable.
+- A memory waiting for your review now shows the page or message it came from, not the error from a later action
+  you declined or that failed.
+- Adding a server (MCP) that you already signed in to from another Sentient setup on the same computer, such as a
+  fresh install or a test setup, no longer signs you out of it. The sign-in now remembers the server's address, so it
+  is kept and reused for the same address and only cleared when the address changes.
+- Older MCP OAuth sign-ins saved without a server address are preserved in the keychain but are no longer
+  automatically reused, as their server URL ownership cannot be verified. Affected users may need to sign in again
+  for each MCP server URL.
+- Local models can now use large MCP servers such as Composio, Notion or GitHub. Naming the server in your message
+  ("using Composio...") always offers its tools, and a server with more tools than fit offers its most relevant ones,
+  keeping its "search" and "run" tools together, instead of none at all.
+- A message with a link now offers local models the page reader (`web_fetch`) next to the web browser, and a tool
+  you name exactly ("use web_fetch") is always offered (#252).
+- Signed-in MCP servers (Composio, for example) no longer ask you to sign in again about an hour after Sentient
+  restarts. The sign-in now remembers where the server renews it, so renewing works after a restart; sign-ins saved
+  before this fix look that up once on their own.
 - Local Ollama models now read 8192 tokens by default instead of Ollama's 4096, so long tasks, big inboxes
   and many tools are no longer cut off without warning. Change it with `models.context_length`, per role with
   `models.context_length_per_role`; it never goes above the model's own maximum, and `sentient doctor` shows it.
@@ -183,8 +606,25 @@ and versions follow [Semantic Versioning](https://semver.org/).
   dropped connection when the computer is busy.
 - What Sentient learns about you reads your messages in the order you sent them, even when two were saved at the
   same instant.
+- The model check-up no longer warns about the graphics card on an 8 GB card running the setup Sentient recommends
+  for it (qwen3:8b reading 8,192 tokens at a time). About 90% of the model fits there, which is expected; the only way
+  to fit all of it is a context below 8,192 tokens, which cuts off long tasks. A bigger spill, a longer context or a
+  different model still gets the warning.
+- Saving something new about you no longer overwrites a different memory: "doesn't want files written" is kept next
+  to "doesn't want files deleted" instead of replacing it, and so is "doesn't want emails deleted". A memory is only
+  changed when the new one is about the same person and the same thing. A vaguer memory that an existing one already
+  covers ("your sister lives in a city", "you have a sister") is no longer added, and neither are gaps like "your
+  sister's job is unknown".
+- Everyday phrases like "If you don't know, say so" no longer make Sentient suggest a Never rule for unrelated
+  tools. A suggested rule for a single tool now needs your words to name an action, the app or the tool, so
+  "Never write files for me" still suggests blocking file writing.
+- Edge's downloads hub no longer replaces the active page or appears as a browser tab when a download starts.
 
 ### Security
+- Text from web pages, emails, messages and other apps now reaches the AI clearly marked as outside content, with a
+  standing rule to treat it as information and never follow instructions hidden in it. A page can't fake the end of
+  the marked part. Your own messages are not marked. To compare, turn it off in Settings > General > Conversations
+  ("Mark outside content").
 - Once Sentient has read an email, a web page, a message or anything else other people wrote, it asks before
   sending, posting, inviting people to an event, typing into a web page, running code or opening an address that
   could carry your data to a new site, even for apps set to Allow and with approvals off. The
@@ -236,5 +676,6 @@ Sentient v3: a rewrite as a desktop app that runs on your own computer. No accou
 
 The cloud web app. Its history is on the [`v2` branch](https://github.com/existence-master/Sentient/tree/v2).
 
-[Unreleased]: https://github.com/existence-master/Sentient/compare/v2-final...main
+[Unreleased]: https://github.com/existence-master/Sentient/compare/v3.0.0-beta.1...main
+[3.0.0-beta.1]: https://github.com/existence-master/Sentient/releases/tag/v3.0.0-beta.1
 [3.0.0-alpha.0]: https://github.com/existence-master/Sentient/tree/main

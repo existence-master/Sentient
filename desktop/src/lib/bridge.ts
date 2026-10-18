@@ -124,6 +124,7 @@ function createBrowserBridge(): SentientBridge {
         }
       }
     },
+    closeApprovalNotification: async () => undefined,
     setLaunchAtLogin: async () => undefined,
     getLaunchAtLogin: async () => false,
     syncPrefs: async () => undefined,
@@ -140,6 +141,8 @@ function createBrowserBridge(): SentientBridge {
     pickFiles: async () => [],
     isFocused: async () => document.hasFocus(),
     openFile: async () => false,
+    showInFolder: async () => false,
+    openFolderFile: async () => false,
     getDevicePrivacy: async () => ({ screen: null, camera: null }),
     setDevicePrivacy: async (patch) => ({ screen: null, camera: null, ...patch }),
     onCaptureNotice: () => () => undefined,
@@ -158,6 +161,24 @@ function createBrowserBridge(): SentientBridge {
       openPermissionSettings: async () => undefined,
       onCommand: () => () => undefined,
       report: () => undefined
+    },
+    ask: {
+      state: async () => null,
+      onState: () => () => undefined,
+      copy: async (text) => {
+        try {
+          await navigator.clipboard.writeText(text)
+          return true
+        } catch {
+          return false
+        }
+      },
+      replace: async () => 'failed' as const,
+      close: async () => undefined,
+      openChat: async (sessionId) => {
+        window.location.hash = `/chat/${encodeURIComponent(sessionId)}`
+      },
+      resize: () => undefined
     },
     getShortcuts: async () => [],
     setShortcut: async () => ({ ok: false, error: 'Available in the desktop app.', shortcuts: [] })

@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, StrictBool
 
 from sentient.gateway.deps import AUTH, get_core
 from sentient.integrations.base import IntegrationError
+from sentient.integrations.mcp import plugin_id_for
+from sentient.memory.forget import forget as forget_learned
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.integrations.service import IntegrationManager
@@ -20,14 +22,27 @@ def _mgr(request: Request) -> IntegrationManager:
     return get_core(request).integrations
 
 
+Access = Literal["read", "read_write"]
+
+
 class ConnectBody(BaseModel):
     fields: dict[str, Any] = Field(default_factory=dict)
+    access: Access | None = None  # Read only or Read and write (#141); None keeps the current choice
+
+
+class AccessBody(BaseModel):
+    access: Access
 
 
 class PrivacyFilters(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     emails: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
+
+
+class EntityChoiceBody(BaseModel):
+    mode: Literal["all", "picked"]
+    picked: list[str] = Field(default_factory=list)
 
 
 class MCPServerBody(BaseModel):
@@ -40,6 +55,7 @@ class MCPServerBody(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     auth: Literal["none", "headers", "oauth"] | None = None
     enabled: bool = True
+    access: Access | None = None
 
 
 # ----------------------------------------------------------------------------- list
@@ -63,9 +79,13 @@ async def add_mcp(request: Request, body: MCPServerBody):
 
 
 @router.delete("/mcp/{name}")
-async def delete_mcp(request: Request, name: str):
+async def delete_mcp(request: Request, name: str, forget: bool = False):
+    """``?forget=true``: also forget what Sentient learned from the server (#153)."""
     if not await _mgr(request).mcp.remove(name):
         raise HTTPException(404, f"no MCP server named {name}")
+    if forget:
+        source = f"app:{plugin_id_for(name)}"
+        return {"ok": True, "forgotten": await forget_learned(get_core(request), source, name)}
     return {"ok": True}
 
 
@@ -94,10 +114,33 @@ class MCPValuesBody(BaseModel):
     enable: StrictBool = False
 
 
+@router.post("/mcp/{name}/access")
+async def mcp_access(request: Request, name: str, body: AccessBody):
+    try:
+        return await _mgr(request).mcp.set_access(name, body.access)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+
+
 @router.post("/mcp/{name}/values")
 async def mcp_values(request: Request, name: str, body: MCPValuesBody):
     try:
         return await _mgr(request).mcp.set_values(name, body.values, enable=body.enable)
+    except KeyError as exc:
+        raise HTTPException(404, f"no MCP server named {name}") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class MCPReviewBody(BaseModel):
+    decisions: dict[str, Literal["approve", "decline"]] = Field(default_factory=dict)
+
+
+@router.post("/mcp/{name}/review")
+async def review_mcp(request: Request, name: str, body: MCPReviewBody):
+    """Approve or decline a server's tools after its safety check (#146)."""
+    try:
+        return await _mgr(request).mcp.review_tools(name, dict(body.decisions))
     except KeyError as exc:
         raise HTTPException(404, f"no MCP server named {name}") from exc
     except ValueError as exc:
@@ -149,11 +192,20 @@ async def get_integration(request: Request, integration_id: str):
 @router.post("/{integration_id}/connect")
 async def connect(request: Request, integration_id: str, body: ConnectBody | None = None):
     try:
-        return await _mgr(request).connect(integration_id, (body or ConnectBody()).fields)
+        body = body or ConnectBody()
+        return await _mgr(request).connect(integration_id, body.fields, access=body.access)
     except KeyError as exc:
         raise HTTPException(404, f"unknown integration {integration_id}") from exc
     except IntegrationError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/{integration_id}/access")
+async def put_access(request: Request, integration_id: str, body: AccessBody):
+    try:
+        return await _mgr(request).set_access(integration_id, body.access)
+    except KeyError as exc:
+        raise HTTPException(404, f"unknown integration {integration_id}") from exc
 
 
 @router.post("/{integration_id}/cancel")
@@ -166,9 +218,10 @@ async def cancel_connect(request: Request, integration_id: str):
 
 
 @router.post("/{integration_id}/disconnect")
-async def disconnect(request: Request, integration_id: str):
+async def disconnect(request: Request, integration_id: str, forget: bool = False):
+    """``?forget=true``: also forget what Sentient learned from the app (#153)."""
     try:
-        return await _mgr(request).disconnect(integration_id)
+        return await _mgr(request).disconnect(integration_id, forget=forget)
     except KeyError as exc:
         raise HTTPException(404, f"unknown integration {integration_id}") from exc
 
@@ -199,3 +252,24 @@ async def put_privacy_filters(request: Request, integration_id: str, body: Priva
         raise HTTPException(400, f"{plugin.display_name} doesn't support privacy filters")
     await mgr.set_privacy_filters(integration_id, body.model_dump())
     return {"ok": True}
+
+
+@router.get("/{integration_id}/entities")
+async def get_entities(request: Request, integration_id: str):
+    """The devices of an integration with an entity picker (Home Assistant), and which ones Sentient may use."""
+    try:
+        return await _mgr(request).list_entities(integration_id)
+    except KeyError as exc:
+        raise HTTPException(404, f"unknown integration {integration_id}") from exc
+    except IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/{integration_id}/entities")
+async def put_entities(request: Request, integration_id: str, body: EntityChoiceBody):
+    try:
+        return await _mgr(request).set_entity_choice(integration_id, body.mode, body.picked)
+    except KeyError as exc:
+        raise HTTPException(404, f"unknown integration {integration_id}") from exc
+    except IntegrationError as exc:
+        raise HTTPException(400, str(exc)) from exc

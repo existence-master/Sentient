@@ -30,6 +30,7 @@
   --color-warning: var(--warning);
   --color-danger: var(--danger);
   --color-info: var(--info);
+  --color-incognito: var(--incognito);
 }
 
 @theme {
@@ -173,6 +174,7 @@
   --warning: #fbbf24;
   --danger: #f87171;
   --info: #60a5fa;
+  --incognito: #a78bfa;
   color-scheme: dark;
 }
 
@@ -195,6 +197,7 @@
   --warning: #b45309;
   --danger: #dc2626;
   --info: #2563eb;
+  --incognito: #6d28d9;
   --shadow-pop: 0 12px 32px -10px rgb(15 15 25 / 0.18), 0 2px 6px rgb(15 15 25 / 0.06);
   color-scheme: light;
 }

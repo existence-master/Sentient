@@ -5,6 +5,7 @@ import {
   IconFilePencil,
   IconFirstAidKit,
   IconMessages,
+  IconRestore,
   IconSparkles,
   IconUser,
   IconUserCog,
@@ -28,6 +29,7 @@ export const EVOLUTION_META: Record<string, { label: string; icon: Icon; color: 
   skill_patched: { label: 'Skill improved', icon: IconFilePencil, color: 'var(--info)' },
   skill_repair_proposed: { label: 'Fix proposed', icon: IconFirstAidKit, color: 'var(--warning)' },
   skill_archived: { label: 'Skill archived', icon: IconArchive, color: 'var(--fg-subtle)' },
+  skill_reset: { label: 'Skill reset', icon: IconRestore, color: 'var(--fg-subtle)' },
   profile_updated: { label: 'Profile updated', icon: IconUserCog, color: 'var(--success)' },
   curator_run: { label: 'Curator tidied up', icon: IconBrush, color: 'var(--warning)' },
   summary_created: { label: 'Conversation remembered', icon: IconMessages, color: '#a78bfa' }

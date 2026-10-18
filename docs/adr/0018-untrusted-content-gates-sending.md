@@ -2,6 +2,9 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-09
+- **Amended by:** [ADR 0023](0023-mark-outside-content-in-prompts.md) (the same tools' results reach the model marked as outside content),
+  [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md) (other people in a group chat are outside content; the user can trust a chat again),
+  [ADR 0031](0031-recipients-first-and-a-tool-less-reader.md) (a reader result of only dates, numbers, yes or no, ids and choices doesn't mark a run)
 
 ## Context
 
@@ -40,7 +43,8 @@ sending anything.") and offers no "Allow for this chat". "Never" rules and the u
 How long the mark lasts:
 
 - **Chat:** the rest of the chat. It is saved on the session (`sessions.untrusted`), because the content stays in
-  the conversation the model reads in later turns, also after a restart. A new chat starts clean.
+  the conversation the model reads in later turns, also after a restart. A new chat starts clean, and the user can
+  clear it after checking the content ("I've checked it", or `/trust yes` in a paired chat, [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md)).
 - **Task run:** the rest of the run. A run cannot ask in-line, so the call is held and the run pauses with the
   existing ask-the-user machinery (#121): "This task read content from Gmail, so it checks with you before anything
   leaves Sentient. OK to use "Send" in Gmail (to: ...)?" with "Yes, go ahead" and "No, stop the task". Yes runs
@@ -49,7 +53,7 @@ How long the mark lasts:
   with a plain message.
 
 Nothing a model says can clear the mark or lower a call below asking. The user's own yes to one call is the only way
-through.
+through, apart from the user's own decision to trust the chat again ([ADR 0029](0029-group-chats-and-trusting-a-chat-again.md)).
 
 ## Consequences
 

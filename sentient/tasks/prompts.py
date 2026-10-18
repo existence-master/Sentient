@@ -21,6 +21,8 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from sentient.agent.prompt import OUTSIDE_RULE, mark_outside
+
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.app import SentientApp
 
@@ -53,15 +55,17 @@ Instructions:
         - If the prompt has **NO MENTION of a future date or time** (e.g., "summarize this document", "organize my files"), the task is for **immediate execution**. You MUST set `run_at` to `null`.
         - If a specific future date and time is mentioned, use the `once` type. The `run_at` value MUST be in `YYYY-MM-DDTHH:MM` format, in the user's timezone.
         - If no time is mentioned for a specific day (e.g., "tomorrow"), default to `09:00`.
-    - Recurring tasks: If the task repeats ("every day", "each Monday", "every weekday", "daily"), use the `recurring` type.
-        - `frequency` can be "daily" or "weekly". YOU CANNOT use "monthly" or "yearly". DO NOT use "hourly", "every minute" or "every second" as a frequency - if the user mentions a short timeframe like this, use "daily" by default.
-        - `time` MUST be in "HH:MM" 24-hour format (9am is "09:00", 6:30pm is "18:30"). If no time is specified, default to `09:00`.
+    - Recurring tasks: If the task repeats ("every day", "each Monday", "every weekday", "daily", "every 10 minutes", "every hour"), use the `recurring` type.
+        - `frequency` can be "daily", "weekly" or "interval". YOU CANNOT use "monthly" or "yearly".
+        - Repeats measured in minutes or hours ("every 10 minutes", "every 30 min", "every hour", "every 2 hours", "hourly") use frequency "interval" with `interval_minutes`, the number of minutes between runs (at least 5), and no `time`. Never turn them into "daily".
+        - For "daily" and "weekly", `time` MUST be in "HH:MM" 24-hour format (9am is "09:00", 6:30pm is "18:30"). If no time is specified, default to `09:00`.
+        - If the user names only a part of the day without an exact time ("every morning", "weekday evenings"), also add `"window"`: "morning", "afternoon", "evening" or "night". The task then runs at some time in that part of the day.
         - For "weekly" frequency, `days` MUST be a list of full day names (e.g., ["Monday", "Wednesday"]). If no day is specified, default to `["Monday"]`.
         - "Every weekday" means frequency "weekly" with days ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"].
-    - Triggered Workflows: Triggered workflows are supported for new calendar events and new emails. If the user tells you to do something "on every new email", "whenever I get an email from ...", or "when a new meeting is added", use the `triggered` type.
-        - `source`: The service that triggers the workflow ("gmail" or "gcalendar").
-        - `event`: The specific event ("new_email" for gmail, "new_event" for gcalendar).
-        - `filter`: A dictionary of conditions to match. Email fields: from, to, subject, snippet, body, labels. Calendar fields: summary, description, location, attendees, organizer_email. Use `{{"field": "value"}}` for exact matches and `{{"field": {{"$contains": "text"}}}}` for partial matches. Use `{{}}` to match every event.
+    - Triggered Workflows: Triggered workflows are supported for new calendar events, new emails and smart home changes. If the user tells you to do something "on every new email", "whenever I get an email from ...", "when a new meeting is added" or "when the front door opens", use the `triggered` type.
+        - `source`: The service that triggers the workflow ("gmail", "gcalendar" or "home_assistant").
+        - `event`: The specific event ("new_email" for gmail, "new_event" for gcalendar, "state_changed" for home_assistant).
+        - `filter`: A dictionary of conditions to match. Email fields: from, to, subject, snippet, body, labels. Calendar fields: summary, description, location, attendees, organizer_email. Smart home fields: name, entity_id, area, from, to (the new state, like "on", "off", "open", "unlocked"). Use `{{"field": "value"}}` for exact matches and `{{"field": {{"$contains": "text"}}}}` for partial matches. Use `{{}}` to match every event.
     - CRUCIAL DISTINCTION: Differentiate between the *task's execution time* (`run_at`) and the *event's time* mentioned in the prompt. A task to arrange a future event (e.g., 'book a flight for next month', 'schedule a meeting for Friday') should be executed *now* to make the arrangement. Therefore, its `run_at` should be null, since setting run_at to null makes the task run immediately. The future date belongs in the task `description`.
     - Ambiguity: Phrases like "weekly hourly" are ambiguous. Interpret "weekly" as the frequency and ignore "hourly".
     - Use the current time and user's timezone to resolve relative dates like "tomorrow", "next Friday at 2pm", etc. correctly.
@@ -94,7 +98,8 @@ Your JSON Output:
     "type": "recurring",
     "frequency": "weekly",
     "days": ["Friday"],
-    "time": "09:00"
+    "time": "09:00",
+    "window": "morning"
   }}
 }}
 
@@ -153,6 +158,20 @@ Your JSON Output:
     "time": "08:30"
   }}
 }}
+
+Example 7: (Recurring Task every few minutes or hours)
+User Prompt: "every 10 minutes check the library page for new opening hours"
+Your JSON Output:
+{{
+  "name": "Watch library opening hours",
+  "description": "Check the library page every 10 minutes and tell me when the opening hours change.",
+  "priority": 1,
+  "schedule": {{
+    "type": "recurring",
+    "frequency": "interval",
+    "interval_minutes": 10
+  }}
+}}
 """
 
 
@@ -176,10 +195,18 @@ Core Directives:
 9.  Clarifying questions are a LAST RESORT. Only ask when the goal truly cannot be planned because essential information is missing AND no available tool (memory, search, contacts, email, calendar...) could find it during execution. When you ask, return an empty `plan` and one to three short `clarifying_questions`. In every other case return `"clarifying_questions": []` and a complete plan, making reasonable assumptions.
 10. Watch jobs (optional): When the user wants to be told, or wants something done, when a condition becomes true ("tell me when...", "let me know if...", "check every hour whether...") and the check itself only needs read-only tools (search, web pages, weather, news, reading email or calendar), you may add a `script` object so each check runs as a short Python 3 script with NO AI model. Script rules:
     - Start with `from sentient_tools import tools, result`. Call read-only functions from the list below as `tools.<function_name>(argument=value)`; each returns that function's JSON result (a dict or list). Never call functions that send, write, delete or buy.
-    - Use only the Python standard library. Keep it short, and handle missing keys so the script does not crash.
+    - Use only the Python standard library (never `requests` or `bs4`; read a web page with `tools.web_fetch(url=...)`, using the exact web address from the request). Keep it short, and handle missing keys so the script does not crash.
+    - What these functions return (read only these keys; there is no "html", "text" or "body"):
+      `tools.web_fetch(url=...)` -> {{"url", "title", "content" (the page's readable text), "truncated"}}
+      `tools.web_search(query=...)` -> {{"query", "provider", "results": [{{"title", "url", "snippet"}}]}}
+      `tools.news_search(query=...)` and `tools.news_top_headlines()` -> {{"provider", "articles": [{{"title", "source", "url", "published_at", "summary"}}]}}
+      A function that fails stops the script with an error, so never check its result for one.
+    - The script runs once per check and Sentient runs it again on the schedule. Scripts that break these rules are rejected: never use `while True`, `time.sleep` or `tools.time_sleep`, and never call memory functions (`memory_recall`, `memory_remember`).
+    - For "changed" and "noteworthy", Sentient remembers the last result and compares for you: return only the current value (never `{{"alert": ...}}`), and never store or compare it yourself.
     - `"condition": "alert"`: finish with `result({{"alert": True, "message": "What the user should know"}})` when the condition is met, otherwise `result({{"alert": False}})`.
-    - `"condition": "changed"`: finish with `result(value)` where `value` is the small thing being watched (a price, a status, a list of titles); the job acts when it differs from the previous check.
-    - `"condition": "every_run"`: finish with `result(value)` or print the report; the job acts after every check that produced something, even when it is the same as last time. Use it only when the user wants a report on every run.
+    - `"condition": "noteworthy"`: finish with `result(value)` where `value` is what is being watched; when it differs from the previous check, a small AI check decides whether the change matters before acting. This is the default for watching a page, a feed or the news ("watch this page", "tell me about new posts"), where small changes (times, counters, ads) are noise. To watch a page, return its whole `content`, never only its title, first line or first characters, so something new anywhere on the page is noticed.
+    - `"condition": "changed"`: like "noteworthy" with no AI check: the job acts on any difference. Use it for one exact value (a price, a status). If the user wants to hear about any change at all, use "changed".
+    - `"condition": "every_run"`: finish with `result(value)` or print the report; the job acts after every check that produced something, even when it is the same as last time. Use it only when the user asks for a report on every run, never to watch for something new ("watch", "track", "monitor", "tell me when").
     - `"then": "notify"` sends the alert message to the user. `"then": "run"` starts a normal run of your `plan` each time the condition fires, with the script result as its context; use it when real work must follow (writing, summarizing, sending).
     - If the schedule above is not already recurring or triggered, also return a `schedule`, for example {{"type": "recurring", "frequency": "interval", "interval_minutes": 60}} for "every hour" (minimum 5 minutes), or a daily/weekly schedule.
     - For `"then": "notify"` the `plan` may be one step describing the check. Do not use a script when the check needs judgement or tools that are not read-only; plan a normal task instead.
@@ -203,7 +230,7 @@ Your output MUST be a single, valid JSON object that follows this exact schema:
 }}
 
 For a watch job (directive 10) add these keys to the same object:
-  "script": {{"code": "from sentient_tools import tools, result\\n...", "condition": "alert, changed or every_run", "then": "notify or run"}},
+  "script": {{"code": "from sentient_tools import tools, result\\n...", "condition": "alert, noteworthy, changed or every_run", "then": "notify or run"}},
   "schedule": {{"type": "recurring", "frequency": "interval", "interval_minutes": 60}}
 Leave both keys out for every other task.
 
@@ -226,6 +253,7 @@ You will be provided with a JSON object containing the full context of a complet
 - `plan`: The sequence of steps the executor agent was supposed to follow.
 - `execution_log`: A detailed, timestamped log of the agent's tool calls, tool results and final answer.
 - `aggregated_results` (for swarm tasks): A list of final outputs from parallel worker agents.
+- `checked_outcome` (when present): what Sentient checked really happened. It is the truth: if it says something failed, the summary says so plainly, whatever the log or the final answer claims.
 
 **Your Task:**
 Based on the provided context, you must generate a final report that summarizes what was accomplished.
@@ -377,6 +405,12 @@ RETRY_NOTE = (
     "the remaining steps, then give your final answer."
 )
 
+PAUSE_RESUMED_NOTE = (
+    "The user paused this task while you were executing this plan and has now resumed it. Everything above this "
+    "message already happened. Continue from where you left off: do not repeat steps whose tool results are "
+    "already shown, finish the remaining steps, then give your final answer."
+)
+
 RESUME_NOTE = (
     "The application was restarted while you were executing this plan. Everything above this message "
     "already happened. Continue from where you left off: do not repeat steps whose tool results are "
@@ -409,13 +443,23 @@ def build_executor_prompt(
     trigger_event_data: dict | None,
     memories: list[str],
     tool_map: dict[str, list[str]],
+    earlier: str = "",
+    mark_outside_content: bool = False,
+    trigger_source: str = "",
+    confirmed: str = "",
 ) -> str:
+    """``earlier``: what the last runs of a recurring task found and its notepad (``tasks/continuity.py``).
+    ``confirmed``: what the user confirmed in a routine's setup checklist (``tasks/checklist.py``, #161)."""
     trigger_section = ""
     if trigger_event_data:
+        data = json.dumps(trigger_event_data, indent=2, default=str)[:12000]
+        if mark_outside_content:  # an email or webhook body someone else wrote (ADR 0023)
+            data = mark_outside(data, trigger_source or "the event that started this task")
         trigger_section = (
             "**Triggering Event Data (Your primary context for this run):**\n---BEGIN TRIGGER DATA---\n"
-            f"{json.dumps(trigger_event_data, indent=2, default=str)[:12000]}\n---END TRIGGER DATA---\n\n"
+            f"{data}\n---END TRIGGER DATA---\n\n"
         )
+    outside_rule = f"11. **Outside content:** {OUTSIDE_RULE.removeprefix('- ')}\n" if mark_outside_content else ""
     context = {k: v for k, v in (original_context or {}).items() if k not in {"auto_approve"}}
     context_str = json.dumps(context, indent=2, default=str)[:8000] if context else "No original context provided."
     memory_section = ""
@@ -431,8 +475,10 @@ def build_executor_prompt(
         f"Your task ID is '{task_id}' and the current run ID is '{run_id}'.\n\n"
         f"The original context that triggered this plan is:\n---BEGIN CONTEXT---\n{context_str}\n---END CONTEXT---\n\n"
         f"**Primary Objective:** '{objective}'\n\n"
+        f"{confirmed}"
         f"**The Plan to Execute:**\n{_plan_lines(plan)}\n\n"
         f"**Plan tools and the functions you can call for them:**\n{tools_section}\n\n"
+        f"{earlier}"
         "**EXECUTION STRATEGY:**\n"
         "1.  **Think Step-by-Step:** Before each action, briefly decide what you are about to do and why.\n"
         "2.  **Execution Flow:** You MUST start by executing the first step of the plan. Do not summarize the plan or provide a final answer until you have executed all steps. Follow the plan sequentially. SEARCH FOR ANY RELEVANT CONTEXT THAT YOU NEED TO COMPLETE THE EXECUTION.\n"
@@ -444,6 +490,7 @@ def build_executor_prompt(
         "8.  **Files:** `file_write` saves into the user's Sentient files folder. Use the exact file names the task asks for.\n"
         "9.  **Scope:** Only do this occurrence of the task. Never create new tasks, reminders or schedules; the scheduler handles recurrence.\n"
         "10. **Provide a Final, Detailed Answer:** ONLY after all steps are completed, reply with a final message (not a tool call) that tells the user what you did and the outcome, including any file names or links you created.\n"
+        f"{outside_rule}"
         "\nNow, begin your work. Start executing the plan, beginning with Step 1."
     )
 

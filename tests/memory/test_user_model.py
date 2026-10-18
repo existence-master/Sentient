@@ -20,12 +20,12 @@ async def _seed(app) -> dict[str, dict]:
     app.fake.json_replies.append(
         {
             "operations": [
-                {"op": "add", "dimension": "communication", "statement": "Sarthak prefers short, direct answers.",
+                {"op": "add", "dimension": "communication", "statement": "Maya prefers short, direct answers.",
                  "confidence": 0.6, "evidence": ["m1"]},
                 {"op": "add", "dimension": "routines", "statement": "The user works late into the night.",
                  "confidence": "high", "evidence": "m2, f999"},
             ],
-            "summary": "Sarthak is a night owl who likes brevity.",
+            "summary": "Maya is a night owl who likes brevity.",
         }
     )
     counts = await app.user_model.refresh()
@@ -55,13 +55,13 @@ async def test_refresh_adds_insights_with_evidence_and_summary(app):
     short, late = ins["short"], ins["late"]
     assert short["status"] == "active" and short["source"] == "inferred" and short["confidence"] == 0.6
     assert short["evidence"][0]["kind"] == "message" and "short" in short["evidence"][0]["quote"]
-    assert late["statement"] == "Sarthak works late into the night."  # "The user" personalised
+    assert late["statement"] == "Maya works late into the night."  # "The user" personalised
     assert late["confidence"] == 0.7 and len(late["evidence"]) == 1  # unknown ref f999 ignored
     state = await app.user_model.get_state()
-    assert state["summary"] == "Sarthak is a night owl who likes brevity." and state["updated_at"]
+    assert state["summary"] == "Maya is a night owl who likes brevity." and state["updated_at"]
     assert events and events[-1]["data"]["summary_changed"] is True and events[-1]["data"]["insights"] == 2
     system = app.fake.calls[-1]["messages"][0]["content"]
-    assert "work_style" in system and "Sarthak" in system
+    assert "work_style" in system and "Maya" in system
 
     # nothing new since the last refresh: no model call
     calls = len(app.fake.calls)
@@ -77,7 +77,7 @@ async def test_support_contradict_dispute_retire(app):
     app.fake.json_replies.append(
         {"operations": [
             {"op": "support", "id": short["id"], "evidence": ["m1"]},
-            {"op": "add", "dimension": "communication", "statement": "Sarthak prefers short direct answers",
+            {"op": "add", "dimension": "communication", "statement": "Maya prefers short direct answers",
              "evidence": ["m1"]},  # duplicate of an existing insight -> treated as support
         ]}
     )
@@ -113,7 +113,7 @@ async def test_support_contradict_dispute_retire(app):
     # a retired insight is not re-added by a later refresh
     await _say(app, "coding at night again")
     app.fake.json_replies.append(
-        {"operations": [{"op": "add", "dimension": "routines", "statement": "Sarthak works late into the night.",
+        {"operations": [{"op": "add", "dimension": "routines", "statement": "Maya works late into the night.",
                          "evidence": ["m1"]}]}
     )
     assert (await um.refresh())["added"] == 0
@@ -152,16 +152,16 @@ async def test_answering_questions_updates_insight_and_stores_fact(app):
         await um._ask(i)
     q_short, q_late = sorted((await um.get_state())["questions"], key=lambda q: q["insight_id"] != ins["short"]["id"])
 
-    llm.json_replies.append({"verdict": "rewrite", "statement": "Sarthak wants detail on technical topics.",
-                             "fact": "Sarthak wants detailed answers on technical topics."})
+    llm.json_replies.append({"verdict": "rewrite", "statement": "Maya wants detail on technical topics.",
+                             "fact": "Maya wants detailed answers on technical topics."})
     out = await um.answer_question(q_short["id"], "Only for casual stuff; go deep on technical things")
     assert out["verdict"] == "rewrite"
     got = await um.get_insight(ins["short"]["id"])
-    assert got["statement"] == "Sarthak wants detail on technical topics."
+    assert got["statement"] == "Maya wants detail on technical topics."
     assert (got["status"], got["source"]) == ("confirmed", "user")
     assert got["evidence"][-1]["kind"] == "feedback"
     facts = await app.memory.list_facts(source="user_model")
-    assert [f["content"] for f in facts] == ["Sarthak wants detailed answers on technical topics."]
+    assert [f["content"] for f in facts] == ["Maya wants detailed answers on technical topics."]
 
     class Broken(Exception):
         pass
@@ -186,7 +186,7 @@ async def test_malformed_refresh_replies_are_tolerated(app):
     um, llm = app.user_model, app.fake
     await _say(app, "I always batch my email twice a day")
     llm.json_replies.append(
-        [{"action": "create", "dimension": "Work Style", "insight": "Sarthak batches email twice a day.",
+        [{"action": "create", "dimension": "Work Style", "insight": "Maya batches email twice a day.",
           "confidence": "95%", "evidence": [{"ref": "M1"}]},
          "garbage", {"op": "explode"}, {"op": "support", "id": "nope"}, {"op": "add", "statement": "hi"}]
     )
@@ -222,14 +222,14 @@ async def test_context_for_budget_and_relevance(app):
 
     app.fake.embed = embed
     assert await um.context_for("anything") == ""
-    await um.add_insight("Sarthak is vegetarian", "preferences")
-    for statement in ("Sarthak loves hiking mountains on weekends", "Sarthak prefers green tea over coffee"):
+    await um.add_insight("Maya is vegetarian", "preferences")
+    for statement in ("Maya loves hiking mountains on weekends", "Maya prefers green tea over coffee"):
         await um._insert(statement, "preferences", confidence=0.5, status="active", source="inferred", evidence=[])
     cfg.context_min_similarity = 0.5
     calls = len(app.fake.calls) + len(app.fake.text_calls)
     block = await um.context_for("any hiking mountains weekends plans?")
     assert len(app.fake.calls) + len(app.fake.text_calls) == calls  # no model call
-    assert block.startswith("## What I have learned about Sarthak")
+    assert block.startswith("## What I have learned about Maya")
     assert "vegetarian" in block and "hiking" in block and "green tea" not in block
     assert "(likely)" in block
     assert len(block) <= cfg.context_max_chars
@@ -247,15 +247,16 @@ async def test_turn_trigger_respects_count_and_daily_limit(app):
     cfg.refresh_after_turns, cfg.min_refresh_hours = 2, 24
     base = datetime.now(UTC) - timedelta(days=3)
     await _say(app, "I like to plan my week on Sunday evenings")
-    reply = {"operations": [], "summary": "Sarthak plans ahead."}
+    reply = {"operations": [], "summary": "Maya plans ahead."}
     app.fake.json_replies.append(reply)
     assert await um.on_turn_completed({"session_id": "s"}, now=base) is None
     assert await um.on_turn_completed({"session_id": "s"}, now=base) is not None
-    assert (await um.get_state())["summary"] == "Sarthak plans ahead."
+    assert (await um.get_state())["summary"] == "Maya plans ahead."
     calls = len(app.fake.calls)
     for _ in range(3):
         assert await um.on_turn_completed({}, now=base + timedelta(hours=1)) is None
     assert len(app.fake.calls) == calls  # daily limit
+    await _say(app, "I batch my errands on Saturday mornings")  # new evidence: the first message was already read
     app.fake.json_replies.append(reply)
     assert await um.on_turn_completed({}, now=base + timedelta(hours=25)) is not None
     assert len(app.fake.calls) == calls + 1
@@ -264,13 +265,13 @@ async def test_turn_trigger_respects_count_and_daily_limit(app):
 
 
 async def test_user_model_ask_tool(app):
-    await app.user_model.add_insight("Sarthak prefers window seats on flights", "preferences")
-    await add_fact(app.memory, "Sarthak is flying to Berlin in October")
+    await app.user_model.add_insight("Maya prefers window seats on flights", "preferences")
+    await add_fact(app.memory, "Maya is flying to Berlin in October")
     app.fake.text_replies.append("A window seat, based on his stated preference.")
     ctx = app.agent.tool_context(None, "desktop")
     out = await app.registry.get("user_model_ask").call(ctx, {"question": "Which seat should I book on the flight?"})
     assert out["answer"].startswith("A window seat")
-    assert "Sarthak prefers window seats on flights" in out["insights"]
+    assert "Maya prefers window seats on flights" in out["insights"]
     prompt = app.fake.text_calls[-1]["messages"][1]["content"]
     assert "window seats" in prompt and "Which seat" in prompt
     assert app.registry.get("user_model_ask").risk == Risk.read

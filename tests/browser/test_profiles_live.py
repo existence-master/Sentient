@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import subprocess
 import sys
 import time
@@ -11,6 +12,7 @@ import time
 import httpx
 import pytest
 
+from sentient import paths
 from sentient.browser import tools as bt
 from sentient.browser.service import _engine_paths, profile_dir
 from sentient.config.schema import BrowserProfileConfig
@@ -123,6 +125,20 @@ async def own_browser(tmp_path):
     if exe is None:
         pytest.skip("no Edge or Chrome installed")
     data = tmp_path / "user-browser"
+    user_downloads = tmp_path / "user-downloads"
+    user_downloads.mkdir(parents=True, exist_ok=True)
+    prefs_dir = data / "Default"
+    prefs_dir.mkdir(parents=True, exist_ok=True)
+    prefs_file = prefs_dir / "Preferences"
+    prefs_file.write_text(
+        json.dumps({
+            "download": {
+                "default_directory": str(user_downloads.resolve()),
+                "prompt_for_download": False,
+            }
+        }),
+        encoding="utf-8",
+    )
     args = [exe, "--headless=new", "--remote-debugging-port=0", f"--user-data-dir={data}", "--no-first-run",
             "--no-default-browser-check", "about:blank"]
     if sys.platform.startswith("linux"):
@@ -151,7 +167,7 @@ async def own_browser(tmp_path):
             proc.wait(timeout=15)
 
 
-async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser, site, own_browser):
+async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser, site, own_browser, tmp_path):
     port = own_browser
     app = browser.app
     await browser.create_profile("mine", kind="attach", endpoint=f"localhost:{port}")
@@ -164,7 +180,43 @@ async def test_attach_to_a_running_browser_and_detach_leaves_it_running(browser,
     assert status["attached"] and status["profile"] == "mine" and status["engine"] is None
     assert len(status["tabs"]) >= 2  # the user's own tab plus the one Sentient opened for itself
 
+    user_page = next(page for page in browser._context.pages if page not in browser._download_pages)
+    await user_page.goto(f"{site}/download.html")
+    downloads_before = browser._download_tasks.copy()
+    await user_page.get_by_role("link", name="Download report").click()
+    downloaded_file = tmp_path / "user-downloads" / "report.txt"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not (
+        downloaded_file.exists() and not (tmp_path / "user-downloads" / "report.txt.crdownload").exists()
+    ):
+        await asyncio.sleep(0.1)
+    folder = downloaded_file.parent
+    folder_contents = sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+    assert downloaded_file.exists(), f"download missing; folder has {folder_contents}"
+    assert downloaded_file.read_text(encoding="utf-8") == "Sentient browser download test.\n"
+    assert browser._download_tasks == downloads_before
+
+    download_page = await bt.browser_open.call(ctx, {"url": f"{site}/download.html", "profile": "mine"})
+    download_ref = next(
+        line.split("]")[0][1:]
+        for line in download_page["text"].splitlines()
+        if 'link "Download report"' in line
+    )
+    download_result = await bt.browser_click.call(ctx, {"ref": download_ref})
+    download_paths = download_result.get("downloads", [])
+    if not download_paths:
+        assert download_result["downloads_in_progress"] == ["report.txt"]
+        pending = [task for task in browser._download_tasks if not task.done()]
+        assert pending
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        later_result = await bt.browser_snapshot.call(ctx, {})
+        download_paths = later_result["downloads"]
+    assert download_paths == ["downloads/report.txt"]
+    saved = paths.files_dir() / download_paths[0]
+    assert saved.read_text(encoding="utf-8") == "Sentient browser download test.\n"
+
     # the same safety applies inside the user's browser
+    snap = await bt.browser_open.call(ctx, {"url": f"{site}/index.html", "profile": "mine"})
     app.config.tools.approvals.mode = "ask"
     text = snap["text"]
     pw = next(line.split("]")[0][1:] for line in text.splitlines() if 'textbox "Password"' in line)
@@ -200,3 +252,42 @@ async def test_writes_in_unload_handlers_survive_a_switch(browser, site):
     await bt.browser_open.call(ctx, {"url": f"{site}/help.html", "profile": "default"})
     stored = await browser._active.evaluate("() => [localStorage.getItem('bye'), localStorage.getItem('hide')]")
     assert stored == ["before", "yes"]
+
+
+async def test_attached_browser_target_blank_download_saves_non_zero_file(browser, site, own_browser):
+    port = own_browser
+    app = browser.app
+    await browser.create_profile("popup", kind="attach", endpoint=f"localhost:{port}")
+    ctx = make_ctx(app)
+
+    snap_open = await bt.browser_open.call(ctx, {"url": f"{site}/download.html", "profile": "popup"})
+    assert snap_open.get("profile") == "popup"
+    await browser._active.evaluate(
+        "() => {"
+        "  const a = document.createElement('a');"
+        "  a.href = '/direct-download';"
+        "  a.target = '_blank';"
+        "  a.textContent = 'Download popup report';"
+        "  document.body.appendChild(a);"
+        "}"
+    )
+    snap = await bt.browser_snapshot.call(ctx, {})
+    ref = next(
+        line.split("]")[0][1:]
+        for line in snap["text"].splitlines()
+        if 'link "Download popup report"' in line
+    )
+    res = await bt.browser_click.call(ctx, {"ref": ref})
+    download_paths = res.get("downloads", [])
+    if not download_paths:
+        pending = [task for task in browser._download_tasks if not task.done()]
+        if pending:
+            await asyncio.wait_for(asyncio.gather(*pending), timeout=10)
+        later = await bt.browser_snapshot.call(ctx, {})
+        download_paths = later.get("downloads", [])
+    assert download_paths == ["downloads/direct-report.txt"]
+    saved = paths.files_dir() / download_paths[0]
+    assert saved.exists()
+    assert saved.stat().st_size > 0
+    assert saved.read_text(encoding="utf-8") == "Direct browser-open download test.\n"
+    assert "download_errors" not in res

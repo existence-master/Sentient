@@ -7,6 +7,7 @@ export const CH = {
   openExternal: 'sentient:open-external',
   openPath: 'sentient:open-path',
   showNotification: 'sentient:show-notification',
+  closeApprovalNotification: 'sentient:close-approval-notification',
   setLaunchAtLogin: 'sentient:set-launch-at-login',
   getLaunchAtLogin: 'sentient:get-launch-at-login',
   syncPrefs: 'sentient:sync-prefs',
@@ -21,6 +22,8 @@ export const CH = {
   pickFiles: 'sentient:pick-files',
   isFocused: 'sentient:is-focused',
   openFile: 'sentient:open-file',
+  showInFolder: 'sentient:show-in-folder',
+  openFolderFile: 'sentient:open-folder-file',
   getDevicePrivacy: 'sentient:get-device-privacy',
   setDevicePrivacy: 'sentient:set-device-privacy',
   captureNotice: 'sentient:capture-notice',
@@ -37,5 +40,12 @@ export const CH = {
   dictationCommand: 'sentient:dictation-command',
   dictationEvent: 'sentient:dictation-event',
   getShortcuts: 'sentient:get-shortcuts',
-  setShortcut: 'sentient:set-shortcut'
+  setShortcut: 'sentient:set-shortcut',
+  askState: 'sentient:ask-state',
+  askGetState: 'sentient:ask-get-state',
+  askCopy: 'sentient:ask-copy',
+  askReplace: 'sentient:ask-replace',
+  askClose: 'sentient:ask-close',
+  askOpenChat: 'sentient:ask-open-chat',
+  askResize: 'sentient:ask-resize'
 } as const

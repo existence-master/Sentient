@@ -1,11 +1,12 @@
 /**
- * "Rules for apps and tools": lasting Allow / Ask / Never choices per app or per tool
+ * "Rules for apps and tools": lasting Allow / Only if I asked / Ask / Hand it to me / Never choices per app or per tool
  * (`tools.approvals.rules`, docs/API.md section 2, ADR 0016). "Default" means no rule. A rule made from a chat
- * message (#130) says so: "From your message on Oct 10, 2026".
+ * message (#130) says so: "From your message on Oct 10, 2026"; one made by answering "Always allow" (#139) says
+ * "From your answer on ...".
  */
 import { IconChevronDown, IconShoppingCart, IconTrash } from '@tabler/icons-react'
 import { useMemo, useState, type ReactNode } from 'react'
-import { Alert, Badge, Button, FormSection, SegmentedControl, Skeleton } from '@/components/ui'
+import { Alert, Badge, Button, FormSection, Select, Skeleton } from '@/components/ui'
 import { useConfigEditor } from '@/hooks/config'
 import { useTools } from '@/hooks/core'
 import { errorMessage, isNotImplemented } from '@/lib/api'
@@ -15,16 +16,20 @@ import { ToolTile } from '../../tasks/tools'
 
 type Choice = ApprovalRule | 'default'
 
-const CHOICES: Array<{ value: Choice; label: string }> = [
-  { value: 'default', label: 'Default' },
-  { value: 'allow', label: 'Allow' },
-  { value: 'ask', label: 'Ask' },
-  { value: 'never', label: 'Never' }
+const CHOICES: Array<{ value: Choice; label: string; description: string }> = [
+  { value: 'default', label: 'Default', description: 'Follows the setting above.' },
+  { value: 'allow', label: 'Allow', description: 'Goes ahead without asking. Purchases still ask.' },
+  { value: 'if_asked', label: 'Only if I asked', description: 'Goes ahead when your message in a chat asks for it. Asks otherwise, in tasks too.' },
+  { value: 'ask', label: 'Ask', description: 'Always asks first.' },
+  { value: 'hand_off', label: 'Hand it to me', description: 'Prepares it, like a draft, and you do the last step yourself.' },
+  { value: 'never', label: 'Never', description: "Sentient can't use it at all." }
 ]
 
 const RULE_WORDS: Record<ApprovalRule, string> = {
   allow: 'goes ahead without asking',
+  if_asked: 'goes ahead only when you ask for it',
   ask: 'always asks first',
+  hand_off: 'is prepared for you to finish yourself',
   never: "can't be used"
 }
 
@@ -32,6 +37,10 @@ const RULE_WORDS: Record<ApprovalRule, string> = {
 function OriginNote({ origin }: { origin?: RuleOrigin }) {
   if (!origin) return null
   const day = parseDate(origin.at)?.toLocaleDateString(undefined, { dateStyle: 'medium' })
+  if (origin.source === 'approval') {
+    // "Always allow" chosen when Sentient asked (#139)
+    return <span className="block truncate text-xs text-fg-subtle">{day ? `From your answer on ${day}` : 'From your answer when Sentient asked'}</span>
+  }
   return (
     <span className="block truncate text-xs text-fg-subtle" title={origin.said ? `You said: "${origin.said}"` : undefined}>
       {day ? `From your message on ${day}` : 'From your message in a chat'}
@@ -122,7 +131,11 @@ export function ApprovalRulesSection({ query }: { query: string }) {
       <FormSection title="Rules for apps and tools" description={description}>
         <div className="flex items-start gap-2.5 px-4 py-3 text-xs text-fg-muted">
           <IconShoppingCart size={15} className="mt-px shrink-0 text-fg-subtle" />
-          <span>Purchases always ask, whatever you choose here. Never hides that app or tool from Sentient completely.</span>
+          <span>
+            Purchases always ask, whatever you choose here. Only if I asked counts only what you say in a chat, never
+            tasks or background work. Hand it to me never does the last step. Never hides that app or tool from
+            Sentient completely.
+          </span>
         </div>
         {nothing && <div className="px-4 py-6 text-center text-sm text-fg-subtle">{q ? 'No apps or tools match your search.' : 'No apps or tools to set rules for yet.'}</div>}
         {plugins.apps.length > 0 && <GroupHeading>Apps and services</GroupHeading>}
@@ -205,12 +218,14 @@ function PluginRows({
             {appRule && <OriginNote origin={origins[plugin.id]} />}
           </span>
         </button>
-        <SegmentedControl
+        <Select<Choice>
           size="sm"
           aria-label={`Rule for ${plugin.display_name}`}
           value={appRule ?? 'default'}
-          onChange={(v) => onChange(plugin.id, v)}
+          onValueChange={(v) => onChange(plugin.id, v)}
           options={CHOICES}
+          className="w-40 shrink-0"
+          contentClassName="w-72"
         />
       </div>
       {open && (
@@ -228,13 +243,14 @@ function PluginRows({
                   )}
                   {own && <OriginNote origin={origins[t.name]} />}
                 </div>
-                <SegmentedControl
+                <Select<Choice>
                   size="sm"
                   aria-label={`Rule for ${toolLabel(plugin, t)}`}
                   value={own ?? 'default'}
-                  onChange={(v) => onChange(t.name, v, plugin.id)}
+                  onValueChange={(v) => onChange(t.name, v, plugin.id)}
                   options={CHOICES}
-                  className={cn(!own && effective && 'opacity-80')}
+                  className={cn('w-40 shrink-0', !own && effective && 'opacity-80')}
+                  contentClassName="w-72"
                 />
               </div>
             )

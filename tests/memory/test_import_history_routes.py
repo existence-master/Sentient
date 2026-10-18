@@ -45,7 +45,7 @@ def _make_pdf(path):
 @pytest.mark.parametrize("suffix", [".txt", ".docx", ".pdf"])
 async def test_import_document_adds_without_wiping(app, tmp_path, suffix):
     mem, llm = app.memory, app.fake
-    keep = await mem.remember("Sarthak lives in Pune", use_llm=False)
+    keep = await mem.remember("Maya lives in Pune", use_llm=False)
     path = tmp_path / f"resume{suffix}"
     if suffix == ".txt":
         path.write_text("I am a backend engineer who knows Rust.", encoding="utf-8")
@@ -53,13 +53,13 @@ async def test_import_document_adds_without_wiping(app, tmp_path, suffix):
         _make_docx(path)
     else:
         _make_pdf(path)
-    llm.json_replies.append({"facts": ["Sarthak is a backend engineer", "Sarthak knows Rust"]})
-    for content in ("Sarthak is a backend engineer", "Sarthak knows Rust"):
+    llm.json_replies.append({"facts": ["Maya is a backend engineer", "Maya knows Rust"]})
+    for content in ("Maya is a backend engineer", "Maya knows Rust"):
         llm.json_replies.append(
             {"action": "ADD", "fact_id": None, "content": content,
              "analysis": {"topics": ["Work & Learning"], "memory_type": "long-term", "duration": None}}
         )
-    out = await mem.import_document(path, username="Sarthak")
+    out = await mem.import_document(path, username="Maya")
     assert out == {"added": 2, "updated": 0, "skipped": 0, "pending": 2, "source": f"file:resume{suffix}"}
     extraction_input = [c for c in llm.calls if c.get("json")][-3]["messages"][1]["content"]
     assert "backend engineer" in extraction_input
@@ -67,7 +67,7 @@ async def test_import_document_adds_without_wiping(app, tmp_path, suffix):
     # imported facts wait for the user's review (issue #137) before Sentient uses them
     assert await mem.list_facts(source=f"file:resume{suffix}") == []
     held = await mem.pending_facts()
-    assert {f["content"] for f in held} == {"Sarthak is a backend engineer", "Sarthak knows Rust"}
+    assert {f["content"] for f in held} == {"Maya is a backend engineer", "Maya knows Rust"}
     assert {f["review"]["from"] for f in held} == {f"resume{suffix}"}
     assert all("backend engineer" in f["review"]["snippet"] for f in held)
 
@@ -82,13 +82,13 @@ async def test_summaries_job_marks_messages(app):
         await store.add_message(sid, "assistant", f"answer {i}")
     await store.execute("UPDATE messages SET created_at = ?", (old,))
     await store.execute("UPDATE sessions SET updated_at = ?", (old,))
-    llm.text_replies = ["Sarthak asked me about the marketing plan and I answered.", "We wrapped up the plan."]
+    llm.text_replies = ["Maya asked me about the marketing plan and I answered.", "We wrapped up the plan."]
     created = await app.evolution.summarize_tick()
     # 8 messages, chunks of 6: one full chunk + an idle partial chunk of 2
     assert len(created) == 2
     left = await store.fetchone("SELECT COUNT(*) AS n FROM messages WHERE summarized = 0")
     assert left["n"] == 0
-    assert "Sarthak" in llm.text_calls[0]["messages"][0]["content"]
+    assert "Maya" in llm.text_calls[0]["messages"][0]["content"]
     hits = await app.memory.episodic.search("marketing plan")
     assert hits and hits[0]["session_id"] == sid
     log = await store.fetchall("SELECT kind FROM evolution_log")
@@ -113,7 +113,7 @@ async def test_history_tools(app):
     assert ts["count"] == 2 and "sticker" in ts["conversation"]
     bad = await reg.get("history_time_search").call(ctx, {"start_date": "yesterday", "end_date": "today"})
     assert "error" in bad
-    await app.memory.episodic.add_summary(sid, "I helped Sarthak find his router password.", [
+    await app.memory.episodic.add_summary(sid, "I helped Maya find his router password.", [
         {"id": "x", "created_at": "2026-09-01T10:00:00+00:00"}, {"id": "y", "created_at": "2026-09-01T10:05:00+00:00"},
     ])
     sem = await reg.get("history_semantic_search").call(ctx, {"query": "router password"})
@@ -138,10 +138,10 @@ def client(config, isolated_home, monkeypatch):
 def test_memory_routes(client):
     llm = client.llm
     llm.json_replies.append(
-        {"action": "ADD", "fact_id": None, "content": "Sarthak's sister is Riya",
+        {"action": "ADD", "fact_id": None, "content": "Maya's sister is Riya",
          "analysis": {"topics": ["Relationships & Social Life"], "memory_type": "long-term", "duration": None}}
     )
-    created = client.post("/api/memories", json={"content": "Sarthak's sister is Riya"}).json()
+    created = client.post("/api/memories", json={"content": "Maya's sister is Riya"}).json()
     assert created["action"] == "ADD"
     mid = created["id"]
     listed = client.get("/api/memories").json()
@@ -151,23 +151,23 @@ def test_memory_routes(client):
     assert len(topics) == 8 and next(t for t in topics if t["name"] == "Relationships & Social Life")["count"] == 1
 
     llm.json_replies.append({"topics": ["Relationships & Social Life"], "memory_type": "long-term", "duration": None})
-    upd = client.put(f"/api/memories/{mid}", json={"content": "Sarthak's younger sister is Riya"}).json()
-    assert upd["id"] == mid and upd["content"] == "Sarthak's younger sister is Riya"
+    upd = client.put(f"/api/memories/{mid}", json={"content": "Maya's younger sister is Riya"}).json()
+    assert upd["id"] == mid and upd["content"] == "Maya's younger sister is Riya"
     assert client.put("/api/memories/9999", json={"content": "x"}).status_code == 404
 
     graph = client.get("/api/memories/graph").json()
     assert graph["nodes"][0]["id"] == mid and graph["links"] == []
 
-    llm.json_replies.append({"facts": ["Sarthak enjoys sailing"]})
+    llm.json_replies.append({"facts": ["Maya enjoys sailing"]})
     llm.json_replies.append(
-        {"action": "ADD", "fact_id": None, "content": "Sarthak enjoys sailing",
+        {"action": "ADD", "fact_id": None, "content": "Maya enjoys sailing",
          "analysis": {"topics": ["Interests & Lifestyle"], "memory_type": "long-term", "duration": None}}
     )
     imp = client.post("/api/memories/import", files={"file": ("notes.md", b"I enjoy sailing.", "text/markdown")}).json()
     assert imp == {"added": 1, "updated": 0, "skipped": 0, "pending": 1, "source": "file:notes.md"}
     assert client.get("/api/memories/review").json()["items"][0]["from"] == "notes.md"
     assert client.post("/api/memories/import", files={"file": ("x.exe", b"MZ", "application/octet-stream")}).status_code == 400
-    assert client.delete("/api/memories/source/file:notes.md").json() == {"deleted": 1}
+    assert client.delete("/api/memories/source/file:notes.md").json() == {"deleted": 1, "unlinked": 0}
 
     assert client.get("/api/memories/summaries").json() == []
     ws = client.get("/api/memories/workspace").json()

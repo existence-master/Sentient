@@ -25,6 +25,23 @@ export function useTasks() {
   return useQuery({ queryKey: qk.tasks.all, queryFn: api.tasks.list })
 }
 
+/** Routines paused while you were away (#163); `tasks.away` events keep it fresh. */
+export function useAway() {
+  return useQuery({ queryKey: qk.tasks.away, queryFn: api.tasks.away, retry: noRetryWhenMissing })
+}
+
+export function useAwayActions() {
+  const qc = useQueryClient()
+  const refresh = () => {
+    void qc.invalidateQueries({ queryKey: qk.tasks.away })
+    void qc.invalidateQueries({ queryKey: qk.tasks.all })
+  }
+  return {
+    resume: useMutation({ mutationFn: api.tasks.awayResume, onSuccess: refresh }),
+    keep: useMutation({ mutationFn: api.tasks.awayKeep, onSuccess: refresh })
+  }
+}
+
 export function useTask(id: string | undefined) {
   return useQuery({ queryKey: qk.tasks.detail(id ?? ''), queryFn: () => api.tasks.get(id as string), enabled: !!id })
 }

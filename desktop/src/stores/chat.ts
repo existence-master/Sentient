@@ -9,10 +9,10 @@
  */
 import { toast } from 'sonner'
 import { create } from 'zustand'
-import { api, errorMessage } from '@/lib/api'
+import { api, errorMessage, isApiError } from '@/lib/api'
 import { applyAgentEvent, emptyTurn, meterFrom, type AssistantTurnView, type AttachmentView, type TimelineItem, type UserMessageView } from '@/lib/chatFold'
 import { queryClient } from '@/lib/queryClient'
-import type { AgentEvent, ApprovalDecision, ChatEvent, ContextMeter, Session, TranscriptMessage } from '@/lib/types'
+import type { AgentEvent, ApprovalDecision, ChatEvent, ContextMeter, Session, TranscriptMessage, UndoAction, UndoWindowEvent } from '@/lib/types'
 import { uid } from '@/lib/utils'
 import { live } from '@/lib/ws'
 import { qk } from '@/hooks/queryKeys'
@@ -21,6 +21,8 @@ export interface ChatRequestDraft {
   text: string
   attachments?: AttachmentView[]
   model?: string
+  /** Start a new incognito chat (#154). Only used for a chat that has no id yet. */
+  incognito?: boolean
 }
 
 export interface LiveSession {
@@ -49,15 +51,26 @@ interface ChatState {
   resolved: Record<string, string>
   /** session_id -> how full the model's context was after its latest call (#131). Kept after the turn ends. */
   context: Record<string, ContextMeter>
+  /** Incognito chats started in this window (#154), so the view and the cleanup know before the list refetches. */
+  incognito: Record<string, true>
   send: (sessionId: string | null, draft: ChatRequestDraft) => Promise<string>
   cancel: (sessionId: string) => void
   retry: (sessionId: string) => Promise<void>
   respondApproval: (sessionId: string, approvalId: string, decision: ApprovalDecision) => Promise<void>
+  /** Undo, or send now, an email, message or post waiting in its undo window (#142). */
+  /** False when the answer couldn't be sent, so the buttons can be pressed again. */
+  respondUndo: (undoId: string, action: UndoAction) => Promise<boolean>
   handleEvent: (ev: ChatEvent) => void
   dropLive: (key: string) => void
+  /** Close an incognito chat: stop its reply and delete it (#154). */
+  closeIncognito: (sessionId: string) => void
+  /** A chat this window created before its first message (one started with its own model, #312). */
+  adopt: (sessionId: string, opts: { incognito?: boolean }) => void
 }
 
 const pendingKey = (clientId: string) => `pending:${clientId}`
+/** Incognito chats being deleted right now (#154). */
+const closing = new Set<string>()
 
 function patchLive(state: ChatState, key: string, fn: (l: LiveSession) => LiveSession): Partial<ChatState> {
   const cur = state.live[key]
@@ -86,6 +99,7 @@ async function finishTurn(key: string, sessionId: string | null) {
   const persistedReply = rows.length > l.baseCount && rows[rows.length - 1]?.role !== 'user'
   if (!persistedReply && (l.turn.status === 'cancelled' || l.turn.status === 'error')) return
   if (l.unsent?.length || l.user.notSent) return // keep "your queued message wasn't sent" visible until the next send
+  if (l.turn.notices?.length) return // keep "the default model answered instead" (#312) visible until the next send
   store.dropLive(key)
 }
 
@@ -93,6 +107,7 @@ export const useChat = create<ChatState>((set, get) => ({
   live: {},
   resolved: {},
   context: {},
+  incognito: {},
 
   send: async (sessionId, draft) => {
     const clientId = uid()
@@ -127,7 +142,8 @@ export const useChat = create<ChatState>((set, get) => ({
 
     const attachments = (draft.attachments ?? []).map((a) => a.name)
     const wsOk = live.isOpen || (await live.waitOpen(1500))
-    if (wsOk && live.send({ type: 'chat.send', session_id: sessionId ?? undefined, text: draft.text, attachments, model: draft.model, client_id: clientId, channel: 'desktop' })) {
+    const incognito = !sessionId && draft.incognito ? true : undefined
+    if (wsOk && live.send({ type: 'chat.send', session_id: sessionId ?? undefined, text: draft.text, attachments, model: draft.model, client_id: clientId, channel: 'desktop', incognito })) {
       return key
     }
 
@@ -137,14 +153,20 @@ export const useChat = create<ChatState>((set, get) => ({
     void (async () => {
       let currentKey = key
       try {
-        for await (const ev of api.chat.stream({ text: draft.text, session_id: sessionId ?? undefined, attachments, model: draft.model, channel: 'desktop' }, abort.signal)) {
-          if (ev.type === 'session') {
+        for await (const ev of api.chat.stream({ text: draft.text, session_id: sessionId ?? undefined, attachments, model: draft.model, channel: 'desktop', incognito }, abort.signal)) {
+          if (ev.type === 'rule_proposal.updated') {
+            // the card is fetched like on /ws (lib/events.ts)
+            if (ev.data?.session_id) void queryClient.invalidateQueries({ queryKey: qk.ruleProposals(ev.data.session_id) })
+          } else if (ev.type === 'session') {
             get().handleEvent({ ...ev, client_id: clientId })
             currentKey = ev.session_id
           } else {
             get().handleEvent({ ...ev, session_id: ev.session_id ?? get().live[currentKey]?.sessionId ?? undefined } as ChatEvent)
           }
         }
+        // §1: every turn ends with done; settle the reply anyway if the stream closed without one (#334)
+        const left = get().live[currentKey]
+        if (left?.streaming && left.sessionId) get().handleEvent({ type: 'done', content: '', message_id: null, session_id: left.sessionId })
       } catch (err) {
         if ((err as Error)?.name === 'AbortError') {
           get().handleEvent({ type: 'done', content: '', message_id: null, cancelled: true, session_id: get().live[currentKey]?.sessionId })
@@ -188,27 +210,48 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  respondUndo: async (undoId, action) => {
+    toast.dismiss(`undo-${undoId}`)
+    if (live.send({ type: 'undo.respond', undo_id: undoId, action })) return true
+    try {
+      await api.undo.respond(undoId, action)
+      return true
+    } catch (err) {
+      toast.error(action === 'undo' ? "Couldn't undo it" : "Couldn't send it now", {
+        description: isApiError(err) && err.status === 404 ? 'It already went out.' : errorMessage(err)
+      })
+      return false
+    }
+  },
+
   handleEvent: (ev) => {
     const state = get()
     switch (ev.type) {
       case 'hello':
       case 'pong':
         return
+      case 'undo.ack': {
+        if (!ev.done && ev.action === 'undo') toast.message('Too late to undo', { description: 'It already went out.' })
+        return
+      }
       case 'session': {
         const pk = ev.client_id ? pendingKey(ev.client_id) : null
         const pending = pk ? state.live[pk] : undefined
         if (pending && pk) {
           const { [pk]: _moved, ...rest } = state.live
           void _moved
+          const incognito = !!pending.request.incognito
           set({
             live: { ...rest, [ev.session_id]: { ...pending, key: ev.session_id, sessionId: ev.session_id, user: { ...pending.user, pending: false } } },
-            resolved: { ...state.resolved, [pending.clientId]: ev.session_id }
+            resolved: { ...state.resolved, [pending.clientId]: ev.session_id },
+            incognito: incognito ? { ...state.incognito, [ev.session_id]: true } : state.incognito
           })
-          // Show the new chat in the sidebar right away.
+          // Show the new chat in the sidebar right away (an incognito chat is kept out of the list).
+          const now = new Date().toISOString()
           queryClient.setQueryData<Session[]>(qk.sessions, (old) =>
             old?.some((s) => s.id === ev.session_id)
               ? old
-              : [{ id: ev.session_id, title: null, channel: 'desktop', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }, ...(old ?? [])]
+              : [{ id: ev.session_id, title: null, channel: 'desktop', created_at: now, updated_at: now, incognito }, ...(old ?? [])]
           )
         } else if (state.live[ev.session_id]) {
           set(patchLive(state, ev.session_id, (l) => ({ ...l, user: { ...l.user, pending: false } })))
@@ -289,6 +332,11 @@ export const useChat = create<ChatState>((set, get) => ({
           if (ev.type === 'error' && !sid) toast.error(ev.message)
           return
         }
+        if (ev.type === 'undo_window') undoToast(ev)
+        if (ev.type === 'tool_result') {
+          const waiting = state.live[key].turn.tools[ev.call_id]?.undo
+          if (waiting) toast.dismiss(`undo-${waiting.undoId}`)
+        }
         const next = applyAgentEvent(state.live[key].turn, ev as AgentEvent)
         const finished = ev.type === 'done'
         if (ev.type === 'user_interjection') {
@@ -299,12 +347,14 @@ export const useChat = create<ChatState>((set, get) => ({
         }
         // "A reply is already in progress." arrives without a turn: settle the optimistic entry.
         const orphanError = ev.type === 'error' && !ev.turn_id && !state.live[key].turn.segments.length
+        // §1: a non-recoverable error ends the reply even if its done never arrives (#334)
+        const fatal = ev.type === 'error' && ev.recoverable === false
         // A stopped reply drops what was queued behind it (steers, §17 dropped turns): show them as not sent.
         const stopped = ev.type === 'done' && ev.cancelled
         set(patchLive(state, key, (l) => ({
           ...l,
           turn: orphanError ? { ...next, status: 'error' } : next,
-          streaming: finished || orphanError ? false : l.streaming,
+          streaming: finished || orphanError || fatal ? false : l.streaming,
           user: { ...l.user, pending: false },
           steers: stopped ? [] : l.steers,
           unsent: stopped ? [...(l.unsent ?? []), ...l.steers] : l.unsent
@@ -314,13 +364,61 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  adopt: (sessionId, opts) => {
+    if (opts.incognito) set({ incognito: { ...get().incognito, [sessionId]: true } })
+  },
+
   dropLive: (key) => {
     const { [key]: removed, ...rest } = get().live
     if (!removed) return
     removed.user.attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl))
     set({ live: rest })
+  },
+
+  closeIncognito: (sessionId) => {
+    if (closing.has(sessionId)) return
+    closing.add(sessionId)
+    get().cancel(sessionId)
+    get().dropLive(sessionId)
+    queryClient.setQueryData<Session[]>(qk.sessions, (old) => old?.filter((s) => s.id !== sessionId))
+    queryClient.removeQueries({ queryKey: qk.messages(sessionId) })
+    const forget = () => {
+      const { [sessionId]: _gone, ...incognito } = get().incognito
+      void _gone
+      const { [sessionId]: _meter, ...context } = get().context
+      void _meter
+      set({ incognito, context })
+    }
+    // the marker stays until the engine confirms, so leaving another page tries again; the engine also deletes it at
+    // shutdown, at the next start and after a while without messages
+    api.sessions
+      .delete(sessionId)
+      .then(forget, (err) => {
+        if (isApiError(err) && err.status === 404) forget()
+        else toast.error("Couldn't delete the incognito chat yet", { description: 'Sentient will delete it when it closes.' })
+      })
+      .finally(() => closing.delete(sessionId))
   }
 }))
+
+/** A toast with Undo while an email, message or post waits to go (#142); the chat shows the same as a card. */
+function undoToast(ev: UndoWindowEvent) {
+  const to = ev.preview?.fields.find((f) => f.label === 'To' || f.label === 'Where')?.value
+  const what = (ev.preview?.title ?? 'Message').toLowerCase()
+  toast(`Sending ${what}${to ? ` to ${to}` : ''}`, {
+    id: `undo-${ev.undo_id}`,
+    description: `It goes in ${ev.seconds} seconds.`,
+    duration: Math.max(1000, new Date(ev.until).getTime() - Date.now()),
+    action: { label: 'Undo', onClick: () => void useChat.getState().respondUndo(ev.undo_id, 'undo') }
+  })
+}
+
+/** True when `sessionId` is an incognito chat this window knows about (#154). */
+export function isIncognito(sessionId: string | null | undefined): boolean {
+  if (!sessionId) return false
+  if (useChat.getState().incognito[sessionId]) return true
+  return !!queryClient.getQueryData<Session[]>(qk.sessions)?.find((s) => s.id === sessionId)?.incognito
+}
 
 function lastUserDraft(sessionId: string): ChatRequestDraft | null {
   const rows = queryClient.getQueryData<TranscriptMessage[]>(qk.messages(sessionId)) ?? []

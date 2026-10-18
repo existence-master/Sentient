@@ -113,6 +113,28 @@ class ToolContext:
     untrusted: str = ""
     # web hosts this run (or chat) already loaded; an address on one of them never asks for carrying data (ADR 0018)
     visited: set[str] = field(default_factory=set)
+    # True in an incognito chat (#154): tools that would keep something from it refuse. Tools also check the chat
+    # itself (``store.is_incognito``), so work it starts (a subagent) is covered too.
+    incognito: bool = False
+    # the longest tool result the model of this run reads (characters), set by the agent loop; 0 when unknown. A tool
+    # that returns a part of something long (file_read) sizes the part to fit, so it is never cut again (#336).
+    result_limit: int = 0
+    # the user's own words in this chat turn: the message and any steer messages, as typed or spoken, without
+    # attachments. Set in code by the chat turn only (empty for tasks, subagents and other work); an "Only if I asked"
+    # rule (#140) runs a tool without asking only when these words ask for it.
+    user_words: list[str] = field(default_factory=list)
+    # the memory scope of this run (#155): a chat's or a task's ("personal", "work", a project). Empty: the chat's own,
+    # or every scope for work not tied to a chat (``memory.scopes.for_context``)
+    memory_scope: str = ""
+
+    async def is_incognito(self) -> bool:
+        """True when this run belongs to an incognito chat (#154)."""
+        if self.incognito:
+            return True
+        check = getattr(self.store, "is_incognito", None)
+        if not self.session_id or not callable(check):
+            return False
+        return bool(await check(self.session_id))
 
     @property
     def call_id(self) -> str | None:
@@ -140,6 +162,13 @@ RiskFn = Callable[[dict, ToolContext], "Risk | Awaitable[Risk | None] | None"]
 DescribeFn = Callable[[dict, ToolContext], "dict | Awaitable[dict | None] | None"]
 ExfilFn = Callable[[dict, ToolContext], bool]
 UrlFn = Callable[[dict, ToolContext], "str | None"]
+# Reads a call's effect back after it ran (#165): ``verify(arguments, result, ctx) -> {ok, detail?}`` (sync or async);
+# None or an exception means it couldn't tell, and the tool's own result stands. Code only, never a model.
+VerifyFn = Callable[[dict, Any, ToolContext], "dict | Awaitable[dict | None] | None"]
+# Who a call goes to when its arguments don't say (#144): a reply goes to the sender in the thread's headers.
+# ``destinations_fn(arguments, ctx) -> [{"address", "why": "sender"|"reply_to"|"thread", "sender"}]`` (sync or async).
+# Worked out in code from the headers, before the call runs, so the second look and the approval card can show it.
+DestinationsFn = Callable[[dict, ToolContext], "list[dict] | Awaitable[list[dict] | None] | None"]
 
 # Default wording for approval prompts, by effective risk.
 RISK_LABELS = {
@@ -174,6 +203,16 @@ class Tool:
     url_fn: UrlFn | None = None
     # False when every call must ask again: "Allow for this chat" never covers this tool (commands on the host)
     allow_for_chat: bool = True
+    # Optional shorter version of a result too long for the model (``shorten_fn(result) -> result | None``), read
+    # instead of a plain cut; the full result is still saved and shown (#264).
+    shorten_fn: Callable[[Any], Any] | None = None
+    # The kind of effect a call has, for the outcome check after it runs (#165, ``sentient.agent.outcomes``):
+    # "email", "message", "file", "event" or "home". None: not checked (MCP tools are checked by their names).
+    outcome: str | None = None
+    # Reads the effect back after a call that said it worked (see ``VerifyFn``): the file, the Sent folder, the event.
+    verify: VerifyFn | None = None
+    # Who a call goes to when its arguments don't name them (a reply: the thread's headers), see ``DestinationsFn``.
+    destinations_fn: DestinationsFn | None = None
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -248,6 +287,14 @@ async def describe_call(tool: Tool, arguments: dict, ctx: ToolContext, risk: Ris
     return out
 
 
+def approval_reason(wording: dict, risk: Risk) -> str:
+    """The reason line of an approval card (#398): the label a ``describe_fn`` gave when it says more than the risk
+    alone ("Purchase", "Deletes", "Unlocks a door", "Takes a photo"), else empty, so the card writes its own line.
+    Never the tool's description: that is written for the model ("Click the element with this ref ...")."""
+    label = str((wording or {}).get("risk_label") or "").strip()
+    return "" if label == RISK_LABELS.get(Risk(risk), "") else label
+
+
 def _params_model_from_signature(fn: Callable, name: str) -> type[BaseModel]:
     sig = inspect.signature(fn)
     hints = typing.get_type_hints(fn, include_extras=True)
@@ -276,6 +323,9 @@ def tool(
     exfiltrates: bool | ExfilFn = False,
     url_fn: UrlFn | None = None,
     allow_for_chat: bool = True,
+    outcome: str | None = None,
+    verify: VerifyFn | None = None,
+    destinations_fn: DestinationsFn | None = None,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -286,7 +336,8 @@ def tool(
         return Tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
             risk_fn=risk_fn, describe_fn=describe_fn, untrusted_output=untrusted_output, exfiltrates=exfiltrates,
-            url_fn=url_fn, allow_for_chat=allow_for_chat,
+            url_fn=url_fn, allow_for_chat=allow_for_chat, outcome=outcome, verify=verify,
+            destinations_fn=destinations_fn,
         )
 
     return wrap

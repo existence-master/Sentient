@@ -153,6 +153,14 @@ async def test_chat_only_fallback_never_reaches_presets_or_check_up_fixes(config
     assert tools["action"] == {"kind": "pull_model", "name": "qwen3:8b", "label": "Download qwen3:8b"}
 
 
+def test_multilingual_memory_search_is_suggested_where_a_local_model_fits():
+    # nomic-embed-text stays the default; bge-m3 is offered for Hindi and other languages (#339)
+    for vram, ram in ((8.0, 16.0), (None, 7.8), (24.0, 64.0), (None, None)):
+        multi = hardware.recommend(fake_hw(vram, ram))["multilingual_embedding"]
+        assert multi["model"] == "ollama/bge-m3" and multi["size"] == "1.2 GB" and "Hindi" in multi["note"]
+    assert hardware.recommend(fake_hw(None, 3.8))["multilingual_embedding"] is None  # a cloud model comes first
+
+
 def test_eight_gb_card_keeps_qwen3_8b_at_8192():
     rec = hardware.recommend(fake_hw(8.0, 16.0))
     assert (rec["name"], rec["context_length"]) == ("qwen3:8b", 8192)
@@ -244,6 +252,45 @@ async def test_checkup_offers_the_context_length_that_fits_this_card(config):
                                            "label": "Use 8,192 tokens"}
     assert checks["gpu"]["action"]["value"] == 8192
     assert checks["gpu"]["fix"].endswith("For this computer Sentient suggests qwen3:8b, reading 8,192 tokens at a time.")
+
+
+# what Ollama 0.9 reported for qwen3:8b at 8,192 tokens on the reference RTX 4060 laptop (8 GB), 2026-10-10
+REFERENCE_PS = {"name": "qwen3:8b", "size": 7_522_944_000, "size_vram": 6_690_180_096}
+
+
+async def _gpu_check(config, ps: dict, roles: dict | None = None) -> dict:
+    llm = FakeProvider(replies=["ready", [tool_call("find_city", name="Paris")], [tool_call("get_weather", city_id="c-42")]])
+    with respx.mock(assert_all_called=False) as mock:
+        ollama_api(mock, ps=[ps])
+        done = await checkup(config, llm, roles or {"primary": "ollama_chat/qwen3:8b"},
+                             hardware=with_rec(fake_hw(8.0, 16.0)))
+    return {c["id"]: c for c in done["roles"][0]["checks"]}
+
+
+async def test_the_recommended_setup_on_the_reference_card_passes(config):
+    """#254: the default qwen3:8b at 8,192 tokens keeps about 89% on an 8 GB card; that is the setup Sentient
+    recommends, so the check-up doesn't warn about it with nothing to do."""
+    checks = await _gpu_check(config, REFERENCE_PS)
+    gpu = checks["gpu"]
+    assert gpu["status"] == "pass" and gpu.get("action") is None
+    assert gpu["detail"] == "Runs mostly on the graphics card (6.7 GB of 7.5 GB), as expected for this computer."
+    assert checks["context"]["status"] == "pass"
+
+
+async def test_a_bigger_spill_or_a_longer_context_still_warns(config):
+    # the recommended setup, but much less fits (another program holds graphics memory)
+    gpu = (await _gpu_check(config, {**REFERENCE_PS, "size_vram": 5_000_000_000}))["gpu"]
+    assert gpu["status"] == "warn" and "34% of this model on the processor" in gpu["detail"]
+    # a longer context than recommended: the fix goes back to 8,192
+    config.models.context_length = 12288
+    gpu = (await _gpu_check(config, REFERENCE_PS))["gpu"]
+    assert gpu["status"] == "warn" and gpu["action"]["value"] == 8192
+
+
+async def test_another_model_with_the_same_spill_still_warns(config):
+    ps = {"name": "llama3.1:8b", "size": 7_522_944_000, "size_vram": 6_690_180_096}
+    gpu = (await _gpu_check(config, ps, {"primary": "ollama_chat/llama3.1:8b"}))["gpu"]
+    assert gpu["status"] == "warn"
 
 
 async def test_checkup_suggests_the_model_sized_for_this_computer(config):

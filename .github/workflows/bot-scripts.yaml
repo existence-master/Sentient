@@ -1,0 +1,26 @@
+# Unit tests for the repository bots in .github/scripts (plain Node, no packages, no network).
+name: Bot scripts
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/**
+      - .github/workflows/assign.yaml
+      - .github/workflows/stale.yaml
+      - .github/workflows/bot-scripts.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: node --test ".github/scripts/*.test.js"

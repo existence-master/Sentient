@@ -7,6 +7,7 @@ approvals, files, tools catalog, usage.
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import re
 from datetime import UTC, datetime, timedelta
@@ -20,14 +21,20 @@ from pydantic import BaseModel
 from sentient import __version__, paths
 from sentient.config import config_json_schema
 from sentient.config.schema import SentientConfig
+from sentient.files import names as file_names
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
+from sentient.llm import availability
+from sentient.llm.events import Done, Error
+from sentient.llm.spending import BudgetError
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.personas import render_persona
-from sentient.tools.rules import SCREEN_FOLDER
+from sentient.tools.rules import SCREEN_FOLDER, SELECTION_FOLDER
 
 open_router = APIRouter(tags=["core"])
 router = APIRouter(tags=["core"])
 _auth = [Depends(require_token)]
+log = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -53,6 +60,15 @@ async def bootstrap(request: Request):
         "features": {"voice": True, "proactivity": cfg.proactivity.enabled},
         "stop": dict(s.stop_state),
     }
+
+
+@router.post("/api/activity", dependencies=_auth)
+async def activity(request: Request):
+    """The window is in use (focused, clicked, typed). Resets the timer that pauses routines while away (#163)."""
+    s = get_core(request)
+    await s.user_seen("app")
+    last = await s.tasks.away.last_active()
+    return {"ok": True, "last_active_at": last.isoformat() if last else None}
 
 
 @router.get("/api/system/hardware", dependencies=_auth)
@@ -141,7 +157,7 @@ async def onboarding(request: Request, body: OnboardingBody):
                 pass
 
         assert s.agent is not None
-        s.agent._spawn(_seed())
+        s.agent._spawn(_seed(), "memory")
     if body.daily_brief:  # the first opt-in: a recurring task the user can edit, pause or delete later
         await s.proactivity.brief.setup({})
     return {"ok": True}
@@ -234,19 +250,46 @@ async def patch_config(request: Request, body: dict):
 # ----------------------------------------------------------------------------- sessions
 @router.get("/api/sessions", dependencies=_auth)
 async def sessions(request: Request, limit: int = 100):
-    rows = await get_core(request).store.list_sessions(limit)
+    s = get_core(request)
+    rows = await s.store.list_sessions(limit)
     for row in rows:  # stored as JSON text; the API gives a list (or null)
+        row["memory_scope"] = memory_scopes.of_session(s.config, row)  # the scope it uses now (#155)
         raw = row.get("visited_hosts")
         try:
             row["visited_hosts"] = json.loads(raw) if raw else None
         except (TypeError, ValueError):
             row["visited_hosts"] = None
+        row["incognito"] = bool(row.get("incognito"))
     return rows
 
 
+def _chat_model(value: str | None) -> str | None:
+    """A chat's model as given (``provider/model``), None for "follow the default" (#312). 422 when malformed."""
+    try:
+        return availability.model_id(value)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+def _chat_scope(value: str | None) -> str | None:
+    """A chat's memory scope (#155): None follows the default; 422 for "always"."""
+    try:
+        return memory_scopes.chat_scope(value)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post("/api/sessions", dependencies=_auth)
-async def create_session(request: Request, channel: str = "desktop"):
-    sid = await get_core(request).store.create_session(channel=channel)
+async def create_session(
+    request: Request,
+    channel: str = "desktop",
+    incognito: bool = False,
+    model: str | None = None,
+    memory_scope: str | None = None,
+):
+    sid = await get_core(request).store.create_session(
+        channel=channel, incognito=incognito, model=_chat_model(model), memory_scope=_chat_scope(memory_scope)
+    )
     return {"session_id": sid}
 
 
@@ -270,27 +313,73 @@ async def search_sessions(request: Request, q: str, limit: int = 30):
     ]
 
 
-class RenameBody(BaseModel):
-    title: str
+class SessionPatch(BaseModel):
+    title: str | None = None
+    # the chat's own model (#312): "provider/model" keeps it for this chat; null or "" follows the default again
+    model: str | None = None
+    # the memories it uses (#155): "personal", "work" or a project's name; null or "" follows the default again
+    memory_scope: str | None = None
 
 
 @router.patch("/api/sessions/{session_id}", dependencies=_auth)
-async def rename_session(request: Request, session_id: str, body: RenameBody):
+async def update_session(request: Request, session_id: str, body: SessionPatch):
+    """Rename a chat, or pick its model or memory scope. Only the fields sent change."""
     s = get_core(request)
-    await s.store.rename_session(session_id, body.title.strip()[:120])
-    s.bus.publish("session.updated", {"session_id": session_id, "title": body.title.strip()[:120]})
-    return {"ok": True}
+    session = await s.store.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "no such chat")
+    # every field is checked before anything is written, so a 422 changes nothing
+    model = _chat_model(body.model) if "model" in body.model_fields_set else None
+    scope = _chat_scope(body.memory_scope) if "memory_scope" in body.model_fields_set else None
+    changed: dict[str, Any] = {}
+    if body.title is not None:
+        changed["title"] = body.title.strip()[:120]
+        await s.store.rename_session(session_id, changed["title"])
+    if "model" in body.model_fields_set:
+        changed["model"] = model
+        await s.store.set_session_model(session_id, model)
+    if "memory_scope" in body.model_fields_set:
+        await s.store.set_session_scope(session_id, scope)
+        changed["memory_scope"] = memory_scopes.of_session(s.config, {**session, "memory_scope": scope})
+    if changed:
+        s.bus.publish("session.updated", {"session_id": session_id, **changed})
+    return {"ok": True, **changed}
+
+
+class TrustBody(BaseModel):
+    # the newest message the window had shown: outside content stored after it keeps the chat marked
+    upto: str | None = None
+
+
+@router.post("/api/sessions/{session_id}/trust", dependencies=_auth)
+async def trust_session(request: Request, session_id: str, body: TrustBody | None = None):
+    """"I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark, up to the message
+    the user had seen. The user's own action in the window; the model has no way to call it."""
+    s = get_core(request)
+    if s.agent is None:
+        raise HTTPException(503, "the assistant isn't ready yet")
+    try:
+        res = await s.agent.trust_chat(session_id, via="desktop", upto=(body.upto if body else None) or None)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if res is None:
+        raise HTTPException(404, "no such chat")
+    return {"ok": True, "was": res.was, "trusted": res.trusted, "untrusted": res.still if not res.trusted else "",
+            "writer": res.writer}
 
 
 @router.delete("/api/sessions/{session_id}", dependencies=_auth)
 async def delete_session(request: Request, session_id: str):
-    await get_core(request).store.delete_session(session_id)
+    await get_core(request).delete_chat(session_id)
     return {"ok": True}
 
 
 @router.get("/api/sessions/{session_id}/messages", dependencies=_auth)
 async def session_messages(request: Request, session_id: str, limit: int = 500):
-    return await get_core(request).store.recent_messages(session_id, limit)
+    s = get_core(request)
+    if await s.store.get_session(session_id) is None:  # deleted (an incognito chat that was closed, #154)
+        raise HTTPException(404, "no such chat")
+    return await s.store.recent_messages(session_id, limit)
 
 
 # ----------------------------------------------------------------------------- rules from chat (#130)
@@ -324,6 +413,7 @@ class ChatBody(BaseModel):
     channel: str = "desktop"
     attachments: list[str] = []
     model: str | None = None
+    incognito: bool = False  # a new chat (no session_id) that learns nothing and is deleted when closed (#154)
 
 
 @router.post("/api/chat", dependencies=_auth)
@@ -334,14 +424,40 @@ async def chat(request: Request, body: ChatBody):
         # a reply is already running for this chat: the text steers it (docs/API.md section 10)
         ack = {"type": "steer_ack", "session_id": body.session_id, "queued": True}
         return StreamingResponse(iter([json.dumps(ack) + "\n"]), media_type="application/x-ndjson")
-    session_id = body.session_id or await s.store.create_session(channel=body.channel)
+    session_id = body.session_id or await s.store.create_session(channel=body.channel, incognito=body.incognito)
 
     async def gen():
         yield json.dumps({"type": "session", "session_id": session_id}) + "\n"
-        async for event in s.agent.run_turn(
-            session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
-        ):
-            yield event.model_dump_json() + "\n"
+        # "Make this a rule?" cards for this chat ride along in the /ws envelope (#311): a client without /ws can
+        # show and answer them, before the approval requests they cause
+        async with s.bus.subscribe() as q:
+
+            def proposals() -> list[str]:
+                out = []
+                while not q.empty():
+                    e = q.get_nowait()
+                    if e["type"] == "rule_proposal.updated" and (e["data"] or {}).get("session_id") == session_id:
+                        out.append(json.dumps(e, default=str) + "\n")
+                return out
+
+            ended = False  # the last line sent was a done
+            try:
+                async for event in s.agent.run_turn(
+                    session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
+                ):
+                    for line in proposals():
+                        yield line
+                    yield event.model_dump_json() + "\n"
+                    ended = isinstance(event, Done)
+            except Exception as exc:
+                log.exception("chat turn failed")
+                if not ended:  # a turn that broke still ends with error, then done (docs/API.md section 1, #334)
+                    for line in proposals():  # rule cards made before it broke still come first
+                        yield line
+                    yield Error(message=str(exc), recoverable=False, session_id=session_id).model_dump_json() + "\n"
+                    yield Done(content="", error=str(exc), session_id=session_id).model_dump_json() + "\n"
+            for line in proposals():
+                yield line
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
@@ -357,6 +473,34 @@ async def approve(request: Request, body: ApprovalBody):
     if not ok:
         raise HTTPException(404, "no such pending approval")
     return {"resolved": True}
+
+
+class UndoBody(BaseModel):
+    undo_id: str
+    action: str = "undo"  # "undo" | "send_now"
+
+
+@router.post("/api/undo", dependencies=_auth)
+async def undo_send(request: Request, body: UndoBody):
+    """Undo (or send now) an email, message or post waiting in its undo window (#142)."""
+    if not get_core(request).undo.respond(body.undo_id, body.action):
+        raise HTTPException(404, "nothing is waiting with that id")
+    return {"done": True, "action": body.action}
+
+
+@router.get("/api/approvals/grants", dependencies=_auth)
+async def list_grants(request: Request):
+    """Live "Allow for this task" and "Allow for a while" answers (#139)."""
+    grants = get_core(request).approvals.grants
+    return {"grants": await grants.list() if grants is not None else []}
+
+
+@router.delete("/api/approvals/grants/{grant_id}", dependencies=_auth)
+async def revoke_grant(request: Request, grant_id: str):
+    grants = get_core(request).approvals.grants
+    if grants is None or not await grants.revoke(grant_id):
+        raise HTTPException(404, "no such grant")
+    return {"ok": True}
 
 
 # ----------------------------------------------------------------------------- files
@@ -383,17 +527,17 @@ def resolve_file(name: str) -> Path:
 
 @router.post("/api/files", dependencies=_auth)
 async def upload_file(
-    request: Request, file: UploadFile = File(...), source: Literal["upload", "screen"] = Form("upload")
+    request: Request,
+    file: UploadFile = File(...),
+    source: Literal["upload", "screen", "selection"] = Form("upload"),
 ):
-    # what the user shared from their screen goes to screens/ and marks the chat it is sent in (ADR 0018)
-    folder = uploads_dir(SCREEN_FOLDER if source == "screen" else "uploads")
-    name = _safe_name(file.filename or "upload")
-    target = folder / name
-    stem, suffix = target.stem, target.suffix
-    i = 1
-    while target.exists():
-        target = folder / f"{stem} ({i}){suffix}"
-        i += 1
+    # what the user shared from their screen (screens/) or selected in another app (selections/) marks the chat it is
+    # sent in (ADR 0018)
+    folder = uploads_dir({"screen": SCREEN_FOLDER, "selection": SELECTION_FOLDER}.get(source, "uploads"))
+    # a name is never handed out again while a chat has it attached, and captures always get a random part (#458)
+    target = await file_names.create(
+        folder, _safe_name(file.filename or "upload"), store=get_core(request).store, unique=source != "upload"
+    )
     size = 0
     with target.open("wb") as fh:
         while chunk := await file.read(1024 * 1024):
@@ -425,8 +569,9 @@ async def list_files(request: Request):
     return out
 
 
-@router.get("/api/files/content/{name:path}", dependencies=_auth)
+@router.api_route("/api/files/content/{name:path}", methods=["GET", "HEAD"], dependencies=_auth)
 async def file_content(request: Request, name: str):
+    # HEAD answers whether the file is still there: a chat shows "No longer available" for an attachment that is gone
     p = resolve_file(name)
     if not p.is_file():
         raise HTTPException(404, "not found")
@@ -455,11 +600,12 @@ async def usage(request: Request, days: int = 30):
 
     async def grouped(col: str) -> list[dict[str, Any]]:
         rows = await s.store.fetchall(
-            f"SELECT {col} AS k, SUM(prompt_tokens) AS p, SUM(completion_tokens) AS c, COUNT(*) AS n"
-            f" FROM usage WHERE created_at >= ? GROUP BY {col} ORDER BY p + c DESC",
+            f"SELECT {col} AS k, SUM(prompt_tokens) AS p, SUM(completion_tokens) AS c, COUNT(*) AS n,"
+            f" SUM(cost_usd) AS usd FROM usage WHERE created_at >= ? GROUP BY {col} ORDER BY p + c DESC",
             (since,),
         )
-        return [{"key": r["k"], "prompt_tokens": r["p"] or 0, "completion_tokens": r["c"] or 0, "calls": r["n"]} for r in rows]
+        return [{"key": r["k"], "prompt_tokens": r["p"] or 0, "completion_tokens": r["c"] or 0, "calls": r["n"],
+                 "cost_usd": r["usd"]} for r in rows]
 
     by_model = [{"model": x.pop("key"), **x} for x in await grouped("model")]
     by_source = [{"source": x.pop("key"), **x} for x in await grouped("source")]
@@ -469,8 +615,24 @@ async def usage(request: Request, days: int = 30):
         "totals": {
             "prompt_tokens": sum(m["prompt_tokens"] for m in by_model),
             "completion_tokens": sum(m["completion_tokens"] for m in by_model),
+            "cost_usd": round(sum(m["cost_usd"] or 0.0 for m in by_model), 6),
         },
         "by_model": by_model,
         "by_source": by_source,
         "by_day": by_day,
     }
+
+
+@router.get("/api/usage/cost", dependencies=_auth)
+async def usage_cost(request: Request):
+    """The cost meter (#148): today, this week and this month per model and role, and the monthly budget."""
+    return await get_core(request).spending.report()
+
+
+@router.post("/api/usage/budget/keep-going", dependencies=_auth)
+async def budget_keep_going(request: Request):
+    """Allow paid cloud models again until the month ends, when the budget is set to ask."""
+    try:
+        return await get_core(request).spending.keep_going()
+    except BudgetError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc

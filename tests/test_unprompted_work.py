@@ -216,8 +216,8 @@ async def test_every_unprompted_entry_point_runs_unprompted(app, monkeypatch):
     app.config.proactivity.context_agent_rounds = 2
     app.fake.replies[:] = [[tool_call("vault_send", text="hi")], "nothing"] * 4
     item = {"id": "m9", "thread_id": "t9", "from": "Jane <jane@acme.example>", "sender_email": "jane@acme.example",
-            "to": "sarthak@example.com", "subject": "Can we meet Tuesday?", "snippet": "Can we meet Tuesday at 2?",
-            "body": "Hi Sarthak, can we meet Tuesday at 2pm to go over the plan? Jane", "labels": ["INBOX"],
+            "to": "maya@example.com", "subject": "Can we meet Tuesday?", "snippet": "Can we meet Tuesday at 2?",
+            "body": "Hi Maya, can we meet Tuesday at 2pm to go over the plan? Jane", "labels": ["INBOX"],
             "date": "2026-10-09T08:00:00+00:00"}
     await app.proactivity.process_event("gmail", "new_email", item)
     await app.proactivity.heartbeat()

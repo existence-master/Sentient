@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.pytest-tmp/
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -46,6 +47,7 @@ linkedin_cookies.json
 /site
 e2e-home/
 workspace/
+!tests/migrate/fixtures/openclaw/workspace/
 sentient_files/
 audio_debug_logs/
 *.db
@@ -57,6 +59,11 @@ audio_debug_logs/
 dump.rdb
 celerybeat*
 *.log
+
+# Agent and test leftovers (docs/AGENT_WORKFLOW.md)
+.ollama.lock
+.pytest-tmp/
+.test-homes/
 
 # Editors, OS and tools
 /.vscode/

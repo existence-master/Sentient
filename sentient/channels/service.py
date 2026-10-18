@@ -12,12 +12,19 @@ WhatsApp linked to the user's own account (their "Message yourself" chat).
 - Rules from chat (#130): a "Make this a rule?" proposal made in a paired chat is sent back to that chat with
   "Make it a rule" / "Not now" (numbered on WhatsApp); answering there decides it, and an answer given in the
   desktop app settles the message.
+- Approvals outside the app (#139): a task waiting for approval (a tool set to Ask, or sending after outside
+  content) is sent to the paired chats as buttons ("Allow once", "Allow for this task", "Allow for 1 hour",
+  "Always allow", "Deny"; numbered on WhatsApp), or answered by replying with a word. It goes out only while
+  nobody is looking at the app (``app.presence``); one raised while the window is in front waits and goes out when
+  the person leaves. Only a chat it was sent to can answer it (the delivered message is remembered per chat), and a
+  request past its time can't be approved.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import re
 from typing import Any
@@ -29,22 +36,36 @@ from sentient.channels.formatting import summary_text
 from sentient.channels.store import ChannelStore
 from sentient.channels.telegram import TelegramChannel
 from sentient.channels.whatsapp import WhatsAppChannel
+from sentient.memory.forget import forget as forget_learned
 from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
 from sentient.tasks.delivery import WHATSAPP_SELF
+from sentient.tools.rules import RULE_TITLES
 
 log = logging.getLogger(__name__)
 
 _UNSET: Any = object()
 TASK_RESULT_EVENTS = {
     "run_completed", "run_failed", "planning_failed", "clarification_needed", "disabled",
-    "script_alert", "script_failed", "script_recovered",
+    "script_alert", "script_failed", "script_recovered", "handed_off", "source_missing",
 }
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
+    "expired": "Expired",
+    "kept": "Keeping them running", "paused": "Paused", "resumed": "Resumed",  # routines while away (#163)
+}
+APPROVAL_HINT = "Tap a button, or reply to this message with {words}."
+APPROVAL_WORDS = {
+    "allow": "once", "allow_task": "task", "allow_timed": "hour", "allow_always": "always", "deny": "no",
 }
 RULE_OUTCOMES = {"accepted": "Made it a rule. Change it in Settings > Approvals & safety.", "declined": "Not now"}
 QUESTION_ROW = 2  # option buttons per row (Discord allows 5 per row and 5 rows)
+# an answer from an older message of the same run, after a newer request took its place (#337)
+OLDER_REQUEST = "This message is for an earlier request, so it can't answer the one waiting now. Use the newest message."
+OLDER_REQUEST_REPLY = (
+    "That message was for an earlier request, so I didn't pass this on. Reply to the newest message to answer the one "
+    "waiting now."
+)
 _TOKEN_LOG_RE = re.compile(r"bot\d{5,}:[A-Za-z0-9_-]{20,}")
 
 
@@ -69,6 +90,23 @@ def install_log_redaction() -> None:
             logger.addFilter(_RedactTokens())
 
 
+def request_stamp(item: dict) -> str:
+    """What names one request of a run (#337): an approval's ``expires_at``, else the question's ``request_id`` (else
+    ``asked_at``, for one asked before request ids). A notification payload, a ``waiting_questions`` entry and a run's
+    ``pending_question`` all carry them."""
+    return str(item.get("expires_at") or item.get("request_id") or item.get("asked_at") or "")
+
+
+def request_tag(stamp: str) -> str:
+    """A short tag of ``request_stamp`` for button data (Telegram allows 64 bytes; ``ta:4:<run id>:<tag>`` is 46)."""
+    return hashlib.sha1(stamp.encode("utf-8")).hexdigest()[:8] if stamp else ""
+
+
+def _button_ref(run_id: str, payload: dict) -> str:
+    tag = request_tag(request_stamp(payload))
+    return f"{run_id}:{tag}" if tag else str(run_id)
+
+
 class ChannelService(Service):
     name = "channels"
 
@@ -82,6 +120,8 @@ class ChannelService(Service):
         self._delivered: dict[str, list[tuple[str, str, str]]] = {}
         self._subagents_sent: set[tuple[str, str, str]] = set()
         self._rule_cards: dict[str, tuple[str, str, str]] = {}  # proposal id -> (channel, chat_id, message_id)
+        # approval requests held back while the person is in the app (#139): notification id -> notification
+        self._held: dict[str, dict] = {}
         self._listening = asyncio.Event()
         install_log_redaction()
 
@@ -203,7 +243,9 @@ class ChannelService(Service):
         await self.publish_channel(ch.id)
         return await self.channel_dict(ch.id)
 
-    async def disconnect(self, channel_id: str) -> dict:
+    async def disconnect(self, channel_id: str, *, forget: bool = False) -> dict:
+        """Stop a messaging app. ``forget``: also forget what Sentient learned there (#153): its chats and their
+        messages, summaries and facts; the result then carries ``forgotten``. Paired chats stay paired."""
         ch = self.get(channel_id)
         if not ch.uses_token:
             await ch.unlink()  # type: ignore[attr-defined]
@@ -213,8 +255,10 @@ class ChannelService(Service):
             keychain.delete_secret(ch.secret_name)
         await self.store.clear_code(channel_id)
         await self.store.set_state(channel_id, enabled=0, status="disconnected", error=None, account_label=None)
+        forgotten = await forget_learned(self.app, f"channel:{channel_id}", ch.display_name) if forget else None
         await self.publish_channel(channel_id)
-        return await self.channel_dict(channel_id)
+        out = await self.channel_dict(channel_id)
+        return {**out, "forgotten": forgotten} if forgotten is not None else out
 
     async def create_pairing(self, channel_id: str) -> dict:
         ch = self.get(channel_id)
@@ -273,7 +317,10 @@ class ChannelService(Service):
                     if kind == "notification.new":
                         await self.deliver_notification(data)
                     elif kind == "notification.updated":
+                        self._held.pop(str(data.get("id")), None)
                         await self.update_delivered(data)
+                    elif kind == "presence.changed" and not data.get("in_app"):
+                        await self.deliver_held()
                     elif kind == "subagent.updated":
                         await self.deliver_subagent(data)
                     elif kind == "rule_proposal.updated":
@@ -321,6 +368,28 @@ class ChannelService(Service):
             log.exception("could not read where task %s delivers", task_id)
             return "desktop"
 
+    async def _reminder_delivery(self, note: dict) -> str | list[dict]:
+        """The paired chat a timer, reminder or alarm was set in. One set anywhere else stays on the desktop, except
+        that with ``channels.deliver_reminders`` a reminder or alarm also goes to the delivery chats ("default", #359)."""
+        payload = note.get("payload") or {}
+        # one set in a messaging chat that is no longer paired never goes to other chats
+        elsewhere = "default" if (
+            self.app.config.channels.deliver_reminders and payload.get("event") in {"reminder", "alarm"}
+            and payload.get("channel") not in self.channels
+        ) else "desktop"
+        session_id = payload.get("session_id")
+        if not session_id:
+            return elsewhere
+        try:
+            found = await self.store.chat_for_session(str(session_id))
+        except Exception:  # fail closed
+            log.exception("could not find the chat of a reminder")
+            return "desktop"
+        if found is None:
+            return elsewhere
+        channel, chat = found
+        return [{"channel": channel, "chat_id": chat["chat_id"]}]
+
     async def _task_result(self, task_id: str | None) -> str:
         getter = getattr(self.app.tasks, "get", None)
         if not task_id or getter is None:
@@ -354,6 +423,14 @@ class ChannelService(Service):
                 return md, [[Button("Approve plan", f"tp:a:{task_id}", "success"), Button("Decline", f"tp:d:{task_id}", "danger")]]
             if event == "question":
                 return self._format_question(note) if cfg.deliver_task_results else None
+            if event in {"away_check", "away_paused"}:  # #163: one message, with the answer as a button
+                if not cfg.deliver_task_results or payload.get("status"):
+                    return None
+                md = f"**{title or 'Your routines'}**\n{message}"
+                button = Button("Keep them running", "aw:k:0", "primary") if event == "away_check" else Button(
+                    "Resume routines", "aw:r:0", "success"
+                )
+                return md, [[button]]
             if event in TASK_RESULT_EVENTS and cfg.deliver_task_results:
                 md = f"**{title or 'Task update'}**\n{message}"
                 if event == "run_completed":
@@ -375,9 +452,39 @@ class ChannelService(Service):
             if not cfg.deliver_briefs or not isinstance(brief, dict) or payload.get("status", "active") != "active":
                 return None
             return f"**{title or 'Your Daily Brief'}**\n{DailyBrief.as_text(brief, links=True)}", None
+        if kind == "reminder":
+            return f"**{title or 'Reminder'}**\n{message}", None
         if payload.get("subagent_id") and cfg.deliver_subagents:
             return f"**{title or 'Background work finished'}**\n{message}", None
         return None
+
+    @staticmethod
+    def is_approval(note: dict) -> bool:
+        """A task's approval request (#139, ADR 0018), as opposed to an ordinary question."""
+        payload = note.get("payload") or {}
+        return note.get("kind") == "task" and payload.get("event") == "question" and isinstance(payload.get("approval"), dict)
+
+    @staticmethod
+    def _format_approval(note: dict) -> tuple[str, list[list[Button]] | None] | None:
+        """ "Approval needed" with one button per offered answer (``ta:<option index>:<run id>:<request tag>``)."""
+        payload = note.get("payload") or {}
+        run_id, question = payload.get("run_id"), str(payload.get("question") or note.get("message") or "").strip()
+        options = [str(o) for o in payload.get("options") or [] if str(o).strip()]
+        if not run_id or not question or not options:
+            return None
+        title = (note.get("title") or "").strip().replace(" needs your answer", " needs your OK") or "A task needs your OK"
+        approval = payload.get("approval") or {}
+        choices = [str(c) for c in approval.get("choices") or []]
+        timed = "hour" if int(approval.get("grant_minutes") or 60) % 60 == 0 else "minutes"  # matches the button
+        words = [timed if c == "allow_timed" else APPROVAL_WORDS[c] for c in choices if c in APPROVAL_WORDS]             if len(choices) == len(options) else []
+        said = (", ".join(words[:-1]) + f" or {words[-1]}") if len(words) > 1 else "yes or no"
+        md = f"**Approval needed: {title}**\n{summary_text(question, 900)}\n\n_{APPROVAL_HINT.format(words=said)}_"
+        ref = _button_ref(run_id, payload)
+        buttons = [
+            Button(label[:60], f"ta:{i}:{ref}", "danger" if label in {"Deny", "No, stop the task"} else "primary")
+            for i, label in enumerate(options)
+        ]
+        return md, [buttons[i:i + QUESTION_ROW] for i in range(0, len(buttons), QUESTION_ROW)]
 
     @staticmethod
     def _format_question(note: dict) -> tuple[str, list[list[Button]] | None] | None:
@@ -385,17 +492,93 @@ class ChannelService(Service):
         run_id, question = payload.get("run_id"), str(payload.get("question") or note.get("message") or "").strip()
         if not run_id or not question or payload.get("status"):
             return None
+        if ChannelService.is_approval(note):
+            return ChannelService._format_approval(note)
         title = (note.get("title") or "").strip() or "A task needs your answer"
         options = [str(o) for o in payload.get("options") or [] if str(o).strip()]
         hint = "Tap an option, or reply to this message with your answer." if options else "Reply to this message with your answer."
         md = f"**{title}**\n{summary_text(question, 900)}\n\n_{hint}_"
         if not options:
             return md, None
-        buttons = [Button(label[:60], f"tq:{i}:{run_id}", "primary") for i, label in enumerate(options)]
+        ref = _button_ref(run_id, payload)
+        buttons = [Button(label[:60], f"tq:{i}:{ref}", "primary") for i, label in enumerate(options)]
         return md, [buttons[i:i + QUESTION_ROW] for i in range(0, len(buttons), QUESTION_ROW)]
 
+    async def deliver_held(self) -> int:
+        """The person left the app: send the approval requests held back while they were in it, if still waiting."""
+        sent = 0
+        for nid, note in list(self._held.items()):
+            self._held.pop(nid, None)
+            run_id = str((note.get("payload") or {}).get("run_id") or "")
+            if run_id and await self._waiting_question(run_id) is not None:
+                sent += await self.deliver_notification(note)
+        return sent
+
+    @staticmethod
+    def sent_title(md: str) -> str:
+        """The first line of a delivered message, without markdown, short: what the timeline calls it (#345)."""
+        first = next((line for line in md.splitlines() if line.strip()), "")
+        return summary_text(first.replace("**", "").replace("__", "").strip(), 120) or "A message"
+
+    @staticmethod
+    def _what(note: dict) -> str:
+        payload = note.get("payload") or {}
+        kind, event = note.get("kind"), payload.get("event")
+        if payload.get("subagent_id"):
+            return "subagent"
+        if kind == "brief":
+            return "brief"
+        if kind == "proactive":
+            return "suggestion"
+        if kind == "reminder":
+            return "reminder"
+        if kind == "task":
+            if event == "question":
+                return "approval" if ChannelService.is_approval(note) else "question"
+            return "plan" if event == "approval_needed" else "task"
+        return "other"
+
+    @staticmethod
+    def _source_ref(note: dict) -> dict | None:
+        """Where the timeline opens a delivery: the task it came from, else the notification."""
+        payload = note.get("payload") or {}
+        task_id = payload.get("task_id") or note.get("task_id")
+        if task_id:
+            return {"type": "task", "id": str(task_id), "run_id": payload.get("run_id"), "notification_id": note.get("id")}
+        if payload.get("session_id"):
+            return {"type": "chat", "id": str(payload["session_id"])}
+        return {"type": "notification", "id": str(note["id"])} if note.get("id") else None
+
+    async def record_delivery(
+        self, ch: Channel, chat: dict, md: str, *, what: str, reason: str, ref: dict | None, error: str | None = None
+    ) -> None:
+        """Keep a line for the Activity timeline (#345) and tell the window. Never breaks a delivery."""
+        try:
+            row = await self.store.add_delivery(
+                ch.id, chat["chat_id"], chat_label=chat.get("label"), title=self.sent_title(md), what=what,
+                reason=reason, delivered=error is None, error=error, ref=ref,
+            )
+        except Exception:
+            log.exception("could not record a delivery")
+            return
+        self.app.bus.publish("channel.delivery", {k: row[k] for k in ("id", "channel", "chat_id", "title", "status", "ref")})
+
+    @staticmethod
+    def _delivery_error(ch: Channel, exc: Exception) -> str:
+        if isinstance(exc, ChannelError):
+            return exc.message[:200]
+        said = str(getattr(exc, "description", "") or exc)  # Telegram's own words, without the error code
+        return f"{ch.display_name} didn't take the message ({ch.redact(said)[:160] or type(exc).__name__})"
+
     async def deliver_notification(self, note: dict) -> int:
-        where = await self._task_delivery(note) if note.get("kind") in {"task", "brief"} else "default"
+        if self.is_approval(note) and getattr(self.app, "presence", None) is not None and self.app.presence.in_app():
+            if note.get("id") and not (note.get("payload") or {}).get("status"):
+                self._held[str(note["id"])] = note  # the person is looking at the app: ask there first (#139)
+            return 0
+        if note.get("kind") == "reminder":  # a timer or reminder goes back to the chat it was set in (#150)
+            where = await self._reminder_delivery(note)
+        else:
+            where = await self._task_delivery(note) if note.get("kind") in {"task", "brief"} else "default"
         if where == "desktop":
             return 0
         chosen = isinstance(where, list)
@@ -406,6 +589,11 @@ class ChannelService(Service):
         subagent_id = (note.get("payload") or {}).get("subagent_id")
         sent = 0
         targets = await self._chosen_targets(where) if isinstance(where, list) else await self._delivery_targets()
+        what, ref = self._what(note), self._source_ref(note)
+        if note.get("kind") == "reminder":
+            reason = "reminder" if chosen else "reminder_copy"  # its own chat, or a copy for the delivery chats
+        else:
+            reason = "chosen" if chosen else "default"
         for ch, chat in targets:
             if subagent_id:
                 key = (str(subagent_id), ch.id, chat["chat_id"])
@@ -416,6 +604,8 @@ class ChannelService(Service):
                 ids = await ch.send_markdown(chat["chat_id"], md, buttons)
             except Exception as exc:
                 log.warning("delivering to %s failed: %s", ch.id, ch.redact(str(exc)))
+                await self.record_delivery(ch, chat, md, what=what, reason=reason, ref=ref,
+                                           error=self._delivery_error(ch, exc))
                 continue
             sent += 1
             ch.publish_message(chat["chat_id"], None, "out", md)
@@ -425,11 +615,13 @@ class ChannelService(Service):
                     await self.store.add_question(
                         ch.id, chat["chat_id"], [str(i) for i in ids],
                         task_id=str(payload.get("task_id") or note.get("task_id") or ""), run_id=str(payload.get("run_id")),
+                        request=request_stamp(payload),
                     )
                 except Exception:
                     log.exception("could not remember the delivered question")
             if buttons and ids and note.get("id"):
                 self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], ids[-1]))
+            await self.record_delivery(ch, chat, md, what=what, reason=reason, ref=ref)
         return sent
 
     async def update_delivered(self, note: dict) -> None:
@@ -442,6 +634,8 @@ class ChannelService(Service):
         if note.get("kind") == "task" and payload.get("event") == "question":
             answer = summary_text(str(payload.get("answer") or ""), 80)
             label = f"Answered: {answer}" if status == "answered" and answer else label
+        elif note.get("kind") == "task" and str(payload.get("event") or "").startswith("away_"):
+            pass  # the label as it is
         elif note.get("kind") == "task":
             label = f"Plan {status}"
         for channel_id, chat_id, message_id in targets:
@@ -471,11 +665,15 @@ class ChannelService(Service):
             md = f"**Background work finished**\n{goal}\n\n{summary_text(str(data.get('summary') or ''), 1500)}".strip()
         else:
             md = f"**Background work failed**\n{goal}\n\n{summary_text(str(data.get('error') or ''), 500)}".strip()
+        ref = {"type": "chat", "id": str(session_id)}
         try:
             await ch.send_markdown(chat["chat_id"], md)
         except Exception as exc:
             log.warning("subagent delivery failed: %s", ch.redact(str(exc)))
+            await self.record_delivery(ch, chat, md, what="subagent", reason="chat", ref=ref,
+                                       error=self._delivery_error(ch, exc))
             return False
+        await self.record_delivery(ch, chat, md, what="subagent", reason="chat", ref=ref)
         ch.publish_message(chat["chat_id"], session_id, "out", md)
         return True
 
@@ -499,7 +697,7 @@ class ChannelService(Service):
         ch = self.channels.get(channel_id)
         if ch is None or not await self.is_connected(channel_id):
             return False
-        level = "Never" if proposal.get("rule") == "never" else "Always ask"
+        level = RULE_TITLES.get(str(proposal.get("rule")), "Always ask")
         what = ", ".join(str(t.get("label") or t.get("key")) for t in proposal.get("targets") or [])
         said = summary_text(str(proposal.get("said") or ""), 200)
         md = (
@@ -565,19 +763,36 @@ class ChannelService(Service):
         await ch.settle_buttons(chat_id, message_id, outcome)
         return outcome
 
-    async def act_on_question(self, ch: Channel, chat_id: str, message_id: str, run_id: str, index: str) -> str:
-        """An option button under a task's question: answer it with that option."""
+    async def act_on_question(
+        self, ch: Channel, chat_id: str, message_id: str, ref: str, index: str, *, approval: bool = False
+    ) -> str:
+        """An option button under a task's question (``ref`` = ``<run id>:<request tag>``): answer it with that option.
+        An approval request (``approval``, #139) is only answered from the message that delivered it to this chat.
+        A button of an earlier request of the same run never answers a newer one (#337)."""
+        run_id, _, tag = ref.partition(":")
+        sent = await self.store.question_for(ch.id, chat_id, message_id)
+        if approval and (sent is None or sent["run_id"] != run_id):
+            return "This request wasn't sent to this chat, so it can't be answered here."
         found = await self._waiting_question(run_id)
         if found is None:
             await ch.settle_buttons(chat_id, message_id, "This question is no longer waiting")
             return "This question is no longer waiting."
+        if found.get("kind") == "approval" and not approval:  # an approval only answers through its own buttons
+            return "Unknown button."
+        stamp = request_stamp(found)
+        sent_for = sent.get("request") if sent is not None and sent["run_id"] == run_id else None
+        if (tag and tag != request_tag(stamp)) or (sent_for and sent_for != stamp):
+            await ch.settle_buttons(chat_id, message_id, "No longer waiting")
+            return OLDER_REQUEST
         options = found.get("options") or []
         if not index.isdigit() or int(index) >= len(options):
             return "Unknown button."
         self._forget_delivered(ch.id, chat_id, message_id)
         answer = str(options[int(index)])
-        try:
-            await self.app.tasks.answer_question(found["task_id"], run_id, answer)
+        try:  # ``expect``: if a newer request took its place meanwhile, the engine refuses instead of answering it
+            await self.app.tasks.answer_question(
+                found["task_id"], run_id, answer, via=ch.id, expect=stamp or None
+            )
         except Exception as exc:
             text = str(exc) or "That didn't work."
             await ch.settle_buttons(chat_id, message_id, text[:120])
@@ -610,13 +825,17 @@ class ChannelService(Service):
         waiting = await self._waiting_question(found["run_id"])
         if waiting is None:
             reply = "That question has already been handled, so I didn't pass this on."
+        elif found.get("request") and found["request"] != request_stamp(waiting):  # a newer request of the run (#337)
+            reply = OLDER_REQUEST_REPLY
         else:
             options = [str(o) for o in waiting.get("options") or []]
             choice = text.strip()
             if re.fullmatch(r"[0-9]{1,3}", choice) and 1 <= int(choice) <= len(options):
                 text = options[int(choice) - 1]  # "2" picks the second option (ASCII digits only)
             try:
-                await self.app.tasks.answer_question(waiting["task_id"], waiting["run_id"], text)
+                await self.app.tasks.answer_question(
+                    waiting["task_id"], waiting["run_id"], text, via=ch.id, expect=request_stamp(waiting) or None
+                )
                 reply = f"Thanks! I passed your answer to '{summary_text(waiting['task_name'], 80)}'. It's carrying on now."
             except Exception as exc:
                 reply = f"I couldn't pass that on: {str(exc)[:200] or 'something went wrong'}"

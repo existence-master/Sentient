@@ -5,6 +5,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type {
   AppCommand,
+  AskState,
   BackendStatus,
   CaptureNotice,
   Connection,
@@ -44,6 +45,7 @@ const bridge: SentientBridge = {
   openExternal: (url: string) => ipcRenderer.invoke(CH.openExternal, url),
   openPath: (target: OpenPathTarget) => ipcRenderer.invoke(CH.openPath, target),
   showNotification: (n: NativeNotification) => ipcRenderer.invoke(CH.showNotification, n),
+  closeApprovalNotification: (runId: string) => ipcRenderer.invoke(CH.closeApprovalNotification, runId),
   setLaunchAtLogin: (enabled: boolean) => ipcRenderer.invoke(CH.setLaunchAtLogin, enabled),
   getLaunchAtLogin: () => ipcRenderer.invoke(CH.getLaunchAtLogin) as Promise<boolean>,
   syncPrefs: (prefs: ShellPrefs) => ipcRenderer.invoke(CH.syncPrefs, prefs),
@@ -60,6 +62,8 @@ const bridge: SentientBridge = {
   pickFiles: (options) => ipcRenderer.invoke(CH.pickFiles, options) as Promise<string[]>,
   isFocused: () => ipcRenderer.invoke(CH.isFocused) as Promise<boolean>,
   openFile: (name: string) => ipcRenderer.invoke(CH.openFile, name) as Promise<boolean>,
+  showInFolder: (path: string) => ipcRenderer.invoke(CH.showInFolder, path) as Promise<boolean>,
+  openFolderFile: (target) => ipcRenderer.invoke(CH.openFolderFile, target) as Promise<boolean>,
   getDevicePrivacy: () => ipcRenderer.invoke(CH.getDevicePrivacy) as Promise<DevicePrivacy>,
   setDevicePrivacy: (patch) => ipcRenderer.invoke(CH.setDevicePrivacy, patch) as Promise<DevicePrivacy>,
   onCaptureNotice: (cb) => subscribe<CaptureNotice>(CH.captureNotice, cb),
@@ -76,6 +80,15 @@ const bridge: SentientBridge = {
     openPermissionSettings: (kind) => ipcRenderer.invoke(CH.dictationPermission, kind),
     onCommand: (cb) => subscribe<DictationCommand>(CH.dictationCommand, cb),
     report: (event: DictationEvent) => ipcRenderer.send(CH.dictationEvent, event)
+  },
+  ask: {
+    state: () => ipcRenderer.invoke(CH.askGetState) as Promise<AskState | null>,
+    onState: (cb) => subscribe<AskState>(CH.askState, cb),
+    copy: (text: string) => ipcRenderer.invoke(CH.askCopy, text) as Promise<boolean>,
+    replace: (text: string) => ipcRenderer.invoke(CH.askReplace, text) as Promise<'pasted' | 'password' | 'failed'>,
+    close: () => ipcRenderer.invoke(CH.askClose),
+    openChat: (sessionId: string) => ipcRenderer.invoke(CH.askOpenChat, sessionId),
+    resize: (height: number) => ipcRenderer.send(CH.askResize, height)
   },
   getShortcuts: () => ipcRenderer.invoke(CH.getShortcuts) as Promise<ShortcutInfo[]>,
   setShortcut: (id, accelerator) => ipcRenderer.invoke(CH.setShortcut, id, accelerator) as Promise<ShortcutResult>

@@ -19,7 +19,13 @@ import sys
 
 # Commands understood by sentient.cli. Anything else on argv[1] is treated as an
 # option for `serve` (so `sentient-engine.exe --port 7777` behaves sensibly).
-_COMMANDS = {"serve", "node", "doctor", "config", "version"}
+# tests/test_packaging.py fails when this drifts from the CLI: the installed app spawns
+# `sentient-engine.exe claude-code-tools <file>` for the Claude Code backend, and v3.0.0-beta.1's
+# first build turned that into `serve claude-code-tools` because it was missing here.
+_COMMANDS = {
+    "serve", "node", "doctor", "config", "version",
+    "claude-code-tools", "backup", "restore", "selfcheck",
+}
 
 
 def main() -> None:

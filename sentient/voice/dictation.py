@@ -40,6 +40,13 @@ POLISH_PROMPT = (
 )
 
 
+def _end_sentence(text: str) -> str:
+    """End a full sentence (three or more words) with a full stop when it has no closing punctuation."""
+    if text[-1].isalnum() and len(text.split()) > 2:
+        return text + "."
+    return text
+
+
 def tidy(text: str) -> str:
     """Remove filler sounds and fix punctuation spacing and capitals. Never adds or changes a word."""
     out = " ".join((text or "").split())
@@ -55,9 +62,7 @@ def tidy(text: str) -> str:
         return ""
     out = out[0].upper() + out[1:]
     out = _SENTENCE_START.sub(lambda m: m.group(1) + m.group(2).upper(), out)
-    if out[-1].isalnum() and len(out.split()) > 2:
-        out += "."
-    return out
+    return _end_sentence(out)
 
 
 def _words(text: str) -> list[str]:
@@ -104,7 +109,7 @@ async def polish(llm: Any, text: str) -> tuple[str, bool]:
     if not answer or not is_faithful(text, answer):
         log.info("dictation polish changed the words, using the tidy text")
         return text, False
-    return answer, True
+    return _end_sentence(answer), True
 
 
 async def clean_dictation(llm: Any, raw: str, cleanup: Cleanup = "tidy") -> dict[str, Any]:

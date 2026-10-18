@@ -47,12 +47,43 @@ PAGES = {
     "index.html": INDEX,
     "search.html": "<!doctype html><title>Results</title><main><h1>Results page</h1><p>Search results here.</p></main>",
     "help.html": "<!doctype html><title>Help</title><main><h1>Help center</h1></main>",
+    "download.html": '<!doctype html><title>Downloads</title><a href="/report.txt" download>Download report</a>',
+    # #307: a link that opens its file in a new tab
+    "download-tab.html": ('<!doctype html><title>Downloads</title><a href="/direct-download" target="_blank">Get it in a new tab</a> '
+                          '<a href="/help.html" target="_blank">Open help in new tab</a>'),
+    "report.txt": "Sentient browser download test.\n",
+    "signup.html": """<!doctype html><meta charset="utf-8"><title>Newsletter</title><main>
+  <section><h2>Weekly notes</h2><p>Free, no spam.</p><button>Subscribe</button></section>
+  <section><h2>Pro</h2><p>All the extras, ₹499/month.</p><button>Subscribe</button></section>
+  <section><h2>Team</h2><div>$20 per seat</div><div><button>Subscribe</button> <a href="/help.html">Learn more</a></div></section>
+  <section><h2>Studio</h2><p>""" + "Long notes on every plant we grow, with photos and care steps. " * 8 + """</p>
+    <p>Studio pass, ₹999/month.</p><div><button>Subscribe</button> <a href="/help.html">Learn more</a></div></section>
+</main>""",
+    # a priced card whose context stops early: another offer button ("Choose") shares the row with Subscribe
+    "signup-choose.html": """<!doctype html><meta charset="utf-8"><title>Team</title><main>
+  <section><h2>Team plan</h2><p>₹2,999/month for five seats.</p>
+    <div><div><button>Subscribe</button></div><div><button>Choose</button></div></div></section>
+  <section><h2>Insider</h2><p>₹1,499/month, billed yearly.</p>
+    <div><div><button>Subscribe to the newsletter</button></div><div><button>Choose</button></div></div></section>
+</main>""",
 }
 
 
 class _Quiet(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):  # keep test output clean
         return
+
+    def do_GET(self):
+        if self.path == "/direct-download":
+            body = b"Direct browser-open download test.\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="direct-report.txt"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
 
 
 @pytest.fixture(scope="session")

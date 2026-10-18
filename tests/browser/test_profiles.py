@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import http.server
 import json
+import os
 import threading
+import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -406,3 +409,1666 @@ async def test_launched_browsers_commit_site_storage_quickly(monkeypatch):
     with pytest.raises(BrowserError):
         await svc._launch_persistent(BrowserProfileConfig(), headless=True)
     assert browser_service.STORAGE_FLAG in seen["args"]
+    assert seen["accept_downloads"] is True
+
+
+async def test_finished_download_is_reported_on_the_next_result():
+    svc = BrowserService(make_app())
+    task = asyncio.create_task(asyncio.sleep(0, result="downloads/late-report.txt"))
+    svc._download_tasks.add(task)
+    await task
+
+    result = await svc._include_downloads({"ok": True}, {task})
+
+    assert result["downloads"] == ["downloads/late-report.txt"]
+    assert task not in svc._download_tasks
+
+
+async def test_download_collection_without_start_wait_returns_immediately(monkeypatch):
+    svc = BrowserService(make_app())
+    monkeypatch.setattr(browser_service, "DOWNLOAD_APPEAR_GRACE_S", 0.01)
+    original_sleep = asyncio.sleep
+    sleeps = []
+
+    async def unexpected_sleep(delay):
+        sleeps.append(delay)
+        await original_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", unexpected_sleep)
+
+    assert await svc._include_downloads({"ok": True}, set()) == {"ok": True}
+    assert sleeps == []
+
+    assert await svc._include_downloads(
+        {"ok": True}, set(), wait_for_download_start=True
+    ) == {"ok": True}
+    assert sleeps
+
+
+async def test_unfinished_download_stays_tracked_until_a_later_result(monkeypatch):
+    svc = BrowserService(make_app())
+    completion = asyncio.get_running_loop().create_future()
+
+    class SlowDownload:
+        suggested_filename = "slow-report.pdf"
+
+    async def save_download(download):
+        return await completion
+
+    monkeypatch.setattr(svc, "_save_download", save_download)
+    svc._on_download(SlowDownload())
+    task = next(iter(svc._download_tasks))
+
+    result = await asyncio.wait_for(svc._include_downloads({"ok": True}, set()), timeout=0.5)
+
+    assert result == {"ok": True, "downloads_in_progress": ["slow-report.pdf"]}
+    assert task in svc._download_tasks
+    assert not task.done()
+
+    completion.set_result("downloads/slow-report.pdf")
+    await task
+    result = await svc._include_downloads({"ok": True}, set())
+
+    assert result["downloads"] == ["downloads/slow-report.pdf"]
+    assert task not in svc._download_tasks
+    assert task not in svc._download_names
+    if svc._download_cleanup_task:
+        svc._download_cleanup_task.cancel()
+        await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
+
+
+async def test_close_tool_waits_for_unfinished_download_before_shutdown(monkeypatch):
+    svc = BrowserService(make_app())
+    svc._context = object()
+    started = asyncio.Event()
+    completion = asyncio.get_running_loop().create_future()
+
+    async def save_download():
+        started.set()
+        return await completion
+
+    task = asyncio.create_task(save_download())
+    svc._download_tasks.add(task)
+    svc._download_names[task] = "stalled.pdf"
+    await started.wait()
+
+    shutdown_started = asyncio.Event()
+
+    async def shutdown():
+        shutdown_started.set()
+        svc._context = None
+
+    monkeypatch.setattr(svc, "_shutdown", shutdown)
+
+    close_task = asyncio.create_task(svc.close_tool(None))
+    await asyncio.sleep(0)
+    assert not close_task.done()
+    assert not shutdown_started.is_set()
+
+    completion.set_result("downloads/stalled.pdf")
+    result = await close_task
+
+    assert shutdown_started.is_set()
+    assert result["downloads"] == ["downloads/stalled.pdf"]
+    assert task not in svc._download_tasks
+
+
+async def test_close_tool_bounds_wait_for_download_that_ignores_cancellation(monkeypatch):
+    svc = BrowserService(make_app())
+    svc._context = object()
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stubborn_download():
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+            return "downloads/stalled.pdf"
+
+    task = asyncio.create_task(stubborn_download())
+    svc._download_tasks.add(task)
+    svc._download_names[task] = "stalled.pdf"
+    await started.wait()
+
+    shutdown_started = asyncio.Event()
+
+    async def shutdown():
+        shutdown_started.set()
+        svc._context = None
+
+    monkeypatch.setattr(svc, "_shutdown", shutdown)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 0.01)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_CANCEL_TIMEOUT_S", 0.01)
+
+    result = await asyncio.wait_for(svc.close_tool(None), timeout=0.5)
+
+    assert cancellation_seen.is_set()
+    assert shutdown_started.is_set()
+    assert result["download_errors"] == [
+        "Download 'stalled.pdf' did not stop before browser shutdown."
+    ]
+    assert result["downloads_in_progress"] == ["stalled.pdf"]
+    assert task in svc._download_tasks and not task.done()
+
+    release.set()
+    await task
+    later_result = await svc._include_downloads({"ok": True}, set())
+    assert later_result["downloads"] == ["downloads/stalled.pdf"]
+    assert task not in svc._download_tasks
+    if svc._download_cleanup_task:
+        svc._download_cleanup_task.cancel()
+        await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
+
+
+async def test_completed_download_is_reported_while_another_download_is_stuck(monkeypatch):
+    svc = BrowserService(make_app())
+    stalled_started = asyncio.Event()
+    finish_stalled = asyncio.Event()
+
+    class Download:
+        def __init__(self, suggested_filename):
+            self.suggested_filename = suggested_filename
+
+    async def save_download(download):
+        if download.suggested_filename == "stalled.pdf":
+            stalled_started.set()
+            await finish_stalled.wait()
+            return "downloads/stalled.pdf"
+        return "downloads/ready.pdf"
+
+    monkeypatch.setattr(svc, "_save_download", save_download)
+    svc._on_download(Download("stalled.pdf"))
+    stalled_task = next(iter(svc._download_tasks))
+    await stalled_started.wait()
+    svc._on_download(Download("ready.pdf"))
+    ready_task = next(task for task in svc._download_tasks if task is not stalled_task)
+    await ready_task
+
+    result = await asyncio.wait_for(svc._include_downloads({"ok": True}, set()), timeout=0.5)
+
+    assert result == {
+        "ok": True,
+        "downloads": ["downloads/ready.pdf"],
+        "downloads_in_progress": ["stalled.pdf"],
+    }
+    assert stalled_task in svc._download_tasks
+
+    finish_stalled.set()
+    await stalled_task
+    later_result = await svc._include_downloads({"ok": True}, set())
+    assert later_result == {"ok": True, "downloads": ["downloads/stalled.pdf"]}
+    if svc._download_cleanup_task:
+        svc._download_cleanup_task.cancel()
+        await asyncio.gather(svc._download_cleanup_task, return_exceptions=True)
+
+
+async def test_attached_downloads_are_wired_only_for_sentient_pages_and_their_popups():
+    svc = BrowserService(make_app())
+    svc._attached = True
+
+    class Page:
+        def __init__(self):
+            self.url = "about:blank"
+            self.handlers = {}
+
+        def on(self, event, handler):
+            self.handlers.setdefault(event, []).append(handler)
+
+    class Context:
+        async def new_page(self):
+            return sentient_page
+
+    user_page = Page()
+    sentient_page = Page()
+    user_popup = Page()
+    sentient_popup = Page()
+    nested_popup = Page()
+
+    svc._wire_page(user_page)
+    svc._wire_page(sentient_page)
+    svc._active = await svc._new_page(Context())
+    svc._wire_page(user_popup)
+    user_page.handlers["popup"][0](user_popup)
+    svc._wire_page(sentient_popup)
+    sentient_page.handlers["popup"][0](sentient_popup)
+    assert svc._active is sentient_popup
+    svc._wire_page(nested_popup)
+    sentient_popup.handlers["popup"][0](nested_popup)
+
+    assert "download" not in user_page.handlers
+    assert "download" not in user_popup.handlers
+    assert sentient_page.handlers["download"] == [svc._on_download]
+    assert sentient_popup.handlers["download"] == [svc._on_download]
+    assert nested_popup.handlers["download"] == [svc._on_download]
+    assert nested_popup in svc._download_pages
+
+
+async def test_attached_browser_resets_download_behavior_to_default(monkeypatch):
+    svc = BrowserService(make_app())
+    cdp_calls = []
+    cdp_handlers = {}
+
+    class MockCDP:
+        def on(self, event, handler):
+            cdp_handlers[event] = handler
+
+        async def send(self, command, params):
+            cdp_calls.append((command, params))
+
+    class MockBrowser:
+        contexts = [object()]
+
+        def on(self, event, handler):
+            pass
+
+        async def new_browser_cdp_session(self):
+            return MockCDP()
+
+    class MockChromium:
+        async def connect_over_cdp(self, ws, timeout=None):
+            return MockBrowser()
+
+    svc._pw = type("MockPW", (), {"chromium": MockChromium()})()
+    monkeypatch.setattr(safety, "devtools_endpoint", lambda ep: ("http://127.0.0.1:9222", None))
+    async def _mock_ws(ep):
+        return "ws://127.0.0.1:9222"
+    monkeypatch.setattr(browser_service, "devtools_ws_url", _mock_ws)
+
+    prof = BrowserProfileConfig(kind="attach", endpoint="http://127.0.0.1:9222")
+    await svc._attach(prof)
+
+    assert svc._attached is True
+    assert ("Browser.setDownloadBehavior", {"behavior": "default", "eventsEnabled": True}) in cdp_calls
+    assert "Browser.downloadWillBegin" in cdp_handlers
+    assert "Browser.downloadProgress" in cdp_handlers
+
+
+@pytest.mark.parametrize(
+    ("fail_stage", "exc_to_raise", "expected_err_type", "expected_match"),
+    [
+        (
+            "session",
+            RuntimeError("session creation failed"),
+            BrowserError,
+            "failed to set up download tracking.*session creation failed",
+        ),
+        (
+            "send",
+            RuntimeError("setDownloadBehavior failed"),
+            BrowserError,
+            "failed to set up download tracking.*setDownloadBehavior failed",
+        ),
+        ("session", asyncio.CancelledError(), asyncio.CancelledError, None),
+        ("send", asyncio.CancelledError(), asyncio.CancelledError, None),
+    ],
+)
+async def test_attached_browser_cdp_setup_failure_and_cancellation_cleanup(
+    monkeypatch, fail_stage, exc_to_raise, expected_err_type, expected_match
+):
+    svc = BrowserService(make_app())
+    closed = []
+    detached = []
+
+    class MockCDP:
+        def on(self, event, handler):
+            pass
+
+        async def send(self, command, params):
+            if fail_stage == "send" and command == "Browser.setDownloadBehavior":
+                raise exc_to_raise
+
+        async def detach(self):
+            await asyncio.sleep(0.01)
+            detached.append(True)
+
+    class MockBrowser:
+        contexts = [object()]
+
+        def on(self, event, handler):
+            pass
+
+        async def new_browser_cdp_session(self):
+            if fail_stage == "session":
+                raise exc_to_raise
+            return MockCDP()
+
+        async def close(self):
+            await asyncio.sleep(0.01)
+            closed.append(True)
+
+    class MockChromium:
+        async def connect_over_cdp(self, ws, timeout=None):
+            return MockBrowser()
+
+    svc._pw = type("MockPW", (), {"chromium": MockChromium()})()
+    monkeypatch.setattr(safety, "devtools_endpoint", lambda ep: ("http://127.0.0.1:9222", None))
+
+    async def _mock_ws(ep):
+        return "ws://127.0.0.1:9222"
+
+    monkeypatch.setattr(browser_service, "devtools_ws_url", _mock_ws)
+
+    prof = BrowserProfileConfig(kind="attach", endpoint="http://127.0.0.1:9222")
+
+    if expected_match:
+        with pytest.raises(expected_err_type, match=expected_match):
+            await svc._attach(prof)
+    else:
+        with pytest.raises(expected_err_type):
+            await svc._attach(prof)
+
+    assert svc._attached is False
+    assert svc._browser is None
+    assert svc._browser_cdp is None
+    assert closed == [True]
+    if fail_stage == "send":
+        assert detached == [True]
+    else:
+        assert detached == []
+    assert len(svc._attached_downloads) == 0
+    if isinstance(exc_to_raise, asyncio.CancelledError):
+        assert svc._last_error is None
+    else:
+        assert svc._last_error is not None
+
+
+async def test_attached_browser_cleanup_error_does_not_mask_original_error(monkeypatch):
+    svc = BrowserService(make_app())
+
+    class MockCDP:
+        def on(self, event, handler):
+            pass
+
+        async def send(self, command, params):
+            raise RuntimeError("original send failure")
+
+        async def detach(self):
+            raise RuntimeError("detach error")
+
+    class MockBrowser:
+        contexts = [object()]
+
+        def on(self, event, handler):
+            pass
+
+        async def new_browser_cdp_session(self):
+            return MockCDP()
+
+        async def close(self):
+            raise RuntimeError("close error")
+
+    class MockChromium:
+        async def connect_over_cdp(self, ws, timeout=None):
+            return MockBrowser()
+
+    svc._pw = type("MockPW", (), {"chromium": MockChromium()})()
+    monkeypatch.setattr(safety, "devtools_endpoint", lambda ep: ("http://127.0.0.1:9222", None))
+
+    async def _mock_ws(ep):
+        return "ws://127.0.0.1:9222"
+
+    monkeypatch.setattr(browser_service, "devtools_ws_url", _mock_ws)
+
+    prof = BrowserProfileConfig(kind="attach", endpoint="http://127.0.0.1:9222")
+    with pytest.raises(BrowserError, match=r"failed to set up download tracking.*original send failure"):
+        await svc._attach(prof)
+
+    assert svc._attached is False
+    assert svc._browser is None
+    assert svc._browser_cdp is None
+
+
+class _MockDownload:
+    def __init__(self, filename="report.pdf", url="https://example.com/report.pdf", page=None):
+        self.suggested_filename = filename
+        self.url = url
+        self.page = page
+        self.saved_to = None
+
+    async def save_as(self, path):
+        self.saved_to = path
+        Path(path).write_text("saved via download.save_as", encoding="utf-8")
+
+    async def cancel(self):
+        pass
+
+
+class _MockPageCDP:
+    def __init__(self, frame_id="sentient-frame"):
+        self.frame_id = frame_id
+        self.detached = False
+
+    async def send(self, command, params=None):
+        if command == "Page.getFrameTree":
+            return {"frameTree": {"frame": {"id": self.frame_id}, "childFrames": []}}
+        return {}
+
+    async def detach(self):
+        self.detached = True
+
+
+class _MockContext:
+    def __init__(self, cdp_session=None):
+        self.cdp_session = cdp_session
+
+    async def new_cdp_session(self, page):
+        if isinstance(self.cdp_session, Exception):
+            raise self.cdp_session
+        return self.cdp_session
+
+
+async def test_attached_download_matches_and_moves_valid_cdp_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    src_file = tmp_path / "browser-download.pdf"
+    src_file.write_text("content from browser", encoding="utf-8")
+
+    user_future = asyncio.get_running_loop().create_future()
+    user_entry = {
+        "guid": "g-user",
+        "frameId": "user-frame-99",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": user_future,
+        "consumed": False,
+    }
+    sentient_future = asyncio.get_running_loop().create_future()
+    sentient_future.set_result(str(src_file))
+    sentient_entry = {
+        "guid": "g-sentient",
+        "frameId": "sentient-frame-1",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": sentient_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.extend([user_entry, sentient_entry])
+
+    rel = await svc._save_download(_MockDownload("report.pdf", page=object()))
+
+    assert rel == "downloads/report.pdf"
+    assert user_entry["consumed"] is False
+    assert not user_future.done()
+    assert sentient_entry["consumed"] is True
+    assert page_cdp.detached is True
+    saved_file = tmp_path / rel
+    assert saved_file.read_text(encoding="utf-8") == "content from browser"
+
+
+async def test_user_tab_entry_never_consumed_even_when_sentient_cdp_arrives_late(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.3
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    src_file = tmp_path / "browser-download-late.pdf"
+    src_file.write_text("late content from browser", encoding="utf-8")
+
+    user_future = asyncio.get_running_loop().create_future()
+    user_entry = {
+        "guid": "g-user",
+        "frameId": "user-frame-99",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": user_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(user_entry)
+
+    task = asyncio.create_task(svc._save_download(_MockDownload("report.pdf", page=object())))
+    await asyncio.sleep(0.05)
+    assert user_entry["consumed"] is False
+
+    sentient_future = asyncio.get_running_loop().create_future()
+    sentient_future.set_result(str(src_file))
+    sentient_entry = {
+        "guid": "g-sentient",
+        "frameId": "sentient-frame-1",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": sentient_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(sentient_entry)
+
+    rel = await task
+    assert rel == "downloads/report.pdf"
+    assert user_entry["consumed"] is False
+    assert not user_future.done()
+    assert sentient_entry["consumed"] is True
+    assert (tmp_path / rel).read_text(encoding="utf-8") == "late content from browser"
+
+
+async def test_frame_tree_lookup_failure_raises_without_consuming_user_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+    svc._context = _MockContext(RuntimeError("CDP detached"))
+
+    user_future = asyncio.get_running_loop().create_future()
+    user_entry = {
+        "guid": "g-user",
+        "frameId": "user-frame-99",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": user_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(user_entry)
+
+    dl = _MockDownload("report.pdf", page=object())
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await svc._save_download(dl)
+
+    assert user_entry["consumed"] is False
+    assert not user_future.done()
+    assert dl.saved_to is None
+    assert not (tmp_path / "downloads" / "report.pdf").exists()
+
+
+async def test_bounded_wait_terminates_when_no_matching_event_arrives(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    user_future = asyncio.get_running_loop().create_future()
+    user_entry = {
+        "guid": "g-user",
+        "frameId": "user-frame-99",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": user_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(user_entry)
+
+    dl = _MockDownload("report.pdf", page=object())
+    t0 = time.monotonic()
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await svc._save_download(dl)
+    elapsed = time.monotonic() - t0
+
+    assert user_entry["consumed"] is False
+    assert not user_future.done()
+    assert dl.saved_to is None
+    assert not (tmp_path / "downloads" / "report.pdf").exists()
+    assert elapsed >= 0.04
+    assert elapsed < 0.5
+
+
+async def test_closing_context_fails_pending_cdp_future_without_hanging(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    ctx = _MockContext(page_cdp)
+    svc._context = ctx
+
+    sentient_future = asyncio.get_running_loop().create_future()
+    sentient_entry = {
+        "guid": "g-pending",
+        "frameId": "sentient-frame-1",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": sentient_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(sentient_entry)
+
+    save_task = asyncio.create_task(svc._save_download(_MockDownload("report.pdf", page=object())))
+    await asyncio.sleep(0.01)
+    assert not save_task.done()
+    assert (tmp_path / "downloads" / "report.pdf").exists()
+
+    # Trigger context closure via the actual context-closed event path
+    svc._on_context_closed(ctx)
+
+    with pytest.raises(BrowserError) as exc_info:
+        await asyncio.wait_for(save_task, timeout=1.0)
+    assert "browser closed before the download completed" in str(exc_info.value)
+    assert not save_task.cancelled()
+    assert len(svc._attached_downloads) == 0
+    assert sentient_future.done()
+    assert isinstance(sentient_future.exception(), BrowserError)
+    # Verify the reserved target file placeholder was cleaned up
+    assert not (tmp_path / "downloads" / "report.pdf").exists()
+
+
+async def test_closing_context_during_match_wait_fails_without_hanging(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    ctx = _MockContext(page_cdp)
+    svc._context = ctx
+
+    # No entries in _attached_downloads yet, so it enters the while True matching wait loop
+    save_task = asyncio.create_task(svc._save_download(_MockDownload("report.pdf", page=object())))
+    await asyncio.sleep(0.01)
+    assert not save_task.done()
+    assert (tmp_path / "downloads" / "report.pdf").exists()
+
+    t0 = time.monotonic()
+    # Context closes while save_task is in the wait loop
+    svc._on_context_closed(ctx)
+
+    with pytest.raises(BrowserError) as exc_info:
+        await asyncio.wait_for(save_task, timeout=1.0)
+    elapsed = time.monotonic() - t0
+
+    assert "browser closed before the download completed" in str(exc_info.value)
+    assert not save_task.cancelled()
+    assert elapsed < 0.5
+    # Verify the reserved target file placeholder was cleaned up
+    assert not (tmp_path / "downloads" / "report.pdf").exists()
+
+
+async def test_both_close_paths_are_idempotent_and_safe_for_futures():
+    svc = BrowserService(make_app())
+    svc._attached = True
+    loop = asyncio.get_running_loop()
+
+    pending_fut = loop.create_future()
+    completed_fut = loop.create_future()
+    completed_fut.set_result("/tmp/done.pdf")
+    cancelled_fut = loop.create_future()
+    cancelled_fut.cancel()
+    failed_fut = loop.create_future()
+    failed_fut.set_exception(ValueError("original failure"))
+
+    svc._attached_downloads.extend([
+        {"guid": "g-pending", "frameId": "frame-1", "future": pending_fut, "consumed": False},
+        {"guid": "g-done", "frameId": "frame-1", "future": completed_fut, "consumed": False},
+        {"guid": "g-cancelled", "frameId": "frame-1", "future": cancelled_fut, "consumed": False},
+        {"guid": "g-failed", "frameId": "frame-1", "future": failed_fut, "consumed": False},
+    ])
+
+    # First close path
+    svc._clear_attached_downloads()
+    assert pending_fut.done()
+    assert isinstance(pending_fut.exception(), BrowserError)
+    # fut.exception() did not hide failure from subsequent await
+    with pytest.raises(BrowserError):
+        await pending_fut
+    # Completed, cancelled, and failed futures were not altered
+    assert completed_fut.result() == "/tmp/done.pdf"
+    assert cancelled_fut.cancelled()
+    assert isinstance(failed_fut.exception(), ValueError)
+    assert len(svc._attached_downloads) == 0
+
+    # Second close path on already cleared list is safe and idempotent
+    mock_ctx = object()
+    svc._context = mock_ctx
+    svc._on_context_closed(mock_ctx)
+    assert len(svc._attached_downloads) == 0
+    assert isinstance(pending_fut.exception(), BrowserError)
+
+
+async def test_cdp_canceled_event_reported_as_download_error_not_task_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    sentient_future = asyncio.get_running_loop().create_future()
+    sentient_entry = {
+        "guid": "g-canceled",
+        "frameId": "sentient-frame-1",
+        "filename": "canceled_file.pdf",
+        "url": "https://example.com/file.pdf",
+        "future": sentient_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(sentient_entry)
+
+    save_task = asyncio.create_task(
+        svc._save_download(_MockDownload("canceled_file.pdf", url="https://example.com/file.pdf", page=object()))
+    )
+    await asyncio.sleep(0.01)
+    assert not save_task.done()
+
+    svc._on_cdp_download_progress({"guid": "g-canceled", "state": "canceled"})
+
+    with pytest.raises(BrowserError) as exc_info:
+        await asyncio.wait_for(save_task, timeout=1.0)
+    assert "was canceled by the browser" in str(exc_info.value)
+    assert not save_task.cancelled()
+
+
+async def test_genuine_save_download_task_cancellation_propagates(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    sentient_future = asyncio.get_running_loop().create_future()
+    sentient_entry = {
+        "guid": "g-stay-pending",
+        "frameId": "sentient-frame-1",
+        "filename": "report.pdf",
+        "future": sentient_future,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(sentient_entry)
+
+    save_task = asyncio.create_task(svc._save_download(_MockDownload("report.pdf", page=object())))
+    await asyncio.sleep(0.01)
+    assert not save_task.done()
+
+    save_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await save_task
+    assert save_task.cancelled()
+
+
+async def test_cdp_download_event_handlers_lifecycle_and_edge_cases(monkeypatch):
+    svc = BrowserService(make_app())
+    cdp_handlers = {}
+
+    class MockCDP:
+        def on(self, event, handler):
+            cdp_handlers[event] = handler
+
+        async def send(self, command, params):
+            pass
+
+    class MockBrowser:
+        contexts = [object()]
+
+        def on(self, event, handler):
+            pass
+
+        async def new_browser_cdp_session(self):
+            return MockCDP()
+
+    class MockChromium:
+        async def connect_over_cdp(self, ws, timeout=None):
+            return MockBrowser()
+
+    svc._pw = type("MockPW", (), {"chromium": MockChromium()})()
+    async def _mock_ws(ep):
+        return "ws://127.0.0.1:9222"
+    monkeypatch.setattr(browser_service, "devtools_ws_url", _mock_ws)
+
+    prof = BrowserProfileConfig(kind="attach", endpoint="http://127.0.0.1:9222")
+    await svc._attach(prof)
+
+    on_begin = cdp_handlers["Browser.downloadWillBegin"]
+    on_progress = cdp_handlers["Browser.downloadProgress"]
+
+    # 1. Missing GUID in downloadWillBegin is ignored
+    on_begin({"frameId": "f-1", "url": "https://example.com/a.pdf"})
+    assert len(svc._attached_downloads) == 0
+
+    # 2. Valid GUID in downloadWillBegin records entry
+    on_begin({
+        "guid": "g-1",
+        "frameId": "f-1",
+        "url": "https://example.com/a.pdf",
+        "suggestedFilename": "a.pdf",
+    })
+    assert len(svc._attached_downloads) == 1
+    entry = svc._attached_downloads[0]
+    assert entry["guid"] == "g-1"
+    assert entry["frameId"] == "f-1"
+    assert entry["filename"] == "a.pdf"
+    assert not entry["future"].done()
+
+    # 3. downloadProgress with unknown or missing GUID is safely ignored
+    on_progress({"state": "completed", "filePath": "/tmp/a.pdf"})
+    on_progress({"guid": "unknown-guid", "state": "completed", "filePath": "/tmp/a.pdf"})
+    assert not entry["future"].done()
+
+    # 4. downloadProgress completed sets result
+    on_progress({"guid": "g-1", "state": "completed", "filePath": "/tmp/a.pdf"})
+    assert entry["future"].done()
+    assert entry["future"].result() == "/tmp/a.pdf"
+
+    # 5. Subsequent progress on already completed future is safely ignored
+    on_progress({"guid": "g-1", "state": "completed", "filePath": "/tmp/other.pdf"})
+    assert entry["future"].result() == "/tmp/a.pdf"
+
+    # 6. downloadProgress canceled sets BrowserError
+    on_begin({"guid": "g-2", "frameId": "f-1", "suggestedFilename": "cancel.pdf"})
+    entry2 = svc._attached_downloads[-1]
+    on_progress({"guid": "g-2", "state": "canceled"})
+    assert entry2["future"].done()
+    assert isinstance(entry2["future"].exception(), BrowserError)
+    assert "was canceled by the browser" in str(entry2["future"].exception())
+
+
+async def test_attached_downloads_pruning_protects_pending_futures():
+    svc = BrowserService(make_app())
+    loop = asyncio.get_running_loop()
+
+    # Add a pending download (e.g. Sentient download started early)
+    early_pending_fut = loop.create_future()
+    early_entry = {
+        "guid": "g-early",
+        "frameId": "sentient-frame",
+        "filename": "important.pdf",
+        "future": early_pending_fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(early_entry)
+
+    # Now simulate 120 completed user-tab downloads
+    for i in range(120):
+        done_fut = loop.create_future()
+        done_fut.set_result(f"/tmp/user_{i}.pdf")
+        svc._attached_downloads.append({
+            "guid": f"g-user-{i}",
+            "frameId": "user-frame",
+            "filename": f"user_{i}.pdf",
+            "future": done_fut,
+            "consumed": False,
+        })
+        svc._prune_attached_downloads()
+
+    # The early pending future was NOT evicted and remains in _attached_downloads
+    assert any(e["guid"] == "g-early" for e in svc._attached_downloads)
+    assert not early_pending_fut.done()
+
+    # Simulating progress completion works because entry was preserved
+    svc._on_cdp_download_progress({
+        "guid": "g-early",
+        "state": "completed",
+        "filePath": "/tmp/important.pdf",
+    })
+    assert early_pending_fut.done()
+    assert early_pending_fut.result() == "/tmp/important.pdf"
+
+
+async def test_concurrent_downloads_in_same_frame_do_not_swap_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("frame-same")
+    svc._context = _MockContext(page_cdp)
+
+    file_a = tmp_path / "browser_download_a.pdf"
+    file_a.write_text("content-A", encoding="utf-8")
+    file_b = tmp_path / "browser_download_b.csv"
+    file_b.write_text("content-B", encoding="utf-8")
+
+    # Reordered CDP events arrive: file B's event arrives BEFORE file A's event
+    fut_b = asyncio.get_running_loop().create_future()
+    fut_b.set_result(str(file_b))
+    entry_b = {
+        "guid": "g-b",
+        "frameId": "frame-same",
+        "filename": "data.csv",
+        "url": "https://example.com/data.csv",
+        "future": fut_b,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry_b)
+
+    fut_a = asyncio.get_running_loop().create_future()
+    fut_a.set_result(str(file_a))
+    entry_a = {
+        "guid": "g-a",
+        "frameId": "frame-same",
+        "filename": "report.pdf",
+        "url": "https://example.com/report.pdf",
+        "future": fut_a,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry_a)
+
+    # Save tasks run concurrently for download A and download B
+    dl_a = _MockDownload("report.pdf", url="https://example.com/report.pdf", page=object())
+    dl_b = _MockDownload("data.csv", url="https://example.com/data.csv", page=object())
+
+    rel_a, rel_b = await asyncio.gather(
+        svc._save_download(dl_a),
+        svc._save_download(dl_b),
+    )
+
+    assert rel_a == "downloads/report.pdf"
+    assert rel_b == "downloads/data.csv"
+    assert (tmp_path / rel_a).read_text(encoding="utf-8") == "content-A"
+    assert (tmp_path / rel_b).read_text(encoding="utf-8") == "content-B"
+
+
+async def test_concurrent_downloads_same_filename_different_urls_do_not_swap(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("frame-same")
+    svc._context = _MockContext(page_cdp)
+
+    file_v1 = tmp_path / "browser_v1_export.csv"
+    file_v1.write_text("v1-content", encoding="utf-8")
+    file_v2 = tmp_path / "browser_v2_export.csv"
+    file_v2.write_text("v2-content", encoding="utf-8")
+
+    # Arrange CDP events so the v2 conflicting event arrives FIRST
+    fut_v2 = asyncio.get_running_loop().create_future()
+    fut_v2.set_result(str(file_v2))
+    entry_v2 = {
+        "guid": "g-v2",
+        "frameId": "frame-same",
+        "filename": "export.csv",
+        "url": "https://example.com/api/v2/export.csv",
+        "future": fut_v2,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry_v2)
+
+    # v1 CDP event arrives slightly later
+    fut_v1 = asyncio.get_running_loop().create_future()
+    fut_v1.set_result(str(file_v1))
+    entry_v1 = {
+        "guid": "g-v1",
+        "frameId": "frame-same",
+        "filename": "export.csv",
+        "url": "https://example.com/api/v1/export.csv",
+        "future": fut_v1,
+        "consumed": False,
+    }
+
+    async def add_v1_later():
+        await asyncio.sleep(0.05)
+        svc._attached_downloads.append(entry_v1)
+
+    add_task = asyncio.create_task(add_v1_later())
+
+    # Task for v1 starts while only conflicting v2 entry is in _attached_downloads
+    dl_v1 = _MockDownload("export.csv", url="https://example.com/api/v1/export.csv", page=object())
+    dl_v2 = _MockDownload("export.csv", url="https://example.com/api/v2/export.csv", page=object())
+
+    rel_v1, rel_v2, _ = await asyncio.gather(
+        svc._save_download(dl_v1),
+        svc._save_download(dl_v2),
+        add_task,
+    )
+
+    # Neither task adopted the other download's file
+    assert (tmp_path / rel_v1).read_text(encoding="utf-8") == "v1-content"
+    assert (tmp_path / rel_v2).read_text(encoding="utf-8") == "v2-content"
+    assert entry_v1["consumed"] is True
+    assert entry_v2["consumed"] is True
+
+
+def test_match_cdp_entry_scoring_and_isolation():
+    loop = asyncio.new_event_loop()
+    f1 = loop.create_future()
+    f2 = loop.create_future()
+    f3 = loop.create_future()
+    loop.close()
+
+    entries = [
+        {"frameId": "f-other", "url": "https://x.com/a.pdf", "filename": "a.pdf", "future": f1, "consumed": False},
+        {"frameId": "f-mine", "url": "https://x.com/diff.zip", "filename": "diff.zip", "future": f2, "consumed": False},
+        {"frameId": "f-mine", "url": "https://x.com/target.pdf", "filename": "target.pdf", "future": f3, "consumed": False},
+    ]
+
+    # Foreign frame is rejected
+    assert BrowserService._match_cdp_entry(entries, {"f-mine"}, "https://x.com/a.pdf", "a.pdf") is None
+
+    # Exact match in page_frames is picked over conflicting entry
+    matched = BrowserService._match_cdp_entry(entries, {"f-mine"}, "https://x.com/target.pdf", "target.pdf")
+    assert matched is entries[2]
+
+    # Conflicting URL is rejected even when filename matches
+    assert BrowserService._match_cdp_entry(
+        entries, {"f-mine"}, "https://x.com/other-url", "target.pdf"
+    ) is None
+
+    # Rejection of conflicting entries when no matching entry exists
+    assert BrowserService._match_cdp_entry(entries, {"f-mine"}, "https://x.com/missing.txt", "missing.txt") is None
+
+    # Missing URL metadata still matches by filename if no conflict
+    assert BrowserService._match_cdp_entry(entries, {"f-mine"}, "", "target.pdf") is entries[2]
+
+    # Missing URL metadata does not match when filename conflicts
+    assert BrowserService._match_cdp_entry(entries, {"f-mine"}, "", "other.pdf") is None
+
+    # Consumed entry is rejected
+    entries[2]["consumed"] = True
+    assert BrowserService._match_cdp_entry(entries, {"f-mine"}, "https://x.com/target.pdf", "target.pdf") is None
+
+
+def test_edge_downloads_hub_is_ignored_and_active_page_is_restored():
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def main_frame(self):
+            return self
+
+        def is_closed(self):
+            return False
+
+    original = Page("https://example.com/")
+    downloads_hub = Page("edge://downloads-hub/")
+    context = type("Context", (), {"pages": [original, downloads_hub]})()
+    svc._context = context
+    svc._active = downloads_hub
+
+    svc._on_navigated(downloads_hub, downloads_hub)
+
+    assert svc._active is original
+    assert svc._usable_pages(context) == [original]
+
+
+def test_attached_downloads_hub_fallback_stays_on_sentient_owned_tab():
+    svc = BrowserService(make_app())
+    svc._attached = True
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def main_frame(self):
+            return self
+
+        def is_closed(self):
+            return False
+
+    sentient_page = Page("https://sentient.example/")
+    user_page = Page("https://user.example/")
+    downloads_hub = Page("edge://downloads-hub/")
+    context = type("Context", (), {"pages": [sentient_page, user_page, downloads_hub]})()
+    svc._context = context
+    svc._active = downloads_hub
+    svc._download_pages.update((sentient_page, downloads_hub))
+
+    svc._on_navigated(downloads_hub, downloads_hub)
+
+    assert svc._active is sentient_page
+
+
+async def test_failed_download_does_not_discard_action_or_successful_download():
+    svc = BrowserService(make_app())
+
+    async def fail_download():
+        raise BrowserError("Couldn't save downloaded file 'broken.pdf'")
+
+    successful = asyncio.create_task(asyncio.sleep(0, result="downloads/report.pdf"))
+    failed = asyncio.create_task(fail_download())
+    svc._download_tasks.update((successful, failed))
+    await asyncio.gather(successful, failed, return_exceptions=True)
+
+    result = await svc._include_downloads({"ok": True, "clicked": "Download"}, set())
+
+    assert result == {
+        "ok": True,
+        "clicked": "Download",
+        "downloads": ["downloads/report.pdf"],
+        "download_errors": ["Couldn't save downloaded file 'broken.pdf'"],
+    }
+    assert successful not in svc._download_tasks
+    assert failed not in svc._download_tasks
+
+
+async def test_stalled_download_is_timed_out_and_reported(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+
+    class StalledDownload:
+        suggested_filename = "stalled.pdf"
+        cancelled = False
+
+        async def save_as(self, target):
+            Path(target).write_text("partial", encoding="utf-8")
+            await asyncio.Future()
+
+        async def cancel(self):
+            self.cancelled = True
+
+    download = StalledDownload()
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 0.01)
+    task = asyncio.create_task(svc._save_download(download))
+    svc._download_tasks.add(task)
+
+    with pytest.raises(BrowserError, match="did not finish within"):
+        await task
+    assert download.cancelled
+    assert not (tmp_path / "downloads" / "stalled.pdf").exists()
+    result = await svc._include_downloads({"ok": True}, set())
+
+    assert result == {
+        "ok": True,
+        "download_errors": ["Download 'stalled.pdf' did not finish within 0.01 seconds."],
+    }
+    assert task not in svc._download_tasks
+
+
+async def test_download_save_error_includes_underlying_reason(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+
+    class FailedDownload:
+        suggested_filename = "broken.pdf"
+
+        async def save_as(self, target):
+            raise OSError("The connection was lost")
+
+        async def cancel(self):
+            raise AssertionError("a failed save should not be cancelled")
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+
+    with pytest.raises(
+        BrowserError,
+        match=r"Couldn't save downloaded file 'broken\.pdf': The connection was lost",
+    ):
+        await svc._save_download(FailedDownload())
+
+    assert not (tmp_path / "downloads" / "broken.pdf").exists()
+
+
+@pytest.mark.flaky(reruns=2)  # 0.5 s outer guard, timed out on Windows CI: #421
+async def test_stalled_download_cancel_is_bounded_and_partial_file_is_removed(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+    cancel_started = asyncio.Event()
+
+    class StalledDownload:
+        suggested_filename = "stalled.pdf"
+
+        async def save_as(self, target):
+            Path(target).write_text("partial", encoding="utf-8")
+            await asyncio.Future()
+
+        async def cancel(self):
+            cancel_started.set()
+            await asyncio.Future()
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 0.01)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_CANCEL_TIMEOUT_S", 0.01)
+
+    with pytest.raises(BrowserError, match=r"Browser cancellation failed: timed out after 0.01 seconds"):
+        await asyncio.wait_for(svc._save_download(StalledDownload()), timeout=0.5)
+
+    assert cancel_started.is_set()
+    assert not (tmp_path / "downloads" / "stalled.pdf").exists()
+
+
+async def test_cancelled_save_cancels_download_and_removes_partial_file(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+    save_started = asyncio.Event()
+
+    class StalledDownload:
+        suggested_filename = "cancelled.pdf"
+        cancelled = False
+
+        async def save_as(self, target):
+            Path(target).write_text("partial", encoding="utf-8")
+            save_started.set()
+            await asyncio.Future()
+
+        async def cancel(self):
+            self.cancelled = True
+
+    download = StalledDownload()
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    task = asyncio.create_task(svc._save_download(download))
+    await save_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert download.cancelled
+    assert not (tmp_path / "downloads" / "cancelled.pdf").exists()
+
+
+async def test_stalled_download_does_not_block_another_save(tmp_path, monkeypatch):
+    svc = BrowserService(make_app())
+    stalled_started = asyncio.Event()
+    finish_stalled = asyncio.Event()
+
+    class StalledDownload:
+        suggested_filename = "report.txt"
+
+        async def save_as(self, target):
+            stalled_started.set()
+            await finish_stalled.wait()
+            Path(target).write_text("first", encoding="utf-8")
+
+        async def cancel(self):
+            finish_stalled.set()
+
+    class QuickDownload:
+        suggested_filename = "report.txt"
+
+        async def save_as(self, target):
+            Path(target).write_text("second", encoding="utf-8")
+
+        async def cancel(self):
+            raise AssertionError("a completed download should not be cancelled")
+
+    monkeypatch.setattr(browser_service.paths, "files_dir", lambda: tmp_path)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_MAX_DURATION_S", 1)
+
+    stalled = asyncio.create_task(svc._save_download(StalledDownload()))
+    await stalled_started.wait()
+    quick = asyncio.create_task(svc._save_download(QuickDownload()))
+
+    assert await asyncio.wait_for(quick, timeout=0.2) == "downloads/report(1).txt"
+    finish_stalled.set()
+    assert await stalled == "downloads/report.txt"
+    assert (tmp_path / "downloads" / "report.txt").read_text(encoding="utf-8") == "first"
+    assert (tmp_path / "downloads" / "report(1).txt").read_text(encoding="utf-8") == "second"
+
+
+async def test_unreported_completed_download_expires_after_reporting_window(monkeypatch):
+    svc = BrowserService(make_app())
+    monkeypatch.setattr(browser_service, "DOWNLOAD_TASK_RETENTION_S", 0.01)
+    monkeypatch.setattr(browser_service, "DOWNLOAD_TASK_CLEANUP_INTERVAL_S", 0.01)
+
+    async def save_download(download):
+        return f"downloads/{download}.pdf"
+
+    monkeypatch.setattr(svc, "_save_download", save_download)
+    await svc._lock.acquire()
+    try:
+        downloads = list(range(100))
+        for download in downloads:
+            svc._on_download(download)
+        tasks = set(svc._download_tasks)
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
+        assert svc._download_cleanup_task is not None
+        assert svc._download_cleanup_task.get_name() == "browser:download-cleanup"
+        assert len(svc._download_tasks) == len(downloads)
+        await asyncio.sleep(0.02)
+        assert len(svc._download_tasks) == len(downloads)
+    finally:
+        svc._lock.release()
+
+    for _ in range(20):
+        if not svc._download_tasks:
+            break
+        await asyncio.sleep(0.01)
+    assert not svc._download_tasks
+    assert not svc._download_completed_at
+    assert not svc._download_names
+
+
+async def test_attached_popup_download_associated_via_target_opener(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("opener-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    # Record target opener mapping: popup target was opened by opener-frame-1
+    svc._on_cdp_target_created({
+        "targetInfo": {
+            "targetId": "popup-target-1",
+            "openerId": "opener-frame-1",
+            "openerFrameId": "opener-frame-1",
+        }
+    })
+
+    file_popup = tmp_path / "browser_download_popup.txt"
+    file_popup.write_text("popup download text", encoding="utf-8")
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(file_popup))
+    entry = {
+        "guid": "g-popup",
+        "frameId": "popup-target-1",
+        "filename": "newtab.txt",
+        "url": "https://example.com/newtab.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    dl = _MockDownload("newtab.txt", url="https://example.com/newtab.txt", page=object())
+    rel = await svc._save_download(dl)
+
+    assert rel == "downloads/newtab.txt"
+    assert entry["consumed"] is True
+    assert (tmp_path / rel).read_text(encoding="utf-8") == "popup download text"
+
+
+async def test_concurrent_same_filename_different_url_timeout_does_not_consume_active_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    file_second = tmp_path / "browser_download_second.csv"
+    file_second.write_text("second download content", encoding="utf-8")
+
+    fut2 = asyncio.get_running_loop().create_future()
+    fut2.set_result(str(file_second))
+    entry2 = {
+        "guid": "g-second",
+        "frameId": "sentient-frame-1",
+        "filename": "export.csv",
+        "url": "https://example.com/second.csv",
+        "future": fut2,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry2)
+
+    # First download with conflicting URL arrives; its matching window expires
+    dl1 = _MockDownload("export.csv", url="https://example.com/first.csv", page=object())
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await svc._save_download(dl1)
+
+    # The second download's record must not have been consumed by the first download's fallback
+    assert entry2["consumed"] is False
+
+    # Second download arrives and should match and save successfully
+    dl2 = _MockDownload("export.csv", url="https://example.com/second.csv", page=object())
+    rel2 = await svc._save_download(dl2)
+    assert rel2 == "downloads/export.csv"
+    assert entry2["consumed"] is True
+    assert (tmp_path / rel2).read_text(encoding="utf-8") == "second download content"
+
+
+async def test_attached_finalize_file_fallback_on_os_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("f-1")
+    svc._context = _MockContext(page_cdp)
+
+    src_file = tmp_path / "browser_file.txt"
+    src_file.write_text("file content", encoding="utf-8")
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(src_file))
+    entry = {
+        "guid": "g-1",
+        "frameId": "f-1",
+        "filename": "test.txt",
+        "url": "https://example.com/test.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    def mock_replace(src, dst):
+        raise OSError("Cross-device link")
+
+    monkeypatch.setattr(os, "replace", mock_replace)
+
+    dl = _MockDownload("test.txt", url="https://example.com/test.txt", page=object())
+    rel = await svc._save_download(dl)
+
+    assert rel == "downloads/test.txt"
+    assert (tmp_path / rel).read_text(encoding="utf-8") == "file content"
+
+
+async def test_attached_popup_target_created_after_matching_starts_is_discovered(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    page_cdp = _MockPageCDP("opener-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    file_popup = tmp_path / "browser_download_late_popup.txt"
+    file_popup.write_text("late popup text", encoding="utf-8")
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(file_popup))
+    entry = {
+        "guid": "g-late-popup",
+        "frameId": "popup-target-1",
+        "filename": "late_popup.txt",
+        "url": "https://example.com/late_popup.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    opener_page = type("Page", (), {"is_closed": lambda self: False, "main_frame": object()})()
+    dl = _MockDownload("late_popup.txt", url="https://example.com/late_popup.txt", page=opener_page)
+
+    async def late_target_created():
+        await asyncio.sleep(0.06)
+        svc._on_cdp_target_created({
+            "targetInfo": {
+                "targetId": "popup-target-1",
+                "openerId": "opener-frame-1",
+                "openerFrameId": "opener-frame-1",
+            }
+        })
+
+    target_task = asyncio.create_task(late_target_created())
+    rel = await svc._save_download(dl)
+    await target_task
+
+    assert rel == "downloads/late_popup.txt"
+    assert entry["consumed"] is True
+    assert (tmp_path / rel).read_text(encoding="utf-8") == "late popup text"
+
+
+async def test_attached_unmatched_download_cleans_up_reservation_and_reports_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+    page_cdp = _MockPageCDP("sentient-frame-1")
+    svc._context = _MockContext(page_cdp)
+
+    dl = _MockDownload("unmatched.pdf", url="https://example.com/unmatched.pdf", page=object())
+
+    svc._on_download(dl)
+    assert len(svc._download_tasks) == 1
+    task = next(iter(svc._download_tasks))
+
+    with pytest.raises(BrowserError, match="could not be associated with a browser download record"):
+        await task
+
+    # Reserved file must be cleaned up
+    assert not (tmp_path / "downloads" / "unmatched.pdf").exists()
+
+    result = await svc._include_downloads({"ok": True}, set())
+    assert result.get("ok") is True
+    assert "downloads" not in result
+    assert result.get("download_errors") == [
+        "Download 'unmatched.pdf' could not be associated with a browser download record."
+    ]
+
+
+async def test_stale_unconsumed_cdp_records_are_not_matched_and_get_evicted(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    loop = asyncio.get_running_loop()
+
+    fut = loop.create_future()
+    stale_entry = {
+        "guid": "g-stale",
+        "frameId": "frame-1",
+        "filename": "old.pdf",
+        "url": "https://example.com/old.pdf",
+        "future": fut,
+        "consumed": False,
+        "created_at": time.monotonic() - 35.0,
+    }
+    svc._attached_downloads.append(stale_entry)
+
+    matched = BrowserService._match_cdp_entry(svc._attached_downloads, {"frame-1"}, "https://example.com/old.pdf", "old.pdf")
+    assert matched is None
+
+    svc._prune_attached_downloads()
+    assert stale_entry not in svc._attached_downloads
+    assert fut.done()
+    assert isinstance(fut.exception(), BrowserError)
+
+
+async def test_prune_attached_downloads_preserves_inflight_and_evicts_overflow_promptly():
+    svc = BrowserService(make_app())
+    loop = asyncio.get_running_loop()
+
+    inflight_fut = loop.create_future()
+    inflight_entry = {
+        "guid": "g-inflight",
+        "frameId": "frame-1",
+        "filename": "inflight.pdf",
+        "url": "https://example.com/inflight.pdf",
+        "future": inflight_fut,
+        "consumed": True,
+        "created_at": time.monotonic(),
+    }
+    svc._attached_downloads.append(inflight_entry)
+
+    overflow_futs = []
+    for i in range(120):
+        f = loop.create_future()
+        overflow_futs.append(f)
+        svc._attached_downloads.append({
+            "guid": f"g-{i}",
+            "frameId": "frame-other",
+            "filename": f"file_{i}.pdf",
+            "url": f"https://example.com/file_{i}.pdf",
+            "future": f,
+            "consumed": False,
+            "created_at": time.monotonic(),
+        })
+
+    svc._prune_attached_downloads()
+
+    assert inflight_entry in svc._attached_downloads
+    assert not inflight_fut.done()
+
+    evicted_futs = [f for f in overflow_futs if f.done()]
+    assert len(evicted_futs) > 0
+    for f in evicted_futs:
+        assert isinstance(f.exception(), BrowserError)
+        assert "evicted" in str(f.exception())
+
+
+async def test_candidate_pages_scoped_to_download_page_when_valid(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "files_dir", lambda: tmp_path)
+    svc = BrowserService(make_app())
+    svc._attached = True
+    svc._attached_match_timeout_s = 0.05
+
+    other_page = type("Page", (), {"is_closed": lambda self: False, "main_frame": object()})()
+    dl_page = type("Page", (), {"is_closed": lambda self: False, "main_frame": object()})()
+    svc._download_pages.update((other_page, dl_page))
+
+    queried_pages = []
+
+    class MockContextWithSpy:
+        async def new_cdp_session(self, page):
+            queried_pages.append(page)
+            return _MockPageCDP("dl-frame")
+
+    svc._context = MockContextWithSpy()
+
+    file_test = tmp_path / "browser_download_test.txt"
+    file_test.write_text("scoped test", encoding="utf-8")
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result(str(file_test))
+
+    entry = {
+        "guid": "g-scoped",
+        "frameId": "dl-frame",
+        "filename": "scoped.txt",
+        "url": "https://example.com/scoped.txt",
+        "future": fut,
+        "consumed": False,
+    }
+    svc._attached_downloads.append(entry)
+
+    dl = _MockDownload("scoped.txt", url="https://example.com/scoped.txt", page=dl_page)
+    rel = await svc._save_download(dl)
+
+    assert rel == "downloads/scoped.txt"
+    assert queried_pages == [dl_page]
+
+
+async def test_a_click_that_only_opened_a_download_tab_stays_on_the_page(monkeypatch):
+    """#307: the blank tab a file link opens, or Edge's downloads hub, is not a page to keep working in."""
+    import sentient.browser.service as service
+
+    monkeypatch.setattr(service, "DOWNLOAD_TAB_WAIT_S", 0.3)
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url, closed=False):
+            self.url, self.closed = url, closed
+
+        def is_closed(self):
+            return self.closed
+
+    before: set = set()
+    assert await svc._download_only_tab(Page("", closed=True), before)  # the blank tab closed once the file came
+    assert await svc._download_only_tab(Page("edge://downloads-hub/"), before)
+    assert not await svc._download_only_tab(Page("https://example.com/help"), before)  # a real new page
+    assert not await svc._download_only_tab(Page("about:blank"), before)  # stays blank, no download: kept
+
+    async def save():
+        return "downloads/x.txt"
+
+    task = asyncio.create_task(save())
+    svc._download_tasks.add(task)
+    assert await svc._download_only_tab(Page("about:blank"), before)  # a download started from it
+    await task
+
+
+def test_a_closed_or_hub_tab_goes_back_to_the_tab_it_came_from():
+    """#307: with several tabs open, a blank download tab that closes, or a new tab that turns out to be Edge's
+    downloads hub, hands back to the tab that was active when it opened, not to the last tab."""
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def main_frame(self):
+            return self
+
+        def is_closed(self):
+            return False
+
+        def on(self, *_):
+            return None
+
+    clicked, other = Page("https://example.com/reports"), Page("https://example.com/help")
+    context = type("Context", (), {"pages": [clicked, other]})()
+    svc._context = context
+    svc._closing = True  # no status publishing in this unit test
+    svc._active = clicked
+
+    blank = Page("")
+    context.pages.append(blank)
+    svc._on_page(blank)
+    assert svc._active is blank
+    context.pages.remove(blank)
+    svc._on_page_closed(blank)
+    assert svc._active is clicked
+
+    hub = Page("")
+    context.pages.append(hub)
+    svc._on_page(hub)
+    hub.url = "edge://downloads-hub/"
+    svc._on_navigated(hub, hub)
+    assert svc._active is clicked

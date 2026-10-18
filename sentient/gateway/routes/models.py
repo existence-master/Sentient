@@ -20,7 +20,7 @@ from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
 from sentient.llm import claude_code, connect, presets
 from sentient.llm.presets import PresetError
-from sentient.llm.provider import provider_config
+from sentient.llm.provider import CLAUDE_CODE, provider_config
 
 router = APIRouter(prefix="/api", tags=["models"], dependencies=AUTH)
 
@@ -176,13 +176,21 @@ async def test_model(request: Request, body: TestBody):
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)[:500]}
 
 
+@router.get("/models/busy")
+async def model_busy(request: Request):
+    """What the local model is doing now and what waits for it (#149); live as the ``model.busy`` event."""
+    return get_core(request).model_jobs.status()
+
+
 @router.get("/models/claude-code")
 async def claude_code_status(request: Request):
-    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version. Runs
-    ``claude --version`` only while it is turned on; never a model call, never reads Claude's login."""
-    from sentient.config.schema import CLAUDE_CODE_MODELS
+    """Claude through the user's own Claude Code (experimental, ADR 0022): turned on, installed, version, the roles
+    that may use it, and whether it does everything (ADR 0032). Runs ``claude --version`` only while it is turned on; never a model call, never reads
+    Claude's login."""
+    from sentient.config.schema import CLAUDE_CODE_FAST_MODEL, CLAUDE_CODE_MODELS
 
-    return {**await claude_code.status(get_core(request).config), "models": list(CLAUDE_CODE_MODELS)}
+    return {**await claude_code.status(get_core(request).config), "models": list(CLAUDE_CODE_MODELS),
+            "roles": list(claude_code.accepting_roles(get_core(request).config)), "fast_model": CLAUDE_CODE_FAST_MODEL}
 
 
 class EmbedTestBody(BaseModel):
@@ -234,6 +242,8 @@ async def set_roles(request: Request, body: dict):
             raise HTTPException(400, f"unknown role {k}")
         if k in {"primary", "fast", "embedding"} and not v:
             raise HTTPException(400, f"role {k} cannot be empty")
+        if isinstance(v, str) and v.startswith(f"{CLAUDE_CODE}/") and not claude_code.accepts(s.config, k):
+            raise HTTPException(400, claude_code.background_refusal(k))  # it only answers chats (ADR 0022, #442)
         roles[k] = v or None
     cfg.models.roles = type(cfg.models.roles).model_validate(roles)
     s.save_config(cfg)
@@ -260,6 +270,10 @@ class PresetBody(BaseModel):
 
 class RenameBody(BaseModel):
     name: str
+
+
+class ApplyBody(BaseModel):
+    local_only: bool = False  # #335: also turn Local only on (the window asks first)
 
 
 def _preset_call(fn, *args, **kwargs):
@@ -293,8 +307,8 @@ async def undo_preset(request: Request):
 
 
 @router.post("/models/presets/{name}/apply")
-async def apply_preset(request: Request, name: str):
-    return await _preset_await(presets.apply(get_core(request), name))
+async def apply_preset(request: Request, name: str, body: ApplyBody | None = None):
+    return await _preset_await(presets.apply(get_core(request), name, local_only=bool(body and body.local_only)))
 
 
 @router.patch("/models/presets/{name}")
@@ -349,7 +363,14 @@ async def connect_openrouter_status(request: Request, state: str):
 @router.get("/models/connect/chatgpt")
 async def chatgpt_status(request: Request):
     """Whether Sign in with ChatGPT can be used here, and whether someone is signed in."""
-    return get_core(request).connections.chatgpt_status()
+    return await get_core(request).connections.chatgpt_status()
+
+
+@router.post("/models/connect/chatgpt/welcome")
+async def chatgpt_welcomed(request: Request):
+    """The one-time "You're using your ChatGPT plan" message was shown: don't show it again."""
+    await get_core(request).connections.chatgpt_welcomed()
+    return {"ok": True}
 
 
 @router.post("/models/connect/chatgpt")

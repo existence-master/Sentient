@@ -45,7 +45,50 @@ its public REST and WebSocket interface, and the desktop screens were captured f
 | Follow-ups deciding and drafting on `qwen3:8b`, with three made-up threads: a client question waiting 4 days, a "sounds good" reply, and your own unanswered request | Pass: replied, skipped, nudged; no placeholders in drafts (3 to 18 s each) |
 | Telegram with a real bot and a real phone, on `qwen3:8b`: pairing code, chat, approval buttons before running code (then the Docker sandbox), weather, `/help`, and two voice notes understood by faster-whisper | Pass. Replies to voice notes are text unless `channels.telegram.voice_replies` is on |
 
+**Claude through your own Claude Code (experimental, ADR 0022), verified on 2026-10-10**
+
+Claude Code 2.1.269 signed in to a Claude Max plan (`claude auth status`: `loggedIn true`, `authMethod claude.ai`,
+`subscriptionType max`), chat on `claude-code/sonnet`, every other role and memory on local `qwen3:8b`. Fresh
+engines driven over REST and `/ws`. No Claude token was printed or stored.
+
+| Check | Result |
+|---|---|
+| Status and Test: Settings shows the version while the switch is on; Test gives a reply with a tool call | Pass. `version "2.1.269 (Claude Code)"`; Test `ok`, `supports_tools: true`, 12.2 s |
+| A plain reply streams | Pass. A short answer comes as one piece after about 13 s; a longer one as 32 pieces between 8.2 s and 9.9 s, done at 11.7 s |
+| The exact stream-json shape | Confirmed. `system/init` first (its `tools` list is checked), then `stream_event` text and thinking deltas, the full `assistant` message with any `tool_use` blocks and usage, then `result` |
+| Claude Code's own tools are off | Pass. Asked to use its own Bash, PowerShell or Read, it said it only had Sentient's tools and made no call. Every `init` listed only `mcp__sentient__*` tools plus the harmless built-ins |
+| A Sentient tool with approval | Pass. `execute_code` asked first (risk `exec`); allowed, it ran in Sentient and streamed its output; declined, nothing ran and the reply said so. `file_write` ran in Sentient's loop without asking, as approvals mode `ask` intends |
+| Memory and usage | Pass. Remembered facts reach the reply. Each model round sends `usage` with prompt and completion tokens and no price (the plan pays) |
+| Stop everything ends a running reply | Pass. Stopped 2.2 s after a long reply began to stream: the turn ended as cancelled, and the Claude Code process, its launcher and Sentient's tool bridge (4 processes while it answered) were all gone |
+| Background work is refused | Pass. Fast and planner roles on `claude-code/` are refused with a plain message, so their fallback model takes over |
+| Scratch folders are removed | Pass after the fix for #259: no folder left after each reply or after Stop everything, and a two-hour-old leftover was removed when the engine started |
+| Turning the switch on, then the status | Pass after the fix in #246: with the save held back for 1.5 s, the first status still said "off"; the window asked again every 0.4 s and showed the version as soon as the save landed |
+
+Not checked: how this usage appears on the Claude plan's usage page (it needs the owner's claude.ai account).
+Chats on `claude-code/` models show no context meter yet (#258).
+
 The automated suite (522 engine tests, desktop typecheck and build) passes.
+
+**Sign in with ChatGPT follow-ups (#241), checked on 2026-10-11 without a ChatGPT account**
+
+The owner's ChatGPT account has no Plus or Pro plan (OpenAI's consent page turned it down), so nothing here signed in
+to ChatGPT for real. The window was driven in the built app; the signed-in screens use the dev-only demo sign-in
+(`#/...?demo=1&chatgpt=1`, never in a packaged build) with the fictional Maya Rao.
+
+| Check | Result |
+|---|---|
+| First-run setup, cloud step: a **ChatGPT plan** choice; picking it shows "Use your ChatGPT plan" and **Continue with ChatGPT** | Pass. Real engine, fresh home, dark and light themes |
+| The button carries OpenAI's ChatGPT logo (the published sign-in button SVG, unchanged): white logo on black in the light theme, black on white in the dark one | Pass |
+| "You're using your ChatGPT plan" shows once after signing in; **Got it** dismisses it for good | Pass in the window (demo sign-in). Engine side: `welcome` false while signed out, true once signed in, false after `POST /api/models/connect/chatgpt/welcome`, through a later sign-out and sign-in (automated) |
+| The chat box shows **Using ChatGPT plan** with **Manage usage** while the main model is a `chatgpt/` model | Pass. Seeded Maya home with `chatgpt/gpt-6-astra` as the main model, dark and light themes |
+| The fast model rule on a recorded list: OpenAI's published Codex model catalog (11 models, 8 listed) | Pass. Ranked by `priority`: `gpt-6.1-sol` (1), `gpt-6-astra` (2), `gpt-6-sol`, `gpt-6-luna`, then the older ones. Main and fast `chatgpt/gpt-6.1-sol`, the everyday model (the list itself puts the heavier `gpt-6-astra` first); fast jobs send `reasoning: {effort: "low"}` (the lightest the list gives), the main role keeps `medium`. No listed name says "mini" or "nano", so the old guess had nothing to find |
+| A user without ChatGPT: real engine start-up on a fresh home | Pass. `GET /api/models/connect/chatgpt` says `signed_in: false`, `welcome: false`; presets unchanged; no errors in the log |
+| A chat on `claude-code/sonnet` | Pass. 12.8 s, the right answer |
+| A chat on `qwen3:8b` | Pass. 25.5 s, the right answer, 32% of context |
+
+**Pending a ChatGPT Plus or Pro account (#241):** signing in with a Plus and a Pro account, the plan's real model list
+(and whether it carries reasoning levels), a streamed tool call, a refresh after an hour, usage-limit behaviour, and
+switching to another ChatGPT account with the saved client id.
 
 Real-model runs found and fixed these problems, each now covered by a test: a memory update dropped a
 city; a task run stopped after announcing its next step; the model passed a whole snapshot line as a browser
@@ -55,6 +98,7 @@ action had happened (declined results now say plainly that nothing was done).
 
 **Not yet verified on real hardware or accounts:**
 
+- Sign in with ChatGPT with a real Plus or Pro account (#241, listed above).
 - Integrations with real Google, GitHub, Slack, Notion, Discord, Trello or WhatsApp accounts, and a paired
   Discord chat. Spoken replies to Telegram voice notes.
 - A real phone and real glasses hardware. The device protocol was exercised over the network with the

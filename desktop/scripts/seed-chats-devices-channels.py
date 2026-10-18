@@ -28,6 +28,8 @@ from math import cos, radians, sin
 from pathlib import Path
 from typing import Any
 
+import seed_safety  # next to this script
+
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
@@ -778,6 +780,7 @@ def main() -> None:
     ap.add_argument("--theme", choices=["dark", "light", "system"], default="dark")
     ap.add_argument("--add", action="store_true",
                     help="add this demo to a home other seed scripts already filled (keeps its data and config)")
+    ap.add_argument(seed_safety.KEEP_LIVE_FLAG, action="store_true", help=seed_safety.KEEP_LIVE_HELP)
     args = ap.parse_args()
     if not args.home:
         ap.error("--home or SENTIENT_HOME is required")
@@ -786,6 +789,8 @@ def main() -> None:
         home.mkdir(parents=True, exist_ok=True)
         os.environ["SENTIENT_HOME"] = str(home)
         asyncio.run(seed(home, args.theme, add=True))
+        if not args.keep_live:
+            seed_safety.announce(seed_safety.quiet(home))
         return
     if home.exists() and any(home.iterdir()):
         if not args.reset:
@@ -797,6 +802,8 @@ def main() -> None:
     (home / MARKER).write_text("created by desktop/scripts/seed-chats-devices-channels.py\n", encoding="utf-8")
     os.environ["SENTIENT_HOME"] = str(home)
     asyncio.run(seed(home, args.theme))
+    if not args.keep_live:
+        seed_safety.announce(seed_safety.quiet(home))
 
 
 if __name__ == "__main__":

@@ -14,19 +14,30 @@
  *   notification.deleted  -> remove (id null = all)
  *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
  *   memory.updated        -> invalidate ['memories']
+ *   memory.forgotten      -> invalidate ['memories'], ['sessions'] and ['messages'] (a source was forgotten, #153)
  *   skill.updated         -> invalidate ['skills']
- *   session.updated       -> rename in ['sessions']
+ *   mcp.review            -> invalidate ['integrations-mcp'] (an MCP server's tools wait for review, #146)
+ *   session.updated       -> rename, set the chat's model or its outside-content mark in ['sessions']
+ *   session.deleted       -> remove from ['sessions'] and refetch its transcript (an incognito chat that was closed)
  *   rule_proposal.updated -> refetch that chat's ['rule-proposals'] ("Make this a rule?" cards)
+ *   approval_grants.updated -> refetch ['approval-grants'] (Settings > Approvals, #139)
  *   config.updated        -> invalidate config/bootstrap/model presets/ChatGPT sign-in (+ secrets/providers)
+ *   budget.updated        -> invalidate ['usage'] (the cost meter, #148)
  *   voice.state           -> ['voice', 'state']
  *   subagent.updated      -> ['subagents', ...] (+ toast when a background helper finishes)
  *   browser.updated       -> ['browser', 'status'] (+ refetch ['browser', 'profiles']); browser.frame -> useBrowserView (live view)
  *   node.updated/deleted  -> ['nodes']; node.event battery -> node battery
  *   channel.updated       -> ['channels']; channel.message -> refresh sessions (+ that transcript)
+ *   channel.delivery      -> (a notification sent to a paired chat, or that failed; only the Activity screen)
  *   user_model.updated    -> refetch ['user-model']
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
  *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
+ *   model.busy            -> ['models', 'busy'] (the title bar's "model busy" indicator)
+ *   backup.updated        -> refetch ['backups'] (Settings > Backups)
+ *   folders.updated       -> refetch ['folders'] (Settings > Folders: progress of a look through a folder)
+ *   import.updated        -> ['import', 'memory', 'job'] (an import from ChatGPT, Claude or OpenClaw; + memory review when it ends)
+ *   (most of the above, and a finished chat reply, also refetch ['timeline'] once things settle: the Activity screen)
  */
 import type { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -40,19 +51,23 @@ import { upsertSubagent } from '@/features/chat/subagents'
 import { deviceKeys, removeDevice, upsertDevice } from '@/features/devices/hooks'
 import { useChat } from '@/stores/chat'
 import { useNotificationStore } from '@/stores/notifications'
+import { isAlarm, useAlarm } from '@/stores/alarm'
 import { useUI } from '@/stores/ui'
 import { getBridge } from './bridge'
+import { approvalTarget, settledApprovalRun } from './nativeApproval'
 import type { DeviceNode, Dream, Notification, NotificationList, Session, Task } from './types'
 import { live, type SocketState } from './ws'
 
 export function notificationRoute(n: Notification): string {
   if (n.task_id) return `/tasks?task=${encodeURIComponent(n.task_id)}`
   if (n.kind === 'skill') return '/skills'
+  if (n.payload && typeof n.payload === 'object' && 'mcp_review' in n.payload) return '/integrations?section=mcp'
   return '/notifications'
 }
 
 function plain(md: string, max = 180): string {
-  const s = md.replace(/[`*_#>[\]()!]/g, '').replace(/\s+/g, ' ').trim()
+  // underscores inside a word stay (tool names such as send_data); emphasis underscores go
+  const s = md.replace(/[`*#>[\]()!]/g, '').replace(/(^|\W)_+|_+(?=\W|$)/g, '$1').replace(/\s+/g, ' ').trim()
   return s.length > max ? `${s.slice(0, max - 1)}…` : s
 }
 
@@ -66,6 +81,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
       if (e.data.original_context?.source === 'brief') refreshBrief()
     })
   )
+  offs.push(live.onDomain('tasks.away', (e) => void qc.setQueryData(qk.tasks.away, e.data)))
   offs.push(
     live.onDomain('task.deleted', (e) => {
       removeTask(qc, e.data.task_id)
@@ -111,6 +127,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
       )
       useNotificationStore.getState().push(n)
       if (n.kind === 'brief') refreshBrief()
+      if (isAlarm(n)) useAlarm.getState().ring(n) // #359: it rings until Stop
       const title = n.title || 'Sentient'
       toast(title, {
         description: plain(n.message),
@@ -118,7 +135,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
       })
       const bridge = getBridge()
       void bridge.isFocused().then((focused) => {
-        if (!focused) void bridge.showNotification({ title, body: plain(n.message, 240), route: notificationRoute(n) })
+        // a task waiting for your OK gets Allow once and Deny right on the notification (#323)
+        if (!focused) void bridge.showNotification({ title, body: plain(n.message, 240), route: notificationRoute(n), approval: approvalTarget(n) })
       })
     })
   )
@@ -144,6 +162,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
       )
       useNotificationStore.getState().update(n)
       if (n.kind === 'brief') refreshBrief()
+      const settled = settledApprovalRun(n)
+      if (settled) void getBridge().closeApprovalNotification(settled)
     })
   )
   offs.push(
@@ -164,21 +184,47 @@ export function installDomainEvents(qc: QueryClient): () => void {
       if (e.data?.id === 'webhook') void qc.invalidateQueries({ queryKey: qk.hooks })
     })
   )
+  // #390: a ringing alarm stopped or snoozed anywhere (a chat, voice, a messaging app) updates the banner
+  offs.push(live.onDomain('reminder.updated', (e) => useAlarm.getState().updated(e.data)))
   offs.push(live.onDomain('memory.updated', () => void qc.invalidateQueries({ queryKey: qk.memories.all })))
+  offs.push(
+    live.onDomain('memory.forgotten', () => {
+      void qc.invalidateQueries({ queryKey: qk.memories.all })
+      void qc.invalidateQueries({ queryKey: qk.sessions })
+      void qc.invalidateQueries({ queryKey: qk.allMessages }) // an app's results in chats were replaced
+    })
+  )
   offs.push(live.onDomain('skill.updated', () => void qc.invalidateQueries({ queryKey: qk.skills.all })))
+  offs.push(live.onDomain('mcp.review', () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })))
 
   offs.push(
     live.onDomain('session.updated', (e) => {
-      const { session_id, title } = e.data
+      const { session_id, ...changed } = e.data
       let found = false
       qc.setQueryData<Session[]>(qk.sessions, (old) =>
         old?.map((s) => {
           if (s.id !== session_id) return s
           found = true
-          return { ...s, title }
+          return { ...s, ...changed }
         })
       )
       if (!found) void qc.invalidateQueries({ queryKey: qk.sessions })
+      // a group member wrote, or the user trusted the chat again: their rows are in the transcript now (ADR 0029)
+      if ('untrusted' in changed) void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
+    })
+  )
+  offs.push(
+    live.onDomain('session.deleted', (e) => {
+      const { session_id } = e.data
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.filter((s) => s.id !== session_id))
+      // an open chat that was deleted (an incognito chat left idle) shows "This chat doesn't exist anymore"
+      void qc.invalidateQueries({ queryKey: qk.messages(session_id) })
+    })
+  )
+
+  offs.push(
+    live.onDomain('approval_grants.updated', () => {
+      void qc.invalidateQueries({ queryKey: qk.approvalGrants })
     })
   )
 
@@ -202,6 +248,8 @@ export function installDomainEvents(qc: QueryClient): () => void {
       void qc.invalidateQueries({ queryKey: qk.bootstrap })
     })
   )
+
+  offs.push(live.onDomain('budget.updated', () => void qc.invalidateQueries({ queryKey: ['usage'] })))
 
   offs.push(live.onDomain('voice.state', (e) => qc.setQueryData(['voice', 'state'], e.data.state)))
 
@@ -293,12 +341,26 @@ export function installDomainEvents(qc: QueryClient): () => void {
     })
   )
 
+  // #149 one local model job at a time
+  offs.push(live.onDomain('model.busy', (e) => qc.setQueryData(qk.modelBusy, e.data)))
+  offs.push(live.onDomain('backup.updated', () => void qc.invalidateQueries({ queryKey: qk.backups })))
+  offs.push(live.onDomain('folders.updated', () => void qc.invalidateQueries({ queryKey: qk.folders })))
+  offs.push(
+    live.onDomain('import.updated', (e) => {
+      qc.setQueryData(qk.memoryImportJob, e.data)
+      if (e.data?.status !== 'running') {
+        void qc.invalidateQueries({ queryKey: qk.memories.all })
+        void qc.invalidateQueries({ queryKey: qk.userModel })
+      }
+    })
+  )
+
   // After a reconnect we may have missed events: refresh lists (not transcripts).
   let prev: SocketState = live.state
   offs.push(
     live.onState((s) => {
       if (s === 'open' && prev === 'reconnecting') {
-        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
+        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, qk.modelBusy, qk.folders, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
           void qc.invalidateQueries({ queryKey: key })
         }
       }
@@ -306,5 +368,41 @@ export function installDomainEvents(qc: QueryClient): () => void {
     })
   )
 
+  // The Activity screen (§21) reads what these events change; refetch it once a burst of them settles.
+  let timelineTimer: number | undefined
+  const refreshTimeline = () => {
+    window.clearTimeout(timelineTimer)
+    timelineTimer = window.setTimeout(() => void qc.invalidateQueries({ queryKey: qk.timeline.all }), 1500)
+  }
+  offs.push(
+    live.onDomain('*', (e) => {
+      if (TIMELINE_EVENTS.has(e.type)) refreshTimeline()
+    })
+  )
+  offs.push(
+    live.onChat((e) => {
+      if (e.type === 'done') refreshTimeline()
+    })
+  )
+  offs.push(() => window.clearTimeout(timelineTimer))
+
   return () => offs.forEach((off) => off())
 }
+
+const TIMELINE_EVENTS = new Set<string>([
+  'task.updated',
+  'task.deleted',
+  'tasks.away',
+  'notification.new',
+  'notification.updated',
+  'memory.updated',
+  'memory.forgotten',
+  'skill.updated',
+  'dream.updated',
+  'backup.updated',
+  'approval_grants.updated',
+  'channel.message',
+  'channel.delivery',
+  'budget.updated',
+  'reminder.updated'
+])

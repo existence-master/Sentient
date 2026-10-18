@@ -1,21 +1,31 @@
-import { IconArrowDown, IconFileUpload, IconMessageOff, IconWorldWww } from '@tabler/icons-react'
+import { IconArrowDown, IconFileUpload, IconMessageOff, IconSpy, IconWorldWww } from '@tabler/icons-react'
+import { ChatNote, OtherMessage, OutsideContentBar } from './OutsideContent'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router'
+import { toast } from 'sonner'
 import { Button, EmptyState, IconButton, Skeleton } from '@/components/ui'
 import { useBrowserView } from '@/features/browser/state'
 import { ChannelBadge } from '@/features/channels/meta'
 import { HelpersTray } from './HelpersTray'
-import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions } from '@/hooks/core'
-import { isApiError } from '@/lib/api'
+import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions, useSetChatModel, useSetChatScope } from '@/hooks/core'
+import { qk } from '@/hooks/queryKeys'
+import { api, errorMessage, isApiError } from '@/lib/api'
 import { foldTranscript, type AttachmentView, type TimelineItem } from '@/lib/chatFold'
+import { chatModelLabel } from '@/lib/models'
+import { queryClient } from '@/lib/queryClient'
+import type { ApprovalDecision, Session } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
+import { scopeLabel } from '@/features/memory/bits'
+import { ChatScopeMenu } from './ChatScopeMenu'
 import { Composer } from './Composer'
+import { useMemorySaveToasts } from './memoryToasts'
 import { RuleProposalCard } from './RuleProposalCard'
 import { takeScreenShare } from './screenShare'
 import { EmptyChat, type Suggestion } from './EmptyChat'
+import { IncognitoBadge, IncognitoIntro } from './Incognito'
 import { useAttachments } from './useAttachments'
 import { UserMessage } from './UserMessage'
 
@@ -23,13 +33,16 @@ export function ChatPage() {
   const { sessionId } = useParams()
   const location = useLocation()
   // `pendingKey`: a message already sent from outside the chat view (push to talk) whose new chat this view shows.
-  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean }; pendingKey?: string } | null
+  // `incognito` (or `#/chat?incognito=1`): a new incognito chat (#154).
+  const state = location.state as { fresh?: number; prompt?: { text: string; autoSend?: boolean }; pendingKey?: string; incognito?: boolean } | null
+  const newIncognito = !sessionId && (!!state?.incognito || /(^|[?&])incognito=1\b/.test(location.search))
   return (
     <ChatView
-      key={sessionId ?? `new-${state?.fresh ?? ''}`}
+      key={sessionId ?? `new-${state?.fresh ?? ''}${newIncognito ? '-incognito' : ''}`}
       sessionId={sessionId}
       initialPrompt={sessionId ? undefined : state?.prompt}
       initialPendingKey={sessionId ? undefined : state?.pendingKey}
+      newIncognito={newIncognito}
     />
   )
 }
@@ -37,17 +50,21 @@ export function ChatPage() {
 function ChatView({
   sessionId,
   initialPrompt,
-  initialPendingKey
+  initialPendingKey,
+  newIncognito = false
 }: {
   sessionId?: string
   initialPrompt?: { text: string; autoSend?: boolean }
   initialPendingKey?: string
+  newIncognito?: boolean
 }) {
   const navigate = useNavigate()
   const [pendingKey, setPendingKey] = useState<string | null>(initialPendingKey ?? null)
   const liveKey = sessionId ?? pendingKey
   const liveSession = useChat((s) => (liveKey ? s.live[liveKey] : undefined))
   const resolvedId = useChat((s) => (pendingKey ? s.resolved[pendingKey.replace('pending:', '')] : undefined))
+  // "Remembered: ... Undo" for memories saved from this chat (#234), also during a new chat's first reply
+  useMemorySaveToasts(sessionId ?? resolvedId)
   const context = useChat((s) => (sessionId ? s.context[sessionId] : undefined))
   const send = useChat((s) => s.send)
   const cancel = useChat((s) => s.cancel)
@@ -69,6 +86,53 @@ function ChatView({
   const assistantName = bootstrap.data?.assistant.name ?? 'Sentient'
   const showThinking = config.data?.chat.show_thinking ?? true
   const session = sessions.data?.find((s) => s.id === sessionId)
+  const knownIncognito = useChat((s) => (sessionId ? !!s.incognito[sessionId] : false))
+  const incognito = newIncognito || knownIncognito || !!session?.incognito || !!liveSession?.request.incognito
+  const usesMemory = config.data?.chat.incognito_uses_memory ?? true
+
+  // The chat's own model (#312). A new chat keeps the pick here until its first message creates it.
+  const [newChatModel, setNewChatModel] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false) // a new chat with its own model is being created
+  const setModel = useSetChatModel()
+  const chatModel = sessionId ? ((session?.model as string | null | undefined) ?? null) : newChatModel
+  const onChatModelChange = useCallback(
+    (model: string | null) => {
+      if (!sessionId) {
+        setNewChatModel(model)
+        return
+      }
+      setModel.mutate(
+        { id: sessionId, model },
+        {
+          onSuccess: () => toast.success(model ? `This chat now uses ${chatModelLabel(model)}` : 'This chat uses the default model again'),
+          onError: (e) => toast.error("Couldn't change this chat's model", { description: errorMessage(e) })
+        }
+      )
+    },
+    [sessionId, setModel]
+  )
+
+  // The memories this chat uses (#155). A new chat keeps the pick here until its first message creates it.
+  const [newChatScope, setNewChatScope] = useState<string>('personal')
+  const setScope = useSetChatScope()
+  const chatScope = sessionId ? ((session?.memory_scope as string | undefined) ?? 'personal') : newChatScope
+  const onChatScopeChange = useCallback(
+    (scope: string) => {
+      if (!sessionId) {
+        setNewChatScope(scope)
+        return
+      }
+      setScope.mutate(
+        { id: sessionId, scope },
+        {
+          onSuccess: () => toast.success(`This chat now uses your ${scopeLabel(scope)} memories`),
+          onError: (e) => toast.error("Couldn't change this chat's memories", { description: errorMessage(e) })
+        }
+      )
+    },
+    [sessionId, setScope]
+  )
+  const newChatOwnScope = newChatScope !== 'personal' ? newChatScope : null
 
   // A brand-new chat navigates to its session once the engine assigns an id.
   useEffect(() => {
@@ -81,19 +145,70 @@ function ChatView({
     return [...history, ...liveItems(liveSession)]
   }, [messages.data, liveSession])
 
+  // ?message=<id> (a memory's source, #152): scroll to that message once it is on screen, and mark it a moment
+  const focusId = new URLSearchParams(useLocation().search).get("message")
+  const loadedAll = !messages.isFetching
+  const focused = useRef<string | null>(null) // done once per link, not again when the chat refetches
+  useEffect(() => {
+    if (!focusId || items.length === 0 || !loadedAll || focused.current === focusId) return
+    const t = window.setTimeout(() => {
+      focused.current = focusId
+      const el = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(focusId)}"]`)
+      if (!el) {
+        // this view shows a chat's newest 500 messages: say so rather than leave the user guessing
+        if (!(messages.data ?? []).some((m) => m.id === focusId)) toast.info('That message is further back in this chat than Sentient shows here.')
+        return
+      }
+      el.scrollIntoView({ block: 'center' })
+      el.classList.add('ring-2', 'ring-accent/60')
+      window.setTimeout(() => el.classList.remove('ring-2', 'ring-accent/60'), 2400)
+    }, 350)
+    return () => window.clearTimeout(t)
+  }, [focusId, items.length, loadedAll])
+
   const streaming = !!liveSession?.streaming
   const lastAssistantIndex = items.map((i) => i.kind).lastIndexOf('assistant')
 
   const onSend = useCallback(
-    async (text: string, files: AttachmentView[], model: string | undefined) => {
-      const key = await send(sessionId ?? null, { text, attachments: files, model })
+    async (text: string, files: AttachmentView[]) => {
+      if (!sessionId && (newChatModel || newChatOwnScope)) {
+        // a new chat with its own model (#312) or memories (#155): create it first so even its first reply uses them
+        if (creating) return
+        let id: string
+        setCreating(true) // until this view moves to the new chat, so a second message can't start another one
+        try {
+          id = (await api.sessions.create({ incognito: newIncognito, model: newChatModel, memory_scope: newChatOwnScope })).session_id
+        } catch (err) {
+          setCreating(false)
+          setInject({ text, nonce: Date.now() }) // the message box was cleared: put the text back
+          toast.error("Couldn't start the chat", { description: errorMessage(err) })
+          return
+        }
+        useChat.getState().adopt(id, { incognito: newIncognito })
+        const now = new Date().toISOString()
+        const row: Session = {
+          id,
+          title: null,
+          channel: 'desktop',
+          created_at: now,
+          updated_at: now,
+          incognito: newIncognito,
+          model: newChatModel,
+          memory_scope: newChatScope
+        }
+        queryClient.setQueryData<Session[]>(qk.sessions, (old) => [row, ...(old ?? []).filter((s) => s.id !== id)])
+        await send(id, { text, attachments: files })
+        navigate(`/chat/${id}`, { replace: true })
+        return
+      }
+      const key = await send(sessionId ?? null, { text, attachments: files, incognito: !sessionId && newIncognito })
       if (!sessionId) setPendingKey(key)
     },
-    [send, sessionId]
+    [send, sessionId, newIncognito, newChatModel, newChatOwnScope, newChatScope, navigate, creating]
   )
 
   const onPick = (s: Pick<Suggestion, 'prompt' | 'autoSend'>) => {
-    if (s.autoSend) void onSend(s.prompt, [], undefined)
+    if (s.autoSend) void onSend(s.prompt, [])
     else setInject({ text: s.prompt, nonce: Date.now() })
   }
 
@@ -120,7 +235,7 @@ function ChatView({
   }, [retry, sessionId])
 
   const onApprove = useCallback(
-    (approvalId: string, decision: 'allow' | 'allow_session' | 'deny') => {
+    (approvalId: string, decision: ApprovalDecision) => {
       if (liveSession) void respondApproval(liveSession.key, approvalId, decision)
     },
     [respondApproval, liveSession]
@@ -151,13 +266,20 @@ function ChatView({
       }}
     >
       {!empty && (
-        <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6">
+        <div
+          className={cn(
+            'flex h-12 shrink-0 items-center gap-3 border-b px-6',
+            incognito ? 'border-incognito/25 bg-incognito/8' : 'border-border'
+          )}
+        >
+          {incognito && <IconSpy size={17} className="shrink-0 text-incognito" aria-hidden />}
           <h2 className="min-w-0 truncate text-sm font-medium text-fg">
-            {session?.title?.trim() || (streaming ? 'New chat' : 'Chat')}
+            {session?.title?.trim() || (incognito ? 'Incognito chat' : streaming ? 'New chat' : 'Chat')}
           </h2>
-          <ChannelBadge channel={session?.channel} withLabel />
+          {incognito ? <IncognitoBadge /> : <ChannelBadge channel={session?.channel} withLabel />}
           <span className="flex-1" />
           {streaming && <span className="text-xs text-fg-subtle">{assistantName} is replying…</span>}
+          {sessionId && <ChatScopeMenu value={chatScope} onChange={onChatScopeChange} />}
           <HelpersTray sessionId={sessionId} />
           <IconButton size="sm" label="Browser live view" icon={<IconWorldWww size={16} />} onClick={toggleBrowser} active={browserOpen} />
         </div>
@@ -166,17 +288,28 @@ function ChatView({
       {empty ? (
         <div className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 py-10">
           <div className="my-auto w-full max-w-[720px]">
-            <EmptyChat userName={bootstrap.data?.assistant.user_name} onPick={onPick} />
+            {newIncognito ? (
+              <IncognitoIntro usesMemory={usesMemory} />
+            ) : (
+              <EmptyChat userName={bootstrap.data?.assistant.user_name} onPick={onPick} />
+            )}
             <div className="mt-8">
+              <div className="mb-1.5 flex items-center justify-end gap-1.5 text-xs text-fg-subtle">
+                <span>Memories</span>
+                <ChatScopeMenu value={newChatScope} onChange={onChatScopeChange} />
+              </div>
               <Composer
                 draftKey="new"
                 assistantName={assistantName}
                 streaming={false}
+                busy={creating}
                 attachments={attachments}
                 onSend={onSend}
                 onStop={() => undefined}
                 autoFocus
                 inject={inject}
+                chatModel={chatModel}
+                onChatModelChange={onChatModelChange}
               />
             </div>
           </div>
@@ -198,7 +331,11 @@ function ChatView({
         <>
           <Timeline items={items} streaming={streaming} loading={loadingHistory}>
             {items.map((item, i) =>
-              item.kind === 'user' ? (
+              item.kind === 'other' ? (
+                <OtherMessage key={item.id} message={item} />
+              ) : item.kind === 'note' ? (
+                <ChatNote key={item.id} note={item} />
+              ) : item.kind === 'user' ? (
                 <UserMessage key={item.id} message={item} onRestore={(text) => setInject({ text, nonce: Date.now() })} />
               ) : (
                 <AssistantTurn
@@ -220,6 +357,15 @@ function ChatView({
           </Timeline>
           <div className="shrink-0 px-6 pb-4 pt-2">
             <div className="mx-auto w-full max-w-[760px]">
+              {sessionId && session?.untrusted ? (
+                <OutsideContentBar sessionId={sessionId} source={session.untrusted} lastSeenId={messages.data?.[messages.data.length - 1]?.id ?? null} />
+              ) : null}
+              {incognito && (
+                <p className="mb-2 flex items-center justify-center gap-1.5 text-xs text-fg-subtle">
+                  <IconSpy size={13} className="text-incognito" aria-hidden />
+                  Incognito: nothing here is remembered, and the chat is deleted when you leave it.
+                </p>
+              )}
               <Composer
                 draftKey={sessionId ?? 'pending'}
                 assistantName={assistantName}
@@ -230,6 +376,8 @@ function ChatView({
                 onStop={() => liveSession && cancel(liveSession.key)}
                 autoFocus
                 inject={inject}
+                chatModel={chatModel}
+                onChatModelChange={sessionId ? onChatModelChange : undefined}
               />
             </div>
           </div>
@@ -270,8 +418,9 @@ function Timeline({ items, streaming, loading, children }: { items: TimelineItem
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
   }, [])
 
-  // `?at=top` keeps the first message in view (deep links from search, screenshots).
-  const atTop = useRef(/(^|[?&])at=top\b/.test(useLocation().search))
+  // `?at=top` keeps the first message in view (deep links from search, screenshots); `?message=` (a memory's source,
+  // #152) doesn't jump to the bottom either, so the page can scroll to that message.
+  const atTop = useRef(/(^|[?&])(at=top\b|message=)/.test(useLocation().search))
   if (atTop.current) stick.current = false
 
   useLayoutEffect(() => {

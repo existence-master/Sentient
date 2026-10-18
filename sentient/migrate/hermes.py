@@ -48,6 +48,8 @@ from typing import Any
 import yaml
 
 from sentient.memory import review as memory_review
+from sentient.skills import vet
+from sentient.skills.lint import lint_file
 from sentient.skills.loader import slugify, valid_name
 from sentient.tasks.delivery import MAX_CHATS, WHATSAPP_SELF
 from sentient.tasks.schedule import DAY_NAMES, MIN_INTERVAL_MINUTES, normalize_schedule, parse_iso
@@ -262,7 +264,15 @@ def _plan_skills(app: Any, home: Path) -> list[dict]:
             note = f"Saved as {target} because Sentient already has a skill named {base}. " + note
         if changed:
             note = "You changed this built-in Hermes skill. " + note
-        items.append(_item(key, "import", note, target=target, changed_builtin=changed, **info))
+        # lint on import (#164): the review screen shows these again next to the skill
+        lint = lint_file(folder / "SKILL.md", check_name=False)
+        # safety check (#146): shown here and again on the review card; high-risk skills are declined by default there
+        report = vet.vet_folder(folder, source="hermes", origin=rel)
+        if report["verdict"] == "high":
+            note = "The safety check found high-risk problems. " + note.replace(
+                "It stays off until you approve it.", "We suggest you decline it there.")
+        items.append(_item(key, "import", note, target=target, changed_builtin=changed, lint=lint,
+                           vetting=report, **info))
     return items
 
 
@@ -589,7 +599,8 @@ async def _plan_jobs(app: Any, home: Path) -> list[dict]:
         skills = [str(s) for s in (job.get("skills") or ([job["skill"]] if job.get("skill") else [])) if str(s).strip()]
         name = str(job.get("name") or "").strip() or (prompt or (skills[0] if skills else "Hermes job"))[:50]
         schedule, shown, reason = _job_schedule(job.get("schedule"))
-        info: dict[str, Any] = {"name": name, "prompt": prompt, "schedule_text": shown, "skills": skills, "script": None}
+        info: dict[str, Any] = {"name": name, "prompt": prompt, "schedule_text": shown, "skills": skills, "script": None,
+                                "hermes_deliver": str(job.get("deliver") or "").strip() or None}
         if key.split(":", 1)[1] in done:
             items.append(_item(key, "skip", "Already brought over.", schedule=None, kind="task", delivery="desktop",
                                deliver_to="desktop", **info))
@@ -600,8 +611,7 @@ async def _plan_jobs(app: Any, home: Path) -> list[dict]:
             continue
         schedule = normalize_schedule(schedule, tz)
         delivery, deliver_to, delivery_note = await _delivery(app, job.get("deliver"), job.get("origin"))
-        info.update(schedule=schedule, delivery=delivery, deliver_to=deliver_to,
-                    hermes_deliver=str(job.get("deliver") or "").strip() or None)
+        info.update(schedule=schedule, delivery=delivery, deliver_to=deliver_to)
         monitor = str(job.get("monitor_script") or "").strip()
         raw_script = monitor or str(job.get("script") or "").strip()
         kind = "task"
@@ -773,6 +783,9 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
     plan = await preview(app, path)
     home = Path(plan["path"])
     left_out = set(skip or [])
+    backups = getattr(app, "backups", None)
+    if backups is not None:  # an import can be undone by restoring this snapshot (issue #151)
+        await backups.snapshot("before importing from Hermes")
     result: dict[str, Any] = {"path": plan["path"]}
 
     if "skills" in chosen:
@@ -781,11 +794,14 @@ async def apply(app: Any, path: str | None, parts: list[str] | None, skip: list[
         for item in _picked(plan["skills"], left_out):
             try:
                 imported.append(_copy_skill(app, home, item))
+                folder = app.skills.pending_dir / item["target"]
+                await vet.record_import(app.store, item["target"],
+                                        vet.vet_folder(folder, source="hermes", origin=item["folder"]))
             except Exception as exc:
                 log.warning("could not import Hermes skill %s: %s", item["folder"], exc)
                 failed.append({"key": item["key"], "name": item["name"], "note": "Couldn't copy it."})
         if imported:
-            app.skills.reload({p.id for p in app.registry.plugins()})
+            app.skills.reload(app._available_tools())
             await app.skills.sync_stats(app.store)
             for name in imported:
                 app.bus.publish("skill.updated", {"name": name, "state": "pending_review"})

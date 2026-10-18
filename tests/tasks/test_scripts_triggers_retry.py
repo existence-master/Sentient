@@ -295,7 +295,105 @@ async def test_planner_produces_script_job(make_app):
     assert "approval_needed" in _events(await app.notifications.list(), task["task_id"])
 
 
-async def test_planner_script_with_invalid_code_is_fixed_or_rejected(make_app):
+PAGE_CODE = (
+    "from sentient_tools import tools, result\n"
+    "page = tools.web_fetch(url='https://example.org/events')\n"
+    "result(page.get('content', ''))\n"
+)
+
+
+PRICE_CODE = (
+    "from sentient_tools import tools, result\n"
+    "page = tools.web_fetch(url='https://example.org/item')\n"
+    "price = [line for line in page.get('content', '').splitlines() if 'Price:' in line]\n"
+    "result(price[0] if price else None)\n"
+)
+WHOLE_PRICE_CODE = (
+    "from sentient_tools import tools, result\n"
+    "value = tools.web_fetch(url='https://example.org/item')\n"
+    "result(value['content'])\n"
+)
+SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_search(query='rust 2.0 release'))\n"
+
+
+@pytest.mark.parametrize(
+    ("request_text", "code", "proposed", "stored"),
+    [
+        # a whole page on plain "changed": a view counter would notify, so it becomes an important-changes check
+        ("Every 10 minutes watch this page and tell me about new events: https://example.org/events", PAGE_CODE,
+         "changed", "noteworthy"),
+        ("Watch this page and tell me about new events: https://example.org/events", PAGE_CODE, "noteworthy",
+         "noteworthy"),
+        # "important changes" asks for the AI check, not for every change
+        *[(f"Tell me about {q} changes on https://example.org/events", PAGE_CODE, "changed", "noteworthy")
+          for q in ("important", "big", "major", "significant", "meaningful")],
+        # the user wants every change: "changed" is kept, even for a whole page
+        ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed",
+         "changed"),
+        ("Tell me about any change on https://example.org/events", PAGE_CODE, "changed", "changed"),
+        ("Tell me about every change to https://example.org/events", PAGE_CODE, "changed", "changed"),
+        ("Tell me when https://example.org/events changes", PAGE_CODE, "changed", "changed"),
+        ("Let me know if the page changes at all: https://example.org/events", PAGE_CODE, "changed", "changed"),
+        ("Tell me everything new on https://example.org/events", PAGE_CODE, "changed", "changed"),
+        # a price request whose script returns the whole page still asks about a change
+        ("Every 10 minutes check the price on https://example.org/item and tell me when the price changes",
+         WHOLE_PRICE_CODE, "changed", "changed"),
+        # one value extracted from the page
+        ("Tell me when the price changes on https://example.org/item", PRICE_CODE, "changed", "changed"),
+        # a search, not a page read
+        ("Tell me when search results for the Rust 2.0 release change", SEARCH_CODE, "changed", "changed"),
+    ],
+)
+async def test_planner_watch_defaults_whole_pages_to_important_changes(make_app, request_text, code, proposed, stored):
+    watch = {**PLAN_SCRIPT, "name": "Watch", "description": request_text,
+             "script": {"code": code, "condition": proposed, "then": "notify"}}
+    llm = FakeProvider(json_replies=[REFINE_ONCE, watch])
+    app = await make_app(llm)
+    task = await app.tasks.create_task(request_text)
+    await app.tasks.drain()
+    task = await app.tasks.get(task["task_id"])
+    assert task["status"] == "approval_pending" and task["task_type"] == "script"
+    assert task["script"]["condition"] == stored and task["script"]["code"] == code
+    prompt = json_calls(llm, "planner")[1]["messages"][0]["content"]
+    assert "This is the default for watching a page, a feed or the news" in prompt
+    assert 'If the user wants to hear about any change at all, use "changed".' in prompt
+
+
+FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.org')\n"
+
+
+@pytest.mark.parametrize(
+    ("code", "whole"),
+    [
+        (FETCH + "result(page)", True),
+        (FETCH + "result(page['content'])", True),
+        (FETCH + "text = page.get('content')\nprint(text)", True),
+        (FETCH + "result(page.get('content', '').strip())", True),
+        (FETCH + "text = page['content'].strip()\nresult(text)", True),
+        ("from sentient_tools import tools, result\nresult(tools.web_fetch(url='https://example.org'))", True),
+        # a value taken out of the page
+        (FETCH + "result(page['title'])", False),
+        (FETCH + "result(page['content'][:200])", False),
+        (FETCH + "result(len(page['content']))", False),
+        (PRICE_CODE, False),
+        (SEARCH_CODE, False),
+        ("def broken(:\n", False),
+    ],
+)
+def test_returns_whole_page(code, whole):
+    assert scripts.returns_whole_page(code) is whole
+
+
+def test_planner_default_keeps_a_task_already_on_changed_and_other_conditions():
+    changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
+    assert scripts.planner_default(changed, "watch this page")["condition"] == "noteworthy"
+    assert scripts.planner_default(changed, "watch this page", {"code": PAGE_CODE, "condition": "changed"}) == changed
+    for condition in ("alert", "every_run", "noteworthy"):
+        script = {**changed, "condition": condition}
+        assert scripts.planner_default(script, "watch this page") == script
+
+
+async def test_planner_script_with_invalid_code_is_fixed_or_falls_back(make_app):
     bad = {**PLAN_SCRIPT, "script": {**PLAN_SCRIPT["script"], "code": "def broken(:\n"}}
     llm = FakeProvider(json_replies=[REFINE_ONCE, bad, PLAN_SCRIPT, REFINE_ONCE, bad, bad])
     app = await make_app(llm)
@@ -305,11 +403,13 @@ async def test_planner_script_with_invalid_code_is_fixed_or_rejected(make_app):
     assert fixed["status"] == "approval_pending" and fixed["script"]["code"] == PLAN_SCRIPT["script"]["code"]
     assert "cannot be used" in json_calls(llm, "planner")[2]["messages"][1]["content"]
 
+    # rejected twice: an ordinary AI-run task instead of an error (#310)
     rejected = await app.tasks.create_task("Tell me when ether drops below 2k")
     await app.tasks.drain()
     rejected = await app.tasks.get(rejected["task_id"])
-    assert rejected["status"] == "error" and "not valid Python" in rejected["error"]
-    assert rejected["script"] is None
+    assert rejected["status"] == "approval_pending" and rejected["error"] is None
+    assert rejected["script"] is None and rejected["task_type"] == "single"
+    assert rejected["plan"] == [{"tool": "internet_search", "description": "Tell me when ether drops below 2k"}]
 
 
 async def test_script_validation_and_update(make_app):
@@ -357,7 +457,8 @@ def test_script_helpers_and_interval_schedule():
 # ---------------------------------------------------------------------------- retry
 async def test_retry_failed_run_continues_from_checkpoint(make_app):
     llm = FakeProvider(
-        replies=[[tool_call("file_write", name="part1.txt", content="one")], "", "", "Finished part1.txt."],  # empty twice: the loop nudges once
+        # empty twice after a call that found nothing: the loop nudges once, and with no results to list the run fails
+        replies=[[tool_call("file_read", name="part1.txt")], "", "", "part1.txt is not there yet."],
         json_replies=[dict(RESULT)],
     )
     app = await make_app(llm)
@@ -380,8 +481,8 @@ async def test_retry_failed_run_continues_from_checkpoint(make_app):
     assert task["status"] == "completed" and retry["status"] == "completed" and retry["retry_of"] == failed["run_id"]
     messages = stream_calls(llm)[-1]["messages"]
     assert messages[-1]["content"].startswith(RETRY_NOTE.split("{error}")[0])
-    assert any(m["role"] == "tool" and m.get("name") == "file_write" for m in messages)
-    assert len(stream_calls(llm)) == 4  # file_write was not repeated (write, empty, empty after nudge, retry)
+    assert any(m["role"] == "tool" and m.get("name") == "file_read" for m in messages)
+    assert len(stream_calls(llm)) == 4  # file_read was not repeated (read, empty, empty after nudge, retry)
     contents = [u["message"].get("content") for u in retry["progress_updates"]]
     assert "Retrying the failed run, continuing from where it stopped." in contents
 

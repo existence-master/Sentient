@@ -20,6 +20,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, IconButton, Input, SegmentedControl } from '@/components/ui'
 import { InstructionsGuide, openExternal } from '@/features/integrations/InstructionsGuide'
+import { ContinueWithChatGPT } from '@/features/models/ChatGPTBrand'
 import { usePresetSwitch } from '@/features/models/usePresetSwitch'
 import {
   useChatGPTStatus,
@@ -45,6 +46,8 @@ export const CLAUDE_PLAN_STEPS = `Claude Max and Team plans come with monthly AP
 2. Under **API credits**, choose the Claude Console organization that should get the credits and link it. You can't change this yourself later, so pick the one you'll keep using.
 3. In the Claude Console, create an API key: https://platform.claude.com/settings/keys
 4. Paste the key here and test it.`
+
+export const CLAUDE_KEYS_URL = 'https://platform.claude.com/settings/keys'
 
 export const NOUS_STEPS = `Nous Portal doesn't offer a sign-in for other apps yet, so Sentient uses an API key.
 
@@ -111,7 +114,7 @@ function KeyPaste({ provider, label, placeholder }: { provider: string; label: s
 }
 
 /** "Key saved" with Test and Remove, or the paste field when there is no key yet. */
-function KeyStatus({
+export function KeyStatus({
   provider,
   label,
   placeholder,
@@ -171,8 +174,11 @@ function KeyStatus({
   )
 }
 
-/** The Claude Max or Team route: claim the included API credits, paste the key, test it, use Claude for the main roles. */
-export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: string, fast: string) => void }) {
+/**
+ * The Claude Max or Team route: claim the included API credits, paste the key, test it, use Claude for the main roles.
+ * Without `steps` it is the plain API key route (#444): a key from the Claude Console, billed per use.
+ */
+export function ClaudePlanGuide({ onUseModels, steps = true }: { onUseModels?: (primary: string, fast: string) => void; steps?: boolean }) {
   const providers = useProviders()
   const [works, setWorks] = useState(false)
   const anthropic = providers.data?.find((p) => p.id === 'anthropic')
@@ -189,7 +195,13 @@ export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: strin
 
   return (
     <div className="space-y-4">
-      <InstructionsGuide markdown={CLAUDE_PLAN_STEPS} />
+      {steps ? (
+        <InstructionsGuide markdown={CLAUDE_PLAN_STEPS} />
+      ) : (
+        <button type="button" onClick={() => openExternal(CLAUDE_KEYS_URL)} className="flex items-center gap-1 text-xs font-medium text-accent-text hover:underline">
+          Create a key in the Claude Console <IconExternalLink size={12} />
+        </button>
+      )}
       <KeyStatus provider="anthropic" label="Claude" placeholder="sk-ant-…" onChecked={(r) => setWorks(r.ok)} />
       {keySet && works && primary && onUseModels && (
         <div className="flex flex-wrap items-center gap-2">
@@ -199,11 +211,13 @@ export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: strin
           <span className="text-xs text-fg-subtle">You can still pick a model per job under Roles.</span>
         </div>
       )}
+      {steps && (
       <Alert tone="info" icon={<IconInfoCircle />}>
         Pro and Free plans don't include API credits, so a key bills your Claude Console account per use. Apps aren't allowed to sign in with your Claude
         account, which is why Sentient asks for a key. Credits arrive each billing month, don't roll over and don't cover Claude Code. When they run out, Claude
         stops answering until the next month unless you add credits in the Console.
       </Alert>
+      )}
     </div>
   )
 }
@@ -330,7 +344,17 @@ export function OpenRouterConnect() {
   )
 }
 
-/** Sign in with ChatGPT: a ChatGPT Plus or Pro plan's models for any job, through OpenAI's sign-in for open-source apps. */
+/**
+ * The plan's main and fast model by the engine's rule (docs/API.md §3, "The fast model rule"): the first model
+ * of the plan's list, which the engine ranks by OpenAI's priority, for both; fast jobs run it with the lightest reasoning. Never a guess from "mini" or "nano" in a name.
+ */
+export function chatgptPlanModels(models: string[]): { main: string; fast: string } | null {
+  const main = models.find((m) => !looksLikeEmbedding(m))
+  return main ? { main, fast: main } : null
+}
+
+/** Sign in with ChatGPT: a ChatGPT Plus or Pro plan's models for any job, through OpenAI's sign-in for open-source apps.
+ * Copy and button follow OpenAI's UI guidelines (https://developers.openai.com/siwc/ui-ux-guidelines). */
 export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string, fast: string) => void }) {
   const qc = useQueryClient()
   const status = useChatGPTStatus()
@@ -345,7 +369,7 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
 
   useEffect(() => {
     if (flowStatus.data?.status === 'connected') {
-      toast.success("You're using your ChatGPT plan", {
+      toast.success("You're signed in with ChatGPT", {
         description: 'Your sign-in is kept in your system keychain. Pick ChatGPT models under Roles.'
       })
       setFlow(null)
@@ -368,9 +392,7 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
     }
   }
 
-  const models = (catalog.data ?? []).map((m) => m.id).filter((m) => !looksLikeEmbedding(m))
-  const main = models[0]
-  const fast = models.find((m) => /mini|nano/i.test(m)) ?? main
+  const picked = chatgptPlanModels((catalog.data ?? []).map((m) => m.id))
 
   if (status.isError) {
     return (
@@ -396,11 +418,17 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
   }
   return (
     <div className="space-y-3">
-      <p className="text-sm leading-relaxed text-fg-muted">
-        Use your ChatGPT Plus or Pro plan for chat and tasks. Your browser opens ChatGPT; sign in and allow Sentient. Usage counts against your plan, not
-        an API bill, and you can set a limit for Sentient in ChatGPT's settings. Your sign-in stays in your system keychain and renews on its own. ChatGPT
-        plans don't include models for memory search, so that keeps its current model.
-      </p>
+      <div>
+        <div className="text-sm font-medium text-fg">Use your ChatGPT plan</div>
+        <p className="mt-0.5 text-sm leading-relaxed text-fg-muted">
+          Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance. It needs ChatGPT Plus or Pro, and it is
+          separate from Sentient, which has no charges of its own.
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-fg-subtle">
+          Your browser opens ChatGPT; sign in and allow Sentient. You can set a limit for Sentient in ChatGPT&apos;s settings. Your sign-in stays in your
+          system keychain and renews on its own. ChatGPT plans don&apos;t include models for memory search, so that keeps its current model.
+        </p>
+      </div>
       {signedIn ? (
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -446,9 +474,9 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
               {check.data.ok ? check.data.detail : check.data.error}
             </Alert>
           )}
-          {main && onUseModels && (
+          {picked && onUseModels && (
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" variant="primary" onClick={() => onUseModels(main, fast ?? main)}>
+              <Button size="sm" variant="primary" onClick={() => onUseModels(picked.main, picked.fast)}>
                 Use ChatGPT for every job
               </Button>
               <span className="text-xs text-fg-subtle">You can still pick a model per job under Roles.</span>
@@ -482,9 +510,7 @@ export function ChatGPTConnect({ onUseModels }: { onUseModels?: (primary: string
           )}
         </div>
       ) : (
-        <Button variant="primary" leftIcon={<IconLogin size={15} />} loading={starting} onClick={() => void start()}>
-          Continue with ChatGPT
-        </Button>
+        <ContinueWithChatGPT loading={starting} onClick={() => void start()} />
       )}
     </div>
   )
@@ -500,16 +526,15 @@ export function NousPortalGuide() {
   )
 }
 
-type Plan = 'claude' | 'chatgpt' | 'openrouter' | 'nous'
+type Plan = 'chatgpt' | 'openrouter' | 'nous'
 
-/** Settings > Models: "Use a plan you already have". */
-export function ConnectPlansSection() {
-  const [plan, setPlan] = useState<Plan>('claude')
+/** Use a plan's models in Settings: the built-in Cloud preset when it uses this provider, so it can be undone;
+ * otherwise the main and fast roles. */
+export function useApplyPlan() {
   const setRoles = useSetRoles()
   const presets = useModelPresets()
   const presetSwitch = usePresetSwitch()
-  // When the built-in Cloud preset uses this provider, switch to it so it can be undone; otherwise set the two roles.
-  const applyPlan = (provider: string, label: string) => (primary: string, fast: string) => {
+  return (provider: string, label: string) => (primary: string, fast: string) => {
     const preset = presets.data?.presets.find((p) => p.builtin && p.available && p.provider === provider)
     if (preset) return presetSwitch.apply(preset.name)
     setRoles.mutate(
@@ -526,6 +551,12 @@ export function ConnectPlansSection() {
       }
     )
   }
+}
+
+/** Settings > Models: "Use a plan you already have". Claude has its own card (ConnectClaude, #444). */
+export function ConnectPlansSection() {
+  const [plan, setPlan] = useState<Plan>('chatgpt')
+  const applyPlan = useApplyPlan()
   return (
     <section className="space-y-3">
       <div className="px-1">
@@ -533,7 +564,7 @@ export function ConnectPlansSection() {
           <IconPlugConnected size={15} /> Use a plan you already have
         </h3>
         <p className="mt-0.5 text-xs text-fg-subtle">
-          Claude Max credits, your ChatGPT plan, an OpenRouter account or Nous Portal. Keys and sign-ins stay in your system keychain.
+          Your ChatGPT plan, an OpenRouter account or Nous Portal. For Claude, see Connect Claude above. Keys and sign-ins stay in your system keychain.
         </p>
       </div>
       <Card className="space-y-4 p-4">
@@ -541,15 +572,12 @@ export function ConnectPlansSection() {
           value={plan}
           onChange={setPlan}
           options={[
-            { value: 'claude', label: 'Claude plan' },
             { value: 'chatgpt', label: 'ChatGPT plan' },
             { value: 'openrouter', label: 'OpenRouter' },
             { value: 'nous', label: 'Nous Portal' }
           ]}
         />
-        {plan === 'claude' ? (
-          <ClaudePlanGuide onUseModels={applyPlan('anthropic', 'Claude')} />
-        ) : plan === 'chatgpt' ? (
+        {plan === 'chatgpt' ? (
           <ChatGPTConnect onUseModels={applyPlan('chatgpt', 'your ChatGPT plan')} />
         ) : plan === 'openrouter' ? (
           <OpenRouterConnect />

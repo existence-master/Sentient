@@ -74,13 +74,18 @@ PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
 
 # Models offered for Claude through the user's own Claude Code (#206, ADR 0022): Claude Code's model aliases.
 CLAUDE_CODE_MODELS: tuple[str, ...] = ("claude-code/sonnet", "claude-code/opus")
+# The quick-jobs model when Claude Code does everything (models.claude_code_everywhere, #444, ADR 0032).
+CLAUDE_CODE_FAST_MODEL = "claude-code/haiku"
 
 # Local model sizing for this computer (#131), used by onboarding, the "Local only" preset and the model check-up.
 # Rows are tried in order and the first one the computer meets is recommended. ``min_vram_gb`` is graphics memory a
 # local model can use (an NVIDIA or AMD card, or about two thirds of the memory on Apple silicon); ``min_ram_gb`` is
 # total memory, for computers without one. Sizes are GiB as tools report them (an "8 GB" card or computer shows about
 # 7.8 to 8.0). One model does chat and background jobs, so Ollama keeps a single model loaded. Only the 8 GB row is
-# measured (qwen3:8b on an RTX 4060 laptop); the 12, 16 and 24 GB rows are estimates from model and cache sizes.
+# measured (qwen3:8b on an RTX 4060 laptop, Ollama 0.9, 2026-10-10): at 8,192 tokens about 89 to 91% of the model is on
+# the graphics card (24 tokens/s); only 5,120 tokens or fewer fit fully (42 tokens/s), which is below the 8,192 that
+# long tasks need, so the row keeps 8,192 and the check-up accepts the small spill. The 12, 16 and 24 GB rows are
+# estimates from model and cache sizes.
 # ``cloud_first``: too little memory for a local model that can do tasks, so a cloud model is recommended and the row's
 # model is only a labelled chat-only fallback (qwen3:4b can't call tools reliably).
 LOCAL_MODEL_TIERS: tuple[dict, ...] = (
@@ -91,6 +96,18 @@ LOCAL_MODEL_TIERS: tuple[dict, ...] = (
     {"id": "cpu", "min_ram_gb": 7, "model": "ollama_chat/qwen3:8b", "context_length": 8192},
     {"id": "small", "min_ram_gb": 0, "model": "ollama_chat/qwen3:4b", "context_length": 8192, "cloud_first": True},
 )
+
+
+# The embedding model recommended for memories in Hindi and other languages besides English (#339). nomic-embed-text
+# (the default, 768 dimensions) is English-first: Hindi facts about different people score 0.71 to 0.85 against each
+# other, and a Hindi question ranks the wrong person first. bge-m3 (1024 dimensions, 100+ languages, no query prefix)
+# scores those pairs 0.35 to 0.56 and the same fact across Hindi and English 0.77 to 0.84. Measured on an RTX 4060
+# laptop with Ollama 0.9 (2026-10-14): 1.7 GB loaded on the graphics card (nomic-embed-text 0.85 GB), a memory search
+# in 0.6 to 0.7 s once loaded (nomic-embed-text 0.5 to 0.7 s), and switching re-embedded 7 memories in 8 s including
+# loading the model. Next to qwen3:8b at 8,192 tokens, Ollama swaps it in when needed: qwen3:8b stays at 7%/93%
+# processor/graphics and about 29 tokens/s, and an embedding right after a chat reply takes 5.4 s to load against
+# 2.3 s for nomic-embed-text. That cost is why it is offered, not the default.
+MULTILINGUAL_EMBEDDING: dict[str, str] = {"model": "ollama/bge-m3", "name": "bge-m3", "size": "1.2 GB"}
 
 
 class ModelPreset(BaseModel):
@@ -131,6 +148,23 @@ class ModelsConfig(BaseModel):
     active_preset: str | None = Field(
         None, description="The model setup chosen last, shown with a check in the model menu."
     )
+    local_only: bool = Field(
+        False,
+        description="No request ever goes to an AI model outside this computer, not even a backup model, a "
+        "chat's own model, a task, memory search or voice. Anything that would have used the cloud stops with a "
+        "plain message, or a local model answers instead. Switched from the model menu in the title bar.",
+    )
+    monthly_budget_usd: float = Field(
+        0.0, ge=0,
+        description="Most you want to spend on paid cloud models each month, in US dollars. You get a notification "
+        "at 80%. 0 means no budget. Models on your Claude or ChatGPT plan and local models don't count.",
+    )
+    budget_at_limit: Literal["ask", "stop"] = Field(
+        "ask",
+        description="What happens when the monthly budget is used up. ask: paid cloud models pause until you choose "
+        "Keep going this month, in a chat or in Settings > Usage. stop: they stay paused until next month or until "
+        "you raise the budget.",
+    )
     fallbacks: dict[str, list[str]] = Field(
         default_factory=dict,
         description="Per-role ordered fallback models tried when the role's model fails.",
@@ -149,8 +183,8 @@ class ModelsConfig(BaseModel):
         le=1_048_576,
         description="How much text (in tokens) a local Ollama model reads at once: instructions, the conversation "
         "and tool results. Ollama's own default is only 4096 on most computers, which quietly cuts off long tasks. "
-        "Bigger values let the model see more but need more graphics memory: 8192 keeps qwen3:8b fully on an "
-        "8 GB graphics card, while 16384 or more can push part of it onto the processor and make replies much "
+        "Bigger values let the model see more but need more graphics memory: 8192 keeps most of qwen3:8b on an "
+        "8 GB graphics card, while 16384 or more pushes much more of it onto the processor and makes replies much "
         "slower. Never goes above the model's own maximum. Cloud models ignore this.",
     )
     context_length_per_role: dict[str, Annotated[int, Field(ge=2048, le=1_048_576)]] = Field(
@@ -179,8 +213,22 @@ class ModelsConfig(BaseModel):
         False,
         description="Experimental. Uses your own Claude Code install and login. Anthropic may change how this is "
         "counted or allowed. When on, models named claude-code/<model> (claude-code/sonnet, claude-code/opus) answer "
-        "your chats through the claude program on this computer, with Sentient's tools and approvals. Never used for "
-        "work that runs in the background, and it can't make embeddings. Sentient never reads your Claude login.",
+        "your chats through the claude program on this computer, with Sentient's tools and approvals. Not used for "
+        "work that runs in the background unless claude_code_everywhere is on, and it can't make embeddings. Sentient "
+        "never reads your Claude login.",
+    )
+    claude_code_everywhere: bool = Field(
+        False,
+        description="Only with experimental_claude_code on. Lets your Claude Code do everything, not just chats: "
+        "tasks, memory, suggestions, background checks and briefs, including while you're away. Anthropic says Claude "
+        "plans are for its own apps, and other apps running work on your plan may be limited, charged as extra usage "
+        "or not allowed, and this uses your plan limits much faster. Turned on from Settings > Models after a warning. "
+        "Memory search still needs another model.",
+    )
+    claude_code_max_concurrent: int = Field(
+        2, ge=1, le=8,
+        description="Most Claude Code runs at once. More wait their turn, your chats first, so background work can't "
+        "flood this computer or your plan.",
     )
     chatgpt_client_id: str = Field(
         "dynamic_agent_client",
@@ -190,6 +238,45 @@ class ModelsConfig(BaseModel):
     )
     max_tool_rounds: int = Field(12, ge=1, le=100, description="Max tool-call rounds per chat turn.")
     request_timeout_s: int = Field(180, ge=10, description="Per-request timeout in seconds.")
+    local_queue: bool = Field(
+        True,
+        description="Give a local Ollama model one job at a time, your chats first. Two jobs at once can push the "
+        "model off the graphics card and make both slow. Cloud models never wait.",
+    )
+    background_quiet_s: int = Field(
+        30, ge=0, le=3600,
+        description="Background work (tasks, suggestions, memory upkeep, chat titles) waits to use a local model "
+        "until you have not chatted for this many seconds.",
+    )
+    background_on_battery: bool = Field(
+        False,
+        description="Let Sentient's own upkeep (memory, suggestions, skill review, chat titles) use a local model on "
+        "battery as freely as when plugged in, except when the battery is low (below). When off, upkeep still runs on "
+        "battery, with the limits below. Your chats and the tasks you scheduled always run on time.",
+    )
+    battery_min_percent: int = Field(
+        40, ge=0, le=100,
+        description="On battery, Sentient's own upkeep uses a local model only while the battery is above this "
+        "percent. Your tasks run on time at any level.",
+    )
+    battery_critical_percent: int = Field(
+        15, ge=0, le=100,
+        description="At or below this battery percent, upkeep waits even when it is allowed on battery. Your tasks "
+        "still run.",
+    )
+    battery_idle_s: int = Field(
+        300, ge=0, le=7200,
+        description="On battery, upkeep waits until you have not chatted for this many seconds.",
+    )
+    battery_upkeep_every_s: int = Field(
+        1800, ge=0, le=86400,
+        description="On battery, upkeep runs in short bursts at most this often, in seconds. 0 lets it run "
+        "whenever the other limits allow.",
+    )
+    battery_max_wait_s: int = Field(
+        7200, ge=60, le=86400,
+        description="Upkeep never waits longer than this many seconds because of the battery, whatever its level.",
+    )
 
 
 class GatewayConfig(BaseModel):
@@ -204,6 +291,17 @@ class ChatConfig(BaseModel):
     )
     show_thinking: bool = Field(True, description="Show the model's reasoning in a collapsible block.")
     auto_title: bool = Field(True, description="Name new chats automatically from the first exchange.")
+    quick_commands: bool = Field(
+        True,
+        description="Do simple timer, reminder and alarm requests (\"set a timer for 10 minutes\", \"remind me at 6 pm "
+        "to call Ravi\", \"wake me at 7\") and \"what's next on my calendar\" at once, without asking the model. "
+        "Anything else still goes to the model. English for now.",
+    )
+    alarm_snooze_minutes: int = Field(
+        9, ge=1, le=60,
+        description="How long \"snooze\" puts off a ringing alarm, in minutes, unless you say how long "
+        "(\"snooze for 5 minutes\").",
+    )
     tool_selection: Literal["auto", "all"] = Field(
         "auto",
         description="auto: offer only the tools relevant to each message when there are more than the budget "
@@ -218,33 +316,99 @@ class ChatConfig(BaseModel):
         description="Longest tool result the model reads. Longer results are cut and the full text is saved "
         "under files/outputs/ so the assistant can open it if needed.",
     )
+    tool_result_context_share: float = Field(
+        0.25,
+        ge=0.05,
+        le=1.0,
+        description="Largest share of what the model reads at once that one tool result may fill. Keeps a single "
+        "long result from crowding out the chat on models with a short context length.",
+    )
     parallel_read_tools: bool = Field(
         True, description="Run look-up tools the model asks for in the same step at the same time."
     )
+    incognito_uses_memory: bool = Field(
+        True,
+        description="Incognito chats can use what Sentient already knows about you. Nothing from an incognito chat "
+        "is ever remembered either way.",
+    )
+    incognito_delete_after_minutes: int = Field(
+        30,
+        ge=1,
+        le=1440,
+        description="An incognito chat is deleted when you leave it or close Sentient, or after this many minutes "
+        "without a new message.",
+    )
+    mark_outside_content: bool = Field(
+        True,
+        description="Mark text from web pages, emails, messages and other apps to help the assistant treat it as "
+        "information, not as instructions.",
+    )
+
+
+# a lasting rule's level (ADR 0016, #140); the order is loosest to strictest
+RuleLevel = Literal["allow", "if_asked", "ask", "hand_off", "never"]
 
 
 class RuleOrigin(BaseModel):
-    """Where a lasting rule came from when the user made it from a chat message (#130)."""
+    """Where a lasting rule came from when the user made it from a chat message (#130) or an answer to an approval
+    request (#139)."""
 
-    rule: Literal["ask", "never"] = Field(description="The rule the user accepted.")
+    rule: RuleLevel = Field(description="The rule the user accepted.")
     said: str = Field("", description="The user's own words, shortened.")
     at: str = Field("", description="When the user accepted it (ISO time).")
     session_id: str | None = Field(None, description="The chat it was said in.")
+    source: Literal["chat", "approval"] = Field(
+        "chat", description="chat: made from a chat message. approval: you chose Always allow when Sentient asked (#139)."
+    )
+    via: str | None = Field(None, description="Where an Always allow answer was given: desktop, telegram, discord or whatsapp.")
 
 
 class ApprovalsConfig(BaseModel):
     mode: Literal["off", "ask", "always"] = Field(
         "ask",
-        description="off: never ask. ask: confirm actions that change things outside Sentient, send, "
-        "delete or run code (its own memory, files and task list never interrupt). always: confirm every tool call.",
+        description="off: don't ask, except before a purchase, before unlocking a door, turning off the alarm or "
+        "opening a garage door or gate, for apps and tools set to Ask (or to Only if I asked, "
+        "when you didn't ask for it), before sending anything "
+        "once a chat has read an email or web page, and before a change you just told it never to make until you "
+        "answer that suggestion. ask: confirm actions that change things outside Sentient, send, delete or run code "
+        "(its own memory, files and task list never interrupt). always: confirm every tool call.",
     )
     remember_session: bool = Field(True, description="'Allow for this chat' answers are honored.")
-    timeout_s: int = Field(600, ge=10, description="Unanswered approvals are denied after this long.")
-    rules: dict[str, Literal["allow", "ask", "never"]] = Field(
+    timeout_s: int = Field(600, ge=10, description="Unanswered approvals in a chat are denied after this long.")
+    grant_minutes: int = Field(
+        60, ge=1, le=24 * 60,
+        description="How many minutes a timed yes to an approval request lasts. 60 shows as \"Allow for 1 hour\".",
+    )
+    task_request_minutes: int = Field(
+        240, ge=1, le=7 * 24 * 60,
+        description="A task waiting for your approval stops if nobody answers within this many minutes. "
+        "A late answer can't approve it.",
+    )
+    second_look_model: bool = Field(
+        True,
+        description="Before Sentient sends, posts, buys, deletes or runs code without asking you, or after it read an "
+        "email or web page, the fast model double-checks the action against what you asked. If it doesn't match, "
+        "Sentient asks you first and says why. Recipients and amounts are always checked, even with this off.",
+    )
+    undo_seconds: int = Field(
+        10, ge=0, le=60,
+        description="Emails, messages and posts Sentient sends from a chat wait this many seconds, with an Undo button, "
+        "before they go. 0 sends them at once. Purchases and running code never wait, and neither do tasks running "
+        "on their own.",
+    )
+    prefer_trash: bool = Field(
+        True,
+        description="When an app can move something to the trash, Sentient does that instead of deleting it for good, "
+        "unless you ask for it to be deleted permanently.",
+    )
+    rules: dict[str, RuleLevel] = Field(
         default_factory=dict,
         description="Lasting rules for apps and tools. The key is a tool name (gmail_send_email) or an app id "
         "(gmail, meaning all of its tools); a tool's own rule beats its app's rule. allow: go ahead without asking "
-        "(purchases still ask). ask: always ask first, whatever the setting above says. never: Sentient can't use it.",
+        "(purchases still ask). if_asked: go ahead without asking only when your own message in a chat asks for it; "
+        "ask everywhere else, tasks included. ask: always ask first, whatever the setting above says. hand_off: "
+        "Sentient prepares it (a draft, a filled form) and hands it to you to do yourself; it never does it. "
+        "never: Sentient can't use it.",
     )
     rule_origins: dict[str, RuleOrigin] = Field(
         default_factory=dict,
@@ -273,8 +437,36 @@ class ApprovalsConfig(BaseModel):
         return self
 
 
+class SnapshotsConfig(BaseModel):
+    """Copies of files kept before code changes them, so they can be put back from Activity (#142, ADR 0026)."""
+
+    enabled: bool = Field(
+        True,
+        description="Before code or a command changes files in your allowed folders or Sentient's files, keep a copy "
+        "of them so you can put them back from Activity.",
+    )
+    max_file_mb: float = Field(
+        5.0, ge=0.1, le=500, description="Files bigger than this aren't copied. Activity says when one was left out.",
+    )
+    max_total_mb: int = Field(
+        25, ge=1, le=10_000,
+        description="The most text copied each time code runs. When your allowed folders hold more, nothing is copied "
+        "for that run, and Activity says \"Too many files to keep a copy\" if it changed something.",
+    )
+    max_files: int = Field(
+        500, ge=1, le=100_000,
+        description="The most files copied each time code runs. When your allowed folders hold more text files, "
+        "nothing is copied for that run, and Activity says so if it changed something.",
+    )
+    keep_days: int = Field(7, ge=1, le=365, description="Copies older than this many days are removed.")
+    max_kept_mb: int = Field(
+        1000, ge=10, le=100_000, description="All kept copies together stay under this size; the oldest go first.",
+    )
+
+
 class ToolsConfig(BaseModel):
     approvals: ApprovalsConfig = Field(default_factory=ApprovalsConfig)
+    snapshots: SnapshotsConfig = Field(default_factory=SnapshotsConfig)
     disabled: list[str] = Field(default_factory=list, description="Tool or plugin ids to hide.")
     repeated_call_limit: int = Field(
         3,
@@ -396,6 +588,26 @@ class TasksConfig(BaseModel):
         "when Sentient is back if it is less than this many hours late. Later ones are skipped and you're told. "
         "A task never runs more than once to catch up. 0 always skips.",
     )
+    source_retry_minutes: int = Field(
+        15, ge=1, le=1440, description="When a routine is set to try again later and the page, app or folder it reads "
+        "isn't there, it tries again after this many minutes.",
+    )
+    source_retries: int = Field(
+        3, ge=1, le=10, description="How many times a routine set to try again later tries before it tells you the "
+        "page, app or folder it reads is still missing.",
+    )
+    away_pause_days: int = Field(
+        7, ge=0, le=365, description="Pause recurring tasks and briefs after you haven't used Sentient (the app or a "
+        "chat) for this many days. Tasks set to keep running are never paused. 0 never pauses for this.",
+    )
+    away_pause_after_results: int = Field(
+        20, ge=0, le=1000, description="Also pause them when this many results arrived since you were last around. "
+        "0 never pauses for this.",
+    )
+    away_ask_hours: int = Field(
+        24, ge=0, le=168, description="Before pausing, ask once and wait this many hours for any sign of you. "
+        "0 pauses without asking.",
+    )
 
 
 # ----------------------------------------------------------------------------- integrations (owner: integrations agent)
@@ -421,6 +633,19 @@ class IntegrationsConfig(BaseModel):
         True,
         description="Only show the model tools of integrations that are connected (keeps small local models focused).",
     )
+    read_only: list[str] = Field(
+        default_factory=list,
+        description="Connections set to Read only, by app id (gmail, github, mcp_<server>). Sentient can look things "
+        "up there but never change, send, delete or run anything: those tools are hidden and refused.",
+    )
+
+    @field_validator("read_only", mode="before")
+    @classmethod
+    def _clean_read_only(cls, value: object) -> object:
+        """Trim ids, drop empty ones and duplicates, keep the order."""
+        if not isinstance(value, list | tuple | set):
+            return value
+        return list(dict.fromkeys(s for s in (str(v).strip() for v in value) if s))
     news_country: str = Field(
         "", description="Two-letter country code for top headlines (empty = guess from your location, else US)."
     )
@@ -431,6 +656,17 @@ class IntegrationsConfig(BaseModel):
         "", description="Optional GitHub OAuth app client id enabling 'Sign in with GitHub' (device flow) instead of a token."
     )
     mcp_timeout_s: int = Field(60, ge=5, le=600, description="Timeout for a single MCP tool call.")
+    home_assistant_live: bool = Field(
+        True,
+        description="Listen to Home Assistant for changes (a door opening, a light turning on) so tasks can start "
+        "when they happen. Uses no model calls.",
+    )
+    home_assistant_check_s: float = Field(
+        4.0, ge=0, le=10,
+        description="After Sentient turns on a light, locks a door or changes another device in Home Assistant, how "
+        "many seconds it waits for the device to report its new state, so it never says done when the device didn't "
+        "change. 0 turns this check off.",
+    )
     fast_sync_seconds: int = Field(
         60, ge=0, le=3600,
         description=(
@@ -858,6 +1094,10 @@ class ChannelAppConfig(BaseModel):
     show_tool_activity: bool = Field(
         True, description="Briefly show what the assistant is doing (for example 'Searching the web...')."
     )
+    memory_scope: str = Field(
+        "personal",
+        description="Which memories chats in this app use and save new ones to: personal, work, or a project's name.",
+    )
 
 
 class ChannelsConfig(BaseModel):
@@ -879,6 +1119,11 @@ class ChannelsConfig(BaseModel):
     deliver_suggestions: bool = Field(True, description="Send proactive suggestions, with Approve and Dismiss buttons.")
     deliver_subagents: bool = Field(True, description="Send summaries when background work finishes.")
     deliver_briefs: bool = Field(True, description="Send your Daily Brief to delivery chats.")
+    deliver_reminders: bool = Field(
+        False,
+        description="Reminders and alarms you set on this computer or by voice also go off in your delivery chats. "
+        "Ones you set in a chat always go off in that chat.",
+    )
 
 
 # ----------------------------------------------------------------------------- know you (owner: memory agent)
@@ -937,11 +1182,95 @@ class DreamingConfig(BaseModel):
         description="Facts about the same person that share only a broad attribute (routine, ownership, health) are "
         "checked for a contradiction above this embedding similarity. Same place, job, relationship or diet is always checked.",
     )
+    merge_languages: bool = Field(
+        True,
+        description="Merge the same memory saved in two languages, like Hindi and English, when the model is sure "
+        "they say exactly the same thing. You can undo each merge in Memory > Review.",
+    )
+    language_merge_similarity: float = Field(
+        0.7, ge=0.0, le=1.0,
+        description="With a multilingual embedding model (bge-m3), two memories in different languages are only "
+        "compared above this similarity. The same fact in Hindi and English scores about 0.77 to 0.84.",
+    )
     promote_min_recalls: int = Field(
         3, ge=1, le=1000, description="Short-term facts recalled at least this often become long-term."
     )
     refresh_user_model: bool = Field(True, description="Refresh the user model as part of each dream.")
     notify: bool = Field(True, description="Send a notification when a dream changed something meaningful.")
+
+
+class BackupsConfig(BaseModel):
+    folder: str | None = Field(
+        None,
+        description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
+        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
+        "folder keeps them safe if this computer fails.",
+    )
+    schedule: Literal["off", "daily", "weekly"] = Field(
+        "off", description="Back up automatically every day or every week, while Sentient is running."
+    )
+    keep: int = Field(
+        5, ge=1, le=100,
+        description="How many automatic backups to keep. Older automatic ones are deleted; backups you make yourself "
+        "are never deleted.",
+    )
+    snapshots_keep: int = Field(
+        5, ge=1, le=50,
+        description="How many snapshots to keep. Sentient takes one before it updates its database, before an import "
+        "and before a restore.",
+    )
+
+
+class FoldersConfig(BaseModel):
+    """Folders and Obsidian vaults the user added as searchable notes (owner: folders, #176). The folders themselves
+    are kept in the database (``GET /api/folders``), since each has its own index and status."""
+
+    watch: bool = Field(
+        True, description="Notice changes to your folders as they happen. Off, Sentient only looks again every few "
+        "minutes (below) and when you press Check again.",
+    )
+    rescan_minutes: int = Field(
+        30, ge=1, le=1440,
+        description="How often Sentient looks through your folders again for added, changed or removed files.",
+    )
+    ignore: list[str] = Field(
+        default_factory=lambda: ["node_modules/", "__pycache__/", "*.excalidraw.md", "*.canvas"],
+        description="Files and folders to leave out of every folder, like node_modules/ or *.tmp. A name ending in / "
+        "is a folder. Hidden folders such as .obsidian, .git and .trash are always left out.",
+    )
+    max_file_mb: float = Field(
+        20.0, ge=0.1, le=500.0, description="Files bigger than this are left out (in megabytes).",
+    )
+    max_files: int = Field(
+        20000, ge=100, le=200000,
+        description="Most files read from one folder. A bigger folder is searched only in part.",
+    )
+    chunk_chars: int = Field(
+        1200, ge=300, le=6000, description="About how many characters one searchable piece of a note holds.",
+    )
+    results: int = Field(
+        6, ge=1, le=20, description="How many pieces of your notes one search gives the assistant.",
+    )
+    prompt_notes: int = Field(
+        3, ge=0, le=5,
+        description="How many short pieces of your notes that clearly match a message go along with it, so even small "
+        "models answer from your notes without searching them. 0 turns this off; the assistant can still search them.",
+    )
+    prompt_min_similarity: float = Field(
+        0.55, ge=0.0, le=1.0,
+        description="How closely a piece of your notes must match a message to go along with it. Higher sends fewer, "
+        "surer pieces.",
+    )
+    prompt_note_chars: int = Field(
+        320, ge=100, le=1200,
+        description="Most characters of each piece of your notes that goes along with a message. Keep it small for "
+        "models with short memory.",
+    )
+    clippings_are_outside: bool = Field(
+        True,
+        description="Treat web pages clipped into your notes (Obsidian Web Clipper, a source link at the top, a "
+        "Clippings folder) as written by someone else: after reading one, Sentient asks before sending anything.",
+    )
 
 
 class SentientConfig(BaseModel):
@@ -967,4 +1296,6 @@ class SentientConfig(BaseModel):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     user_model: UserModelConfig = Field(default_factory=UserModelConfig)
     dreaming: DreamingConfig = Field(default_factory=DreamingConfig)
+    backups: BackupsConfig = Field(default_factory=BackupsConfig)
+    folders: FoldersConfig = Field(default_factory=FoldersConfig)
     ui: UIConfig = Field(default_factory=UIConfig)

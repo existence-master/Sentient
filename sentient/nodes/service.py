@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from sentient import __version__, paths
+from sentient.memory.forget import forget as forget_learned
 from sentient.services import Service
 from sentient.store.db import now_iso
 
@@ -339,11 +340,14 @@ class NodeService(Service):
         self.app.bus.publish("node.updated", node)
         return node
 
-    async def delete(self, node_id: str) -> bool:
-        """Forget a device and revoke its token. The built-in desktop node cannot be deleted."""
+    async def delete(self, node_id: str, *, forget: bool = False) -> bool | dict:
+        """Forget a device and revoke its token. The built-in desktop node cannot be deleted. ``forget``: also forget
+        what Sentient learned from it (#153), its voice chats and the facts from them; returns what was deleted
+        instead of True."""
         if node_id == DESKTOP_ID:
             raise ValueError("The desktop app is built in and cannot be removed.")
-        if await self._row(node_id) is None:
+        row = await self._row(node_id)
+        if row is None:
             return False
         await self.app.store.execute("UPDATE nodes SET revoked = 1, token_hash = NULL WHERE id = ?", (node_id,))
         conn = self._conns.get(node_id)
@@ -351,6 +355,8 @@ class NodeService(Service):
             await self._close_conn(conn, CLOSE_CODES["revoked"], ("revoked", "This device was removed in Sentient."))
         self.app.bus.publish("node.deleted", {"node_id": node_id})
         self._refresh_tools()
+        if forget:
+            return await forget_learned(self.app, f"device:{node_id}", str(row["name"] or "the device"))
         return True
 
     # ------------------------------------------------------------------ pairing

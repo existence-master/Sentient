@@ -1,6 +1,7 @@
 import {
   IconAlertTriangle,
   IconArchive,
+  IconArrowBackUp,
   IconBulb,
   IconChartBar,
   IconCheck,
@@ -13,6 +14,7 @@ import {
   IconRestore,
   IconTool,
   IconTrash,
+  IconUserEdit,
   IconX,
   IconZzz
 } from '@tabler/icons-react'
@@ -25,6 +27,9 @@ import { useSkill, useSkillActions } from '@/hooks/skills'
 import { errorMessage } from '@/lib/api'
 import type { SkillDetail as SkillDetailType, SkillsList } from '@/lib/types'
 import { formatDateTime, relativeTime } from '@/lib/utils'
+import { LintList } from './LintList'
+import { SkillChecks } from './SkillChecks'
+import { SafetyReport } from './SafetyReport'
 import { AuthorBadge, SkillStat } from './SkillCard'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
 import { parseSections } from './meta'
@@ -83,6 +88,7 @@ export function SkillDetailSheet({
   const actions = useSkillActions()
   const [draft, setDraft] = useState<SkillDraft | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmReset, setConfirmReset] = useState(false)
 
   const inActive = !!list?.active.some((s) => s.name === name)
   const inArchived = !!list?.archived.some((s) => s.name === name)
@@ -204,6 +210,11 @@ export function SkillDetailSheet({
                   )}
                   {inArchived && !inActive && <Badge tone="neutral" icon={<IconArchive />}>Archived</Badge>}
                   {s.created_by_review && <Badge tone="accent">Learned from your work</Badge>}
+                  {s.user_edited && (
+                    <Badge tone="info" icon={<IconUserEdit />}>
+                      Edited by you
+                    </Badge>
+                  )}
                   {s.tags.map((t) => (
                     <span key={t} className="rounded-md bg-active px-1.5 py-0.5 text-xs text-fg-muted">
                       #{t}
@@ -224,6 +235,26 @@ export function SkillDetailSheet({
                   )}
                 </div>
               </div>
+
+              {s.user_edited && (
+                <Alert
+                  tone="neutral"
+                  icon={<IconUserEdit />}
+                  title="You changed this skill"
+                  action={
+                    s.can_reset ? (
+                      <Button size="sm" variant="secondary" leftIcon={<IconArrowBackUp size={14} />} onClick={() => setConfirmReset(true)}>
+                        Reset to original
+                      </Button>
+                    ) : undefined
+                  }
+                >
+                  Sentient never overwrites your changes. When it has a better idea, it shows you the change to approve first.
+                </Alert>
+              )}
+              {s.vetting && (s.vetting.verdict !== 'clear' || s.vetting.changed_since_approval) && <SafetyReport vetting={s.vetting} />}
+              <LintList findings={s.vetting ? s.lint?.filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule)) : s.lint} />
+              <SkillChecks skill={s} />
 
               {hasPendingUpdate && (
                 <Alert
@@ -250,6 +281,22 @@ export function SkillDetailSheet({
           )}
         </div>
       ) : null}
+      <ConfirmDialog
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title={`Reset ${name}?`}
+        description="Your changes are replaced by the version Sentient wrote before you edited it."
+        confirmLabel="Reset skill"
+        onConfirm={async () => {
+          if (!name) return
+          try {
+            await actions.reset.mutateAsync(name)
+            toast.success(`Reset ${name}`, { description: 'It is back to the original version.' })
+          } catch (e) {
+            toast.error("Couldn't reset", { description: errorMessage(e) })
+          }
+        }}
+      />
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}

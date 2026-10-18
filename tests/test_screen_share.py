@@ -7,6 +7,7 @@ someone else wrote."""
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,18 +64,19 @@ def test_screen_upload_goes_to_screens_and_others_stay_in_uploads(config, isolat
         shot = client.post(
             "/api/files", files={"file": ("Inbox - Mail.png", PNG, "image/png")}, data={"source": "screen"}
         ).json()
-        assert shot["name"] == "screens/Inbox - Mail.png" and shot["mime"] == "image/png"
+        # named after the window, with a short random part (#458)
+        assert re.fullmatch(r"screens/Inbox - Mail [0-9a-f]{6}\.png", shot["name"]) and shot["mime"] == "image/png"
         again = client.post(
             "/api/files", files={"file": ("Inbox - Mail.png", PNG, "image/png")}, data={"source": "screen"}
         ).json()
-        assert again["name"] == "screens/Inbox - Mail (1).png"
+        assert again["name"] != shot["name"] and again["name"].startswith("screens/Inbox - Mail ")
         plain = client.post("/api/files", files={"file": ("photo.png", PNG, "image/png")}).json()
         assert plain["name"] == "uploads/photo.png"
         bad = client.post("/api/files", files={"file": ("x.png", PNG, "image/png")}, data={"source": "elsewhere"})
         assert bad.status_code == 422
         # deletable like any other file
         assert client.delete(f"/api/files/{shot['name']}").json() == {"ok": True}
-        assert not (isolated_home / "files" / "screens" / "Inbox - Mail.png").exists()
+        assert not (isolated_home / "files" / shot["name"]).exists()
 
 
 @pytest.mark.parametrize("vision", ["ollama_chat/qwen2.5vl:7b", None])
@@ -90,8 +92,17 @@ def test_a_screen_capture_goes_to_the_vision_role_and_marks_the_chat(config, iso
         role = "vision" if vision else "primary"
         content = _user_message(llm, role)["content"]
         assert isinstance(content, list)
-        assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
-        assert "Screen capture attached: screens/Inbox - Mail.png" in content[0]["text"]
+        image_block = next(
+            block for block in content
+            if block.get("type") == "image_url"
+        )
+        image_url = image_block["image_url"]["url"]
+        assert image_url.startswith("data:image/png;base64,")
+        assert any(
+            block.get("type") == "text"
+            and f"Screen capture attached: {shot['name']}" in block.get("text", "")
+            for block in content
+        )
         listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
         assert listed["untrusted"] == "your screen"
 
@@ -104,7 +115,13 @@ def test_a_plain_image_upload_does_not_mark_the_chat(config, isolated_home, monk
         r = client.post("/api/chat", json={"text": "what is this?", "attachments": [up["name"]]})
         sid = json.loads(r.text.splitlines()[0])["session_id"]
         assert llm.calls[-1]["role"] == "vision"
-        assert "Image attached: uploads/cat.png" in _user_message(llm, "vision")["content"][0]["text"]
+        content = _user_message(llm, "vision")["content"]
+        assert isinstance(content, list)
+        assert any(
+            block.get("type") == "text"
+            and "Image attached: uploads/cat.png" in block.get("text", "")
+            for block in content
+        )
         listed = next(s for s in client.get("/api/sessions").json() if s["id"] == sid)
         assert listed["untrusted"] == ""
 

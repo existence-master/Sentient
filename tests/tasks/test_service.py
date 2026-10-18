@@ -74,7 +74,7 @@ async def test_full_lifecycle_to_completed(make_app):
     assert {"file_write", "current_datetime", "memory_recall"} <= names
     assert "create_task_from_prompt" not in names and "memory_forget" not in names
     system = first["messages"][0]["content"]
-    assert "Save the haiku to haiku.txt" in system and "Pune, India" in system and "Sarthak" in system
+    assert "Save the haiku to haiku.txt" in system and "Pune, India" in system and "Maya" in system
     # planner catalogue is dynamic and excludes the tasks plugin
     planner_system = json_calls(llm, "planner")[1]["messages"][0]["content"]
     assert '"files"' in planner_system and '"tasks"' not in planner_system

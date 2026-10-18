@@ -10,6 +10,11 @@ Other packages use only these methods (signatures are stable):
 - ``feed_active(source) -> bool``                      a change feed / push watcher keeps ``source`` current
 - ``await feed_status() -> list[dict]``                change feed status per feed-capable source
 - ``await emit_items(source, origin, items, event=None) -> list[dict]``  shared seen record + ``source.items``
+- ``access(plugin_id) -> "read" | "read_write"`` and ``await set_access(plugin_id, access)``: Read only connections
+  (``integrations.read_only``, #141). The approvals broker hides and refuses their write, send and exec tools.
+- ``entity_choice(plugin_id) -> {mode, picked}``, ``await list_entities(plugin_id)`` and
+  ``await set_entity_choice(plugin_id, mode, picked)``: the entity picker of integrations with ``entity_picker``
+  (Home Assistant, #175), saying which devices Sentient may see and use.
 
 Every new item from poll, feed or webhook is published once as ``source.items`` (docs/API.md section 16).
 
@@ -43,6 +48,7 @@ from sentient.integrations.common import (
 from sentient.integrations.feeds import FeedEngine
 from sentient.integrations.hooks import HookStore
 from sentient.integrations.plugins import PLUGIN_MODULES
+from sentient.memory.forget import forget as forget_learned
 from sentient.services import Service
 from sentient.store.db import now_iso
 
@@ -54,6 +60,7 @@ log = logging.getLogger(__name__)
 OAUTH_FLOW_TTL_S = 15 * 60
 DEFAULT_POLL_LOOKBACK = timedelta(hours=1)
 SEEN_CAP = 500
+ACCESS_LEVELS = ("read", "read_write")
 
 
 def secret_name(plugin_id: str) -> str:
@@ -72,6 +79,7 @@ def _parse_ts(value: str | None) -> datetime | None:
 
 class IntegrationManager(Service):
     name = "integrations"
+    model_kind = "background"
 
     def __init__(self, app: SentientApp):
         super().__init__(app)
@@ -95,9 +103,6 @@ class IntegrationManager(Service):
     async def start(self) -> None:
         _base._CURRENT_MANAGER = self
         store = self.app.store
-        await store.ensure_column("integrations", "status", "TEXT")
-        await store.ensure_column("integrations", "error", "TEXT")
-        await store.db.commit()
         self._load_plugins()
         for row in await store.fetchall("SELECT * FROM integrations"):
             self._state[row["id"]] = self._row_to_state(dict(row))
@@ -222,6 +227,34 @@ class IntegrationManager(Service):
         if self.plugin(plugin_id) is not None:
             self.app.bus.publish("integration.updated", await self.integration(plugin_id))
 
+    # ------------------------------------------------------------------ access level (#141)
+    def access(self, plugin_id: str) -> str:
+        """``read`` when the connection is set to Read only, else ``read_write``."""
+        return "read" if plugin_id in self.app.config.integrations.read_only else "read_write"
+
+    def save_access(self, plugin_id: str, access: str) -> bool:
+        """Record the access level in config (no event). Returns True when it changed. Takes effect at once: the
+        approvals broker and the registry read ``integrations.read_only`` on every check."""
+        if access not in ACCESS_LEVELS:
+            raise IntegrationError("Choose Read only or Read and write.")
+        cfg = self.app.config.integrations
+        current = list(cfg.read_only)
+        wanted = [*current, plugin_id] if access == "read" and plugin_id not in current else (
+            [p for p in current if p != plugin_id] if access == "read_write" else current)
+        if wanted == current:
+            return False
+        cfg.read_only = wanted
+        self.app.save_config()
+        return True
+
+    async def set_access(self, plugin_id: str, access: str) -> dict:
+        """Set an integration to Read only (``read``) or Read and write (``read_write``). Returns the Integration."""
+        if self.plugin(plugin_id) is None:
+            raise KeyError(plugin_id)
+        if self.save_access(plugin_id, access):
+            await self.publish(plugin_id)
+        return await self.integration(plugin_id)
+
     # ------------------------------------------------------------------ public API
     async def connected_plugins(self) -> set[str]:
         ids = {pid for pid in self._plugins if self._connected_sync(pid)}
@@ -283,16 +316,23 @@ class IntegrationManager(Service):
             "privacy_filters": {"supported": bool(p.privacy_fields), "fields": list(p.privacy_fields)},
             "triggers": await self._triggers(p),
             "alternative_for": p.optional_alternative_for,
+            "access": self.access(plugin_id),
+            "entity_picker": bool(getattr(p, "entity_picker", False)),
             "tools": [{"name": t.name, "description": t.description, "risk": t.risk.name} for t in p.tools],
         }
 
     # ------------------------------------------------------------------ connect / disconnect / test
-    async def connect(self, plugin_id: str, fields: dict[str, Any] | None = None) -> dict:
+    async def connect(self, plugin_id: str, fields: dict[str, Any] | None = None, access: str | None = None) -> dict:
+        """``access`` (``read`` or ``read_write``) is saved first, so the connection never starts with more than the
+        user chose."""
         p = self.plugin(plugin_id)
         if p is None:
             raise KeyError(plugin_id)
+        changed = access is not None and self.save_access(plugin_id, access)
         fields = {k: ("" if v is None else str(v)) for k, v in (fields or {}).items()}
         if p.is_builtin:
+            if changed:
+                await self.publish(plugin_id)
             return await self.integration(plugin_id)
         started = await p.begin_oauth(fields, self)
         if started is not None:
@@ -327,7 +367,9 @@ class IntegrationManager(Service):
         if getattr(self.app, "enable_background", False):
             self.feeds.start_watch(plugin_id)
 
-    async def disconnect(self, plugin_id: str) -> dict:
+    async def disconnect(self, plugin_id: str, *, forget: bool = False) -> dict:
+        """Sign out of an app. ``forget``: also forget what Sentient learned from it (#153); the result then carries
+        ``forgotten``, what was deleted."""
         p = self.plugin(plugin_id)
         if p is None:
             raise KeyError(plugin_id)
@@ -349,8 +391,10 @@ class IntegrationManager(Service):
                 await disable(plugin_id)
             except Exception:
                 log.exception("disabling tasks for %s failed", plugin_id)
+        forgotten = await forget_learned(self.app, f"app:{plugin_id}", p.display_name) if forget else None
         await self.publish(plugin_id)
-        return await self.integration(plugin_id)
+        out = await self.integration(plugin_id)
+        return {**out, "forgotten": forgotten} if forgotten is not None else out
 
     async def cancel_connect(self, plugin_id: str) -> dict:
         """Abandon a pending browser sign-in (the user closed the dialog or gave up)."""
@@ -465,6 +509,54 @@ class IntegrationManager(Service):
             return items
         blocked = email_blocked if kind == "email" else event_blocked
         return [i for i in items if not blocked(i, filters)]
+
+    # ------------------------------------------------------------------ entity picker (#175)
+    def _picker(self, plugin_id: str) -> IntegrationPlugin:
+        p = self.plugin(plugin_id)
+        if p is None:
+            raise KeyError(plugin_id)
+        if not getattr(p, "entity_picker", False):
+            raise IntegrationError(f"{p.display_name} has no devices to choose from.")
+        return p
+
+    def entity_choice(self, plugin_id: str) -> dict:
+        """``{mode: "all"|"picked", picked: [ids]}``: every device, or only the picked ones."""
+        raw = self._get_state(plugin_id)["settings"].get("entities") or {}
+        mode = "picked" if raw.get("mode") == "picked" else "all"
+        picked = [str(x) for x in raw.get("picked") or [] if str(x).strip()]
+        return {"mode": mode, "picked": picked}
+
+    async def list_entities(self, plugin_id: str) -> dict:
+        """``{mode, picked, entities: [{entity_id, name, domain, area, state, allowed}]}`` for the picker."""
+        p = self._picker(plugin_id)
+        if not self._connected_sync(plugin_id):
+            raise IntegrationError(f"Connect {p.display_name} first.")
+        choice = self.entity_choice(plugin_id)
+        rows = await p.entities(self)  # type: ignore[attr-defined]
+        chosen = set(choice["picked"])
+        for row in rows:
+            row["allowed"] = choice["mode"] == "all" or row["entity_id"] in chosen
+        return {**choice, "entities": rows}
+
+    async def set_entity_choice(self, plugin_id: str, mode: str, picked: list[str] | None = None) -> dict:
+        """Save which devices Sentient may use. Applies at once, to chats, tasks and live updates."""
+        self._picker(plugin_id)
+        if mode not in ("all", "picked"):
+            raise IntegrationError("Choose every device or only the ones you pick.")
+        settings = dict(self._get_state(plugin_id)["settings"])
+        settings["entities"] = {"mode": mode, "picked": list(dict.fromkeys(str(x).strip() for x in picked or []
+                                                                         if str(x).strip()))}
+        await self._save_state(plugin_id, settings=settings)
+        await self.publish(plugin_id)
+        return self.entity_choice(plugin_id)
+
+    async def home_devices(self, words: str, *, device: str, plural: bool, everywhere: bool = False) -> list[dict] | None:
+        """The Home Assistant devices a quick command names (``sentient.agent.fastpath``, #175), or None when Home
+        Assistant isn't connected or can't be reached, or the words don't name exactly which devices."""
+        p = self.plugin("home_assistant")
+        if p is None or not self._connected_sync("home_assistant"):
+            return None
+        return await p.quick_match(self, words, device=device, plural=plural, everywhere=everywhere)  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------ polling (proactivity / triggered tasks)
     async def poll_state(self, source: str) -> dict:

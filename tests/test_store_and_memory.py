@@ -34,21 +34,21 @@ def test_parse_duration():
 
 async def test_remember_recall_dedup_update(store, fake_provider, config):
     mem = FactMemory(store, fake_provider, config)
-    r1 = await mem.remember("Sarthak's favorite snack is almonds", use_llm=False)
+    r1 = await mem.remember("Maya's favorite snack is almonds", use_llm=False)
     assert r1["action"] == "ADD"
-    r2 = await mem.remember("Sarthak's favorite snack is almonds", use_llm=False)
+    r2 = await mem.remember("Maya's favorite snack is almonds", use_llm=False)
     assert r2["action"] == "SKIP" and r2["id"] == r1["id"]
     hits = await mem.recall("favorite snack", top_k=3, min_similarity=0.0)
     assert hits and hits[0]["id"] == r1["id"]
 
     fake_provider.json_replies.append(
-        {"action": "UPDATE", "fact_id": r1["id"], "content": "Sarthak's favorite snack is cashews",
+        {"action": "UPDATE", "fact_id": r1["id"], "content": "Maya's favorite snack is cashews",
          "memory_type": "long-term", "duration": None, "topics": ["preferences"]}
     )
-    r3 = await mem.remember("Sarthak's favorite snack is cashews now", use_llm=True)
+    r3 = await mem.remember("Maya's favorite snack is cashews now", use_llm=True)
     assert r3["action"] == "UPDATE" and r3["id"] == r1["id"]
     facts = await mem.list_facts()
-    assert len(facts) == 1 and facts[0]["content"] == "Sarthak's favorite snack is cashews"
+    assert len(facts) == 1 and facts[0]["content"] == "Maya's favorite snack is cashews"
 
     assert await mem.forget(r1["id"])
     assert await mem.count() == 0
@@ -57,7 +57,7 @@ async def test_remember_recall_dedup_update(store, fake_provider, config):
 async def test_short_term_expiry(store, fake_provider, config):
     mem = FactMemory(store, fake_provider, config)
     fake_provider.json_replies.append(
-        {"action": "ADD", "fact_id": None, "content": "Sarthak flies to Delhi on Friday",
+        {"action": "ADD", "fact_id": None, "content": "Maya flies to Delhi on Friday",
          "memory_type": "short-term", "duration": "0 hours", "topics": ["travel"]}
     )
     r = await mem.remember("I fly to Delhi on Friday")
@@ -69,9 +69,9 @@ async def test_short_term_expiry(store, fake_provider, config):
 
 async def test_extract_and_store(store, fake_provider, config):
     mem = FactMemory(store, fake_provider, config)
-    fake_provider.json_replies.append({"facts": ["Sarthak lives in Pune", "Sarthak's manager is Jane"]})
-    fake_provider.json_replies.append({"action": "ADD", "content": "Sarthak lives in Pune", "memory_type": "long-term", "topics": ["identity"], "fact_id": None, "duration": None})
-    fake_provider.json_replies.append({"action": "ADD", "content": "Sarthak's manager is Jane", "memory_type": "long-term", "topics": ["work"], "fact_id": None, "duration": None})
-    results = await mem.extract_and_store("User: I live in Pune and my manager is Jane", "Sarthak")
+    fake_provider.json_replies.append({"facts": ["Maya lives in Pune", "Maya's manager is Jane"]})
+    fake_provider.json_replies.append({"action": "ADD", "content": "Maya lives in Pune", "memory_type": "long-term", "topics": ["identity"], "fact_id": None, "duration": None})
+    fake_provider.json_replies.append({"action": "ADD", "content": "Maya's manager is Jane", "memory_type": "long-term", "topics": ["work"], "fact_id": None, "duration": None})
+    results = await mem.extract_and_store("User: I live in Pune and my manager is Jane", "Maya")
     assert [r["action"] for r in results] == ["ADD", "ADD"]
     assert await mem.count() == 2

@@ -13,38 +13,27 @@ from sentient.tasks.delivery import from_stored
 
 TASK_JSON_FIELDS = {
     "schedule", "plan", "chat_history", "clarifying_questions", "swarm_details", "original_context", "script",
-    "deliver_to",
+    "deliver_to", "setup",
 }
 TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
-    "browser_profile", "deliver_to",
+    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope", "setup",
 }
-RUN_JSON_FIELDS = {"plan", "trigger_data", "messages", "result", "pending_question", "limits", "memory_sources"}
+TASK_BOOL_FIELDS = {"enabled", "keep_running"}
+RUN_JSON_FIELDS = {
+    "plan", "trigger_data", "messages", "result", "pending_question", "limits", "memory_sources", "sources", "would_do",
+    "checks",
+}
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
     "pending_question", "limits", "last_activity_at", "started_at", "finished_at", "created_at", "memory_sources",
+    "sources", "dry_run", "would_do", "checks", "retry_at",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
-_ADDED_TASK_COLUMNS = {
-    "assignee": "TEXT NOT NULL DEFAULT 'ai'",
-    "model": "TEXT",
-    "chat_history": "TEXT",
-    "clarifying_questions": "TEXT",
-    "swarm_details": "TEXT",
-    "original_context": "TEXT",
-    "error": "TEXT",
-    "next_execution_at": "TEXT",
-    "last_execution_at": "TEXT",
-    "script": "TEXT",
-    "browser_profile": "TEXT",
-    "deliver_to": "TEXT",
-}
-_ADDED_RUN_COLUMNS = {
-    "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
-    "limits": "TEXT", "last_activity_at": "TEXT", "memory_sources": "TEXT",
-}
+# SQL condition: a real run, not a try run (#142). Try runs never hold a task busy or count as its last result.
+REAL_RUN = "COALESCE(dry_run, 0) = 0"
 
 # Progress updates embedded in each run of a serialized Task; the full log is at
 # GET /api/tasks/{id}/runs/{run_id}/events.
@@ -68,35 +57,25 @@ def _question_to_api(question: Any) -> dict | None:
     if not isinstance(question, dict) or not question.get("question"):
         return None
     options = question.get("options")
-    kind = "stuck" if question.get("stuck") else "limit" if question.get("limit") else "question"
+    kind = (
+        "stuck" if question.get("stuck") else "limit" if question.get("limit")
+        else "approval" if question.get("approval") or question.get("untrusted_call") else "question"
+    )
     return {
         "question": str(question["question"]),
         "options": [str(o) for o in options] if isinstance(options, list) else [],
         "asked_at": question.get("asked_at"),
         "kind": kind,
         "reason": (str(question.get("reason") or "") or None) if kind == "stuck" else None,
+        "expires_at": question.get("expires_at"),  # approvals only (#139): a late answer can't approve
+        # approvals only (#142): what the held call would send, the way a person reads it
+        "preview": question.get("preview") if kind == "approval" and isinstance(question.get("preview"), dict) else None,
     }
 
 
 class TaskRepo:
     def __init__(self, store: Store):
         self.store = store
-
-    # ------------------------------------------------------------------ schema
-    async def ensure_schema(self) -> None:
-        for col, decl in _ADDED_TASK_COLUMNS.items():
-            await self.store.ensure_column("tasks", col, decl)
-        for col, decl in _ADDED_RUN_COLUMNS.items():
-            await self.store.ensure_column("task_runs", col, decl)
-        await self.store.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_next_exec ON tasks(status, enabled, next_execution_at)"
-        )
-        await self.store.db.execute(
-            "CREATE TABLE IF NOT EXISTS task_trigger_seen ("
-            " task_id TEXT NOT NULL, item_key TEXT NOT NULL, seen_at TEXT NOT NULL,"
-            " PRIMARY KEY (task_id, item_key))"
-        )
-        await self.store.db.commit()
 
     # ------------------------------------------------------------------ tasks
     @staticmethod
@@ -105,6 +84,7 @@ class TaskRepo:
         for f in TASK_JSON_FIELDS:
             d[f] = _loads(d.get(f))
         d["enabled"] = bool(d.get("enabled", 1))
+        d["keep_running"] = bool(d.get("keep_running") or 0)
         return d
 
     async def insert_task(self, fields: dict) -> str:
@@ -113,8 +93,8 @@ class TaskRepo:
         data["id"] = task_id
         for f in TASK_JSON_FIELDS & data.keys():
             data[f] = _dumps(data[f])
-        if "enabled" in data:
-            data["enabled"] = 1 if data["enabled"] else 0
+        for f in TASK_BOOL_FIELDS & data.keys():
+            data[f] = 1 if data[f] else 0
         cols = ", ".join(data)
         marks = ", ".join("?" for _ in data)
         await self.store.execute(f"INSERT INTO tasks({cols}) VALUES({marks})", tuple(data.values()))
@@ -137,8 +117,8 @@ class TaskRepo:
             return
         for f in TASK_JSON_FIELDS & data.keys():
             data[f] = _dumps(data[f])
-        if "enabled" in data:
-            data["enabled"] = 1 if data["enabled"] else 0
+        for f in TASK_BOOL_FIELDS & data.keys():
+            data[f] = 1 if data[f] else 0
         sets = ", ".join(f"{k} = ?" for k in data)
         await self.store.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*data.values(), task_id))
 
@@ -150,8 +130,8 @@ class TaskRepo:
             return False
         for f in TASK_JSON_FIELDS & data.keys():
             data[f] = _dumps(data[f])
-        if "enabled" in data:
-            data["enabled"] = 1 if data["enabled"] else 0
+        for f in TASK_BOOL_FIELDS & data.keys():
+            data[f] = 1 if data[f] else 0
         wanted = list(statuses)
         sets = ", ".join(f"{k} = ?" for k in data)
         marks = ", ".join("?" for _ in wanted)
@@ -200,13 +180,14 @@ class TaskRepo:
         return d
 
     async def insert_run(
-        self, task_id: str, *, now: str, plan: Any = None, trigger_data: Any = None, status: str = "processing"
+        self, task_id: str, *, now: str, plan: Any = None, trigger_data: Any = None, status: str = "processing",
+        dry_run: bool = False,
     ) -> str:
         run_id = new_id()
         await self.store.execute(
-            "INSERT INTO task_runs(id, task_id, status, plan, trigger_data, started_at, created_at)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (run_id, task_id, status, _dumps(plan), _dumps(trigger_data), now, now),
+            "INSERT INTO task_runs(id, task_id, status, plan, trigger_data, started_at, created_at, dry_run)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (run_id, task_id, status, _dumps(plan), _dumps(trigger_data), now, now, 1 if dry_run else 0),
         )
         return run_id
 
@@ -221,8 +202,10 @@ class TaskRepo:
         return [self._decode_run(r) for r in rows]
 
     async def latest_run(self, task_id: str) -> dict | None:
+        """The newest real run (never a try run)."""
         row = await self.store.fetchone(
-            "SELECT * FROM task_runs WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", (task_id,)
+            f"SELECT * FROM task_runs WHERE task_id = ? AND {REAL_RUN} ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (task_id,),
         )
         return self._decode_run(row) if row else None
 
@@ -247,6 +230,20 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
+    async def retries_due(self, now: str) -> list[dict]:
+        """Runs skipped for a missing source whose time to try again has come (#161)."""
+        rows = await self.store.fetchall(
+            "SELECT * FROM task_runs WHERE retry_at IS NOT NULL AND retry_at <= ? ORDER BY retry_at, rowid", (now,)
+        )
+        return [self._decode_run(r) for r in rows]
+
+    async def claim_retry(self, run_id: str) -> bool:
+        """Take a skipped run's retry, once: False when it was already taken (or dropped)."""
+        cur = await self.store.execute(
+            "UPDATE task_runs SET retry_at = NULL WHERE id = ? AND retry_at IS NOT NULL", (run_id,)
+        )
+        return (cur.rowcount or 0) > 0
+
     async def pause_run(self, run_id: str, question: dict) -> bool:
         """Compare-and-set a processing run to ``waiting_for_user`` with its question. False if it changed meanwhile."""
         cur = await self.store.execute(
@@ -265,8 +262,21 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
-    async def waiting_runs(self, task_id: str | None = None) -> list[dict]:
-        sql = "SELECT * FROM task_runs WHERE status = 'waiting_for_user'"
+    async def held_runs(self, task_id: str, note: str) -> list[dict]:
+        """A task's runs that ended ``cancelled`` with ``note`` and are still its latest work (#304): not carried on
+        by a retry yet, and with no other run started after them (a Run now since then replaced them)."""
+        rows = await self.store.fetchall(
+            "SELECT * FROM task_runs r WHERE r.task_id = ? AND r.status = 'cancelled' AND r.error = ?"
+            " AND NOT EXISTS (SELECT 1 FROM task_runs n WHERE n.task_id = r.task_id AND (n.retry_of = r.id"
+            " OR (n.rowid > r.rowid AND NOT (n.status = 'cancelled' AND n.error = ?))))"
+            " ORDER BY r.created_at, r.rowid",
+            (task_id, note, note),
+        )
+        return [self._decode_run(r) for r in rows]
+
+    async def waiting_runs(self, task_id: str | None = None, *, real: bool = False) -> list[dict]:
+        """Runs waiting for an answer; ``real`` leaves out try runs (#142)."""
+        sql = "SELECT * FROM task_runs WHERE status = 'waiting_for_user'" + (f" AND {REAL_RUN}" if real else "")
         params: tuple = ()
         if task_id:
             sql += " AND task_id = ?"
@@ -274,13 +284,18 @@ class TaskRepo:
         rows = await self.store.fetchall(sql + " ORDER BY created_at, rowid", params)
         return [self._decode_run(r) for r in rows]
 
-    async def processing_runs(self, task_id: str | None = None) -> list[dict]:
+    async def processing_runs(self, task_id: str | None = None, *, real: bool = False) -> list[dict]:
+        """Runs in progress; ``real`` leaves out try runs (#142)."""
+        only = f" AND {REAL_RUN}" if real else ""
         if task_id:
             rows = await self.store.fetchall(
-                "SELECT * FROM task_runs WHERE status = 'processing' AND task_id = ? ORDER BY created_at", (task_id,)
+                f"SELECT * FROM task_runs WHERE status = 'processing' AND task_id = ?{only} ORDER BY created_at",
+                (task_id,),
             )
         else:
-            rows = await self.store.fetchall("SELECT * FROM task_runs WHERE status = 'processing' ORDER BY created_at")
+            rows = await self.store.fetchall(
+                f"SELECT * FROM task_runs WHERE status = 'processing'{only} ORDER BY created_at"
+            )
         return [self._decode_run(r) for r in rows]
 
     # ------------------------------------------------------------------ progress
@@ -336,6 +351,13 @@ class TaskRepo:
             "pending_question": _question_to_api(run.get("pending_question")) if run["status"] == "waiting_for_user" else None,
             "last_activity_at": run.get("last_activity_at") or run.get("started_at"),
             "memory_sources": run.get("memory_sources") or [],
+            "sources": run.get("sources") or [],
+            "dry_run": bool(run.get("dry_run")),  # a try run (#142): nothing was sent, changed or run
+            "would_do": (run.get("would_do") or []) if run.get("dry_run") else [],
+            # what code found the run's calls really did (#165): each failure that still stands has its ``message``
+            "checks": run.get("checks") or [],
+            # skipped because its source was missing, and set to try again then (#161)
+            "retry_at": run.get("retry_at"),
         }
 
     @staticmethod
@@ -355,11 +377,15 @@ class TaskRepo:
             "clarifying_questions": task.get("clarifying_questions") or [],
             "swarm_details": task.get("swarm_details"),
             "enabled": bool(task.get("enabled", True)),
+            "keep_running": bool(task.get("keep_running")),
             "model": task.get("model"),
             "browser_profile": task.get("browser_profile"),
+            "memory_scope": task.get("memory_scope") or "personal",
             "deliver_to": from_stored(task.get("deliver_to")),
+            "notepad": task.get("notepad") or None,
             "original_context": task.get("original_context") or {"source": "manual_creation"},
             "script": task.get("script") if task.get("task_type") == "script" else None,
+            "setup": task.get("setup") if isinstance(task.get("setup"), dict) else None,  # routines (#161)
             "error": task.get("error"),
             "next_execution_at": task.get("next_execution_at"),
             "last_execution_at": task.get("last_execution_at"),

@@ -1,6 +1,8 @@
 -- Sentient v3 storage. One SQLite file replaces Mongo + Postgres/pgvector + Chroma + Redis.
 -- Vectors: sqlite-vec virtual tables (created lazily once the embedding dimension is known).
 -- Keyword search: FTS5.
+-- Idempotent, and the whole current shape: a new database is made from the schema.sql files alone. An older
+-- database first gets its missing columns from sentient/store/migrations (docs/DEVELOPING.md).
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -19,15 +21,19 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at  TEXT NOT NULL,
     archived    INTEGER NOT NULL DEFAULT 0,
     context_summary TEXT,                         -- running summary of turns older than the history window
-    context_upto    TEXT,                         -- created_at of the last message folded into the summary
+    context_upto    TEXT,                         -- watermark of the messages folded into the summary (store.db.next_watermark)
     untrusted       TEXT,                         -- app whose content this chat read ("Gmail"); sends then ask (ADR 0018)
-    visited_hosts   TEXT                          -- JSON list of web hosts this chat loaded (ADR 0018)
+    visited_hosts   TEXT,                         -- JSON list of web hosts this chat loaded (ADR 0018)
+    incognito       INTEGER NOT NULL DEFAULT 0,   -- 1: nothing is learned from it and it is deleted when closed (#154)
+    model           TEXT,                         -- the model picked for this chat; NULL follows the default (#312)
+    memory_scope    TEXT,                         -- the memories this chat uses (#155); NULL: its app's, else personal
+    node_id         TEXT                          -- the paired device it was started on (#153); NULL: none
 );
 
 CREATE TABLE IF NOT EXISTS messages (
     id            TEXT PRIMARY KEY,
     session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role          TEXT NOT NULL,                  -- system | user | assistant | tool
+    role          TEXT NOT NULL,                  -- system | user | assistant | tool | other | event (ADR 0029)
     content       TEXT,
     tool_calls    TEXT,                           -- JSON list (assistant messages)
     tool_call_id  TEXT,                           -- (tool messages)
@@ -36,10 +42,19 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments   TEXT,                           -- JSON list of file names (user messages)
     interjection  INTEGER NOT NULL DEFAULT 0,     -- 1 for user messages sent while a reply was running (steering)
     memory_sources TEXT,                          -- JSON list: memories a final assistant reply had in mind
+    sources       TEXT,                           -- JSON list: pages, emails, files and apps a final reply used (#174)
+    approval      TEXT,                           -- JSON (tool messages): how the user answered the call's approval
+                                                  -- request {decision, asked_at, answered_at, target, risk_label,
+                                                  -- untrusted, rule}; NULL when it did not ask (activity timeline, #147)
+    checks        TEXT,                           -- JSON list: outcome checks of a final reply's calls (#165)
     created_at    TEXT NOT NULL,
     summarized    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
+-- the activity timeline (#147) reads tool calls newest first across every chat
+CREATE INDEX IF NOT EXISTS idx_messages_tool_time ON messages(created_at) WHERE role = 'tool';
+-- ... and what the user did to a chat (role 'event', e.g. trusting it again, ADR 0029)
+CREATE INDEX IF NOT EXISTS idx_messages_event_time ON messages(created_at) WHERE role = 'event';
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content, content='messages', content_rowid='rowid'
@@ -60,8 +75,9 @@ CREATE TABLE IF NOT EXISTS summaries (
     end_at        TEXT NOT NULL,
     message_ids   TEXT NOT NULL,                  -- JSON list
     created_at    TEXT NOT NULL,
-    untrusted     TEXT                            -- app whose content the chat had read (ADR 0018/0021): kept out of
+    untrusted     TEXT,                           -- app whose content the chat had read (ADR 0018/0021): kept out of
                                                   -- other chats, proactivity and MEMORY.md; "" or NULL = clean
+    scope         TEXT                            -- the chat's memory scope when written (#155); NULL = personal
 );
 
 -- ---------------------------------------------------------------- semantic memory (atomic facts)
@@ -77,10 +93,22 @@ CREATE TABLE IF NOT EXISTS facts (
     embedding_model TEXT,
     previous_content TEXT,                                  -- kept on UPDATE so edits are auditable
     status          TEXT NOT NULL DEFAULT 'active',         -- active | pending (held for the user's review, ADR 0021)
-    review          TEXT                                    -- JSON {from, snippet, session_id}: where a held memory came from
+    review          TEXT,                                   -- JSON {from, snippet, session_id}: where a held memory came from
+    scope           TEXT NOT NULL DEFAULT 'personal',       -- personal | work | always | a project's name (#155)
+    recall_count    INTEGER NOT NULL DEFAULT 0,             -- times recalled into a prompt (dreaming promotes them)
+    last_recalled_at TEXT,
+    merged_into     INTEGER,                                -- the memory the nightly tidy-up merged this one into (#353)
+    merged_at       TEXT,                                   -- kept for undo
+    merged_by       TEXT,
+    source_ref      TEXT,                                   -- JSON: exactly where its source said it (#152)
+    confidence      REAL NOT NULL DEFAULT 0.8,              -- 0..1: how sure Sentient is of it (#152)
+    state           TEXT NOT NULL DEFAULT 'current',        -- current | disputed | superseded: only current in prompts
+    superseded_by   INTEGER                                 -- the memory that replaced it (#152)
 );
+CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope, status);
 CREATE INDEX IF NOT EXISTS idx_facts_expires ON facts(expires_at) WHERE expires_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source);
+CREATE INDEX IF NOT EXISTS idx_facts_created ON facts(created_at);   -- the activity timeline (#147)
 
 -- ---------------------------------------------------------------- notifications / approvals
 CREATE TABLE IF NOT EXISTS notifications (
@@ -102,9 +130,11 @@ CREATE TABLE IF NOT EXISTS usage (
     source            TEXT NOT NULL DEFAULT 'chat',     -- chat | task | memory | proactive | evolution | voice
     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL,                             -- the call's price when known (#148); NULL: free, plan or unknown
     created_at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_paid ON usage(created_at) WHERE cost_usd > 0;   -- the activity timeline's spending lines (#147)
 
 -- ---------------------------------------------------------------- integrations / credentials metadata
 -- Actual OAuth tokens go to the OS keychain under sentient/integration:<id>;
@@ -116,7 +146,9 @@ CREATE TABLE IF NOT EXISTS integrations (
     account_label TEXT,                           -- e.g. the email address
     settings      TEXT,                           -- JSON (privacy filters etc.)
     connected_at  TEXT,
-    updated_at    TEXT
+    updated_at    TEXT,
+    status        TEXT,                           -- connected | disconnected | error, as last seen
+    error         TEXT                            -- why it last failed
 );
 
 -- ---------------------------------------------------------------- skills (self-evolution ledger)
@@ -126,7 +158,21 @@ CREATE TABLE IF NOT EXISTS skill_stats (
     view_count   INTEGER NOT NULL DEFAULT 0,
     patch_count  INTEGER NOT NULL DEFAULT 0,
     last_used_at TEXT,
-    state        TEXT NOT NULL DEFAULT 'active'   -- active | pending_review | stale | archived
+    state        TEXT NOT NULL DEFAULT 'active',  -- active | pending_review | stale | archived
+    created_at   TEXT,
+    -- usage outcomes recorded by self-evolution (skill repair) so the curator can prefer reliable skills
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_failure_at TEXT,
+    -- edit protection (#164): the SKILL.md as Sentient last wrote it (or as first seen), so a hand edit shows up as a
+    -- different hash and reset can put the original back; and the active hash a proposal was drafted from
+    origin_hash  TEXT,
+    origin_text  TEXT,
+    proposal_base_hash TEXT,
+    -- the last run of the skill's own checks (#386, sentient.skills.checks), as JSON: the active skill's, and its
+    -- pending proposal's
+    check_report TEXT,
+    pending_check_report TEXT
 );
 
 -- ---------------------------------------------------------------- chat subagents (owner: core, docs/API.md section 10)
@@ -135,6 +181,7 @@ CREATE TABLE IF NOT EXISTS subagents (
     session_id     TEXT,                          -- chat that spawned it (NULL outside chats)
     parent_call_id TEXT,                          -- tool call id of delegate_task / delegate_tasks
     goal           TEXT NOT NULL,
+    kind           TEXT NOT NULL DEFAULT 'worker',  -- worker (delegate_task) | reader (read_with_reader: no tools, #144)
     context        TEXT,
     tools          TEXT,                          -- JSON list of requested tool names, or NULL
     status         TEXT NOT NULL DEFAULT 'running',   -- running | completed | error | cancelled
@@ -164,3 +211,47 @@ CREATE TABLE IF NOT EXISTS rule_proposals (
     decided_at  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rule_proposals_session ON rule_proposals(session_id, status);
+
+-- ---------------------------------------------------------------- approval grants (owner: core, docs/API.md section 2)
+-- How wide a "yes" to an approval request was (#139): later calls of one tool in one task, or anywhere until
+-- expires_at. "Allow once" and "Allow for this chat" are not stored here; "Always allow" becomes an Allow rule.
+CREATE TABLE IF NOT EXISTS approval_grants (
+    id          TEXT PRIMARY KEY,
+    tool        TEXT NOT NULL,                    -- tool name
+    scope       TEXT NOT NULL,                    -- task | timed
+    task_id     TEXT,                             -- the task a "task" grant belongs to
+    risk        INTEGER NOT NULL,                 -- highest effective risk it covers (tools.base.Risk)
+    via         TEXT NOT NULL DEFAULT 'desktop',  -- where it was answered: desktop | telegram | discord | whatsapp
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT                              -- set for "timed"
+);
+
+-- ---------------------------------------------------------------- skills from outside (#146, docs/API.md section 8)
+-- Where an imported skill came from, the hash of its folder and the safety check that saw it: a lock record that is
+-- checked again whenever the skill is shown or approved.
+CREATE TABLE IF NOT EXISTS skill_imports (
+    name          TEXT PRIMARY KEY,                -- the skill's name in Sentient
+    source        TEXT NOT NULL,                   -- link | hermes
+    origin        TEXT,                            -- the web address or the Hermes folder it came from
+    hash          TEXT NOT NULL,                   -- SHA-256 of its folder when it was imported
+    scanner       TEXT NOT NULL,                   -- version of the safety check
+    verdict       TEXT NOT NULL,                   -- high | check | clear
+    imported_at   TEXT NOT NULL,
+    decision      TEXT,                            -- approved (declined skills are deleted)
+    decided_at    TEXT,
+    approved_hash TEXT                             -- folder hash the user approved
+);
+
+-- ---------------------------------------------------------------- MCP tools the user reviewed (#146, section 5)
+-- One row per tool of an MCP server: the hash of what it said about itself when the user decided. A tool whose hash
+-- changes is held back until the user looks again.
+CREATE TABLE IF NOT EXISTS mcp_tool_reviews (
+    server       TEXT NOT NULL,
+    tool         TEXT NOT NULL,                    -- the tool's name on the server
+    hash         TEXT NOT NULL,                    -- SHA-256 of name, title, description, input schema and hints
+    decision     TEXT NOT NULL,                    -- approved | declined
+    description  TEXT,                             -- the description that was approved, to show what changed
+    decided_at   TEXT NOT NULL,
+    alerted_hash TEXT,                             -- a changed hash the user was already told about
+    PRIMARY KEY (server, tool)
+);

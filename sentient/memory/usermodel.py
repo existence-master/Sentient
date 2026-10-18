@@ -36,7 +36,7 @@ from sentient.memory.facts import FactMemory, word_overlap
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.vectors import VecTable, cosine
 from sentient.services import Service, cancel_tasks
-from sentient.store.db import new_id, now_iso
+from sentient.store.db import after_watermark, new_id, next_watermark, now_iso
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.app import SentientApp
@@ -49,6 +49,11 @@ PENDING = "pending"  # held for the user's review; never one of STATUSES, so no 
 VEC_TABLE = "user_insights_vec"
 MAX_EVIDENCE = 8
 SUMMARY_MAX_WORDS = 180
+# what the last refresh read, per kind of evidence (store.db watermarks): rows saved in the same clock tick as the
+# last one read are still new (#297, #236)
+REFRESH_MARKS = {
+    "messages": "user_model.messages_mark", "facts": "user_model.facts_mark", "summaries": "user_model.summaries_mark",
+}
 _COLUMNS = "rid, id, dimension, statement, confidence, status, source, evidence, created_at, updated_at, review"
 
 _DIMENSION_ALIASES = {
@@ -194,6 +199,7 @@ def protected(ins: dict) -> bool:
 
 class UserModelService(Service):
     name = "user_model"
+    model_kind = "memory"
 
     def __init__(self, app: SentientApp):
         super().__init__(app)
@@ -201,6 +207,7 @@ class UserModelService(Service):
         self.clock = lambda: datetime.now(UTC)
         self._lock = asyncio.Lock()
         self._vectors: dict[int, list[float]] | None = None
+        self._vectors_model: str | None = None  # the embedding model ``_vectors`` were read for
         self._background: set[asyncio.Task] = set()
 
     @property
@@ -310,7 +317,7 @@ class UserModelService(Service):
             vecs = await self.app.llm.embed([statement])
             if not vecs:
                 return
-            await self.vec.ensure(len(vecs[0]), self._reindex)
+            await self.vec.ensure(len(vecs[0]), self._reindex, self.app.llm.model_for("embedding"))
             await self.vec.upsert(rid, vecs[0])
         except Exception as exc:
             log.debug("insight embedding skipped: %s", exc)
@@ -593,20 +600,31 @@ class UserModelService(Service):
         return {"ok": True, "verdict": verdict, "insight": _public(out) if out else None, "fact": stored}
 
     # ------------------------------------------------------------------ refresh
-    async def _gather(self, since: str) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
+    async def _gather(
+        self, since: str | dict[str, str | None]
+    ) -> tuple[dict[str, dict], dict[str, str], dict[str, str]]:
         """Evidence since the last refresh: aliases (m1, f12, s1) -> evidence dict, prompt sections, and the aliases
-        that are outside material (from a chat that read outside content, ADR 0018) -> where it came from."""
+        that are outside material (from a chat that read outside content, ADR 0018) -> where it came from.
+
+        ``since`` is a watermark per kind (``REFRESH_MARKS``: what the last refresh read, ``store.db.next_watermark``),
+        or one for all three. The marks after this read are left in ``self._read_marks`` for ``_refresh`` to save."""
         cfg, store = self.cfg, self.app.store
+        marks = since if isinstance(since, dict) else dict.fromkeys(REFRESH_MARKS, since)
+        self._read_marks = dict(marks)
         evidence: dict[str, dict] = {}
         outside: dict[str, str] = {}
         sections = {"messages": "", "facts": "", "summaries": ""}
         if cfg.recent_messages:
+            mark = marks.get("messages")
+            after, params = after_watermark(mark, "m.created_at", "m.id")  # same-tick rows are not skipped (#236)
             rows = await store.fetchall(
                 "SELECT m.id, m.content, m.created_at, s.untrusted FROM messages m LEFT JOIN sessions s"
                 " ON s.id = m.session_id WHERE m.role = 'user' AND m.content IS NOT NULL"
-                " AND m.content != '' AND m.created_at > ? ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
-                (since, cfg.recent_messages),
+                f" AND m.content != '' AND {after} AND COALESCE(s.incognito, 0) = 0"  # never incognito (#154)
+                " ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
+                (*params, cfg.recent_messages),
             )
+            self._read_marks["messages"] = next_watermark(mark, rows, "created_at", "id")
             lines = []
             for i, r in enumerate(reversed(rows), 1):
                 text = " ".join(r["content"].split())[:300]
@@ -616,11 +634,14 @@ class UserModelService(Service):
                 lines.append(f"- m{i}: {text}")
             sections["messages"] = "\n".join(lines)
         if cfg.recent_facts:
+            mark = marks.get("facts")
+            after, params = after_watermark(mark, "updated_at", "id")
             rows = await store.fetchall(
-                "SELECT id, content, updated_at FROM facts WHERE status = 'active' AND updated_at > ?"
-                " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC LIMIT ?",
-                (since, now_iso(), cfg.recent_facts),
+                f"SELECT id, content, updated_at FROM facts WHERE status = 'active' AND state = 'current' AND {after}"
+                " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id DESC LIMIT ?",
+                (*params, now_iso(), cfg.recent_facts),
             )
+            self._read_marks["facts"] = next_watermark(mark, rows, "updated_at", "id")
             lines = []
             for r in reversed(rows):
                 alias = f"f{int(r['id'])}"
@@ -628,12 +649,15 @@ class UserModelService(Service):
                 lines.append(f"- {alias}: {r['content'][:240]}")
             sections["facts"] = "\n".join(lines)
         if cfg.recent_summaries:
+            mark = marks.get("summaries")
+            after, params = after_watermark(mark, "m.created_at", "m.id")
             rows = await store.fetchall(
-                "SELECT m.id, m.content, m.end_at, COALESCE(NULLIF(m.untrusted, ''), s.untrusted) AS untrusted"
-                " FROM summaries m LEFT JOIN sessions s"
-                " ON s.id = m.session_id WHERE m.created_at > ? ORDER BY m.created_at DESC LIMIT ?",
-                (since, cfg.recent_summaries),
+                "SELECT m.id, m.content, m.end_at, m.created_at,"
+                " COALESCE(NULLIF(m.untrusted, ''), s.untrusted) AS untrusted FROM summaries m LEFT JOIN sessions s"
+                f" ON s.id = m.session_id WHERE {after} ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
+                (*params, cfg.recent_summaries),
             )
+            self._read_marks["summaries"] = next_watermark(mark, rows, "created_at", "id")
             lines = []
             for i, r in enumerate(reversed(rows), 1):
                 text = " ".join(r["content"].split())[:400]
@@ -667,7 +691,12 @@ class UserModelService(Service):
     async def _refresh(self, counts: dict, trigger: str, now: datetime) -> dict:
         cfg, store = self.cfg, self.app.store
         await ensure_memory_schema(store)
-        since = await store.get_meta("user_model.last_refresh_at") or ""
+        # what the last refresh read, per kind; an older build saved only the refresh time ("newer than", #236)
+        last = await store.get_meta("user_model.last_refresh_at") or ""
+        since = {}
+        for kind, key in REFRESH_MARKS.items():
+            mark = await store.get_meta(key)
+            since[kind] = last if mark is None else mark  # "" (saved): nothing of this kind read yet
         await store.set_meta("user_model.turns_since_refresh", "0")
         evidence, sections, outside = await self._gather(since)
         if not evidence:
@@ -822,6 +851,8 @@ class UserModelService(Service):
         if summary_changed:
             await store.set_meta("user_model.summary", new_summary)
         await store.set_meta("user_model.last_refresh_at", now.isoformat())
+        for kind, key in REFRESH_MARKS.items():  # the next refresh starts after what this one read, not at its time
+            await store.set_meta(key, str(self._read_marks.get(kind) or ""))  # also "": a later fact is never skipped
         if summary_changed or changed_ids or counts["questions"]:
             await self._touch(summary_changed=summary_changed, changed=len(changed_ids))
         log.info("user model refresh (%s): %s", trigger, counts)
@@ -855,13 +886,38 @@ class UserModelService(Service):
             return None
 
     async def _insight_vectors(self) -> dict[int, list[float]]:
-        if self._vectors is None:
-            vectors: dict[int, list[float]] = {}
-            if self.app.store.vec_available and (self.vec.ready or await self.vec.exists()):
-                with contextlib.suppress(Exception):
-                    vectors = await self.vec.all_vectors()
-            self._vectors = vectors
-        return self._vectors
+        current = self.app.llm.model_for("embedding")
+        if self._vectors is not None and self._vectors_model == current:
+            return self._vectors
+        vectors: dict[int, list[float]] = {}
+        if self.app.store.vec_available and (self.vec.ready or await self.vec.exists()):
+            stored = await self.app.store.get_meta(f"{VEC_TABLE}_model")
+            if stored and stored != current:
+                # made by another embedding model, so they don't compare with today's query: re-embed them
+                self._vectors = None
+                self._start(self._reembed())
+                return {}
+            with contextlib.suppress(Exception):
+                vectors = await self.vec.all_vectors()
+        self._vectors, self._vectors_model = vectors, current
+        return vectors
+
+    def _start(self, coro) -> None:
+        if any(t.get_name() == "user_model:reembed" for t in self._background):
+            coro.close()
+            return
+        task = asyncio.create_task(coro, name="user_model:reembed")
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _reembed(self) -> None:
+        """Rebuild the insight index with the current embedding model (``VecTable.ensure`` sees the new model)."""
+        try:
+            [vec] = await self.app.llm.embed(["user model"])
+            await self.vec.ensure(len(vec), self._reindex, self.app.llm.model_for("embedding"))
+        except Exception as exc:
+            log.debug("re-embedding insights skipped: %s", exc)
+        self._vectors = None
 
     async def _ranked(self, text: str, limit: int = 100) -> tuple[list[dict], list[dict]]:
         """(confirmed insights, active insights ordered by relevance to ``text`` then confidence)."""
@@ -890,8 +946,11 @@ class UserModelService(Service):
         """Short markdown block for the system prompt (no model call). Empty when disabled or unknown."""
         return (await self.context_with_sources(text))[0]
 
-    async def context_with_sources(self, text: str) -> tuple[str, list[dict]]:
-        """``context_for`` plus the insights that made it into the block (public shape), for memory sources."""
+    async def context_with_sources(
+        self, text: str, leave_out: frozenset[str] | set[str] = frozenset()
+    ) -> tuple[str, list[dict]]:
+        """``context_for`` plus the insights that made it into the block (public shape), for memory sources.
+        ``leave_out``: dimensions a work or project chat doesn't get (#155, relationships)."""
         cfg = self.cfg
         if not cfg.enabled or cfg.context_max_chars <= 0:
             return "", []
@@ -908,6 +967,8 @@ class UserModelService(Service):
         shown: list[dict] = []
         used = len(header)
         for ins in [*confirmed, *active]:
+            if ins.get("dimension") in leave_out:
+                continue
             line = f"- {ins['statement']}" + (" (likely)" if not protected(ins) and ins["confidence"] < 0.6 else "")
             if used + len(line) + 1 > budget:
                 continue
@@ -917,8 +978,9 @@ class UserModelService(Service):
         return (header + "\n".join(lines), shown) if lines else ("", [])
 
     # ------------------------------------------------------------------ tool
-    async def ask(self, question: str) -> dict:
-        """Answer "what would the user want" from insights and facts with one model call."""
+    async def ask(self, question: str, scopes: list[str] | None = None) -> dict:
+        """Answer "what would the user want" from insights and facts with one model call. ``scopes``: the facts it
+        reads (a chat's memory scope plus always, #155); None reads every scope."""
         if not self.cfg.enabled:
             return {"error": "The user model is turned off in settings."}
         question = " ".join(str(question or "").split())
@@ -929,7 +991,7 @@ class UserModelService(Service):
         facts: list[str] = []
         if self.app.memory is not None:
             with contextlib.suppress(Exception):
-                facts = [f["content"] for f in await self.app.memory.recall(question, top_k=6)]
+                facts = [f["content"] for f in await self.app.memory.recall(question, top_k=6, scopes=scopes)]
         summary = await self.app.store.get_meta("user_model.summary") or ""
         name = self.user_name or "the user"
         if not insights and not facts and not summary:

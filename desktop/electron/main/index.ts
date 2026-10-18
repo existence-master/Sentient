@@ -13,9 +13,9 @@ import {
   session,
   shell
 } from 'electron'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   AppCommand,
   CaptureNotice,
@@ -25,10 +25,23 @@ import type {
   DictationStatus,
   NativeNotification,
   OpenPathTarget,
+  PickFilesOptions,
   ShellPrefs,
   ShortcutId
 } from '../../src/types/bridge'
 import notificationIcon from '../../resources/icon.png?asset'
+import {
+  answerPath,
+  answerProblem,
+  APPROVAL_BUTTONS,
+  approvalAnswer,
+  approvalNotificationId,
+  approvalRoute,
+  type ApprovalTarget,
+  answerBody,
+  cleanApproval
+} from './approval-notify'
+import { AskController } from './ask'
 import { BackendManager } from './backend'
 import { CH } from './channels'
 import { DictationController, dictationSettingsFromConfig } from './dictation'
@@ -56,6 +69,7 @@ let quitting = false
 let smokeRunner: SmokeRunner | null = null
 let engineStopped: boolean | undefined // §17 Stop everything, as the engine last reported it
 let dictation: DictationController | null = null // #169 push to talk and dictation into any app
+let ask: AskController | null = null // #173 ask about selected text
 const liveNotifications = new Set<Notification>()
 
 function showWindow(): void {
@@ -66,6 +80,12 @@ function showWindow(): void {
   if (win.isMinimized()) win.restore()
   if (!win.isVisible()) win.show()
   win.focus()
+}
+
+/** The window is on screen and has focus. Windows can report a minimized window as focused when nothing else took
+ *  focus, so minimized or hidden never counts (#323: a task's approval then shows as a notification). */
+function inFront(): boolean {
+  return !!win && !win.isDestroyed() && win.isVisible() && !win.isMinimized() && win.isFocused()
 }
 
 function sendCommand(cmd: AppCommand): void {
@@ -153,7 +173,10 @@ async function toggleProactivity(): Promise<void> {
 // ------------------------------------------------------------------ stop everything (§17)
 /** Stop or resume from the tray or the global shortcut. Works with the window hidden; never asks the model. */
 async function setStopped(stop: boolean, source: 'tray' | 'hotkey'): Promise<void> {
-  if (stop) dictation?.cancel() // the microphone goes off at once, before the engine answers
+  if (stop) {
+    dictation?.cancel() // the microphone goes off at once, before the engine answers
+    ask?.close()
+  }
   try {
     const state = await api<{ stopped: boolean; cancelled?: number }>(stop ? '/api/stop-all' : '/api/resume', {
       method: 'POST',
@@ -191,7 +214,10 @@ const desktopNode = new DesktopNode({
   },
   onStopState: (stopped) => {
     engineStopped = stopped
-    if (stopped) dictation?.cancel()
+    if (stopped) {
+      dictation?.cancel()
+      ask?.close()
+    }
     tray?.refresh()
   },
   notice: (kind) => {
@@ -289,6 +315,70 @@ function installSecurity(): void {
   })
 }
 
+// ------------------------------------------------------------------ approvals from a notification (#323)
+/** The approval notification of each waiting run. Kept after the toast closes, because Windows keeps it in the
+ *  notification center and its buttons still work from there; dropped once answered here or in the app. */
+const approvalNotes = new Map<string, Notification>()
+
+function showApprovalNotification(n: NativeNotification, target: ApprovalTarget): void {
+  approvalNotes.get(target.runId)?.close()
+  const note = new Notification({
+    id: approvalNotificationId(target.runId),
+    title: String(n.title || 'Sentient needs your OK'),
+    body: String(n.body ?? ''),
+    icon: notificationIcon,
+    timeoutType: 'never', // it waits with the task until someone answers
+    actions: APPROVAL_BUTTONS.map((text) => ({ type: 'button' as const, text }))
+  })
+  approvalNotes.set(target.runId, note)
+  const forget = () => {
+    if (approvalNotes.get(target.runId) === note) approvalNotes.delete(target.runId)
+  }
+  // a click on the notification itself (or a system without buttons): open the task, where the approval card waits
+  note.on('click', () => {
+    forget()
+    sendCommand({ type: 'navigate', route: approvalRoute(target) })
+  })
+  note.on('action', (details) => {
+    forget()
+    const answer = approvalAnswer(details.actionIndex, target.untrusted)
+    if (answer) void answerApproval(target, answer)
+    else sendCommand({ type: 'navigate', route: approvalRoute(target) })
+  })
+  // notifications turned off in the system settings: flash the taskbar button instead, until the window is focused
+  note.on('failed', () => {
+    forget()
+    if (win && !win.isDestroyed() && !inFront()) win.flashFrame(true)
+  })
+  note.show()
+}
+
+/** Answer the run the way the approval card does. A refused answer (expired, already answered) says why. */
+async function answerApproval(target: ApprovalTarget, answer: string): Promise<void> {
+  let problem: string | null = null
+  try {
+    // scoped to the request this notification showed: the engine refuses it when the run now waits on another one
+    const r = await fetch(`${backend.baseUrl}${answerPath(target)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${backend.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(answerBody(target, answer)),
+      signal: AbortSignal.timeout(10_000)
+    })
+    if (!r.ok) problem = answerProblem(r.status, await r.json().catch(() => null))
+  } catch {
+    problem = "Sentient isn't reachable right now. Open the task to answer there."
+  }
+  if (!problem || !Notification.isSupported()) return
+  const note = new Notification({ title: "Your answer didn't go through", body: problem, silent: true, icon: notificationIcon })
+  liveNotifications.add(note)
+  note.on('click', () => {
+    liveNotifications.delete(note)
+    sendCommand({ type: 'navigate', route: approvalRoute(target) })
+  })
+  note.on('close', () => liveNotifications.delete(note))
+  note.show()
+}
+
 // ------------------------------------------------------------------ IPC
 function registerIpc(): void {
   ipcMain.handle(CH.getConnection, () => ({ baseUrl: backend.baseUrl, token: backend.token }))
@@ -307,6 +397,11 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.showNotification, (_e, n: NativeNotification) => {
     if (!Notification.isSupported()) return
+    const approval = cleanApproval(n.approval)
+    if (approval) {
+      showApprovalNotification(n, approval)
+      return
+    }
     const note = new Notification({
       title: String(n.title ?? 'Sentient'),
       body: String(n.body ?? ''),
@@ -321,6 +416,12 @@ function registerIpc(): void {
     })
     note.on('close', () => liveNotifications.delete(note))
     note.show()
+  })
+  ipcMain.handle(CH.closeApprovalNotification, (_e, runId: string) => {
+    if (typeof runId !== 'string') return
+    const note = approvalNotes.get(runId)
+    approvalNotes.delete(runId)
+    note?.close()
   })
   ipcMain.handle(CH.setLaunchAtLogin, (_e, enabled: boolean) => {
     app.setLoginItemSettings({ openAtLogin: !!enabled, args: ['--hidden'] })
@@ -352,7 +453,7 @@ function registerIpc(): void {
   })
   ipcMain.handle(CH.winClose, () => win?.close())
   ipcMain.handle(CH.winIsMaximized, () => win?.isMaximized() ?? false)
-  ipcMain.handle(CH.isFocused, () => win?.isFocused() ?? false)
+  ipcMain.handle(CH.isFocused, () => inFront())
   ipcMain.handle(CH.getVersion, () => ({
     app: app.getVersion(),
     electron: process.versions.electron,
@@ -361,24 +462,90 @@ function registerIpc(): void {
     platform: process.platform,
     arch: process.arch
   }))
-  ipcMain.handle(CH.pickFiles, async (_e, options?: { multiple?: boolean; directory?: boolean }) => {
+  ipcMain.handle(CH.pickFiles, async (_e, options?: PickFilesOptions) => {
     const parent = win ?? undefined
     const props: Array<'openFile' | 'openDirectory' | 'multiSelections' | 'showHiddenFiles'> = options?.directory
       ? ['openDirectory', 'showHiddenFiles']
       : ['openFile']
     if (options?.multiple !== false) props.push('multiSelections')
+    const filters = Array.isArray(options?.filters)
+      ? options.filters
+          .filter((f) => typeof f?.name === 'string' && Array.isArray(f.extensions))
+          .map((f) => ({ name: f.name, extensions: f.extensions.filter((x) => typeof x === 'string' && /^[a-z0-9]{1,10}$/i.test(x)) }))
+      : undefined
     const result = parent
-      ? await dialog.showOpenDialog(parent, { properties: props })
-      : await dialog.showOpenDialog({ properties: props })
+      ? await dialog.showOpenDialog(parent, { properties: props, filters })
+      : await dialog.showOpenDialog({ properties: props, filters })
     return result.canceled ? [] : result.filePaths
   })
   ipcMain.on(CH.readyForScreenshot, () => smokeRunner?.ready())
+  ipcMain.handle(CH.showInFolder, async (_e, path: string) => {
+    if (typeof path !== 'string' || !path) return false
+    const target = resolve(path)
+    let isDir: boolean
+    try {
+      isDir = statSync(target).isDirectory()
+    } catch {
+      return false
+    }
+    // a folder opens in the file manager; only a Sentient backup file is selected in its folder; nothing is opened or run
+    if (isDir) return (await shell.openPath(target)) === ''
+    if (!/^sentient-(backup|snapshot)-[\w-]+\.zip$/i.test(basename(target))) return false
+    shell.showItemInFolder(target)
+    return true
+  })
   ipcMain.handle(CH.openFile, async (_e, name: string) => {
     if (typeof name !== 'string' || !name) return false
     const base = resolve(homePaths.files())
     const target = resolve(base, name)
     if (!target.startsWith(base + sep) || !existsSync(target)) return false
     return (await shell.openPath(target)) === ''
+  })
+  ipcMain.handle(CH.openFolderFile, async (_e, target: { path?: unknown; url?: unknown }) => {
+    // a note from a folder the user added (#176): only files really inside one of those folders (links followed),
+    // only note and document types, so a reply can never make the window open or run anything else
+    const path = typeof target?.path === 'string' ? target.path : ''
+    if (!path) return false
+    let folders: Array<{ path: string; name: string; kind: string }> = []
+    try {
+      folders = (await api<{ folders: Array<{ path: string; name: string; kind: string }> }>('/api/folders')).folders
+    } catch {
+      return false
+    }
+    let file: string
+    try {
+      file = realpathSync(resolve(path))
+    } catch {
+      return false
+    }
+    if (!/\.(md|markdown|txt|text|pdf|docx)$/i.test(file) || !statSync(file).isFile()) return false
+    let folder: (typeof folders)[number] | undefined
+    let rel = ''
+    for (const f of folders) {
+      let root: string
+      try {
+        root = realpathSync(resolve(f.path))
+      } catch {
+        continue
+      }
+      const r = relative(root, file)
+      if (r && !r.startsWith('..') && !isAbsolute(r)) {
+        folder = f
+        rel = r
+        break
+      }
+    }
+    if (!folder) return false
+    // in a vault, Obsidian opens it when installed; the link is built here from the checked file, never taken as given
+    const wantsObsidian = typeof target?.url === 'string' && target.url.startsWith('obsidian://')
+    if (wantsObsidian && folder.kind === 'obsidian' && app.getApplicationNameForProtocol('obsidian://')) {
+      const note = rel.split(sep).join('/').replace(/\.md$/i, '')
+      await shell.openExternal(`obsidian://open?vault=${encodeURIComponent(folder.name)}&file=${encodeURIComponent(note)}`)
+      return true
+    }
+    if ((await shell.openPath(file)) === '') return true
+    shell.showItemInFolder(file) // no app opens this kind of file here: show it in its folder instead
+    return true
   })
   ipcMain.handle(CH.getDevicePrivacy, () => devicePrivacy())
   ipcMain.handle(CH.setDevicePrivacy, (_e, patch: Partial<DevicePrivacy>) => {
@@ -407,6 +574,22 @@ function registerIpc(): void {
   ipcMain.handle(CH.dictationCancel, () => dictation?.cancel())
   ipcMain.handle(CH.dictationPermission, (_e, kind: 'microphone' | 'accessibility') => dictation?.openPermissionSettings(kind))
   ipcMain.on(CH.dictationEvent, (e, ev: DictationEvent) => dictation?.onPillEvent(e.sender.id, ev))
+  // #173 ask about selected text: only the ask window may use these
+  const fromAsk = (e: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => !!ask && ask.ownsWebContents(e.sender.id)
+  ipcMain.handle(CH.askGetState, (e) => (fromAsk(e) ? ask?.currentState() ?? null : null))
+  ipcMain.handle(CH.askCopy, (e, text: string) => (fromAsk(e) && typeof text === 'string' ? ask?.copy(text) : false))
+  ipcMain.handle(CH.askReplace, (e, text: string) =>
+    fromAsk(e) && typeof text === 'string' ? ask?.replace(text) ?? 'failed' : 'failed'
+  )
+  ipcMain.handle(CH.askClose, (e) => {
+    if (fromAsk(e)) ask?.hide()
+  })
+  ipcMain.handle(CH.askOpenChat, (e, sessionId: string) => {
+    if (fromAsk(e) && typeof sessionId === 'string' && /^[\w-]{1,80}$/.test(sessionId)) ask?.openChat(sessionId)
+  })
+  ipcMain.on(CH.askResize, (e, height: number) => {
+    if (fromAsk(e) && typeof height === 'number') ask?.resize(height)
+  })
 }
 
 const DICTATION_OFF: DictationStatus = { accessibility: null, microphone: null }
@@ -463,6 +646,12 @@ function boot(): void {
       micChanged: () => tray?.refresh()
     })
 
+    ask = new AskController({
+      shortcut: () => shortcuts.accelerator('askSelection'),
+      openChat: (sessionId) => sendCommand({ type: 'navigate', route: `/chat/${sessionId}` }),
+      notice: (text) => tray?.flash(text)
+    })
+
     shortcuts.registerFixed(NEW_CHAT_ACCELERATOR, () => sendCommand({ type: 'new-chat' }))
     // Stop only: resuming is always a deliberate click.
     shortcuts.registerFixed(STOP_ACCELERATOR, () => {
@@ -473,7 +662,8 @@ function boot(): void {
       shareRegion: () => void sharer.shareRegion(),
       // Called on every press and every autorepeat of a held key: the controller tells holding from pressing.
       pushToTalk: () => dictation?.trigger('talk'),
-      dictate: () => dictation?.trigger('dictate')
+      dictate: () => dictation?.trigger('dictate'),
+      askSelection: () => void ask?.trigger()
     })
   })
 
@@ -482,6 +672,7 @@ function boot(): void {
   app.on('before-quit', () => {
     quitting = true
     dictation?.dispose()
+    ask?.dispose()
     shortcuts.stopAll()
     desktopNode.stop()
     backend.stop()

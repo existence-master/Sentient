@@ -9,6 +9,8 @@ import { cn } from '@/lib/utils'
 import { schemaMatches } from './SchemaForm'
 import { SETTINGS_SECTIONS, sectionById } from './sections'
 import { AdvancedSection } from './sections/Advanced'
+import { BackupsSection } from './sections/Backups'
+import { FoldersSection } from './sections/Folders'
 import { GeneralSection } from './sections/General'
 import { ModelsSection } from './sections/Models'
 import { PersonalitySection } from './sections/Personality'
@@ -25,6 +27,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<SectionProps>> = {
   models: ModelsSection,
   personality: PersonalitySection,
   memory: MemorySection,
+  folders: FoldersSection,
   tasks: TasksSection,
   proactivity: ProactivitySection,
   voice: VoiceSection,
@@ -36,6 +39,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<SectionProps>> = {
   terminal: TerminalSection,
   browser: BrowserSection,
   subagents: SubagentsSection,
+  backups: BackupsSection,
   advanced: AdvancedSection
 }
 

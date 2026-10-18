@@ -62,6 +62,21 @@ export interface StopState {
   source: string | null
 }
 
+/** What the local model is doing (#149): `GET /api/models/busy`, live as `model.busy`. */
+export type ModelJobKind = 'chat' | 'interactive' | 'task' | 'suggestions' | 'memory' | 'skills' | 'titles' | 'background'
+export interface ModelBusy {
+  busy: boolean
+  job: ModelJobKind | null
+  model: string | null
+  since: ISODate | null
+  /** Jobs that go as soon as the model is free. */
+  waiting: number
+  /** Background jobs held back while you chat or on battery. */
+  deferred: number
+  /** #296: on battery only Sentient's own upkeep waits; `battery_low` at or below `battery_critical_percent`. */
+  deferred_reason: 'chat' | 'battery' | 'battery_low' | null
+}
+
 export interface StopResult extends StopState {
   /** How many running jobs were cancelled. */
   cancelled: number
@@ -98,6 +113,29 @@ export interface OkResponse {
   ok: boolean
 }
 
+/** §7 "Also forget what Sentient learned from it" (#153): how much a source taught, before and after forgetting it.
+ *  ``memories`` are deleted; ``shared`` memories another source also backs stay, without this one. */
+export interface ForgetCounts {
+  source: string
+  memories: number
+  shared: number
+  chats: number
+  messages: number
+  summaries: number
+  /** what its tools returned in chats, replaced by a short note */
+  results: number
+  /** emails or other items proactivity kept from it */
+  items: number
+  /** insights about the user inferred only from what goes */
+  insights: number
+  item_noun: 'emails' | 'items'
+}
+
+/** A disconnect or removal with ``?forget=true`` carries what was forgotten. */
+export interface Forgotten {
+  forgotten?: ForgetCounts
+}
+
 // ---------------------------------------------------------------------------- config (sentient/config/schema.py)
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high'
 
@@ -115,12 +153,35 @@ export interface ModelsConfig {
   context_length_per_role: Record<string, number>
   providers: Record<string, ProviderConfig>
   /** The user's own saved model setups (built-ins are not stored). */
-  presets: Record<string, Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'active'>>
+  presets: Record<
+    string,
+    Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'cloud' | 'blocked_by' | 'active'>
+  >
   active_preset: string | null
+  /** #148: no request goes to a model outside this computer (switched from the title bar model menu). */
+  local_only?: boolean
+  /** #148: most to spend on paid cloud models per month in US dollars; 0 means no budget. */
+  monthly_budget_usd?: number
+  /** #148: at 100%, `ask` pauses paid cloud models until Keep going, `stop` until next month or a bigger budget. */
+  budget_at_limit?: 'ask' | 'stop'
   /** Experimental: claude-code/<model> answers chats through the user's own Claude Code (ADR 0022). */
   experimental_claude_code?: boolean
+  /** Claude Code does everything, not just chats (ADR 0032); only counts with experimental_claude_code on. */
+  claude_code_everywhere?: boolean
+  /** Most Claude Code runs at once; more wait their turn, chats first. */
+  claude_code_max_concurrent?: number
   max_tool_rounds: number
   request_timeout_s: number
+  /** #149: one local model job at a time, chats first; background waits after a chat and on battery. */
+  local_queue?: boolean
+  background_quiet_s?: number
+  background_on_battery?: boolean
+  /** #296: how upkeep behaves on battery. Tasks always run on time. */
+  battery_min_percent?: number
+  battery_critical_percent?: number
+  battery_idle_s?: number
+  battery_upkeep_every_s?: number
+  battery_max_wait_s?: number
 }
 
 export interface GatewayConfig {
@@ -133,12 +194,21 @@ export interface ChatConfig {
   compress_after_messages: number
   show_thinking: boolean
   auto_title: boolean
+  /** Timers and reminders done at once, without the model (#150). */
+  quick_commands?: boolean
+  /** Incognito chats can use what Sentient already knows (#154). Nothing from them is remembered either way. */
+  incognito_uses_memory?: boolean
+  incognito_delete_after_minutes?: number
 }
 
 export type ApprovalMode = 'off' | 'ask' | 'always'
 
-/** Lasting rule for a tool or a whole app (ADR 0016). No entry means the normal approvals setting. */
-export type ApprovalRule = 'allow' | 'ask' | 'never'
+/**
+ * Lasting rule for a tool or a whole app (ADR 0016). No entry means the normal approvals setting. `if_asked` ("Only if
+ * I asked") runs without asking only when the user's own chat message asks for it; `hand_off` ("Hand it to me")
+ * prepares the action and hands it to the user, never doing it (#140).
+ */
+export type ApprovalRule = 'allow' | 'if_asked' | 'ask' | 'hand_off' | 'never'
 
 export interface ApprovalsConfig {
   mode: ApprovalMode
@@ -151,11 +221,32 @@ export interface ApprovalsConfig {
 }
 
 export interface RuleOrigin {
-  rule: 'ask' | 'never'
+  rule: ApprovalRule
   /** The user's own words, shortened. */
   said: string
   at: ISODate | ''
   session_id: string | null
+  /** `approval`: the user chose "Always allow" when Sentient asked (#139). Older engines leave it out (chat). */
+  source?: 'chat' | 'approval'
+  /** Where an "Always allow" answer was given: desktop, telegram, discord or whatsapp. */
+  via?: string | null
+}
+
+/** A live "Allow for this task" or "Allow for 1 hour" answer (#139, `GET /api/approvals/grants`). */
+export interface ApprovalGrant {
+  id: string
+  tool: string
+  /** Plain name, e.g. `"Write file" in Files`. */
+  label: string
+  app: string | null
+  scope: 'task' | 'timed'
+  task_id: string | null
+  task_name: string | null
+  risk: Risk
+  via: string
+  created_at: ISODate
+  /** Set for `timed` grants. */
+  expires_at: ISODate | null
 }
 
 /** One app or tool a rule proposal covers: `label` is "Gmail > Trash", or just "Gmail" for the whole app. */
@@ -172,7 +263,7 @@ export interface RuleProposal {
   session_id: string
   message_id: string | null
   said: string
-  rule: 'ask' | 'never'
+  rule: 'if_asked' | 'ask' | 'hand_off' | 'never'
   keys: string[]
   targets: RuleProposalTarget[]
   status: 'pending' | 'accepted' | 'declined'
@@ -224,6 +315,8 @@ export interface IntegrationsConfig {
   searxng_url: string
   weather_provider: 'open_meteo' | 'accuweather'
   mcp_servers: Record<string, McpServerConfig>
+  /** App ids set to Read only (#141). */
+  read_only?: string[]
   [key: string]: unknown
 }
 
@@ -352,6 +445,14 @@ export interface Session {
   channel: string
   created_at: ISODate
   updated_at: ISODate
+  /** Nothing is learned from it and it is deleted when closed (#154). */
+  incognito?: boolean
+  /** The model picked for this chat (#312); null or missing follows the default model. */
+  model?: string | null
+  /** The memories this chat uses and saves to (#155): "personal", "work" or a project's name. */
+  memory_scope?: string
+  /** Who or what wrote outside content this chat read ("Gmail"), "" when clean, null before its first turn (ADR 0018). */
+  untrusted?: string | null
   [key: string]: unknown
 }
 
@@ -361,7 +462,9 @@ export interface ToolCallRef {
   function: { name: string; arguments: string }
 }
 
-export type MessageRole = 'user' | 'assistant' | 'tool' | 'system'
+/** `other`: a message someone else wrote in a paired group chat (`name` = who); `event`: something the user did to
+ * the chat, e.g. trusting it again (`name: "trusted"`, content JSON `{event, was, via}`), ADR 0029. */
+export type MessageRole = 'user' | 'assistant' | 'tool' | 'system' | 'other' | 'event'
 
 /** Raw transcript row (`GET /api/sessions/{id}/messages`). */
 export interface TranscriptMessage {
@@ -376,7 +479,33 @@ export interface TranscriptMessage {
   attachments?: string[]
   /** Memories the final reply had in mind; `[]` on every other row. */
   memory_sources?: MemorySource[]
+  sources?: AnswerSource[]
+  /** What code found the final reply's calls really did (#165); `[]` on every other row. */
+  checks?: OutcomeCheck[]
   created_at: ISODate
+}
+
+/**
+ * §10 What code found one call really did, after it ran (#165): its result said it worked and, where the app can,
+ * the effect was read back (the file, the Sent folder, the event). Never decided by a model.
+ */
+export interface OutcomeCheck {
+  tool: string
+  /** The app it went through ("Gmail", or an MCP server's name). */
+  app: string
+  /** `email`, `message`, `file`, `event`, `home`, or null when only the result was read. */
+  kind: string | null
+  /** Short label once checked: "email sent", "file written". */
+  action: string
+  ok: boolean
+  /** Why it failed, in plain words; "" when it worked. */
+  detail: string
+  /** `read_back`: the effect was read back; `result`: only the call's own result was read. */
+  how: 'read_back' | 'result'
+  /** A later call did the same thing again and it worked, so this failure is settled. */
+  settled?: boolean
+  /** A failure that still stands, as the user reads it: "Sentient said it sent the email, but ...". */
+  message?: string
 }
 
 /**
@@ -393,6 +522,32 @@ export interface MemorySource {
   via: 'prompt' | 'tool'
 }
 
+/** Something a reply used (#174): a web page, an email, a file, or a connected app. Recorded from tool results. */
+export interface AnswerSource {
+  kind: 'web' | 'email' | 'file' | 'app'
+  title: string
+  /** Web page, or the email in its mail app. */
+  url?: string
+  /** File name under the files folder (`kind: 'file'`). */
+  file?: string
+  /** Full path of a note from a folder the user added (`kind: 'file'`, #176); `url` is then an obsidian:// link. */
+  path?: string
+  /** Name of that folder. */
+  folder?: string
+  /** Sender (`kind: 'email'`). */
+  from?: string
+  id?: string
+  /** A short excerpt of what Sentient read. */
+  snippet?: string
+  /** Plugin id and the tool that found it. */
+  app: string
+  tool: string
+  /** Every tool of that app the reply used (`kind: 'app'`). */
+  tools?: string[]
+  /** `prompt`: a piece of this note matched the message and went along with it (#354); absent: a tool read it. */
+  via?: 'prompt'
+}
+
 export interface MessageSearchHit {
   session_id: string
   message_id: string
@@ -407,9 +562,12 @@ export interface ChatRequest {
   attachments?: string[]
   model?: string
   channel?: string
+  /** Start a new incognito chat (#154); ignored with `session_id`. */
+  incognito?: boolean
 }
 
-export type ApprovalDecision = 'allow' | 'allow_session' | 'deny'
+/** How wide a yes is (#139): once, this chat, this task (task runs only), a while, or an Allow rule. */
+export type ApprovalDecision = 'allow' | 'allow_session' | 'allow_task' | 'allow_timed' | 'allow_always' | 'deny'
 
 // ---------------------------------------------------------------------------- files, tools, usage
 export interface UploadedFile {
@@ -448,10 +606,58 @@ export interface TokenCounts {
 }
 
 export interface UsageReport {
-  totals: TokenCounts
-  by_model: Array<TokenCounts & { model: string; calls: number }>
+  totals: TokenCounts & { cost_usd?: number }
+  by_model: Array<TokenCounts & { model: string; calls: number; cost_usd?: number | null }>
   by_source: Array<TokenCounts & { source: string; calls: number }>
   by_day: Array<TokenCounts & { day: string; calls?: number }>
+}
+
+/** How a model is paid for (#148): free on this computer, on the user's Claude or ChatGPT plan, or per token. */
+export type Billing = 'local' | 'plan' | 'paid'
+
+export interface CostRow extends TokenCounts {
+  calls: number
+  /** US dollars from priced calls; null when none of its calls had a known price (plan, local or unpriced). */
+  cost_usd: number | null
+  /** Paid calls whose price LiteLLM's list doesn't know. */
+  unpriced_calls: number
+}
+
+export interface CostPeriod {
+  key: 'today' | 'week' | 'month'
+  label: string
+  since: string
+  cost_usd: number
+  calls: number
+  tokens: number
+  paid_calls: number
+  unpriced_calls: number
+  plan_calls: number
+  plan_tokens: number
+  local_calls: number
+  local_tokens: number
+  by_model: Array<CostRow & { model: string; billing: Billing }>
+  by_role: Array<CostRow & { role: string; plan_calls: number; local_calls: number }>
+  /** Claude Code calls by the role that made them, most tokens first (#444). Missing from older engines. */
+  claude_code_by_role?: Array<{ role: string; calls: number; prompt_tokens: number; completion_tokens: number }>
+}
+
+export interface BudgetState {
+  monthly_usd: number
+  at_limit: 'ask' | 'stop'
+  spent_usd: number
+  month: string
+  percent: number | null
+  state: 'off' | 'ok' | 'warning' | 'reached'
+  kept_going: boolean
+  message: string | null
+}
+
+/** `GET /api/usage/cost` (#148). */
+export interface CostReport {
+  local_only: boolean
+  periods: CostPeriod[]
+  budget: BudgetState
 }
 
 // ============================================================================ §3 Models & secrets
@@ -499,6 +705,8 @@ export interface ChatGPTStatus {
   signed_in: boolean
   email: string | null
   manage_usage_url: string
+  /** True while the one-time "You're using your ChatGPT plan" message is still to be shown. */
+  welcome: boolean
 }
 
 /** `GET /api/models/connect/{openrouter|chatgpt}/{state}`. */
@@ -531,6 +739,16 @@ export interface ClaudeCodeStatus {
   version: string | null
   detail: string
   models: string[]
+  /** The quick-jobs model when Claude Code does everything (claude-code/haiku). */
+  fast_model?: string
+  /** Claude Code does everything, not just chats (`models.claude_code_everywhere`, ADR 0032). Missing from older engines. */
+  everywhere?: boolean
+  /** The roles that may use a Claude Code model (#442, #444). Missing from older engines. */
+  roles?: RoleName[]
+  /** Most Claude Code runs at once, and how many run and wait now. */
+  max_concurrent?: number
+  running?: number
+  waiting?: number
 }
 
 export interface ModelTestResult {
@@ -545,9 +763,13 @@ export interface ModelTestResult {
 export interface ModelPreset {
   name: string
   builtin: boolean
-  /** False for Cloud and Mixed until a cloud key is set; `reason` says why. */
+  /** False for Cloud and Mixed until a cloud key is set, or while Local only blocks it; `reason` says why. */
   available: boolean
   reason: string | null
+  /** #335: the preset sets a model outside this computer. */
+  cloud: boolean
+  /** #335: `local_only` when Local only is on and this preset uses cloud models. */
+  blocked_by: 'local_only' | null
   /** The cloud provider a built-in uses. */
   provider: string | null
   description: string | null
@@ -586,6 +808,8 @@ export interface PresetApplyResult {
   changed: { role: RoleName; from: string | null; to: string | null }[]
   missing: PresetMissing[]
   can_undo: boolean
+  /** Local only after the switch (#335: applying Local only can turn it on, and undo puts it back). */
+  local_only: boolean
 }
 
 /** `POST /api/models/checkup` (docs/API.md §3). */
@@ -637,6 +861,8 @@ export interface HardwareRecommendation {
   /** "qwen3:8b, reading 8,192 tokens at a time" */
   summary: string
   note: string
+  /** Memory search model for Hindi and other languages besides English (#339); null when a cloud model comes first. */
+  multilingual_embedding?: { model: string; name: string; size: string; note: string } | null
 }
 
 export interface Hardware {
@@ -723,6 +949,8 @@ export interface ToolResultEvent extends TurnScoped {
   result: unknown
   is_error: boolean
   duration_ms: number | null
+  /** What code found the call really did (#165); absent for calls that aren't checked. */
+  check?: OutcomeCheck | null
 }
 export interface ApprovalRequestEvent extends TurnScoped {
   type: 'approval_request'
@@ -738,6 +966,55 @@ export interface ApprovalRequestEvent extends TurnScoped {
   target?: string | null
   /** Why this asks although rules would let it run: the chat read outside content (ADR 0018). */
   untrusted?: string | null
+  /** What a second look found off about this call (#143), e.g. "You asked to email Arjun, but this goes to ...". */
+  warning?: string | null
+  /** The answers offered, in order (#139). Older engines leave it out: allow, allow_session, deny. */
+  choices?: ApprovalDecision[] | null
+  /** How long `allow_timed` lasts, in minutes. */
+  grant_minutes?: number | null
+  /** What will be sent or changed, the way a person reads it (#142). */
+  preview?: ActionPreview | null
+}
+/** §10 A human-readable preview of an outgoing action (#142): an email's recipients, subject and text. */
+export interface ActionPreview {
+  kind: 'email' | 'message' | 'post' | 'delete' | 'trash' | 'purchase' | 'action' | string
+  title: string
+  fields: Array<{ label: string; value: string }>
+  body?: string | null
+  app?: string | null
+}
+/**
+ * §10 The `tool_result` of a call a "Hand it to me" rule handed to the user instead of running (#140). It is not an
+ * error: Sentient prepared it and the user takes the last step.
+ */
+export interface HandOff {
+  handed_off: true
+  message: string
+  /** Plain name of what it was, e.g. `"Send email" in Gmail`. */
+  label: string
+  title: string
+  preview: ActionPreview | null
+  /** Plain details when nothing in the call reads like an email or message (a command, a click). */
+  details?: Array<{ label: string; value: string }>
+}
+/** §10 An email, message or post waiting `seconds` before it goes, so it can still be undone (#142). */
+export interface UndoWindowEvent extends TurnScoped {
+  type: 'undo_window'
+  undo_id: string
+  call_id: string
+  name: string
+  seconds: number
+  /** ISO time the window ends. */
+  until: string
+  preview?: ActionPreview | null
+}
+export type UndoAction = 'undo' | 'send_now'
+/** Reply to `undo.respond`: `done` false means the window had already ended. */
+export interface UndoAckEvent {
+  type: 'undo.ack'
+  undo_id: string
+  action: UndoAction
+  done: boolean
 }
 export interface UsageEvent extends TurnScoped {
   type: 'usage'
@@ -763,16 +1040,33 @@ export interface ErrorEvent extends TurnScoped {
   type: 'error'
   message: string
   recoverable?: boolean
+  /** #148: `local_only` (Local only kept a cloud model from being used) or `budget_reached` (monthly budget used up). */
+  code?: 'local_only' | 'budget_reached' | string | null
   /** §17: a queued message was dropped by Stop everything (echoes the `client_id` it was sent with). */
   dropped?: boolean
   client_id?: string | null
+}
+/** §10 A plain note about this reply that is not an error, sent once before it (#312). */
+export interface NoticeEvent extends TurnScoped {
+  type: 'notice'
+  message: string
+  /** `model_fallback`: the chat's own model couldn't answer, so the default answered. */
+  code?: string
+  /** The chat's model that couldn't answer, and the one that answered instead. */
+  model?: string | null
+  used?: string | null
 }
 export interface DoneEvent extends TurnScoped {
   type: 'done'
   content: string
   message_id: string | null
   cancelled?: boolean
+  /** §1: the turn ended in an error before any reply (the `error` event before it has the message). Nothing was saved. */
+  error?: string | null
   memory_sources?: MemorySource[]
+  sources?: AnswerSource[]
+  /** What code found this reply's calls really did (#165). */
+  checks?: OutcomeCheck[]
   /** §17: a queued message dropped by Stop everything (its text; never sent). Comes with the `client_id` it was sent with. */
   dropped?: string[]
   client_id?: string | null
@@ -819,10 +1113,13 @@ export type ChatEvent =
   | ToolResultEvent
   | ToolProgressEvent
   | ApprovalRequestEvent
+  | UndoWindowEvent
   | UsageEvent
   | ErrorEvent
+  | NoticeEvent
   | DoneEvent
   | ApprovalAckEvent
+  | UndoAckEvent
   | PongEvent
   | SteerAckEvent
   | UserInterjectionEvent
@@ -830,7 +1127,7 @@ export type ChatEvent =
 export type ChatEventType = ChatEvent['type']
 
 /** Turn-scoped events as produced by `POST /api/chat` and the voice socket. */
-export type AgentEvent = Exclude<ChatEvent, HelloEvent | ApprovalAckEvent | PongEvent | SteerAckEvent>
+export type AgentEvent = Exclude<ChatEvent, HelloEvent | ApprovalAckEvent | UndoAckEvent | PongEvent | SteerAckEvent>
 
 export interface MemoryUpdatedData {
   action: 'ADD' | 'UPDATE' | 'DELETE'
@@ -838,16 +1135,29 @@ export interface MemoryUpdatedData {
   id: number | null
   content?: string
   source?: string
-  /** `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired` */
+  /**
+   * `merged` | `contradicted` | `promoted` | `expired` | `approved` | `discarded` | `review_expired` | `moved` |
+   * `scope_reset` (#155), or
+   * `instruction` on a held memory that reads like an instruction for how Sentient should act (#234)
+   */
   reason?: string
   count?: number
   /** `pending`: the memory waits in the review inbox (ADR 0021). */
   status?: 'pending'
+  /** The memory's scope (#155) on a save: where it was kept. With `reason: "moved"`, where it moved to (`previous_scope`
+   * is where it was); with `reason: "scope_reset"`, the scope that was forgotten. */
+  scope?: string
+  previous_scope?: string
+  /** An UPDATE's words before it, so the save can be undone (#234). */
+  previous?: string
+  /** The chat it was learned in; that chat shows "Remembered: ... Undo" (#234). */
+  session_id?: string
 }
 
 export interface DomainEventMap {
   'task.updated': Task
   'task.deleted': { task_id: string }
+  'tasks.away': AwayStatus
   'task.run_progress': { task_id: string; run_id: string; update: ProgressUpdate }
   'task.run_activity': { task_id: string; run_id: string; last_activity_at: ISODate }
   'task.run_context': { task_id: string; run_id: string; used: number | null; length: number | null; percent: number | null; warning: string | null }
@@ -857,10 +1167,23 @@ export interface DomainEventMap {
   'notification.deleted': { id: string | null }
   'integration.updated': Integration
   'memory.updated': MemoryUpdatedData
+  /** "Also forget what Sentient learned from it" ran for a source (#153). */
+  'memory.forgotten': { id: string; source: string; label: string; counts: Omit<ForgetCounts, 'source'>; at: string }
   'skill.updated': { name: string; state: SkillState }
-  'session.updated': { session_id: string; title: string }
+  /** A server's tools wait for review, or the user answered (#146). */
+  'mcp.review': { server: string; reason?: 'new' | 'changed'; tools?: string[]; needed: boolean }
+  /** Only the fields that changed are sent: a rename (`title`) or the chat's own model (`model`, null = default). */
+  'session.updated': { session_id: string; title?: string; model?: string | null; untrusted?: string }
+  /** A chat was deleted: by the user, or an incognito chat that was closed or left idle (#154). */
+  'session.deleted': { session_id: string; reason?: 'incognito' }
   'rule_proposal.updated': RuleProposal
+  /** A task or timed grant was added, revoked or ran out (#139); refetch the list. */
+  'approval_grants.updated': { count: number }
+  /** Whether anyone is looking at the window now (#139). */
+  'presence.changed': { in_app: boolean }
   'config.updated': { sections: string[] }
+  /** #148: the monthly budget crossed 80% or 100%, or the user chose Keep going. */
+  'budget.updated': BudgetState
   'voice.state': { state: VoiceState }
   // §10-14
   'subagent.updated': Subagent
@@ -871,12 +1194,22 @@ export interface DomainEventMap {
   'node.event': { node_id: string; event: string; data: Record<string, unknown> }
   'channel.updated': Channel
   'channel.message': ChannelMessage
+  'channel.delivery': ChannelDelivery
   // §15-16
   'user_model.updated': UserModelUpdatedData
   'dream.updated': Dream
   'source.items': SourceItemsData
   // §17
   'stop.updated': StopState
+  // #149
+  'model.busy': ModelBusy
+  // §20
+  'backup.updated': BackupUpdated
+  // §22
+  'folders.updated': FoldersUpdated
+  // §23
+  'reminder.updated': Reminder
+  'import.updated': MemoryImportJob
 }
 
 export type DomainEventType = keyof DomainEventMap
@@ -897,10 +1230,16 @@ export type ClientMessage =
       model?: string
       client_id?: string
       channel?: string
+      /** Start a new incognito chat (#154); ignored with `session_id`. */
+      incognito?: boolean
     }
   | { type: 'chat.cancel'; session_id: string }
   | { type: 'chat.steer'; session_id: string; text: string }
   | { type: 'approval.respond'; approval_id: string; decision: ApprovalDecision }
+  /** §10 Undo, or send now, a send waiting in its undo window (#142). */
+  | { type: 'undo.respond'; undo_id: string; action: UndoAction }
+  /** The window is focused and visible, or not (#139): approval requests go to a paired chat only while it isn't. */
+  | { type: 'presence'; active: boolean }
   | { type: 'ping' }
 
 // ============================================================================ §10 Subagents
@@ -911,6 +1250,8 @@ export interface Subagent {
   session_id: string | null
   parent_call_id: string | null
   goal: string
+  /** `reader`: the tool-less reader behind `read_with_reader` (#144); it never makes tool calls. */
+  kind?: 'worker' | 'reader'
   status: SubagentStatus
   background: boolean
   summary: string | null
@@ -1122,6 +1463,9 @@ export interface PairedChat {
   paired_at: ISODate
   deliver: boolean
   session_id: string | null
+  /** A group chat: only its owner (who paired it) talks to Sentient there (ADR 0029). */
+  is_group?: boolean
+  owner_id?: string | null
 }
 
 export interface Channel {
@@ -1148,6 +1492,16 @@ export interface ChannelMessage {
   session_id: string
   direction: 'in' | 'out'
   text: string
+}
+
+/** A notification sent to a paired chat (or that couldn't be), as the Activity screen lists it. */
+export interface ChannelDelivery {
+  id: string
+  channel: string
+  chat_id: string
+  title: string
+  status: 'delivered' | 'failed'
+  ref: TimelineRef | null
 }
 
 // ============================================================================ §4 Tasks
@@ -1185,12 +1539,15 @@ export interface RecurringSchedule {
   days?: Weekday[] | string[]
   time: string
   interval_minutes?: number
+  /** Daily/weekly only: run at some time in this part of the day instead of at `time` (§4 "Fuzzy windows"). */
+  window?: ScheduleWindow
   timezone?: string
   catch_up?: CatchUpPolicy
 }
+export type ScheduleWindow = 'morning' | 'afternoon' | 'evening' | 'night'
 
 // §16 script jobs
-export type ScriptCondition = 'changed' | 'alert' | 'every_run'
+export type ScriptCondition = 'changed' | 'noteworthy' | 'alert' | 'every_run'
 export type ScriptThen = 'notify' | 'run'
 
 export interface TaskScript {
@@ -1200,6 +1557,17 @@ export interface TaskScript {
   last_result: unknown
   last_run_at: ISODate | null
   last_error: string | null
+  /** Recent checks, oldest first (§16). Older engines leave it out. */
+  checks?: ScriptCheck[] | null
+}
+export type ScriptCheckOutcome = 'baseline' | 'nothing_new' | 'changed' | 'minor' | 'alert' | 'quiet' | 'reported' | 'failed' | 'skipped'
+export interface ScriptCheck {
+  at: ISODate
+  outcome: ScriptCheckOutcome
+  note?: string
+  /** A row of the same quiet outcome folds into one entry. */
+  count?: number
+  last_at?: ISODate
 }
 export interface TriggeredSchedule {
   type: 'triggered'
@@ -1225,6 +1593,8 @@ export interface ProgressUpdate {
     parameters?: Record<string, unknown>
     result?: unknown
     is_error?: boolean
+    /** `tool_result` only: what code found the call really did (#165). */
+    check?: OutcomeCheck
   }
 }
 
@@ -1241,7 +1611,8 @@ export interface TaskRunResult {
   tools_used: string[]
 }
 
-export type RunStatus = 'processing' | 'waiting_for_user' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled'
+/** `skipped` (#161): a routine's run that didn't start because what it reads wasn't there (`error` says why). */
+export type RunStatus = 'processing' | 'waiting_for_user' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled' | 'skipped'
 
 /** The question a `waiting_for_user` run asked (§4). Answer with `POST /api/tasks/{id}/runs/{run_id}/answer`. */
 export interface RunQuestion {
@@ -1249,9 +1620,14 @@ export interface RunQuestion {
   /** Suggested answers (0 to 6). A free-text answer is always allowed. */
   options: string[]
   asked_at: ISODate | null
-  /** `stuck`: the run stopped getting anywhere and asks what to do (`reason` says why); `limit`: it reached a limit. */
-  kind?: 'question' | 'limit' | 'stuck'
+  /** `stuck`: the run stopped getting anywhere and asks what to do (`reason` says why); `limit`: it reached a limit;
+   * `approval`: it holds a call until you allow it (a tool set to Ask, or sending after outside content, #139). */
+  kind?: 'question' | 'limit' | 'stuck' | 'approval'
   reason?: string | null
+  /** Approvals only: after this a late answer can't approve it. */
+  expires_at?: ISODate | null
+  /** Approvals only (#142): what the held call would send, the way a person reads it. */
+  preview?: ActionPreview | null
 }
 
 export interface Run {
@@ -1275,6 +1651,34 @@ export interface Run {
   context?: ContextMeter | null
   /** Memories the run had in mind: facts in its instructions or found by a memory look-up (docs/API.md §4). */
   memory_sources?: MemorySource[]
+  /** Pages, emails, files and apps the run used (#291), like a chat reply's sources. Older engines leave it out. */
+  sources?: AnswerSource[]
+  /** A try run ("Try it first", #142): it only noted what it would send, change or run. */
+  dry_run?: boolean
+  /** Try runs only: what a real run would do, in order. */
+  would_do?: TryRunAction[]
+  /** What code found the run's calls really did (#165). A failure that still stands makes it `completed_with_errors`. */
+  checks?: OutcomeCheck[]
+  /** A skipped run set to try again later (#161): when it does. */
+  retry_at?: ISODate | null
+}
+
+/** One call a try run noted instead of making (#142). Built by the engine from the call itself. */
+export interface TryRunAction {
+  tool: string
+  plugin?: string
+  app: string | null
+  /** The tool's plain name ("Send email"). */
+  title: string
+  kind: 'email' | 'message' | 'post' | 'delete' | 'trash' | 'purchase' | 'run' | 'change' | string
+  risk: string
+  preview: ActionPreview | null
+  arguments: Record<string, unknown>
+  /** A real run would stop and ask you first (a tool set to Ask, a purchase, sending after outside content). */
+  asks: boolean
+  at: ISODate | null
+  /** One plain line: "Send an email in Gmail: To sam@example.com". */
+  summary: string
 }
 
 export interface TaskChatMessage {
@@ -1324,11 +1728,19 @@ export interface Task {
   /** `null` for single tasks. */
   swarm_details: SwarmDetails | null
   enabled: boolean
+  /** Never paused while you are away (#163). Older engines leave it out (false). */
+  keep_running?: boolean
   model: string | null
   /** Named browser profile its browser steps use (§12); `null` is the default one. */
   browser_profile?: string | null
+  /** The memories its runs use and save to (#155): "personal", "work" or a project's name. */
+  memory_scope?: string
   /** Where its notifications go besides the app (§4 "Where results go"). Older engines leave it out (default). */
   deliver_to?: TaskDeliverTo
+  /** Recurring tasks: short notes its runs keep for the next run (§4 "Recurring tasks remember"). */
+  notepad?: string | null
+  /** Routines: the setup checklist (§4 "Setup checklist", #161). `null` for other tasks; older engines leave it out. */
+  setup?: TaskSetup | null
   original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
@@ -1338,12 +1750,48 @@ export interface Task {
   updated_at: ISODate
 }
 
+/** What a routine reads (#161): a web page, a connected app, a folder, or nothing to check first. */
+export interface TaskSource {
+  kind: 'page' | 'app' | 'folder' | 'none'
+  /** The web address, app id or folder path; empty for `none`. */
+  target: string
+  /** How to show it: "example.com/events", "Gmail". */
+  label: string
+}
+
+/** What to do when what a routine reads isn't there: skip quietly, skip and tell me, or try again a little later. */
+export type MissingSourcePolicy = 'skip' | 'notify' | 'retry'
+
+/** A routine's setup checklist (§4 "Setup checklist", #161), filled in from its plan for the user to confirm. */
+export interface TaskSetup {
+  source: TaskSource
+  /** What the user gets each time. */
+  output: string
+  /** `plan`: goes ahead with what the plan does. `ask`: asks before it sends, posts, buys, deletes or runs anything. */
+  approval: 'plan' | 'ask'
+  /** The plan's apps that can send or change things, which `plan` lets it use. */
+  acts: string[]
+  if_missing: MissingSourcePolicy
+  confirmed_at: ISODate | null
+}
+
+/** `PATCH /api/tasks/{id}` `{setup}`: answers to merge in; `confirm: true` marks the checklist confirmed. */
+export interface TaskSetupAnswers {
+  source?: { kind: TaskSource['kind']; target?: string }
+  output?: string
+  approval?: TaskSetup['approval']
+  if_missing?: MissingSourcePolicy
+  confirm?: boolean
+}
+
 export interface TaskCreateRequest {
   prompt: string
   is_swarm?: boolean
   assignee?: 'ai'
   model?: string
   browser_profile?: string
+  /** The memories its runs use (#155); personal when left out. */
+  memory_scope?: string
 }
 
 export interface TaskPreview {
@@ -1372,7 +1820,27 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'deliver_to'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'memory_scope' | 'deliver_to' | 'notepad' | 'keep_running'>> & {
+  /** Routines (#161): answers to the setup checklist, merged in by the engine. */
+  setup?: TaskSetupAnswers
+}
+
+/** `GET /api/tasks/away` (#163): routines pause after a long absence and resume with one click. */
+export interface AwayStatus {
+  state: 'active' | 'asked' | 'paused'
+  last_active_at: ISODate | null
+  /** When the question was asked (`asked`) or the routines were paused (`paused`). */
+  since: ISODate | null
+  reason: 'days' | 'results' | null
+  /** `paused`: the tasks paused for absence. */
+  task_ids: string[]
+  notification_id: string | null
+  /** `asked`: when they pause if you don't come back. */
+  pause_at?: ISODate
+  away_pause_days: number
+  away_pause_after_results: number
+  away_ask_hours: number
+}
 
 export interface ClarificationAnswer {
   question_id: string
@@ -1380,7 +1848,7 @@ export interface ClarificationAnswer {
 }
 
 // ============================================================================ §5 Integrations
-export type IntegrationCategory = 'productivity' | 'communication' | 'knowledge' | 'development' | 'utilities' | 'core'
+export type IntegrationCategory = 'productivity' | 'communication' | 'knowledge' | 'development' | 'home' | 'utilities' | 'core'
 export type IntegrationAuthType = 'builtin' | 'oauth' | 'api_key' | 'manual' | 'mcp'
 export type IntegrationStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -1411,8 +1879,37 @@ export interface Integration {
    * (`accuweather` -> `weather`, `brave_search` -> `internet_search`...). These have no tools.
    */
   alternative_for: string | null
+  /** Read only (`read`) or Read and write (`read_write`, the default). Older engines leave it out. */
+  access?: ConnectionAccess
+  /** #175: the integration has devices to choose from (Home Assistant). Older engines leave it out. */
+  entity_picker?: boolean
   tools: ToolInfo[]
 }
+
+/** #175: one device (entity) of an integration with an entity picker. */
+export interface IntegrationEntity {
+  entity_id: string
+  name: string
+  /** light, switch, climate, lock, cover, sensor... */
+  domain: string
+  area: string
+  state: string | null
+  /** Sentient may see and use it. */
+  allowed: boolean
+}
+
+/** #175: every device, or only the picked ones. */
+export interface EntityChoice {
+  mode: 'all' | 'picked'
+  picked: string[]
+}
+
+export interface IntegrationEntities extends EntityChoice {
+  entities: IntegrationEntity[]
+}
+
+/** #141: a Read only connection hides and refuses its tools that change, send, delete or run something. */
+export type ConnectionAccess = 'read' | 'read_write'
 
 /**
  * `connect` result for OAuth (`{auth_url, state}`) and GitHub device flow (`+ user_code`).
@@ -1446,6 +1943,29 @@ export interface McpToolInfo {
   mcp_name: string
   description: string
   risk: Risk
+  /** The risk is decided per call from the tools it runs (Composio's multi-execute). Older engines leave it out. */
+  per_call?: boolean
+}
+
+/** One tool in a server's safety check (#146). */
+export interface McpToolReview extends McpToolInfo {
+  /** `new` and `changed` tools are not offered until the user decides. */
+  status: 'approved' | 'declined' | 'new' | 'changed'
+  level: VetVerdict
+  findings: SkillLintFinding[]
+  suggested: 'approve' | 'decline'
+  /** `changed` only: the description the user approved before, and that answer. */
+  previous_description?: string
+  previous_decision?: 'approved' | 'declined'
+}
+
+export interface McpReview {
+  /** Some tools wait for the user's answer. */
+  needed: boolean
+  reason: 'new' | 'changed' | null
+  verdict: VetVerdict
+  tools: McpToolReview[]
+  scanner: string
 }
 
 export type McpServerStatus = 'connecting' | 'connected' | 'needs_sign_in' | 'error' | 'disconnected' | 'disabled'
@@ -1471,8 +1991,13 @@ export interface McpServer {
   /** A browser sign-in is waiting for the user. */
   signing_in: boolean
   enabled: boolean
+  /** Read only or Read and write. Older engines leave it out. */
+  access?: ConnectionAccess
   status: McpServerStatus | string
+  /** Only the tools Sentient offers (approved, unchanged). */
   tools: McpToolInfo[]
+  /** The safety check of every tool the server listed when it last connected; null before it connects. */
+  review?: McpReview | null
   error: string | null
 }
 
@@ -1486,6 +2011,7 @@ export interface McpServerCreate {
   headers?: Record<string, string>
   auth?: McpAuth
   enabled?: boolean
+  access?: ConnectionAccess
 }
 
 /** `POST /api/integrations/mcp/{name}/sign-in`: open `auth_url` in the browser. */
@@ -1502,7 +2028,7 @@ export interface McpTestResult {
 }
 
 // ============================================================================ §6 Notifications & proactivity
-export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief'
+export type NotificationKind = 'info' | 'task' | 'approval' | 'proactive' | 'skill' | 'error' | 'brief' | 'reminder'
 
 /** Daily Brief (docs/API.md section 6). */
 export type BriefKind = 'morning' | 'evening'
@@ -1690,6 +2216,55 @@ export interface Memory {
   /** Listed memories are always `active`; `pending` ones are only in the review inbox. */
   status?: 'active' | 'pending'
   review?: ReviewNote | null
+  /** Where it is kept (#155): "personal" (default), "work", "always" (every chat) or a project's name. */
+  scope?: string
+  /** #152: how sure Sentient is (0..1), from where it came and how often it was learned again. */
+  confidence?: number
+  /** #152: only `current` memories go into chats and tasks. */
+  state?: MemoryState
+  /** The memory that replaced it (state `superseded`). */
+  superseded_by?: number | null
+  /** Its words, on `GET /api/memories/{id}` of a superseded memory. */
+  superseded_by_content?: string | null
+  /** Exactly where its own source said it. */
+  ref?: MemorySourceRef | null
+  /** Every source, its own first (#152). */
+  sources?: MemorySourceLink[]
+}
+
+export type MemoryState = 'current' | 'disputed' | 'superseded'
+
+/** Exactly where a source said a memory (#152): a chat message, an email or app result, a note, a file. */
+export interface MemorySourceRef {
+  kind?: 'message' | 'email' | 'app' | 'note' | 'file' | string
+  session_id?: string
+  message_id?: string
+  quote?: string | null
+  title?: string
+  url?: string
+  id?: string
+  app?: string
+  path?: string
+  folder_id?: string
+  file?: string
+}
+
+export interface MemorySourceLink {
+  source: string
+  ref: MemorySourceRef | null
+  at: string
+  /** its own source (the first one) */
+  own: boolean
+}
+
+/** One memory scope (#155) from `GET /api/memories/scopes`. */
+export interface MemoryScope {
+  name: string
+  label: string
+  /** Active memories kept there. */
+  count: number
+  /** Always, Personal and Work; projects are the user's own. */
+  built_in: boolean
 }
 
 /** Where a memory waiting for review came from (ADR 0021). */
@@ -1709,21 +2284,46 @@ export interface MemoryReviewItem {
   from: string
   snippet: string | null
   session_id: string | null
+  /** An import from another assistant: the conversation, note or file it was in, its day and the export's name. */
+  title?: string | null
+  dated?: string | null
+  export?: string | null
+  /** `instruction`: it reads like an instruction for how Sentient should act, so it waits even from a clean chat (#234). */
+  reason?: string | null
   created_at: ISODate
   /** When it is let go if nobody reviews it. */
   expires_at: ISODate | null
+  /** A fact's memory scope (#155): it is approved into it. Null for insights. */
+  scope?: string | null
 }
 
 export interface MemoryReviewInbox {
   items: MemoryReviewItem[]
   count: number
   expire_days: number
+  /** Review history (#353): memories the nightly tidy-up merged into another one, newest first. Not in `count`. */
+  merged?: MergedMemory[]
+}
+
+/** A memory the nightly tidy-up merged into another one because they said the same thing in two languages (#353). */
+export interface MergedMemory {
+  id: number
+  text: string
+  source: string
+  merged_at: ISODate
+  /** Who merged it, in plain words ("nightly tidying"). */
+  by: string
+  /** The memory that stayed; null when it was deleted since. */
+  merged_into: { id: number; text: string } | null
 }
 
 export interface MemoryQuery {
   topic?: string
   q?: string
   source?: string
+  scope?: string
+  /** None: current and disputed; `all` adds superseded ones (#152). */
+  state?: MemoryState | 'all'
   limit?: number
   offset?: number
 }
@@ -1820,6 +2420,80 @@ export interface Skill {
   reason?: string | null
   origin?: { session_id?: string; task_id?: string; run_id?: string; curator?: boolean; merged_from?: string } | null
   proposed_at?: string | null
+  /** Active skills: the file differs from the version Sentient last wrote (edited in Skills or any editor).
+   * Pending proposals: the skill it would replace was edited by the user. */
+  user_edited?: boolean
+  /** Active skills: `POST /api/skills/{name}/reset` can put the original back. */
+  can_reset?: boolean
+  /** Pending proposals: the active skill changed after this was drafted, so approving undoes those changes. */
+  changed_since_proposal?: boolean
+  /** What the skill linter found (#164). */
+  lint?: SkillLintFinding[]
+  /** Skills from outside (a link or Hermes): the safety check, run again on the files as they are now (#146). */
+  vetting?: SkillVetting | null
+  /** How to check the skill works, from its `validate` header (#386). */
+  validate?: SkillCheck[]
+  /** The last run of those checks, or null when it declares none or they haven't run. */
+  check?: SkillCheckReport | null
+}
+
+/** One check in a skill's `validate` header: a file that must exist, or Python run in the code sandbox. */
+export interface SkillCheck {
+  file?: string
+  run?: string
+  /** Text the file or the output must contain. */
+  expect?: string
+  timeout_s?: number
+}
+
+/** `waiting`: a code check runs when the user approves. `not_run`: it can't run here (the detail says why). */
+export interface SkillCheckReport {
+  status: 'passed' | 'failed' | 'waiting' | 'not_run'
+  results: { kind: 'file' | 'run'; target: string; ok: boolean | null; detail: string }[]
+  checked_at: string
+}
+
+export interface SkillLintFinding {
+  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | 'validate' | string
+  level: 'error' | 'warning'
+  message: string
+}
+
+/** `high`: we suggest declining; approving needs "approve anyway". `check`: notes to read. `clear`: nothing found. */
+export type VetVerdict = 'high' | 'check' | 'clear'
+
+export interface SkillVetFinding extends SkillLintFinding {
+  /** `SKILL.md` or another file in the skill's folder. */
+  file?: string
+}
+
+export interface SkillVetting {
+  verdict: VetVerdict
+  /** One plain sentence for the top of the report. */
+  summary: string
+  findings: SkillVetFinding[]
+  /** Every file the skill brings, relative to its folder. */
+  files: string[]
+  /** Scripts or programs among them. */
+  programs: string[]
+  hash: string
+  scanner: string
+  source: 'link' | 'hermes' | string | null
+  /** The web address or Hermes folder it came from. */
+  origin: string | null
+  imported_at?: ISODate
+  decision?: 'approved' | null
+  changed_since_import?: boolean
+  /** Approved, then its files changed. */
+  changed_since_approval?: boolean
+}
+
+/** A SKILL.md in the skills folder that can't load. */
+export interface BrokenSkill {
+  folder: string
+  state: 'active' | 'pending_review' | 'archived'
+  path: string
+  lint: SkillLintFinding[]
 }
 
 export type SkillDetail = Skill & { body: string }
@@ -1828,6 +2502,7 @@ export interface SkillsList {
   active: Skill[]
   pending: Skill[]
   archived: Skill[]
+  broken?: BrokenSkill[]
 }
 
 export interface SkillCreate {
@@ -1850,6 +2525,8 @@ export interface SkillUpdate {
 export interface SkillDiff {
   current: string
   proposed: string
+  user_edited?: boolean
+  changed_since_proposal?: boolean
 }
 
 export interface SkillReviewResult {
@@ -1861,6 +2538,7 @@ export type EvolutionKind =
   | 'skill_created'
   | 'skill_patched'
   | 'skill_archived'
+  | 'skill_reset'
   | 'profile_updated'
   | 'curator_run'
   | 'summary_created'
@@ -2053,6 +2731,8 @@ export interface DreamStats {
   promoted: number
   expired: number
   insights_updated: number
+  /** Memories kept once because they were saved in two languages (#353); also counted in `merged`. */
+  languages_merged?: number
 }
 
 export interface Dream {
@@ -2121,6 +2801,10 @@ export interface HermesSkillItem extends HermesItem {
   /** The name it gets in Sentient (made unique). */
   target?: string
   changed_builtin?: boolean
+  /** What the skill linter found in it. */
+  lint?: SkillLintFinding[]
+  /** The safety check (#146). Older engines leave it out. */
+  vetting?: SkillVetting
 }
 export interface HermesMemoryItem extends HermesItem {
   kind: 'fact' | 'insight'
@@ -2177,4 +2861,308 @@ export interface HermesResult {
   persona?: { updated: boolean }
   jobs?: { created: Array<{ task_id: string; name: string }>; skipped: HermesSkipped[] }
   mcp?: { added: string[]; skipped: HermesSkipped[] }
+}
+
+/** POST /api/memories/export: the file written in Sentient's files folder (§7). */
+export interface MemoryExport {
+  path: string
+  folder: string
+  name: string
+  format: 'markdown' | 'sqlite'
+  memories: number
+  about_you: number
+  waiting: number
+}
+
+// §19 memory from ChatGPT, Claude and OpenClaw ---------------------------------------------
+export type MemoryImportApp = 'chatgpt' | 'claude' | 'openclaw'
+
+export interface MemoryImportItem {
+  key: string
+  action: 'import' | 'skip'
+  note: string
+  kind: 'fact' | 'insight'
+  text: string
+  title: string
+  dated: string | null
+}
+
+export interface MemoryImportSource {
+  key: string
+  title: string
+  dated: string | null
+  messages: number
+  action: 'import' | 'skip'
+  note: string
+  snippet?: string
+}
+
+export interface MemoryImportPart {
+  id: string
+  label: string
+  /** Memories plus conversations or notes to import. */
+  count: number
+  items: MemoryImportItem[]
+  sources: MemoryImportSource[]
+  sources_total: number
+  batches: number
+  messages: number
+}
+
+export interface MemoryImportPreview {
+  app: MemoryImportApp
+  label: string
+  path: string
+  export: string
+  counts: Record<string, number>
+  batches: number
+  parts: MemoryImportPart[]
+  stats: Record<string, number>
+  never_read: string[]
+}
+
+export interface MemoryImportJob {
+  id: string
+  app: MemoryImportApp
+  label: string
+  export: string
+  path: string
+  parts: string[]
+  status: 'running' | 'done' | 'cancelled' | 'error'
+  total: number
+  done: number
+  facts: number
+  insights: number
+  merged: number
+  skipped: number
+  failed: number
+  started_at: ISODate
+  finished_at: ISODate | null
+  message: string
+}
+
+// §20 backups, restore and snapshots ------------------------------------------------------
+export type BackupKind = 'manual' | 'scheduled' | 'snapshot'
+export type BackupSchedule = 'off' | 'daily' | 'weekly'
+
+/** Something signed in through the keychain. Keychain secrets are never in a backup. */
+export interface BackupSignIn {
+  kind: 'model' | 'integration' | 'channel' | 'browser'
+  id: string
+  label: string
+  /** After a restore: whether it works on this computer now (`null`: Sentient can't tell). */
+  signed_in?: boolean | null
+}
+
+export interface BackupEntry {
+  name: string
+  path: string
+  kind: BackupKind
+  /** Why a snapshot was taken, e.g. "before importing from Hermes". */
+  reason: string | null
+  created_at: ISODate | null
+  version: string | null
+  schema_version: number | null
+  size: number
+  /** Snapshots leave out the files folder. */
+  includes_files: boolean
+  counts: { chats?: number; memories?: number; tasks?: number; skills?: number }
+  sign_ins: BackupSignIn[]
+}
+
+export interface BackupInspect extends BackupEntry {
+  /** Made by a newer Sentient than this one. */
+  newer: boolean
+  contents: string[]
+}
+
+export interface RestoreStaged {
+  staged: true
+  restart_required: true
+  source: string
+  created_at: ISODate | null
+  contents: string[]
+  sign_ins: BackupSignIn[]
+}
+
+export interface RestoreResult {
+  restored_at: ISODate
+  source: string | null
+  kind: BackupKind | null
+  backup_created_at: ISODate | null
+  contents: string[]
+  sign_ins: BackupSignIn[]
+  /** The snapshot of the data the restore replaced (restore it to undo). */
+  snapshot: string | null
+  /** A plain sentence when the restore didn't happen; the data was left as it was. */
+  error: string | null
+}
+
+export interface BackupOverview {
+  folder: string
+  default_folder: string
+  /** Sentient's data folder. */
+  home: string
+  /** The backup folder is inside the data folder (so a backup would not survive losing it). */
+  folder_in_home: boolean
+  /** The sync service the backup folder is inside (its backups are copied to the cloud too). */
+  folder_cloud: 'OneDrive' | 'Dropbox' | 'Google Drive' | 'iCloud' | null
+  backups: BackupEntry[]
+  snapshots: BackupEntry[]
+  schedule: BackupSchedule
+  keep: number
+  snapshots_keep: number
+  last_scheduled_at: ISODate | null
+  pending_restore: { source: string | null; created_at: ISODate | null; staged_at: ISODate | null; kind: BackupKind | null } | null
+  last_restore: RestoreResult | null
+}
+
+export interface BackupUpdated {
+  what: 'backup' | 'snapshot' | 'restore_staged' | 'restore_cancelled' | 'restore_dismissed'
+  name?: string
+  source?: string
+}
+
+// ---------------------------------------------------------------------------- §21 activity timeline (#147)
+export type TimelineKind =
+  | 'chat'
+  | 'tasks'
+  | 'reminders'
+  | 'briefs'
+  | 'monitors'
+  | 'approvals'
+  | 'channels'
+  | 'notifications'
+  | 'memory'
+  | 'skills'
+  | 'backups'
+  | 'cost'
+
+export type TimelineStatus = 'done' | 'failed' | 'waiting' | 'declined' | 'running' | 'stopped' | 'scheduled' | 'paused' | 'restored'
+
+/** Where an item came from, for the click-through (the window maps it to a screen). */
+export interface TimelineRef {
+  type: 'chat' | 'task' | 'memory' | 'dream' | 'skill' | 'about' | 'backups' | 'usage' | 'approvals' | 'notification'
+  id?: string
+  run_id?: string | null
+  message_id?: string
+  notification_id?: string
+  review?: boolean
+}
+
+export interface TimelineItem {
+  id: string
+  kind: TimelineKind
+  /** null only for paused routines (they have no time). */
+  at: ISODate | null
+  /** What happened, in plain words: "Ran your Daily Brief". */
+  title: string
+  /** Why: "It runs every weekday at 7:30 AM". */
+  why: string | null
+  detail: string | null
+  status: TimelineStatus | null
+  app: string | null
+  app_label: string | null
+  ref: TimelineRef | null
+  upcoming: boolean
+  /** A way back the window can offer: Restore for something moved to the trash (#142) or for files code changed
+   *  (Sentient kept copies first), Cancel for a timer or reminder that has not gone off yet (#150). */
+  undo?: { action: 'restore' | 'cancel'; label: string } | null
+}
+
+export interface TimelinePage {
+  items: TimelineItem[]
+  /** Cursor for the next (older) page; null at the end. */
+  next: string | null
+}
+
+export interface TimelineUpcoming {
+  items: TimelineItem[]
+  paused: TimelineItem[]
+}
+
+export interface TimelineFilters {
+  kinds?: TimelineKind[]
+  app?: string
+  q?: string
+}
+
+// §22 folders and Obsidian vaults as searchable notes (#176) ------------------------------------------------------
+export type FolderStatus = 'waiting' | 'scanning' | 'ready' | 'missing'
+
+export interface WatchedFolder {
+  id: string
+  path: string
+  name: string
+  /** `obsidian` when the folder is an Obsidian vault (it has a .obsidian folder). */
+  kind: 'folder' | 'obsidian'
+  /** This folder's own ignore patterns (Settings > Folders adds them to `folders.ignore`). */
+  ignore: string[]
+  /** The chats its notes are used in (#392): `always` (every chat, the default), `personal`, `work` or a project.
+   * Missing on older engines. */
+  scope?: string
+  status: FolderStatus
+  /** While a look through it runs: new or changed files read so far. */
+  progress: { done: number; total: number } | null
+  added_at: ISODate
+  last_scan_at: ISODate | null
+  last_scan_ms: number | null
+  files: number
+  /** Files that could not be read. */
+  unreadable: number
+  /** Searchable pieces, and how many of them can be searched by meaning. */
+  chunks: number
+  embedded: number
+  /** Files left out at the last look: too big, or over the limit. */
+  skipped: number
+  /** Notes that are clipped web pages (treated as written by someone else). */
+  clippings: number
+  error: string | null
+}
+
+export interface FoldersOverview {
+  folders: WatchedFolder[]
+  searching_by_meaning: boolean
+  embedding_error: string | null
+}
+
+export interface FoldersUpdated {
+  id: string
+  removed?: boolean
+  progress?: { done: number; total: number }
+}
+
+// ---------------------------------------------------------------------------- §23 timers and reminders (#150)
+export type ReminderKind = 'timer' | 'reminder' | 'alarm'
+export type ReminderStatus = 'scheduled' | 'fired' | 'cancelled'
+
+export interface Reminder {
+  id: string
+  kind: ReminderKind
+  /** What to remind about ("call Ravi"); '' for a timer. */
+  message: string
+  connector: '' | 'to' | 'about' | 'that'
+  /** A timer's or an alarm's name ("pasta", "gym"). */
+  label: string
+  /** A timer's length, or a reminder set "in 20 minutes". */
+  duration_s: number | null
+  fire_at: ISODate
+  status: ReminderStatus
+  session_id: string | null
+  channel: string | null
+  language: string
+  source: 'quick' | 'chat' | 'api'
+  created_at: ISODate
+  fired_at: ISODate | null
+  cancelled_at: ISODate | null
+  notification_id: string | null
+  /** An alarm: when it was stopped or snoozed while ringing (#390). */
+  stopped_at?: ISODate | null
+  /** An alarm made by a snooze: the id of the alarm that was ringing (#390). */
+  snoozed_from?: string | null
+}
+
+export interface SnoozedAlarm {
+  stopped: Reminder
+  reminder: Reminder
 }

@@ -1,9 +1,10 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { MotionConfig } from 'motion/react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { HashRouter, Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router'
 import { toast, Toaster } from 'sonner'
 import { AppShell } from '@/components/shell/AppShell'
+import { ActivityPage } from '@/features/activity/ActivityPage'
 import { EngineError, Splash } from '@/components/shell/EngineScreens'
 import { TooltipProvider } from '@/components/ui'
 import { ChannelsPage } from '@/features/channels/ChannelsPage'
@@ -11,6 +12,7 @@ import { ChatPage } from '@/features/chat/ChatPage'
 import { holdScreenShare } from '@/features/chat/screenShare'
 import { DevicesPage } from '@/features/devices/DevicesPage'
 import { IntegrationsPage } from '@/features/integrations/IntegrationsPage'
+import { ChatGPTWelcome } from '@/features/models/ChatGPTWelcome'
 import { MemoryPage } from '@/features/memory/MemoryPage'
 import { NotificationsPage } from '@/features/notifications/NotificationsPage'
 import { OnboardingPage } from '@/features/onboarding/OnboardingPage'
@@ -30,7 +32,7 @@ import { installDemoData } from '@/lib/demo'
 import { installDomainEvents } from '@/lib/events'
 import { queryClient } from '@/lib/queryClient'
 import { resolveTheme } from '@/lib/theme'
-import { installChatEvents } from '@/stores/chat'
+import { installChatEvents, isIncognito, useChat } from '@/stores/chat'
 import { useConnection } from '@/stores/connection'
 import { useNotificationStore } from '@/stores/notifications'
 import { useUI } from '@/stores/ui'
@@ -55,6 +57,7 @@ export function App() {
         <TooltipProvider delayDuration={450} skipDelayDuration={200}>
           <HashRouter>
             <GlobalCommands />
+            <IncognitoCleanup />
             <Routes>
               <Route element={<EngineGate />}>
                 <Route element={<BootstrapGate />}>
@@ -66,6 +69,7 @@ export function App() {
                     <Route path="/chat/:sessionId" element={<ChatPage />} />
                     <Route path="/tasks" element={<TasksPage />} />
                     <Route path="/tasks/:taskId" element={<TasksPage />} />
+                    <Route path="/activity" element={<ActivityPage />} />
                     <Route path="/memory" element={<MemoryPage />} />
                     <Route path="/integrations" element={<IntegrationsPage />} />
                     <Route path="/skills" element={<SkillsPage />} />
@@ -173,9 +177,37 @@ function BootstrapGate() {
     <>
       <SmokeReporter />
       <DictationShellSync />
+      <ChatGPTWelcome />
       <Outlet />
     </>
   )
+}
+
+/** Leaving an incognito chat closes it: it is deleted (#154). The engine deletes leftovers when Sentient closes. */
+function IncognitoCleanup() {
+  const location = useLocation()
+  const known = useChat((s) => s.incognito)
+  const current = location.pathname.match(/^\/chat\/([^/?#]+)/)?.[1] ?? null
+  // the new incognito chat view, which moves to its chat as soon as the engine names it
+  const state = location.state as { incognito?: boolean } | null
+  const onNewIncognito = location.pathname === '/chat' && (!!state?.incognito || /(^|[?&])incognito=1\b/.test(location.search))
+  const previous = useRef<string | null>(null)
+  const visited = useRef(new Set<string>())
+  useEffect(() => {
+    const prev = previous.current
+    previous.current = current
+    if (current) visited.current.add(current)
+    const leaving = new Set(Object.keys(known))
+    if (prev && isIncognito(prev)) leaving.add(prev)
+    for (const id of leaving) {
+      if (id === current) continue
+      // named while its view was still open: that view is about to show it. Named after the user left: close it.
+      if (!visited.current.has(id) && onNewIncognito) continue
+      visited.current.delete(id)
+      useChat.getState().closeIncognito(id)
+    }
+  }, [current, known, onNewIncognito])
+  return null
 }
 
 function SmokeReporter() {
@@ -224,6 +256,7 @@ function GlobalCommands() {
 
   useHotkey('mod+k', () => useUI.getState().setPaletteOpen(!useUI.getState().paletteOpen))
   useHotkey('mod+n', () => navigate('/chat', { state: { fresh: Date.now() } }))
+  useHotkey('mod+shift+n', () => navigate('/chat', { state: { fresh: Date.now(), incognito: true } }))
   useHotkey('mod+,', () => navigate('/settings'))
   useHotkey('mod+b', () => useUI.getState().toggleSidebar())
   return null

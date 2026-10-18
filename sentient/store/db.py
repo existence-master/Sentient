@@ -6,9 +6,12 @@ lets the UI read while a task run writes.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import sqlite3
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,11 +19,26 @@ from typing import Any
 import aiosqlite
 
 from sentient import paths
+from sentient.store import migrations
+
+log = logging.getLogger(__name__)
 
 _SCHEMA = Path(__file__).with_name("schema.sql")
 _PKG_ROOT = Path(__file__).resolve().parents[1]
+# The schema version: the highest numbered step in sentient/store/migrations, never typed by hand (ADR 0030). A
+# database opened with another version gets a snapshot first (issue #151).
+MIGRATIONS = migrations.discover()
+SCHEMA_VERSION = MIGRATIONS[-1].number
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
-PACKAGE_SCHEMAS = ["tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox"]
+PACKAGE_SCHEMAS = [
+    "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
+    "folders", "reminders", "snapshots",
+]
+
+
+# SQL condition: the chat ``col`` names is not incognito (#154). Learning, summaries and history search use it so an
+# incognito chat is never read back. ``.format(col="m.session_id")``.
+NOT_INCOGNITO = "NOT EXISTS (SELECT 1 FROM sessions inc WHERE inc.id = {col} AND inc.incognito = 1)"
 
 
 def now_iso() -> str:
@@ -29,6 +47,48 @@ def now_iso() -> str:
 
 def new_id() -> str:
     return uuid.uuid4().hex
+
+
+# ---------------------------------------------------------------- watermarks (#236)
+# Rows saved in the same clock tick share a timestamp (Windows' clock moves about every 15.6 ms), so "newer than the
+# last timestamp seen" skips a row saved in that tick after the read. A watermark keeps the newest timestamp read and
+# the ids already read at it, as JSON: {"at": "<iso>", "ids": [...]}. A plain timestamp (from an older build, or a
+# starting point) means "strictly newer than this".
+
+
+def _read_mark(mark: str | None) -> tuple[str, list]:
+    if not mark:
+        return "", []
+    try:
+        data = json.loads(mark)
+    except ValueError:
+        return mark, []
+    if isinstance(data, dict):
+        return str(data.get("at") or ""), list(data.get("ids") or [])
+    return mark, []
+
+
+def after_watermark(mark: str | None, ts_col: str, id_col: str) -> tuple[str, list]:
+    """SQL condition and parameters for rows after ``mark``: newer than its timestamp, or at it and not read yet."""
+    at, ids = _read_mark(mark)
+    if not ids:
+        return f"{ts_col} > ?", [at]
+    marks = ",".join("?" * len(ids))
+    return f"({ts_col} > ? OR ({ts_col} = ? AND {id_col} NOT IN ({marks})))", [at, at, *ids]
+
+
+def next_watermark(mark: str | None, rows: Iterable[Any], ts_key: str, id_key: str) -> str | None:
+    """The watermark after reading ``rows`` (each with ``ts_key`` and ``id_key``): their newest timestamp and the ids
+    read at it, kept together with ``mark``'s ids when the timestamp did not move. ``mark`` itself when no rows."""
+    rows = list(rows)
+    if not rows:
+        return mark
+    at = max(str(r[ts_key]) for r in rows)
+    ids = [r[id_key] for r in rows if str(r[ts_key]) == at]
+    old_at, old_ids = _read_mark(mark)
+    if old_at == at:
+        ids = [*old_ids, *(i for i in ids if i not in old_ids)]
+    return json.dumps({"at": at, "ids": ids})
 
 
 async def _load_vec(db: aiosqlite.Connection) -> bool:
@@ -46,39 +106,56 @@ async def _load_vec(db: aiosqlite.Connection) -> bool:
         return False
 
 
+def _peek_version(path: Path) -> tuple[bool, int]:
+    """(has tables, user_version) of a database file, before anything changes it."""
+    if not path.exists():
+        return False, 0
+    con = sqlite3.connect(path, timeout=30)
+    try:
+        tables = con.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
+        return bool(tables), int(con.execute("PRAGMA user_version").fetchone()[0])
+    finally:
+        con.close()
+
+
 class Store:
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, *, before_migration: Callable[[str], Awaitable[None]] | None = None):
         self.path = path or paths.db_file()
         self._db: aiosqlite.Connection | None = None
         self.vec_available = False
+        # called once, before the first change to an existing database (a snapshot, issue #151)
+        self.before_migration = before_migration
+        self._existing = False
+        self._snapshot_taken = False
+
+    async def _before_migration(self, reason: str) -> None:
+        if not self._existing or self._snapshot_taken or self.before_migration is None:
+            return
+        self._snapshot_taken = True
+        try:
+            await self.before_migration(reason)
+        except Exception:  # a failed snapshot never keeps Sentient from starting
+            log.exception("could not take a snapshot before updating the database")
 
     # ------------------------------------------------------------------ lifecycle
     async def open(self) -> Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._existing, version = await asyncio.to_thread(_peek_version, self.path)
+        if self._existing and version != SCHEMA_VERSION:
+            await self._before_migration(f"before updating the database (version {version} to {SCHEMA_VERSION})")
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
         self.vec_available = await _load_vec(self._db)
+        if self._existing and version < SCHEMA_VERSION:
+            # columns first, so the schema files' indexes find them; the files then add whatever tables are missing
+            await migrations.migrate(self, version, MIGRATIONS)
+        # a new database is made from these alone (they hold the whole current shape)
         await self._db.executescript(_SCHEMA.read_text(encoding="utf-8"))
-        # additive migrations for databases created by older builds
-        await self.ensure_column("sessions", "context_summary", "TEXT")
-        await self.ensure_column("sessions", "context_upto", "TEXT")
-        await self.ensure_column("sessions", "untrusted", "TEXT")
-        await self.ensure_column("sessions", "visited_hosts", "TEXT")
-        await self.ensure_column("messages", "attachments", "TEXT")
-        await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
-        await self.ensure_column("messages", "memory_sources", "TEXT")
-        await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
-        await self.ensure_column("facts", "review", "TEXT")
-        await self.ensure_column("summaries", "untrusted", "TEXT")
-        # summaries written before the mark existed take it from their chat (ADR 0021)
-        await self.db.execute(
-            "UPDATE summaries SET untrusted = (SELECT s.untrusted FROM sessions s WHERE s.id = summaries.session_id)"
-            " WHERE untrusted IS NULL AND session_id IS NOT NULL"
-        )
         for pkg in PACKAGE_SCHEMAS:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():
                 await self._db.executescript(extra.read_text(encoding="utf-8"))
+        await self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await self._db.commit()
         return self
 
@@ -106,11 +183,16 @@ class Store:
         async with self.db.execute(sql, tuple(params)) as cur:
             return list(await cur.fetchall())
 
-    async def ensure_column(self, table: str, column: str, decl: str) -> None:
-        """Add a column if it is missing. Packages use this for additive schema changes."""
+    async def columns(self, table: str) -> set[str]:
+        """The column names of ``table``; empty when there is no such table."""
         async with self.db.execute(f"PRAGMA table_info({table})") as cur:
-            cols = {r[1] for r in await cur.fetchall()}
+            return {r[1] for r in await cur.fetchall()}
+
+    async def ensure_column(self, table: str, column: str, decl: str) -> None:
+        """Add a column if the table exists and lacks it. Migration steps use this (sentient/store/migrations)."""
+        cols = await self.columns(table)
         if cols and column not in cols:
+            await self._before_migration(f"before adding {column} to {table}")
             await self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     async def get_meta(self, key: str) -> str | None:
@@ -124,14 +206,52 @@ class Store:
         )
 
     # ------------------------------------------------------------------ sessions & messages
-    async def create_session(self, channel: str = "web", title: str | None = None) -> str:
+    async def create_session(
+        self,
+        channel: str = "web",
+        title: str | None = None,
+        *,
+        incognito: bool = False,
+        model: str | None = None,
+        memory_scope: str | None = None,
+        node_id: str | None = None,
+    ) -> str:
+        """A new chat. ``node_id``: the paired device it was started on (#153)."""
         sid = new_id()
         ts = now_iso()
         await self.execute(
-            "INSERT INTO sessions(id, title, channel, created_at, updated_at) VALUES(?,?,?,?,?)",
-            (sid, title, channel, ts, ts),
+            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model, memory_scope, node_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (sid, title, channel, ts, ts, int(bool(incognito)), model or None, memory_scope or None, node_id or None),
         )
         return sid
+
+    async def set_session_scope(self, session_id: str, scope: str | None) -> bool:
+        """The memories one chat uses (#155); None makes it follow its app's scope, else personal. False: no such chat."""
+        cur = await self.execute("UPDATE sessions SET memory_scope = ? WHERE id = ?", (scope or None, session_id))
+        return cur.rowcount > 0
+
+    async def set_session_model(self, session_id: str, model: str | None) -> bool:
+        """Pick the model for one chat (#312); None (or "") makes it follow the default again. False: no such chat."""
+        cur = await self.execute("UPDATE sessions SET model = ? WHERE id = ?", (model or None, session_id))
+        return cur.rowcount > 0
+
+    async def is_incognito(self, session_id: str | None) -> bool:
+        """True for an incognito chat (#154): nothing is learned from it and it is deleted when closed."""
+        if not session_id:
+            return False
+        row = await self.fetchone("SELECT incognito FROM sessions WHERE id = ?", (session_id,))
+        return bool(row and row["incognito"])
+
+    async def incognito_sessions(self, idle_before: str | None = None) -> list[str]:
+        """Ids of incognito chats, or only those last used before ``idle_before`` (ISO time)."""
+        if idle_before is None:
+            rows = await self.fetchall("SELECT id FROM sessions WHERE incognito = 1")
+        else:
+            rows = await self.fetchall(
+                "SELECT id FROM sessions WHERE incognito = 1 AND updated_at < ?", (idle_before,)
+            )
+        return [r["id"] for r in rows]
 
     async def touch_session(self, session_id: str, title: str | None = None) -> None:
         if title:
@@ -161,11 +281,14 @@ class Store:
         attachments: list[str] | None = None,
         interjection: bool = False,
         memory_sources: list[dict] | None = None,
+        sources: list[dict] | None = None,
+        approval: dict | None = None,
+        checks: list[dict] | None = None,
     ) -> str:
         mid = new_id()
         await self.execute(
             "INSERT INTO messages(id, session_id, role, content, tool_calls, tool_call_id, name, thinking, attachments,"
-            " interjection, memory_sources, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            " interjection, memory_sources, sources, approval, checks, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 mid,
                 session_id,
@@ -178,6 +301,9 @@ class Store:
                 json.dumps(attachments) if attachments else None,
                 int(bool(interjection)),
                 json.dumps(memory_sources, ensure_ascii=False) if memory_sources else None,
+                json.dumps(sources, ensure_ascii=False) if sources else None,
+                json.dumps(approval, ensure_ascii=False) if approval else None,
+                json.dumps(checks, ensure_ascii=False) if checks else None,
                 now_iso(),
             ),
         )
@@ -196,6 +322,9 @@ class Store:
             d["attachments"] = json.loads(d["attachments"]) if d.get("attachments") else []
             d["interjection"] = bool(d.get("interjection"))
             d["memory_sources"] = json.loads(d["memory_sources"]) if d.get("memory_sources") else []
+            d["sources"] = json.loads(d["sources"]) if d.get("sources") else []
+            d["approval"] = json.loads(d["approval"]) if d.get("approval") else None
+            d["checks"] = json.loads(d["checks"]) if d.get("checks") else []
             out.append(d)
         return out
 
@@ -208,9 +337,10 @@ class Store:
         return int(row["n"]) if row else 0
 
     async def search_messages(self, query: str, limit: int = 10) -> list[dict]:
+        """Keyword search over past chats. Incognito chats are never found (#154)."""
         rows = await self.fetchall(
             "SELECT m.* FROM messages_fts f JOIN messages m ON m.rowid = f.rowid"
-            " WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?",
+            f" WHERE messages_fts MATCH ? AND {NOT_INCOGNITO.format(col='m.session_id')} ORDER BY rank LIMIT ?",
             (query, limit),
         )
         return [dict(r) for r in rows]
@@ -226,10 +356,14 @@ class Store:
         )
         return nid
 
-    async def record_usage(self, model: str, prompt_tokens: int, completion_tokens: int, *, role: str | None = None, source: str = "chat") -> None:
+    async def record_usage(
+        self, model: str, prompt_tokens: int, completion_tokens: int, *, role: str | None = None, source: str = "chat",
+        cost_usd: float | None = None,
+    ) -> None:
         await self.execute(
-            "INSERT INTO usage(model, role, source, prompt_tokens, completion_tokens, created_at) VALUES(?,?,?,?,?,?)",
-            (model, role, source, prompt_tokens, completion_tokens, now_iso()),
+            "INSERT INTO usage(model, role, source, prompt_tokens, completion_tokens, cost_usd, created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (model, role, source, prompt_tokens, completion_tokens, cost_usd, now_iso()),
         )
 
     async def delete_session(self, session_id: str) -> None:

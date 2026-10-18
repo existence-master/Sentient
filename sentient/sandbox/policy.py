@@ -8,17 +8,32 @@ allows everything except tools that would recurse (code, subagents, voice), comm
 computer (terminal, ADR 0019) and purchases, which always ask.
 
 Lasting rules (ADR 0016) only ever take away here: a "never" tool is not listed and is refused,
-and an "ask" tool is refused because a script cannot stop to ask. An "allow" rule changes nothing:
-scripts still only read (ADR 0012, docs/PRIVACY.md).
+an "ask" or "only if I asked" tool is refused because a script cannot stop to ask and a script is never the user's
+own words (#140), and a "hand it to me" tool's calls that would change something are refused, since a script can't
+hand anything to the user (its look-ups run as usual). An "allow" rule changes nothing:
+scripts still only read (ADR 0012, docs/PRIVACY.md). A connection set to Read only (#141) takes away the same way,
+even with approvals mode ``off``: its tools that can change things are not listed and calls above ``read`` are refused.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 
 from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
-from sentient.tools.rules import SETTINGS_HINT, is_purchase, never_message, rule_for, rule_label
+from sentient.tools.rules import (
+    HAND_OFF,
+    IF_ASKED,
+    SETTINGS_HINT,
+    is_purchase,
+    never_message,
+    opens_home,
+    read_only_blocks,
+    read_only_hides,
+    read_only_message,
+    rule_for,
+    rule_label,
+)
 
 BLOCKED_PLUGINS = frozenset({"code", "subagents", "voice", "terminal"})
 BLOCKED_TOOLS = frozenset({"execute_code", "delegate_task", "delegate_tasks", "terminal_run"})
@@ -37,6 +52,8 @@ class BridgePolicy:
     rules: Mapping[str, str] = field(default_factory=dict)  # tools.approvals.rules
     # read the owner's rules on every call, so a rule changed while a script runs applies at once
     rules_source: Callable[[], Mapping[str, str] | None] | None = None
+    # app ids of Read only connections (``integrations.read_only``), read on every call like the rules
+    read_only_apps_source: Callable[[], Collection[str] | None] | None = None
 
     @classmethod
     def build(
@@ -48,6 +65,7 @@ class BridgePolicy:
         max_tool_calls: int,
         rules: Mapping[str, str] | None = None,
         rules_source: Callable[[], Mapping[str, str] | None] | None = None,
+        read_only_apps_source: Callable[[], Collection[str] | None] | None = None,
     ) -> BridgePolicy:
         return cls(
             approvals_mode=approvals_mode,
@@ -56,6 +74,7 @@ class BridgePolicy:
             max_tool_calls=max_tool_calls,
             rules=dict(rules or {}),
             rules_source=rules_source,
+            read_only_apps_source=read_only_apps_source,
         )
 
     def current_rules(self) -> Mapping[str, str]:
@@ -63,11 +82,14 @@ class BridgePolicy:
             return self.rules_source() or {}
         return self.rules
 
+    def read_only_apps(self) -> Collection[str]:
+        return (self.read_only_apps_source() if self.read_only_apps_source is not None else None) or ()
+
     def is_available(self, tool: Tool) -> bool:
         """Tools a script can see at all (listed in the generated sentient_tools module)."""
         if tool.plugin in BLOCKED_PLUGINS or tool.name in BLOCKED_TOOLS:
             return False
-        if rule_for(self.current_rules(), tool) == "never":
+        if rule_for(self.current_rules(), tool) == "never" or read_only_hides(self.read_only_apps(), tool):
             return False
         return self.allowed_tools is None or tool.name in self.allowed_tools or tool.plugin in self.allowed_tools
 
@@ -87,6 +109,13 @@ class BridgePolicy:
                 f"You've set Sentient to always ask before using {label}, and a script cannot stop to ask. "
                 f"Call '{name}' directly as a normal tool call instead. {SETTINGS_HINT}"
             )
+        if rule == IF_ASKED:
+            raise Refused(
+                f"You've set {label} to run without asking only when you ask for it in a chat, and a script cannot "
+                f"stop to ask. Call '{name}' directly as a normal tool call instead. {SETTINGS_HINT}"
+            )
+        if read_only_hides(self.read_only_apps(), tool):
+            raise Refused(read_only_message(tool, (getattr(ctx, "extra", None) or {}).get("registry")))
         if not self.is_available(tool):
             raise Refused(f"'{name}' is not one of the tools this script may use.")
         if calls_so_far >= self.max_tool_calls:
@@ -95,6 +124,13 @@ class BridgePolicy:
                 "Split the work into smaller scripts."
             )
         risk = await effective_risk(tool, arguments, ctx)
+        if rule == HAND_OFF and risk > Risk.read:
+            raise Refused(
+                f"You've set {label} to \"Hand it to me\", so Sentient prepares it for you instead of doing it, and a "
+                f"script can't hand anything over. Call '{name}' directly as a normal tool call instead. {SETTINGS_HINT}"
+            )
+        if read_only_blocks(self.read_only_apps(), tool, risk):
+            raise Refused(read_only_message(tool, (getattr(ctx, "extra", None) or {}).get("registry")))
         if self.read_only:
             if risk > Risk.read:
                 raise Refused(
@@ -105,6 +141,11 @@ class BridgePolicy:
             raise Refused(
                 f"'{name}' would spend money, which always needs the user's yes. Call '{name}' directly as a "
                 "normal tool call instead."
+            )
+        if await opens_home(tool, arguments, ctx, risk):
+            raise Refused(
+                f"'{name}' would open the user's home (unlock a door, turn off the alarm or open a garage door), which "
+                f"always needs the user's yes. Call '{name}' directly as a normal tool call instead."
             )
         if self.approvals_mode == "off":
             return risk

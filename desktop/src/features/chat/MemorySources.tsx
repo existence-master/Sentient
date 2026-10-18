@@ -26,15 +26,31 @@ function sourceLabel(s: MemorySource): string {
   return sourceMeta(s.source || 'conversation').label
 }
 
-export function MemorySources({ sources, assistantName, task = false }: { sources: MemorySource[]; assistantName: string; task?: boolean }) {
-  const [open, setOpen] = useState(false)
+export function MemorySources({
+  sources,
+  assistantName,
+  task = false,
+  open: openProp,
+  onOpenChange
+}: {
+  sources: MemorySource[]
+  assistantName: string
+  task?: boolean
+  /** Controlled by a parent with its own toggle (the sources strip under a reply); the built-in toggle is hidden. */
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+}) {
+  const [openState, setOpenState] = useState(false)
+  const controlled = openProp !== undefined
+  const open = controlled ? openProp : openState
+  const setOpen = (fn: (o: boolean) => boolean) => (controlled ? onOpenChange?.(fn(open)) : setOpenState(fn))
   const [changes, setChanges] = useState<Record<string, Change>>({})
   if (!sources.length) return null
   const n = sources.length
 
   return (
     <div className="text-sm">
-      <button
+      {!controlled && <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -43,7 +59,7 @@ export function MemorySources({ sources, assistantName, task = false }: { source
         <IconBrain size={13} />
         Used {n} {n === 1 ? 'memory' : 'memories'}
         <IconChevronRight size={12} className={cn('transition-transform', open && 'rotate-90')} />
-      </button>
+      </button>}
       <AnimatePresence initial={false}>
         {open && (
           <motion.div

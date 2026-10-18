@@ -1,18 +1,23 @@
 import { IconAlertTriangle, IconCircleCheck, IconCloud, IconCpu, IconDeviceDesktop, IconDownload, IconExternalLink, IconEye, IconEyeOff, IconKey, IconRefresh } from '@tabler/icons-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, Field, IconButton, Input, ProgressBar, SegmentedControl, Skeleton } from '@/components/ui'
 import { InstructionsGuide } from '@/features/integrations/InstructionsGuide'
-import { CLAUDE_PLAN_STEPS, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
+import { ChatGPTMark } from '@/features/models/ChatGPTBrand'
+import { CLAUDE_CODE_STREAMING, CLAUDE_CODE_WARNING } from '@/features/models/ClaudeCodeSection'
+import { ConnectClaude } from '@/features/models/ConnectClaude'
+import { ChatGPTConnect, chatgptPlanModels, NOUS_STEPS, OpenRouterConnect } from '@/features/models/ConnectPlans'
 import { ModelCheckup } from '@/features/models/ModelCheckup'
 import { ModelPicker } from '@/features/models/ModelPicker'
 import { ModelTest } from '@/features/models/ModelTest'
 import { OllamaPull } from '@/features/models/OllamaPull'
+import { useConfigEditor } from '@/hooks/config'
 import { useConfig } from '@/hooks/core'
-import { useHardware, useLocalModels, useOllamaPull, useProviders, useSetSecret } from '@/hooks/models'
+import { useClaudeCodeStatus, useHardware, useLocalModels, useModelCatalog, useOllamaPull, useProviders, useSetSecret } from '@/hooks/models'
 import { errorMessage } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
-import { looksLikeEmbedding, recommendFastLocal, recommendLocal } from '@/lib/models'
+import { allowedForRole, isClaudeCode, otherModel } from '@/lib/claudeCode'
+import { chatModelLabel, looksLikeEmbedding, modelShortName, recommendFastLocal, recommendLocal } from '@/lib/models'
 import type { RoleName } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useOnboardingDraft } from './draft'
@@ -34,7 +39,8 @@ export function BrainStep() {
     const primary = fits?.model ?? recommendLocal(local.data) ?? roles?.primary ?? ''
     d.set({
       primary,
-      fast: fits?.model ?? recommendFastLocal(local.data) ?? primary,
+      // Claude Code only answers chats, so it is never the background model (#442)
+      fast: otherModel([fits?.model, recommendFastLocal(local.data), primary, roles?.fast]),
       embedding: recommendLocal(local.data, true) ?? roles?.embedding ?? '',
       context_length: rec && rec.tier !== 'unknown' && !rec.cloud_first ? rec.context_length : null
     })
@@ -45,7 +51,7 @@ export function BrainStep() {
     <div>
       <StepHeader
         title="Choose my brain"
-        subtitle="Run a model privately on this computer, or use a cloud provider with your own key. You can change this any time."
+        subtitle="Run a model privately on this computer, or use a cloud provider with your own key or your ChatGPT plan. You can change this any time."
       />
       <SegmentedControl
         fullWidth
@@ -70,6 +76,7 @@ function LocalBrain() {
   const chatModels = (ollama?.models ?? []).filter((m) => !(m.is_embedding ?? looksLikeEmbedding(m.name)))
   const embedModels = (ollama?.models ?? []).filter((m) => m.is_embedding ?? looksLikeEmbedding(m.name))
   const [showPull, setShowPull] = useState(false)
+  const pickMain = usePickMain()
 
   if (local.isLoading) {
     return (
@@ -138,12 +145,14 @@ function LocalBrain() {
         <div className="space-y-4">
           <Field label="Main model" description="Talks with you and uses tools. We picked the best one you have installed.">
             <div className="flex items-center gap-2">
-              <ModelPicker value={d.primary} onChange={(primary) => d.set({ primary })} className="flex-1" />
+              <ModelPicker role="primary" offerClaudeCode value={d.primary} onChange={pickMain} className="flex-1" />
               <ModelTest model={d.primary} role="primary" className="shrink-0" />
             </div>
+            <ClaudeCodeNote />
           </Field>
           <Field label="Background model" description="Handles memory, summaries and triage quietly. A smaller model keeps things snappy.">
-            <ModelPicker value={d.fast} onChange={(fast) => d.set({ fast })} />
+            <ModelPicker role="fast" value={d.fast} onChange={(fast) => d.set({ fast })} />
+            <BackgroundNote />
           </Field>
           <Field
             label="Memory search"
@@ -153,6 +162,7 @@ function LocalBrain() {
               <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
               <ModelTest embedding model={d.embedding} className="shrink-0" />
             </div>
+            <MultilingualHint installed={embedModels.map((m) => m.name)} onShowDownloads={() => setShowPull(true)} />
           </Field>
         </div>
         {(showPull || !embedModels.length) && (
@@ -163,6 +173,27 @@ function LocalBrain() {
       </Card>
       <DraftCheckup />
     </div>
+  )
+}
+
+/** "Writing in Hindi?" (#339): the default memory search model is English-first, so point to a multilingual one. */
+function MultilingualHint({ installed, onShowDownloads }: { installed: string[]; onShowDownloads: () => void }) {
+  const d = useOnboardingDraft()
+  const hardware = useHardware()
+  const rec = hardware.data?.recommendation.multilingual_embedding
+  if (!rec || d.embedding === rec.model) return null
+  const have = isInstalled(rec.name, installed)
+  return (
+    <p className="mt-2 text-xs text-fg-subtle">
+      Writing in Hindi or another language besides English? {rec.name} ({rec.size}) keeps those memories apart and finds them better.{' '}
+      <button
+        type="button"
+        className="font-medium text-accent hover:underline"
+        onClick={() => (have ? d.set({ embedding: rec.model }) : onShowDownloads())}
+      >
+        {have ? `Use ${rec.name}` : `Download ${rec.name}`}
+      </button>
+    </p>
   )
 }
 
@@ -286,9 +317,34 @@ function CloudBrain() {
   const setSecret = useSetSecret()
   const [key, setKey] = useState('')
   const [show, setShow] = useState(false)
-  // a ChatGPT plan is signed in from Settings > Models once setup is done; its models come from the plan's own list
-  const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud' && !p.sign_in)
+  const pickMain = usePickMain()
+  // a ChatGPT plan is a sign-in ("Continue with ChatGPT"), not a key; its models come from the plan's own list
+  const cloud = (providers.data ?? []).filter((p) => p.kind === 'cloud')
   const selected = cloud.find((p) => p.id === d.cloudProvider)
+  const isChatGPT = selected?.id === 'chatgpt'
+  const isClaude = selected?.id === 'anthropic'
+  const onClaudeCode = isClaude && isClaudeCode(d.primary)
+  const config = useConfig()
+  // Claude Code for chats only: background work needs a model that isn't Claude Code, and an Anthropic model only
+  // works with a key. Then the saved background model (not Claude Code) does it.
+  const savedFast = config.data?.models.roles.fast ?? ''
+  const fastForChatsOnly = isClaudeCode(d.fast) || (d.fast.startsWith('anthropic/') && !selected?.key_set) ? (isClaudeCode(savedFast) ? '' : savedFast) : d.fast
+  const plan = useModelCatalog('chatgpt', isChatGPT && !!selected?.key_set)
+
+  // Signed in with ChatGPT: start from the plan's models by the same rule as Settings (the plan's first model, for
+  // both), once each time the ChatGPT plan is picked, so a later refresh of the plan's list never undoes the user's own choice.
+  const prefilled = useRef(false)
+  useEffect(() => {
+    if (!isChatGPT) {
+      prefilled.current = false
+      return
+    }
+    const picked = chatgptPlanModels((plan.data ?? []).map((m) => m.id))
+    if (!picked || prefilled.current) return
+    prefilled.current = true
+    if (!d.primary.startsWith('chatgpt/')) d.set({ primary: picked.main, fast: picked.fast })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isChatGPT, plan.data])
 
   useEffect(() => {
     if (!d.cloudProvider && cloud.length) d.set({ cloudProvider: cloud[0].id })
@@ -325,15 +381,32 @@ function CloudBrain() {
               d.cloudProvider === p.id ? 'border-accent/60 bg-accent/[0.06]' : 'border-border bg-surface/70 hover:border-border-strong'
             )}
           >
-            <span className="text-sm font-medium text-fg">{p.label}</span>
-            <span className={cn('text-2xs', p.key_set ? 'text-success' : 'text-fg-subtle')}>{p.key_set ? 'Key saved' : 'Needs a key'}</span>
+            <span className="flex items-center gap-1.5 text-sm font-medium text-fg">
+              {p.sign_in && p.id === 'chatgpt' && <ChatGPTMark size={14} />}
+              {p.label}
+            </span>
+            <span className={cn('text-2xs', p.key_set ? 'text-success' : 'text-fg-subtle')}>
+              {p.sign_in ? (p.key_set ? 'Signed in' : 'Sign in') : p.key_set ? 'Key saved' : 'Needs a key'}
+            </span>
           </button>
         ))}
       </div>
 
       {selected && (
         <Card className="space-y-4 p-5">
-          {selected.key_set ? (
+          {isClaude ? (
+            <ConnectClaude
+              primary={d.primary}
+              fast={d.fast}
+              others={{ planner: config.data?.models.roles.planner, executor: config.data?.models.roles.executor }}
+              onUseModels={(primary, fast) => d.set({ primary, fast })}
+              // Claude Code only answers chats: the background model stays on another model (#442)
+              onUseForChat={(primary) => d.set({ primary, fast: fastForChatsOnly })}
+              onUseForEverything={(primary, fast) => d.set({ primary, fast })}
+            />
+          ) : isChatGPT ? (
+            <ChatGPTConnect />
+          ) : selected.key_set ? (
             <div className="flex items-center gap-2 text-sm text-fg">
               <IconCircleCheck size={17} className="text-success" />
               Your {selected.label} key is saved in the system keychain.
@@ -341,7 +414,6 @@ function CloudBrain() {
           ) : (
             <>
               {selected.id === 'openrouter' && <OpenRouterConnect />}
-              {selected.id === 'anthropic' && <PlanSteps title="Have a Claude Max or Team plan? Use its included API credits" markdown={CLAUDE_PLAN_STEPS} />}
               {selected.id === 'nous' && <InstructionsGuide markdown={NOUS_STEPS} />}
               <Field
                 label={selected.id === 'openrouter' ? 'Or paste an OpenRouter key' : `${selected.label} API key`}
@@ -384,43 +456,97 @@ function CloudBrain() {
               </Field>
             </>
           )}
-          <Field label="Main model">
-            <div className="flex items-center gap-2">
-              <ModelPicker provider={selected.id} value={d.primary} onChange={(primary) => d.set({ primary })} className="flex-1" />
-              <ModelTest model={d.primary} role="primary" className="shrink-0" />
-            </div>
-          </Field>
-          <Field label="Background model" description="Used for memory and summaries. A cheaper model is ideal.">
-            <ModelPicker provider={selected.id} value={d.fast} onChange={(fast) => d.set({ fast })} />
-          </Field>
-          <Field label="Memory search" description="Embeddings can stay local even with a cloud chat model.">
-            <div className="flex items-center gap-2">
-              <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
-              <ModelTest embedding model={d.embedding} className="shrink-0" />
-            </div>
-          </Field>
+          {!(isChatGPT && !selected.key_set) && (
+            <>
+              <Field label="Main model">
+                <div className="flex items-center gap-2">
+                  <ModelPicker provider={onClaudeCode ? undefined : selected.id} role="primary" offerClaudeCode value={d.primary} onChange={pickMain} className="flex-1" />
+                  <ModelTest model={d.primary} role="primary" className="shrink-0" />
+                </div>
+                {!isClaude && <ClaudeCodeNote />}
+              </Field>
+              <Field label="Background model" description="Used for memory and summaries. A cheaper model is ideal.">
+                <ModelPicker provider={onClaudeCode ? undefined : selected.id} role="fast" value={d.fast} onChange={(fast) => d.set({ fast })} />
+                <BackgroundNote />
+              </Field>
+              <Field label="Memory search" description="Embeddings can stay local even with a cloud chat model.">
+                <div className="flex items-center gap-2">
+                  <ModelPicker embedding value={d.embedding} onChange={(embedding) => d.set({ embedding })} className="flex-1" />
+                  <ModelTest embedding model={d.embedding} className="shrink-0" />
+                </div>
+              </Field>
+            </>
+          )}
         </Card>
       )}
-      {selected?.key_set && <DraftCheckup />}
+      {(selected?.key_set || onClaudeCode) && <DraftCheckup />}
     </div>
   )
 }
 
-/** Steps for using a plan, folded away until asked for. */
-function PlanSteps({ title, markdown }: { title: string; markdown: string }) {
-  const [open, setOpen] = useState(false)
+/** The roles the engine says may use Claude Code (`GET /api/models/claude-code`), undefined until it has said. */
+function useClaudeCodeRoles() {
+  const config = useConfig()
+  return useClaudeCodeStatus(!!config.data?.models.experimental_claude_code).data?.roles
+}
+
+/**
+ * Picking the main model. Picking Claude Code turns it on (the warning shows right under it). When the engine says the
+ * background role refuses Claude Code (it only answers chats, ADR 0022), the background model stays on, or moves to,
+ * the best other model this step found (#442).
+ */
+function usePickMain() {
+  const d = useOnboardingDraft()
+  const local = useLocalModels()
+  const hardware = useHardware()
+  const providers = useProviders()
+  const { config, patch } = useConfigEditor()
+  const accepting = useClaudeCodeRoles()
+  return (primary: string) => {
+    if (isClaudeCode(primary) && !config?.models.experimental_claude_code) {
+      patch({ models: { experimental_claude_code: true } }, { immediate: true })
+    }
+    if (!isClaudeCode(primary) || (d.fast && allowedForRole(d.fast, 'fast', accepting))) {
+      d.set({ primary })
+      return
+    }
+    const installed = (local.data?.ollama.models ?? []).map((m) => m.name)
+    const rec = hardware.data?.recommendation
+    const keyed = (providers.data ?? []).filter((p) => p.kind === 'cloud' && p.key_set && !p.sign_in)
+    const selected = keyed.find((p) => p.id === d.cloudProvider)
+    const cloud = [selected, ...keyed].flatMap((p) => p?.suggested.filter((m) => !looksLikeEmbedding(m)) ?? [])
+    const fast = otherModel([
+      rec && !rec.cloud_first && isInstalled(rec.name, installed) ? rec.model : null,
+      recommendFastLocal(local.data),
+      recommendLocal(local.data),
+      ...cloud
+    ])
+    d.set({ primary, fast })
+  }
+}
+
+/** Under the main model when it is Claude Code: what it is, and that choosing it turns it on. */
+function ClaudeCodeNote() {
+  const d = useOnboardingDraft()
+  if (!isClaudeCode(d.primary)) return null
   return (
-    <div className="rounded-xl border border-border bg-surface/60 px-3.5 py-2.5">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 text-left text-sm font-medium text-fg"
-      >
-        {title}
-        <span className="shrink-0 text-xs font-normal text-accent-text">{open ? 'Hide steps' : 'Show steps'}</span>
-      </button>
-      {open && <InstructionsGuide markdown={markdown} className="mt-3" />}
-    </div>
+    <Alert tone="warning" className="mt-2">
+      {CLAUDE_CODE_WARNING} {CLAUDE_CODE_STREAMING} You can turn it off in Settings &gt; Models.
+    </Alert>
+  )
+}
+
+/** Under the background model when the main model is Claude Code: one plain line on who does the rest. */
+function BackgroundNote() {
+  const d = useOnboardingDraft()
+  const accepting = useClaudeCodeRoles()
+  if (!isClaudeCode(d.primary) || allowedForRole(d.primary, 'fast', accepting)) return null
+  if (!d.fast || isClaudeCode(d.fast)) {
+    return <p className="mt-2 text-xs text-warning">Claude Code only answers your chats. Pick a model here for memory and tasks.</p>
+  }
+  return (
+    <p className="mt-2 text-xs text-fg-muted">
+      Claude Code only answers your chats, so memory and tasks use {chatModelLabel(d.fast) || modelShortName(d.fast)}.
+    </p>
   )
 }

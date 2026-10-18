@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from sentient.gateway.deps import AUTH, get_core
-from sentient.llm.provider import ProviderError
+from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.tasks.service import TaskConflict, TaskNotFound
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"], dependencies=AUTH)
@@ -21,6 +21,7 @@ class CreateTaskBody(BaseModel):
     assignee: str | None = "ai"
     model: str | None = None
     browser_profile: str | None = None
+    memory_scope: str | None = None  # #155: personal (default), work or a project's name
 
 
 class PreviewBody(BaseModel):
@@ -47,6 +48,8 @@ async def _guard[T](awaitable: Awaitable[T]) -> T:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     except TaskConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PlainProviderError as exc:  # a refused job, no credits, a bad key...: say why and what to change
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ProviderError as exc:
         raise HTTPException(status_code=503, detail=f"The AI model is unavailable: {exc}") from exc
     except TypeError as exc:  # the model returned the wrong JSON shape
@@ -67,13 +70,30 @@ async def list_tasks(request: Request):
 @router.post("")
 async def create_task(request: Request, body: CreateTaskBody):
     return await _guard(_tasks(request).create_task(
-        body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile
+        body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile,
+        memory_scope=body.memory_scope,
     ))
 
 
 @router.post("/preview")
 async def preview_task(request: Request, body: PreviewBody):
     return await _guard(_tasks(request).preview(body.prompt))
+
+
+@router.get("/away")
+async def away_status(request: Request):
+    """Routines paused while the user was away (#163), before ``/{task_id}`` so "away" isn't read as an id."""
+    return await _tasks(request).away.status()
+
+
+@router.post("/away/resume")
+async def away_resume(request: Request):
+    return await _tasks(request).away.resume()
+
+
+@router.post("/away/keep")
+async def away_keep(request: Request):
+    return await _tasks(request).away.keep()
 
 
 @router.get("/{task_id}")
@@ -111,6 +131,12 @@ async def run_task_now(request: Request, task_id: str):
     return await _guard(_tasks(request).run_now(task_id))
 
 
+@router.post("/{task_id}/dry-run")
+async def try_task(request: Request, task_id: str):
+    """Try it first (#142): a run that only notes what it would send, change or run."""
+    return await _guard(_tasks(request).dry_run(task_id))
+
+
 @router.post("/{task_id}/archive")
 async def archive_task(request: Request, task_id: str):
     return await _guard(_tasks(request).archive(task_id))
@@ -134,11 +160,13 @@ async def cancel_run(request: Request, task_id: str, run_id: str):
 
 class AnswerBody(BaseModel):
     answer: str = ""
+    # the request being answered (its ``expires_at``): set, a run now waiting on another request refuses (#323)
+    expires_at: str | None = None
 
 
 @router.post("/{task_id}/runs/{run_id}/answer")
 async def answer_question(request: Request, task_id: str, run_id: str, body: AnswerBody):
-    return await _guard(_tasks(request).answer_question(task_id, run_id, body.answer))
+    return await _guard(_tasks(request).answer_question(task_id, run_id, body.answer, expect=body.expires_at))
 
 
 @router.post("/{task_id}/runs/{run_id}/retry")

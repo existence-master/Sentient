@@ -17,43 +17,44 @@ async def test_cud_add_update_delete_skip(app):
     mem, llm = app.memory, app.fake
     app.config.memory.duplicate_similarity = 0.999  # keep hashed toy embeddings out of the near-duplicate short-circuit
     llm.json_replies.append(
-        {"action": "ADD", "fact_id": None, "content": "Sarthak drinks black coffee",
+        {"action": "ADD", "fact_id": None, "content": "Maya drinks black coffee",
          "analysis": {"topics": ["Personal Identity"], "memory_type": "long-term", "duration": None}}
     )
-    added = await mem.remember("Sarthak drinks black coffee")
+    added = await mem.remember("Maya drinks black coffee")
     assert added["action"] == "ADD"
     fact = await mem.get_fact(added["id"])
     assert fact["topics"] == ["Personal Identity"] and fact["memory_type"] == "long-term"
 
     # exact duplicate short-circuits before any LLM call
     calls = len(llm.calls)
-    assert (await mem.remember("Sarthak drinks black coffee"))["action"] == "SKIP"
+    assert (await mem.remember("Maya drinks black coffee"))["action"] == "SKIP"
     assert len(llm.calls) == calls
 
     llm.json_replies.append(
-        {"action": "UPDATE", "fact_id": added["id"], "content": "Sarthak drinks black coffee with oat milk",
+        {"action": "UPDATE", "fact_id": added["id"], "content": "Maya drinks black coffee with oat milk",
          "analysis": {"topics": ["Personal Identity"], "memory_type": "long-term", "duration": None}}
     )
-    upd = await mem.remember("Sarthak drinks black coffee with oat milk now")
-    assert upd == {"action": "UPDATE", "id": added["id"], "content": "Sarthak drinks black coffee with oat milk"}
+    upd = await mem.remember("Maya drinks black coffee with oat milk now")
+    assert upd == {"action": "UPDATE", "id": added["id"], "content": "Maya drinks black coffee with oat milk",
+                   "previous": "Maya drinks black coffee"}
 
     llm.json_replies.append({"action": "SKIP", "fact_id": added["id"], "content": None, "analysis": None})
-    assert (await mem.remember("Sarthak drinks black coffee with oat milk daily"))["action"] == "SKIP"
+    assert (await mem.remember("Maya drinks black coffee with oat milk daily"))["action"] == "SKIP"
 
     llm.json_replies.append({"action": "DELETE", "fact_id": added["id"], "content": None, "analysis": None})
-    assert (await mem.remember("Sarthak drinks black coffee no more"))["action"] == "DELETE"
+    assert (await mem.remember("Maya drinks black coffee no more"))["action"] == "DELETE"
     assert await mem.count() == 0
 
 
 async def test_update_by_id_keeps_id_and_reanalyzes(app):
     mem, llm = app.memory, app.fake
-    r = await mem.remember("Sarthak works at Existence", use_llm=False)
+    r = await mem.remember("Maya works at Existence", use_llm=False)
     llm.json_replies.append({"topics": ["Work & Learning"], "memory_type": "long-term", "duration": None})
-    out = await mem.update_content(r["id"], "Sarthak is the founder of Existence")
-    assert out["id"] == r["id"] and out["content"] == "Sarthak is the founder of Existence"
+    out = await mem.update_content(r["id"], "Maya is the founder of Existence")
+    assert out["id"] == r["id"] and out["content"] == "Maya is the founder of Existence"
     assert out["topics"] == ["Work & Learning"]
     row = await app.store.fetchone("SELECT previous_content FROM facts WHERE id = ?", (r["id"],))
-    assert row["previous_content"] == "Sarthak works at Existence"
+    assert row["previous_content"] == "Maya works at Existence"
     hits = await mem.recall("founder of Existence", min_similarity=0.0)
     assert hits and hits[0]["id"] == r["id"]
 
@@ -61,10 +62,10 @@ async def test_update_by_id_keeps_id_and_reanalyzes(app):
 async def test_short_term_expiry_and_purge(app):
     mem, llm = app.memory, app.fake
     llm.json_replies.append(
-        {"action": "ADD", "fact_id": None, "content": "Sarthak has a dentist appointment on Friday",
+        {"action": "ADD", "fact_id": None, "content": "Maya has a dentist appointment on Friday",
          "analysis": {"topics": ["Health & Wellbeing"], "memory_type": "short-term", "duration": "3 days"}}
     )
-    r = await mem.remember("Sarthak has a dentist appointment on Friday")
+    r = await mem.remember("Maya has a dentist appointment on Friday")
     fact = await mem.get_fact(r["id"])
     assert fact["memory_type"] == "short-term" and fact["expires_at"]
     assert (await mem.expiring_soon())== []
@@ -77,10 +78,10 @@ async def test_short_term_expiry_and_purge(app):
 
 async def test_list_filters_topics_and_delete_by_source(app):
     mem = app.memory
-    a = await mem.remember("Sarthak plays chess on weekends", use_llm=False, source="manual")
+    a = await mem.remember("Maya plays chess on weekends", use_llm=False, source="manual")
     await app.store.execute("UPDATE facts SET topics = ? WHERE id = ?", ('["Interests & Lifestyle"]', a["id"]))
-    await mem.remember("Sarthak studied computer engineering", use_llm=False, source="file:cv.txt")
-    await mem.remember("Sarthak knows Python very well", use_llm=False, source="file:cv.txt")
+    await mem.remember("Maya studied computer engineering", use_llm=False, source="file:cv.txt")
+    await mem.remember("Maya knows Python very well", use_llm=False, source="file:cv.txt")
 
     assert [f["id"] for f in await mem.list_facts(topic="Interests & Lifestyle")] == [a["id"]]
     assert len(await mem.list_facts(source="file:cv.txt")) == 2
@@ -99,8 +100,8 @@ async def test_graph_links_similar_facts(app):
     mem = app.memory
     app.config.memory.graph_link_similarity = 0.8
     app.config.memory.duplicate_similarity = 0.999
-    a = await mem.remember("Sarthak loves hiking mountains", use_llm=False)
-    b = await mem.remember("Sarthak loves hiking mountains often", use_llm=False)
+    a = await mem.remember("Maya loves hiking mountains", use_llm=False)
+    b = await mem.remember("Maya loves hiking mountains often", use_llm=False)
     await mem.remember("zebra quantum violin", use_llm=False)
     g = await mem.graph()
     assert len(g["nodes"]) == 3
@@ -113,18 +114,18 @@ async def test_graph_links_similar_facts(app):
 async def test_extraction_personalizes_and_drops_requests(app):
     mem, llm = app.memory, app.fake
     llm.json_replies.append(
-        {"facts": ["The user's sister Riya lives in Pune", "Sarthak asked what day it is", "USERNAME likes tea"]}
+        {"facts": ["The user's sister Riya lives in Pune", "Maya asked what day it is", "USERNAME likes tea"]}
     )
-    facts = await mem.extract_facts("my sister riya lives in pune. what day is it? I like tea", "Sarthak")
-    assert facts == ["Sarthak's sister Riya lives in Pune", "Sarthak likes tea"]
+    facts = await mem.extract_facts("my sister riya lives in pune. what day is it? I like tea", "Maya")
+    assert facts == ["Maya's sister Riya lives in Pune", "Maya likes tea"]
     system = llm.calls[-1]["messages"][0]["content"]
-    assert "Never write the words" in system and "Sarthak" in system
+    assert "Never write the words" in system and "Maya" in system
 
 
 async def test_bus_events_on_changes(app):
     events = []
     async with app.bus.subscribe() as q:
-        r = await app.memory.remember("Sarthak owns a red bicycle", use_llm=False, notify=True)
+        r = await app.memory.remember("Maya owns a red bicycle", use_llm=False, notify=True)
         await app.memory.forget(r["id"], notify=True)
         while not q.empty():
             events.append(await q.get())

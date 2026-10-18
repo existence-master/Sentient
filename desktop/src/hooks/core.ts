@@ -127,6 +127,30 @@ export function useRenameSession() {
   })
 }
 
+/** Pick a chat's own model, or null to follow the default (#312). */
+export function useSetChatModel() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, model }: { id: string; model: string | null }) => api.sessions.setModel(id, model),
+    onMutate: ({ id, model }) => {
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === id ? { ...s, model } : s)))
+    },
+    onError: () => void qc.invalidateQueries({ queryKey: qk.sessions })
+  })
+}
+
+/** The memories one chat uses (#155). */
+export function useSetChatScope() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: string | null }) => api.sessions.setScope(id, scope),
+    onMutate: ({ id, scope }) => {
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === id ? { ...s, memory_scope: scope ?? 'personal' } : s)))
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.sessions })
+  })
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient()
   return useMutation({
@@ -146,10 +170,54 @@ export function useFiles() {
   return useQuery({ queryKey: qk.files, queryFn: api.files.list })
 }
 
+/** Whether an attachment's file is still there (#458); only asked when `enabled`. */
+export function useFileExists(name: string, enabled: boolean) {
+  return useQuery({ queryKey: qk.fileExists(name), queryFn: () => api.files.exists(name), enabled, staleTime: 60_000 })
+}
+
 export function useTools() {
   return useQuery({ queryKey: qk.tools, queryFn: api.tools.list, staleTime: 5 * 60_000 })
 }
 
 export function useUsage(days = 30) {
   return useQuery({ queryKey: qk.usage(days), queryFn: () => api.usage.get(days) })
+}
+
+/** The cost meter and the monthly budget (#148). Refreshed every minute while shown. */
+export function useUsageCost() {
+  return useQuery({ queryKey: qk.usageCost, queryFn: api.usage.cost, refetchInterval: 60_000 })
+}
+
+/** "Keep going this month" once the budget (set to ask) is used up. */
+export function useKeepGoing() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: api.usage.keepGoing,
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['usage'] })
+  })
+}
+
+/** Live "Allow for this task" and "Allow for 1 hour" answers (#139). Empty on engines without them. */
+export function useApprovalGrants() {
+  return useQuery({
+    queryKey: qk.approvalGrants,
+    queryFn: async () => {
+      try {
+        return (await api.approvals.grants()).grants
+      } catch (err) {
+        if (isNotImplemented(err)) return []
+        throw err
+      }
+    },
+    // a timed grant runs out on its own: look again now and then while Settings is open
+    refetchInterval: 60_000
+  })
+}
+
+export function useRevokeGrant() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.approvals.revokeGrant(id),
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.approvalGrants })
+  })
 }

@@ -314,7 +314,12 @@ async def test_photo_and_document_become_attachments(wa, llm):
     await wa.say("what is this", media=[WAMedia(kind="image", name="whatsapp-image-1.jpg", mime="image/jpeg", size=12, ref="img")])
     assert (paths.files_dir() / "uploads" / "whatsapp-image-1.jpg").read_bytes() == b"\xff\xd8\xff\xe0fakejpeg"
     content = llm.calls[-1]["messages"][-1]["content"]
-    assert isinstance(content, list) and "what is this" in content[0]["text"]
+    assert isinstance(content, list)
+    assert any(
+        block.get("type") == "text"
+        and "what is this" in block.get("text", "")
+        for block in content
+    )
     await wa.say(media=[WAMedia(kind="document", name="notes.txt", mime="text/plain", size=22, ref="doc")])
     assert "hello from a text file" in llm.calls[-1]["messages"][-1]["content"]
     await wa.say(media=[WAMedia(kind="document", name="huge.zip", size=50 * 1024 * 1024, ref="big")])
@@ -331,9 +336,11 @@ async def test_approval_by_numbered_reply(wa, llm):
     await wa.say("what time is it", wait=False)
     await until(lambda: wa.hub.message_with("Approval needed") is not None)
     msg = wa.hub.message_with("Approval needed")
-    assert msg["text"].endswith("Reply with a number:\n*1* Allow\n*2* Allow for this chat\n*3* Deny")
+    assert msg["text"].endswith(
+        "Reply with a number:\n*1* Allow\n*2* Allow for this chat\n*3* Allow for 1 hour\n*4* Always allow\n*5* Deny"
+    )
     await wa.say("7", reply_to=msg["id"], wait=False)
-    await until(lambda: wa.hub.last() == "Reply with a number from 1 to 3.")
+    await until(lambda: wa.hub.last() == "Reply with a number from 1 to 5.")
     await wa.say("1", reply_to=msg["id"])
     await wa.ch.wait_idle()
     edits = [s for s in wa.hub.sent if s["op"] == "edit" and s["id"] == msg["id"]]
@@ -348,7 +355,7 @@ async def test_a_bare_number_answers_the_waiting_approval(wa, llm):
     llm.replies = [[tool_call("current_datetime")], "Okay, I won't."]
     await wa.say("what time is it", wait=False)
     await until(lambda: wa.hub.message_with("Approval needed") is not None)
-    await wa.say("3")
+    await wa.say("5")
     await wa.ch.wait_idle()
     assert "_Denied._" in wa.hub.screen() and wa.hub.last() == "Okay, I won't."
     llm.replies = ["Three it is."]
@@ -426,9 +433,15 @@ async def test_voice_note_in_and_voice_note_out(wa, llm, monkeypatch):
     await wa.say(media=[WAMedia(kind="voice", name="whatsapp-voice-ABC.ogg", mime="audio/ogg; codecs=opus", size=10, ref="v1")])
     assert voice.received == [(b"OggS-voice", "whatsapp-voice-ABC.ogg")]
     assert "_Heard:_ what's the weather in Pune" in wa.hub.screen()
-    assert llm.calls[-1]["messages"][-1]["content"] == "what's the weather in Pune"
+    content = llm.calls[-1]["messages"][-1]["content"]
+    assert isinstance(content, str)
+    assert content.endswith("what's the weather in Pune")
     assert wa.hub.last() == "It's sunny."
     notes = [s for s in wa.hub.sent if s["op"] == "voice"]
+    print("Voice replies enabled:", wa.app.config.channels.whatsapp.voice_replies)
+    print("Voice service:", repr(wa.app.voice))
+    print("Sent operations:", [s["op"] for s in wa.hub.sent])
+    print("All sent messages:", repr(wa.hub.sent))
     assert len(notes) == 1 and notes[0]["data"].startswith(b"OggS") and notes[0]["seconds"] >= 1
 
 

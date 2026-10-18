@@ -22,7 +22,7 @@ agent engine. Sentient's own USPs from v2 are preserved exactly:
   history search.
 - **Proactivity**: watches connected apps, reasons over your context and
   suggests actions, learning per suggestion type from approve/dismiss.
-- **Integrations**: Google Workspace, GitHub, Slack, Notion, Discord, Trello,
+- **Integrations**: Google Workspace, GitHub, Slack, Notion, Discord, Trello, Home Assistant,
   WhatsApp, web search, weather, maps, news, charts, and any MCP server.
 - **Voice mode**: hands-free conversation, and the path to the smart glasses.
 
@@ -99,6 +99,7 @@ never shown to the user.
 | `sentient/evolution`, `sentient/skills` | skill reviewer, curator, profile upkeep, SKILL.md library | new (Hermes Agent) |
 | `sentient/voice` | STT/TTS providers, VAD, wake word and talk mode, device audio (pcm16), `/ws/voice` loop | `main/voice` (FastRTC) |
 | `sentient/sandbox` | `execute_code`: Python scripts calling tools over a one-time loopback bridge; process or Docker backend | new (Hermes programmatic tool calling) |
+| `sentient/folders` | folders and Obsidian vaults as notes: read-only scans in threads, chunks, FTS5 + sqlite-vec index, watcher, `folder_search`/`folder_read` (ADR 0025) | new (Smart Connections, Khoj) |
 | `sentient/terminal` | `terminal_run`: approved commands on the host in allowed folders, built-in blocklist, secrets kept out, off by default (ADR 0019) | new (Hermes local terminal) |
 | `sentient/browser` | Playwright on the installed Edge/Chrome, snapshot refs, risk heuristics, headed sign-in, live frames | new (OpenClaw, Hermes) |
 | `sentient/nodes` | device pairing, invoke/result protocol, LAN TLS listener, mDNS, device tools, web device app, reference node | new (OpenClaw nodes) |
@@ -162,8 +163,9 @@ budget), context compression first calls `memory.flush_conversation`, and
 
 ### Memory is pushed, not pulled
 Each turn the system prompt carries SOUL.md (persona), USER.md, MEMORY.md,
-recent daily notes, recalled facts, the skill index, the clock and a running
-summary of long conversations. v2 relied on the model deciding to call a memory
+recent daily notes, recalled facts, the skill index, and a running
+summary of long conversations. The current clock goes with the latest user
+message instead. v2 relied on the model deciding to call a memory
 tool before it knew anything about you. Tools remain for explicit recall,
 remembering, forgetting and history search. Memories learned from outside
 content (an email, a web page), from work nobody asked for, or from an import
@@ -199,9 +201,9 @@ keychain; file tools confined to `~/.sentient/files`; external links open in the
 system browser; strict renderer CSP with context isolation and sandboxing.
 
 Approvals use each call's effective risk: a browser click on "Place order" or a device photo is a `send`
-that asks every time, even after "allow for this chat". Lasting rules per app or tool (Allow, Ask, Never;
+that asks every time, even after "allow for this chat". Lasting rules per app or tool (Allow, Only if I asked, Ask, Hand it to me, Never;
 [ADR 0016](adr/0016-lasting-approval-rules.md)) are applied in code before the mode, and purchases ask even under
-Allow. The browser never types into password, card or
+Allow. "Only if I asked" counts only the user's own words in a chat turn; "Hand it to me" never runs the action. The browser never types into password, card or
 one-time-code fields. Scripts from `execute_code` get no API keys and may only call read and internal tools.
 Subagents cannot send, execute or spawn more subagents. Messaging bots answer paired chats only; device and
 hook secrets are stored as hashes; bot tokens live in the keychain and are scrubbed from logs.

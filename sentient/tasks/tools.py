@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sentient.memory import scopes as memory_scopes
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 
 
@@ -38,6 +39,7 @@ def _compact(task: dict) -> dict:
         "task_type": task["task_type"],
         "schedule": task["schedule"],
         "enabled": task["enabled"],
+        "keep_running": task.get("keep_running", False),
         "next_execution_at": task["next_execution_at"],
         "last_execution_at": task["last_execution_at"],
         "plan": task["plan"],
@@ -78,7 +80,12 @@ async def create_task_from_prompt(ctx: ToolContext, prompt: str, is_swarm: bool 
     context = {"source": "chat"}
     if ctx.session_id:
         context["session_id"] = ctx.session_id
-    task = await svc.create_task(prompt, is_swarm=is_swarm, source="chat", original_context=context)
+    # a task made in a work chat uses work memories (#155); personal ones stay the default
+    scope = await memory_scopes.for_context(ctx)
+    task = await svc.create_task(
+        prompt, is_swarm=is_swarm, source="chat", original_context=context,
+        memory_scope=None if scope in (None, memory_scopes.PERSONAL, memory_scopes.ALWAYS) else scope,
+    )
     short = prompt[:50] + "..." if len(prompt) > 50 else prompt
     return {
         "status": "success",
@@ -121,14 +128,16 @@ async def update_task(
     description: str | None = None,
     enabled: bool | None = None,
     schedule: dict | None = None,
+    keep_running: bool | None = None,
     script_code: str | None = None,
     script_condition: str | None = None,
     script_then: str | None = None,
 ) -> dict:
     """Change an existing task directly: rename it, edit its description, turn it on or off (`enabled`),
+    keep a routine running even while the user is away (`keep_running`; others pause after a long absence),
     change its `schedule` (same shape as in search_tasks results; every N minutes is
     {"type": "recurring", "frequency": "interval", "interval_minutes": N}), or edit a watch job's check
-    script (`script_code`, `script_condition` "alert"|"changed"|"every_run", `script_then` "notify"|"run").
+    script (`script_code`, `script_condition` "alert"|"changed"|"noteworthy"|"every_run", `script_then` "notify"|"run").
     Changed script code waits for the user's approval before it runs again. To change what a normal
     task does, use request_task_change instead."""
     svc = _service(ctx)
@@ -137,7 +146,8 @@ async def update_task(
     from sentient.tasks.service import TaskConflict, TaskNotFound
 
     fields: dict[str, Any] = {}
-    for key, value in (("name", name), ("description", description), ("enabled", enabled), ("schedule", schedule)):
+    for key, value in (("name", name), ("description", description), ("enabled", enabled), ("schedule", schedule),
+                       ("keep_running", keep_running)):
         if value is not None:
             fields[key] = value
     script = {k: v for k, v in (("code", script_code), ("condition", script_condition), ("then", script_then)) if v}

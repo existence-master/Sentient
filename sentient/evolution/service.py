@@ -31,12 +31,14 @@ from typing import Any
 from sentient.evolution import prompts
 from sentient.evolution.log import log_event
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import CLEAN as CLEAN_SUMMARY
 from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
-from sentient.skills.loader import slugify, valid_name
-from sentient.store.db import now_iso
+from sentient.skills import checks as skill_checks
+from sentient.skills.loader import render_skill, slugify, valid_name
+from sentient.store.db import after_watermark, next_watermark, now_iso
 
 log = logging.getLogger(__name__)
 
@@ -44,10 +46,14 @@ SECTIONS = ["When to use", "Procedure", "Pitfalls", "Verification"]
 TRANSCRIPT_BUDGET = 14_000
 REVIEW_LOOKBACK_DAYS = 3
 STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
+# the memory scopes the profile files (MEMORY.md, USER.md) are built from (#155); work and project chats leave them out
+PROFILE_SCOPES = "COALESCE(scope, 'personal') IN ('personal', 'always')"
 DONE_STATUSES = {"completed", "completed_with_errors"}
 FAILED_RUN_STATUSES = {"error", "failed", "completed_with_errors"}
 REPAIR_TRANSCRIPT_BUDGET = 6_000
 MAX_TRACKED_TURNS = 200
+PROFILE_FACTS_MARK = "evolution.profile_facts_mark"  # what profile upkeep read last (store.db.next_watermark)
+PROFILE_SUMMARIES_MARK = "evolution.profile_summaries_mark"
 
 # cheap first pass before one fast-model confirmation; false positives are fine, misses are not
 _CORRECTION_RE = re.compile(
@@ -129,6 +135,7 @@ def looks_like_correction(text: str) -> bool:
 
 class EvolutionService(Service):
     name = "evolution"
+    model_kind = "skills"
     pause_on_stop = True  # Stop everything pauses reviews, the curator and profile updates until resume
 
     def __init__(self, app):
@@ -189,7 +196,8 @@ class EvolutionService(Service):
             self._task_runs.setdefault((data["task_id"], data.get("run_id")), datetime.now(UTC))
         elif kind == "task.updated" and data.get("status") in DONE_STATUSES and data.get("task_id"):
             runs = data.get("runs") or []
-            run_id = next((r.get("run_id") for r in reversed(runs) if r.get("status") in DONE_STATUSES | {"completed"}), None)
+            run_id = next((r.get("run_id") for r in reversed(runs)
+                           if r.get("status") in DONE_STATUSES | {"completed"} and not r.get("dry_run")), None)
             self._task_runs.setdefault((data["task_id"], run_id), datetime.now(UTC))
 
     async def _tick(self) -> None:
@@ -241,18 +249,21 @@ class EvolutionService(Service):
         idle = cfg.review_idle_minutes if idle_minutes is None else idle_minutes
         cutoff = (now - timedelta(minutes=idle)).isoformat()
         lookback = (now - timedelta(days=REVIEW_LOOKBACK_DAYS)).isoformat()
+        # "<=": a message saved in the same clock tick as the last one reviewed still counts (#297, #236)
         rows = await self.app.store.fetchall(
-            "SELECT s.id, s.updated_at, r.activity_at FROM sessions s"
+            "SELECT s.id, s.updated_at, r.activity_at, r.activity_mark FROM sessions s"
             " LEFT JOIN evolution_reviews r ON r.target = 'session:' || s.id"
-            " WHERE s.updated_at <= ? AND s.updated_at >= ? AND (r.activity_at IS NULL OR r.activity_at < s.updated_at)"
+            " WHERE s.updated_at <= ? AND s.updated_at >= ? AND (r.activity_at IS NULL OR r.activity_at <= s.updated_at)"
+            " AND s.incognito = 0"  # skills are never learned from an incognito chat (#154)
             " ORDER BY s.updated_at",
             (cutoff, lookback),
         )
         due = []
         for r in rows:
+            after, params = after_watermark(r["activity_mark"] or r["activity_at"] or "", "created_at", "id")
             n = await self.app.store.fetchone(
-                "SELECT COUNT(*) AS n FROM messages WHERE session_id = ? AND role = 'tool' AND created_at > ?",
-                (r["id"], r["activity_at"] or ""),
+                f"SELECT COUNT(*) AS n FROM messages WHERE session_id = ? AND role = 'tool' AND {after}",
+                (r["id"], *params),
             )
             if n and int(n["n"]) >= cfg.min_tool_calls_for_review:
                 due.append(r["id"])
@@ -324,32 +335,43 @@ class EvolutionService(Service):
             text = text[:half] + "\n[... middle of the transcript omitted ...]\n" + text[-half:]
         return text, tool_calls
 
-    async def _record_review(self, target: str, activity_at: str | None, tool_calls: int, decision: str, skill: str | None) -> None:
+    async def _record_review(
+        self, target: str, activity_at: str | None, tool_calls: int, decision: str, skill: str | None,
+        mark: str | None = None,
+    ) -> None:
         await self.app.store.execute(
-            "INSERT INTO evolution_reviews(target, reviewed_at, activity_at, tool_calls, decision, skill) VALUES(?,?,?,?,?,?)"
-            " ON CONFLICT(target) DO UPDATE SET reviewed_at = excluded.reviewed_at, activity_at = excluded.activity_at,"
+            "INSERT INTO evolution_reviews(target, reviewed_at, activity_at, activity_mark, tool_calls, decision, skill)"
+            " VALUES(?,?,?,?,?,?,?) ON CONFLICT(target) DO UPDATE SET reviewed_at = excluded.reviewed_at,"
+            " activity_at = excluded.activity_at, activity_mark = excluded.activity_mark,"
             " tool_calls = excluded.tool_calls, decision = excluded.decision, skill = COALESCE(excluded.skill, skill)",
-            (target, now_iso(), activity_at, tool_calls, decision, skill),
+            (target, now_iso(), activity_at, mark, tool_calls, decision, skill),
         )
 
     async def review_session(self, session_id: str, *, force: bool = False) -> dict:
         store = self.app.store
+        if await store.is_incognito(session_id):  # never learned from (#154)
+            return {"reviewed": False, "decision": "skipped"}
         target = f"session:{session_id}"
-        prev = await store.fetchone("SELECT activity_at FROM evolution_reviews WHERE target = ?", (target,))
-        since = (prev["activity_at"] if prev else None) or ""
+        prev = await store.fetchone(
+            "SELECT activity_at, activity_mark FROM evolution_reviews WHERE target = ?", (target,)
+        )
+        # what the last review read: messages saved in the same clock tick as its last one are still new (#297)
+        since = (prev["activity_mark"] or prev["activity_at"] if prev else None) or ""
+        after, params = after_watermark(since, "created_at", "id")
         rows = [
             dict(r)
             for r in await store.fetchall(
-                "SELECT role, content, tool_calls, name, created_at FROM messages WHERE session_id = ? AND created_at > ?"
-                " ORDER BY created_at, rowid",
-                (session_id, since),
+                "SELECT id, role, content, tool_calls, name, created_at FROM messages"
+                f" WHERE session_id = ? AND {after} ORDER BY created_at, rowid",
+                (session_id, *params),
             )
         ]
         if force and not rows:
             rows = [
                 dict(r)
                 for r in await store.fetchall(
-                    "SELECT role, content, tool_calls, name, created_at FROM messages WHERE session_id = ? ORDER BY created_at, rowid",
+                    "SELECT id, role, content, tool_calls, name, created_at FROM messages WHERE session_id = ?"
+                    " ORDER BY created_at, rowid",
                     (session_id,),
                 )
             ]
@@ -357,12 +379,13 @@ class EvolutionService(Service):
             return {"reviewed": False, "decision": "skipped"}
         transcript, tool_calls = self._transcript_from_messages(rows)
         activity_at = rows[-1]["created_at"]
+        mark = next_watermark(since, rows, "created_at", "id")
         if tool_calls < self.app.config.evolution.min_tool_calls_for_review:
-            await self._record_review(target, activity_at, tool_calls, "skipped", None)
+            await self._record_review(target, activity_at, tool_calls, "skipped", None, mark)
             return {"reviewed": False, "decision": "skipped"}
         async with self._review_lock:
             decision, skill = await self._review(transcript, label="Conversation transcript", origin={"session_id": session_id})
-        await self._record_review(target, activity_at, tool_calls, decision, skill)
+        await self._record_review(target, activity_at, tool_calls, decision, skill, mark)
         return {"reviewed": True, "decision": decision, "skill": skill}
 
     async def _task_run_log(self, task_id: str, run_id: str | None) -> tuple[str, int, str | None, str | None]:
@@ -475,20 +498,34 @@ class EvolutionService(Service):
         plugin_ids = {p.id for p in self.app.registry.plugins()}
         requires = [str(t) for t in raw.get("requires_tools") or [] if str(t) in plugin_ids]
         tags = [str(t) for t in raw.get("tags") or []][:8]
+        validate = skill_checks.merge(existing.validate if existing else [], skill_checks.parse(raw.get("validate"))[0])
+        body = ensure_sections(body)
+        report = await self.check_skill(name, validate, origin=origin, description=description, body=body)
+        if skill_checks.failure(report):
+            return None  # a skill whose own check fails isn't proposed (#386)
         lib.write(
-            name, description, ensure_sections(body),
+            name, description, body,
             author=existing.author if existing else "assistant",
             tags=tags or (existing.tags if existing else []),
             requires_tools=requires or (existing.requires_tools if existing else []),
-            pending=True, created_by_review=True,
+            pending=True, created_by_review=True, validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
+        await lib.record_check(name, report, self.app.store, pending=True)
+        user_edited = existing is not None and (await lib.edit_state(name, self.app.store))["user_edited"]
         kind = "skill_patched" if existing else "skill_created"
-        await log_event(
-            self.app.store, kind, {"name": name, "pending": True, "reason": raw.get("reason"), **origin}
-        )
+        detail = {"name": name, "pending": True, "reason": raw.get("reason"), **origin}
+        if user_edited:
+            detail["user_edited"] = True
+        await log_event(self.app.store, kind, detail)
         self.app.bus.publish("skill.updated", {"name": name, "state": "pending_review"})
-        if existing:
+        if user_edited:
+            msg = (
+                f"You changed **{name}** yourself, so I left it as it is and drafted an update for you to compare. "
+                "Review the change in Skills."
+            )
+            title = "Skill update to review"
+        elif existing:
             msg = f"I found a better way to do **{name}** and drafted an update. Review the change in Skills."
             title = "Skill update to review"
         else:
@@ -498,6 +535,25 @@ class EvolutionService(Service):
             "skill", msg, title=title, payload={"skill": name, "action": decision, "origin": origin}
         )
         return name
+
+    async def check_skill(
+        self, name: str, validate: list[dict], *, origin: dict, description: str, body: str
+    ) -> dict | None:
+        """Run a drafted skill's checks before it is proposed (#386): its file checks now, in the active skill's folder
+        and Sentient's files folder. This is work Sentient started itself, so a code check never runs here (ADR 0017):
+        it waits for the user's approval. A failure is logged as ``skill_check_failed`` and the draft is dropped."""
+        if not validate:
+            return None
+        current = self.app.skills.get_active_file(name)
+        draft = render_skill(name, description, body, author="assistant", version=1, tags=[], requires_tools=[],
+                             validate=validate)  # what a check of SKILL.md itself reads
+        report = await skill_checks.run(self.app, name, validate, [current.dir] if current else [], run_code=False,
+                                        candidate=draft)
+        if reason := skill_checks.failure(report):
+            log.info("skill %s not proposed: its check failed (%s)", name, reason)
+            clean = {k: v for k, v in origin.items() if v is not None}
+            await log_event(self.app.store, "skill_check_failed", {"name": name, "reason": reason, **clean})
+        return report
 
     # ------------------------------------------------------------------ repair during use
     async def handle_repair_event(self, event: dict) -> list[str]:
@@ -520,6 +576,8 @@ class EvolutionService(Service):
         if not sid:
             return []
         lib, store = self.app.skills, self.app.store
+        if await store.is_incognito(sid):  # an incognito chat never shapes skills (#154)
+            return []
         proposed: list[str] = []
         prev = self._last_skill_turn.pop(sid, None)
         user_text = str(data.get("user_text") or "")
@@ -665,6 +723,10 @@ class EvolutionService(Service):
         now = datetime.now(UTC)
         if await self._repair_cooling_down(name, now):
             return None
+        user_edited = (await lib.edit_state(name, self.app.store))["user_edited"]
+        skill_text = f"description: {current.description}\n\n{current.body}"[:6000]
+        if user_edited:  # small models keep the user's wording when told plainly
+            skill_text += "\n\n(The user edited this skill by hand. Keep their changes; change only what fixes the problem.)"
         self._repairing.add(name)
         try:
             raw = await self.app.llm.complete_json(
@@ -674,7 +736,7 @@ class EvolutionService(Service):
                     {
                         "role": "user",
                         "content": prompts.REPAIR_USER.format(
-                            name=name, skill=f"description: {current.description}\n\n{current.body}"[:6000],
+                            name=name, skill=skill_text,
                             failure=failure[:2000], transcript=transcript or "(not available)",
                         ),
                     },
@@ -698,20 +760,28 @@ class EvolutionService(Service):
         description = " ".join(str(raw.get("description") or "").split()) or current.description
         fix = " ".join(str(raw.get("reason") or "").split())
         full_reason = (reason.rstrip(". ") + (f". {fix}" if fix else ""))[:400]
+        validate = skill_checks.merge(current.validate, skill_checks.parse(raw.get("validate"))[0])
+        report = await self.check_skill(name, validate, origin={"repair": True, **origin}, description=description,
+                                        body=body)
+        if skill_checks.failure(report):
+            return None  # the fix doesn't pass the skill's own check (#386)
         lib.write(
             name, description, body, author=current.author, tags=current.tags,
             requires_tools=current.requires_tools, pending=True, created_by_review=current.created_by_review,
+            validate=validate,
         )
         await lib.record_patch(name, "pending_review", self.app.store)
+        await lib.record_check(name, report, self.app.store, pending=True)
         clean_origin = {k: v for k, v in origin.items() if v is not None}
-        await log_event(
-            self.app.store, "skill_repair_proposed",
-            {"name": name, "pending": True, "origin": "repair", "failure": failure_kind, "reason": full_reason, **clean_origin},
-        )
+        detail = {"name": name, "pending": True, "origin": "repair", "failure": failure_kind, "reason": full_reason, **clean_origin}
+        if user_edited:
+            detail["user_edited"] = True
+        await log_event(self.app.store, "skill_repair_proposed", detail)
         self.app.bus.publish("skill.updated", {"name": name, "state": "pending_review"})
+        kept = " You edited it yourself, so I left your version in place." if user_edited else ""
         await self.app.notify(
             "skill",
-            f"**{name}** didn't work as planned: {reason.rstrip('.')}. I drafted a fix. Review the change in Skills.",
+            f"**{name}** didn't work as planned: {reason.rstrip('.')}.{kept} I drafted a fix. Review the change in Skills.",
             title="Skill fix to review",
             payload={"skill": name, "action": "patch", "origin": "repair", "reason": full_reason, **clean_origin},
         )
@@ -756,7 +826,7 @@ class EvolutionService(Service):
                 merges = await self._merge_suggestions(stats)
         lib.reload()
         with contextlib.suppress(Exception):
-            self.app.skills.reload({p.id for p in self.app.registry.plugins()})
+            self.app.skills.reload(self.app._available_tools())
         await store.set_meta("evolution.curator_last_run", now.isoformat())
         detail = {"staled": staled, "archived": archived, "merge_proposals": merges}
         await log_event(store, "curator_run", detail, ts=now.isoformat())
@@ -819,18 +889,32 @@ class EvolutionService(Service):
             return {"updated": False}
         since = (last or now - timedelta(days=30)).isoformat()
         nowiso = now.isoformat()
+        # what upkeep read last time: rows saved in the same clock tick as that read are still picked up (#236)
+        facts_mark = await store.get_meta(PROFILE_FACTS_MARK) or since
+        summaries_mark = await store.get_meta(PROFILE_SUMMARIES_MARK) or since
+        after, params = after_watermark(facts_mark, "updated_at", "id")
+        # MEMORY.md and USER.md are personal: work and project memories never go in them (#155)
         new_facts = await store.fetchall(
-            "SELECT content, topics, source FROM facts WHERE status = 'active' AND memory_type = 'long-term' AND updated_at > ?"
-            " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at",
-            (since, nowiso),
+            "SELECT id, content, topics, source, updated_at FROM facts WHERE status = 'active' AND state = 'current'"
+            f" AND memory_type = 'long-term' AND {after} AND (expires_at IS NULL OR expires_at > ?)"
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at, id",
+            (*params, nowiso),
         )
         # chats that read outside content never feed MEMORY.md (ADR 0021): their facts wait for review and their
         # summaries are left out
+        after, params = after_watermark(summaries_mark, "created_at", "id")
+        personal, personal_params = memory_scopes.personal_summary_sql(cfg)  # no work or project chat's (#155)
         new_summaries = await store.fetchall(
-            f"SELECT content FROM summaries WHERE created_at > ? AND {CLEAN_SUMMARY} ORDER BY end_at DESC LIMIT 8",
-            (since,),
+            f"SELECT id, content, created_at FROM summaries WHERE {after} AND {CLEAN_SUMMARY} AND {personal}"
+            " ORDER BY created_at, id LIMIT 8",  # in watermark order, so the limit never jumps over a summary
+            (*params, *personal_params),
         )
         await store.set_meta("evolution.profile_last_run", nowiso)
+        # saved after every read, also an empty one: the next read starts where this one did, never at this run's time
+        await store.set_meta(PROFILE_FACTS_MARK, next_watermark(facts_mark, new_facts, "updated_at", "id"))
+        await store.set_meta(
+            PROFILE_SUMMARIES_MARK, next_watermark(summaries_mark, new_summaries, "created_at", "id")
+        )
         if not new_facts and not new_summaries:
             return {"updated": False}
 
@@ -842,12 +926,15 @@ class EvolutionService(Service):
 
         budget = cfg.memory.workspace_budget_chars
         all_facts = await store.fetchall(
-            "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
-            " ORDER BY updated_at DESC LIMIT 80",
+            "SELECT content FROM facts WHERE status = 'active' AND state = 'current'"
+            " AND (expires_at IS NULL OR expires_at > ?)"
+            f" AND {PROFILE_SCOPES} ORDER BY updated_at DESC, id DESC LIMIT 80",
             (nowiso,),
         )
         summaries = await store.fetchall(
-            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} ORDER BY end_at DESC LIMIT 8"
+            f"SELECT content FROM summaries WHERE {CLEAN_SUMMARY} AND {personal}"
+            " ORDER BY end_at DESC, rowid DESC LIMIT 8",
+            personal_params,
         )
         current = app.workspace.read_full()["memory"]
         memory_chars = 0

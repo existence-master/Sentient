@@ -102,7 +102,7 @@ Actions:
 
 Instructions:
 1. Analyze the new information to understand its intent.
-2. Compare it with the existing facts listed (they come with their IDs and similarity scores). Only use IDs from that list. A fact marked "same_subject_attribute" is about the same person and the same attribute (where they live, their job, relationship, diet...): if the new information changes that attribute (e.g. "moved to Bengaluru" vs "lives in Pune"), UPDATE that fact instead of adding a second one.
+2. Compare it with the existing facts listed (they come with their IDs and similarity scores). Only use IDs from that list. A fact marked "same_subject_attribute" is about the same person and the same attribute (where they live, their job, relationship, diet...): if the new information changes that attribute (e.g. "moved to Bengaluru" vs "lives in Pune"), UPDATE that fact instead of adding a second one. A fact marked "changes_value" states a different date, place, number or name for the same thing: the new information is a correction, so UPDATE that fact (e.g. "Mira's school now starts in July" vs "Mira starts school in June"). A correction is never SKIP.
 3. Decide the action. When the existing list is empty, the action is ADD.
 4. For ADD or UPDATE you MUST perform a complete analysis on the new `content`:
    - topics: one or more of: {TOPIC_LIST_STR}
@@ -194,6 +194,12 @@ Conversation:
 {transcript}"""
 
 
+IMPORT_USER = """This comes from {username}'s {app} account: messages {username} wrote to {app}, and notes {app} kept about {username}. Extract only lasting facts about {username}: who they are, their people, work, home, health, habits, preferences and plans.
+Ignore questions, requests and tasks {username} wanted help with (and their budgets or formats), and the content of documents, code or emails they pasted.
+
+{sections}"""
+
+
 # ---------------------------------------------------------------- user model (dialectic refresh)
 USER_MODEL_DIMENSIONS = [
     "preferences", "communication", "goals", "routines", "relationships", "values", "work_style", "dislikes", "context",
@@ -253,6 +259,14 @@ Reply with JSON only: {{"conflict": true | false, "current": "A" | "B", "change"
 Pick B unless A's own wording says it is the more recent situation."""
 
 DREAM_CONTRADICTION_USER = 'A (saved {a_at}): "{a}"\nB (saved {b_at}): "{b}"'
+
+DREAM_LANGUAGE_SYSTEM = """Two memories about {name}, written in different languages. Do they say exactly the same thing?
+Reply with JSON only: {{"a_in_english": "<A translated to English, every word>", "same": true | false, "extra": "A" | "B" | "none", "conflict": true | false}}
+same: true only if they mean the same thing.
+extra: the one that says something the other does not (a time, place, name, number, reason or any other detail), else "none".
+conflict: true if both can't be true."""
+
+DREAM_LANGUAGE_USER = 'A: "{a}"\nB: "{b}"'
 
 
 def summarize_system(user_name: str) -> str:

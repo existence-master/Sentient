@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from sentient.channels.service import OLDER_REQUEST, OLDER_REQUEST_REPLY, request_tag
 from tests.channels.conftest import callback, until
 from tests.conftest import FakeProvider, tool_call
 
@@ -51,7 +52,8 @@ async def test_question_arrives_with_buttons_and_a_tap_answers_it(tg, llm):
     rows = msg["reply_markup"]["inline_keyboard"]
     buttons = [b for row in rows for b in row]
     assert [b["text"] for b in buttons] == FLIGHTS
-    assert buttons[1]["callback_data"] == f"tq:1:{run_id}"
+    request_id = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["request_id"]
+    assert buttons[1]["callback_data"] == f"tq:1:{run_id}:{request_tag(request_id)}"
 
     tg.ch.dispatch(callback(42, msg["_id"], buttons[1]["callback_data"]))
     await tg.ch.wait_idle()
@@ -111,7 +113,9 @@ async def test_reply_to_the_question_answers_it(tg, llm):
     msg = await _question_message(tg, "Which flight should I book?")
     assert msg["text"].endswith("<i>Tap an option, or reply to this message with your answer.</i>")
     # remembered in SQLite, so a reply still matches after a restart
-    assert await tg.app.channels.store.question_for("telegram", "42", str(msg["_id"])) == {"task_id": task_id, "run_id": run_id}
+    sent = await tg.app.channels.store.question_for("telegram", "42", str(msg["_id"]))
+    request_id = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["request_id"]
+    assert sent == {"task_id": task_id, "run_id": run_id, "request": request_id}
     calls = len(llm.calls)
 
     await tg.say(42, "The early one please", **_reply(msg))
@@ -174,3 +178,29 @@ async def test_reply_to_an_already_answered_question(tg, llm):
     await tg.say(42, "Actually the later one", **_reply(msg))
     assert "already been handled" in tg.api.screen()[-1]
     assert len(llm.calls) == calls  # neither an answer nor a chat turn
+
+
+async def test_an_older_question_of_the_same_run_cant_answer_a_newer_one(tg, llm):
+    """#337: the run asks a second question; the first message's buttons and replies no longer answer anything."""
+    seats = [{**tool_call("ask_user", question="Window or aisle?", options=["Window", "Aisle"]), "id": "call_seat"}]
+    llm.replies[:] = [ASK_FLIGHT, seats, "Booked."]
+    await tg.pair(42)
+    task_id, _ = await _waiting_task(tg.app, "Book a flight to Goa")
+    first = await _question_message(tg, "Which flight should I book?")
+    tg.ch.dispatch(callback(42, first["_id"], first["reply_markup"]["inline_keyboard"][0][0]["callback_data"]))
+    await tg.ch.wait_idle()
+    await tg.app.tasks.drain()
+    second = await _question_message(tg, "Window or aisle?")
+
+    tg.ch.dispatch(callback(42, first["_id"], first["reply_markup"]["inline_keyboard"][0][1]["callback_data"]))
+    await tg.ch.wait_idle()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == OLDER_REQUEST
+    await tg.say(42, "Aisle", **_reply(first))
+    assert OLDER_REQUEST_REPLY in tg.api.screen()[-1]
+    assert (await tg.app.tasks.get(task_id))["status"] == "waiting_for_user"
+
+    tg.ch.dispatch(callback(42, second["_id"], second["reply_markup"]["inline_keyboard"][0][1]["callback_data"]))
+    await tg.ch.wait_idle()
+    await tg.app.tasks.drain()
+    assert (await tg.app.tasks.get(task_id))["status"] == "completed"
+    assert _executor_answer(llm, 2) == "Aisle"

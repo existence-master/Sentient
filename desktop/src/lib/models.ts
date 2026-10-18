@@ -48,7 +48,8 @@ export const ROLE_META: Record<RoleName, RoleMeta> = {
   embedding: {
     role: 'embedding',
     label: 'Embedding',
-    description: 'Turns memories into vectors so Sentient can find relevant ones. Changing it re-indexes memory.',
+    description:
+      'Turns memories into vectors so Sentient can find relevant ones. Changing it re-reads every memory once. For memories in Hindi or other languages, bge-m3 works better.',
     required: true,
     embedding: true
   },
@@ -95,6 +96,15 @@ export function modelShortName(model: string | null | undefined): string {
   if (!model) return ''
   const i = model.indexOf('/')
   return i > 0 ? model.slice(i + 1) : model
+}
+
+/** A chat model's name as people know it: "Claude Sonnet" for `claude-code/sonnet`, else the short name. */
+export function chatModelLabel(model: string | null | undefined): string {
+  const short = modelShortName(model)
+  if (providerOf(model) === 'claude-code' && /^(sonnet|opus|haiku|fable)$/.test(short)) {
+    return `Claude ${short[0].toUpperCase()}${short.slice(1)}`
+  }
+  return short
 }
 
 export function isLocalModel(model: string | null | undefined): boolean {
@@ -211,5 +221,6 @@ export function recommendFastLocal(local: LocalModels | undefined): string | nul
 export const SUGGESTED_PULLS = [
   { name: 'qwen3:8b', size: '5.2 GB', note: 'Best all-rounder with tool use' },
   { name: 'qwen3:4b', size: '2.5 GB', note: 'Lighter, good for the fast role' },
-  { name: 'nomic-embed-text', size: '274 MB', note: 'Embeddings for memory' }
+  { name: 'nomic-embed-text', size: '274 MB', note: 'Embeddings for memory' },
+  { name: 'bge-m3', size: '1.2 GB', note: 'Memory search in Hindi and other languages' }
 ]

@@ -1,9 +1,11 @@
 import {
+  IconArchive,
   IconBolt,
   IconBrain,
   IconChartBar,
   IconCode,
   IconCpu,
+  IconFolders,
   IconListCheck,
   IconMicrophone,
   IconMoodSmile,
@@ -35,7 +37,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'General',
     description: 'Names, timezone, language, appearance, startup and shortcuts.',
     icon: IconSettings,
-    keywords: ['name', 'timezone', 'location', 'language', 'theme', 'dark', 'light', 'accent', 'color', 'login', 'startup', 'tray', 'shortcut', 'hotkey', 'keyboard', 'screen', 'share', 'screenshot', 'window', 'region']
+    keywords: ['name', 'timezone', 'location', 'language', 'theme', 'dark', 'light', 'accent', 'color', 'login', 'startup', 'tray', 'shortcut', 'hotkey', 'keyboard', 'screen', 'share', 'screenshot', 'window', 'region', 'incognito', 'private']
   },
   {
     id: 'models',
@@ -60,6 +62,14 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     schemaSections: ['memory']
   },
   {
+    id: 'folders',
+    label: 'Folders',
+    description: 'Folders of notes and Obsidian vaults Sentient searches when you ask about your notes.',
+    icon: IconFolders,
+    keywords: ['obsidian', 'vault', 'notes', 'documents', 'markdown', 'pdf', 'word', 'search', 'knowledge', 'index', 'ignore', 'files'],
+    schemaSections: ['folders']
+  },
+  {
     id: 'knowing',
     label: 'Knowing you',
     description: 'How Sentient builds its picture of you and tidies its memory overnight.',
@@ -72,7 +82,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Tasks',
     description: 'Long-running work, scheduling and plan approval.',
     icon: IconListCheck,
-    keywords: ['scheduler', 'runs', 'swarm', 'plan', 'timeout'],
+    keywords: ['scheduler', 'runs', 'swarm', 'plan', 'timeout', 'away', 'pause', 'routines', 'vacation'],
     schemaSections: ['tasks']
   },
   {
@@ -95,7 +105,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Approvals & safety',
     description: 'When Sentient asks before acting.',
     icon: IconShieldCheck,
-    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask', 'allow', 'never', 'rules', 'apps', 'always ask'],
+    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask', 'allow', 'never', 'only if i asked', 'hand it to me', 'draft', 'rules', 'apps', 'always ask', 'allowed for now', 'revoke', 'grant'],
     schemaSections: ['tools']
   },
   {
@@ -141,9 +151,17 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   {
     id: 'usage',
     label: 'Usage',
-    description: 'Tokens by model, source and day.',
+    description: 'What your models cost, a monthly budget, and tokens by model and day.',
     icon: IconChartBar,
-    keywords: ['tokens', 'cost', 'insights', 'statistics']
+    keywords: ['tokens', 'cost', 'insights', 'statistics', 'budget', 'spend', 'money', 'dollars', 'price', 'bill']
+  },
+  {
+    id: 'backups',
+    label: 'Backups',
+    description: 'Back up and restore your data, and snapshots taken before updates.',
+    icon: IconArchive,
+    keywords: ['backup', 'back up', 'restore', 'snapshot', 'export', 'copy', 'undo', 'schedule', 'new computer', 'move'],
+    schemaSections: ['backups']
   },
   {
     id: 'advanced',

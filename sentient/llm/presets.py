@@ -30,6 +30,7 @@ from sentient.config.schema import (
 )
 from sentient.llm import chatgpt
 from sentient.llm.checkup import LABELS, LOCAL, OLLAMA
+from sentient.llm.locality import runs_here
 from sentient.llm.provider import provider_config
 
 UNDO_META_KEY = "models.preset_undo"
@@ -39,6 +40,8 @@ PLAN_MODELS_META = chatgpt.MODELS_META  # the plan's model list from last time, 
 PLAN_MODELS_TIMEOUT_S = 5
 SETUP_FIELDS = ("fallbacks", "reasoning", "context_length", "context_length_per_role")
 MAX_NAME = 40
+# #335: with Local only on, a setup that uses a model outside this computer can't be picked
+LOCAL_ONLY_BLOCKED = "Local only is on, and this setup uses cloud models. Switch to May use cloud to use it."
 _BAD_NAME = re.compile(r"[/\\\x00-\x1f]")
 
 
@@ -149,6 +152,17 @@ def _custom(name: str, preset: ModelPreset) -> dict[str, Any]:
     return out
 
 
+def _mark_locality(config: SentientConfig, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``cloud``: the preset sets a model outside this computer. With Local only on such a preset is blocked
+    (``blocked_by: "local_only"``) unless it is already unavailable for another reason (a missing key)."""
+    for p in items:
+        p["cloud"] = any(m and not runs_here(config, m) for m in p["roles"].values())
+        p["blocked_by"] = None
+        if config.models.local_only and p["cloud"] and p["available"]:
+            p.update(available=False, reason=LOCAL_ONLY_BLOCKED, blocked_by="local_only")
+    return items
+
+
 def presets(config: SentientConfig, hw: dict[str, Any] | None = None, *,
             plan: list[str] | None = None) -> list[dict[str, Any]]:
     """Built-in presets first, then the user's own in saved order. A saved preset can't shadow a built-in.
@@ -156,7 +170,7 @@ def presets(config: SentientConfig, hw: dict[str, Any] | None = None, *,
     (:func:`plan_models`), needed only when the cloud presets use it."""
     builtin_names = {n.lower() for n in BUILTIN}
     custom = [_custom(n, p) for n, p in config.models.presets.items() if n.lower() not in builtin_names]
-    return _builtin(config, hw, plan=plan) + custom
+    return _mark_locality(config, _builtin(config, hw, plan=plan) + custom)
 
 
 def find(config: SentientConfig, name: str, hw: dict[str, Any] | None = None, *,
@@ -204,8 +218,10 @@ async def listing(app: Any) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------------- applying and undo
-async def apply(app: Any, name: str) -> dict[str, Any]:
-    """Switch every role (and the preset's other settings) at once. Returns what changed and what is missing."""
+async def apply(app: Any, name: str, *, local_only: bool = False) -> dict[str, Any]:
+    """Switch every role (and the preset's other settings) at once. Returns what changed and what is missing.
+    ``local_only`` also turns Local only on in the same save (#335; the window asks first), for a preset whose
+    models all run on this computer."""
     before = app.config
     preset = find(before, name, hardware(app), plan=await plan_models(app))
     if not preset["available"]:
@@ -214,25 +230,35 @@ async def apply(app: Any, name: str) -> dict[str, Any]:
     roles = cfg.models.roles.model_dump()
     roles.update({r: m or None for r, m in preset["roles"].items()})
     cfg.models.roles = ModelRoles.model_validate(roles)
+    # every role after the switch, also one the preset leaves as it is, must run here for Local only to go on
+    if local_only and any(m and not runs_here(cfg, m) for m in roles.values()):
+        raise PresetError(f"{preset['name']} uses models outside this computer, so Local only can't be turned on "
+                          "with it.", 409)
     for f in SETUP_FIELDS:
         if f in preset:
             value = preset[f]
             setattr(cfg.models, f, dict(value) if isinstance(value, dict) else value)
     cfg.models.active_preset = preset["name"]
-    if _snapshot(cfg) == _snapshot(before) and cfg.models.active_preset == before.models.active_preset:
+    switched_on = local_only and not before.models.local_only
+    if switched_on:
+        cfg.models.local_only = True
+    if (_snapshot(cfg) == _snapshot(before) and cfg.models.active_preset == before.models.active_preset
+            and not switched_on):
         # already in use, unchanged: nothing to save, and the undo step still points at the setup before it
         return {"preset": preset["name"], "changed": [], "missing": await missing(cfg),
-                "can_undo": await _undo_entry(app) is not None}
+                "can_undo": await _undo_entry(app) is not None, "local_only": cfg.models.local_only}
     previous = await app.store.get_meta(UNDO_META_KEY)
-    await app.store.set_meta(UNDO_META_KEY, json.dumps({"preset": before.models.active_preset,
-                                                        "setup": _snapshot(before)}))
+    entry: dict[str, Any] = {"preset": before.models.active_preset, "setup": _snapshot(before)}
+    if switched_on:  # undo puts the switch back too
+        entry["local_only"] = before.models.local_only
+    await app.store.set_meta(UNDO_META_KEY, json.dumps(entry))
     try:
         app.save_config(cfg)
     except Exception:
         await app.store.set_meta(UNDO_META_KEY, previous or "null")
         raise
     return {"preset": preset["name"], "changed": _changes(before, cfg), "missing": await missing(cfg),
-            "can_undo": True}
+            "can_undo": True, "local_only": cfg.models.local_only}
 
 
 async def _undo_entry(app: Any) -> dict[str, Any] | None:
@@ -244,7 +270,8 @@ async def _undo_entry(app: Any) -> dict[str, Any] | None:
 
 
 async def undo(app: Any) -> dict[str, Any]:
-    """Put back the setup the last switch replaced. One step: undoing twice is refused."""
+    """Put back the setup the last switch replaced (and Local only, when that switch turned it on). One step:
+    undoing twice is refused."""
     entry = await _undo_entry(app)
     if entry is None:
         raise PresetError("There's no model switch to undo.", 409)
@@ -254,11 +281,13 @@ async def undo(app: Any) -> dict[str, Any]:
     data = cfg.models.model_dump()
     data.update({k: v for k, v in setup.items() if k in {"roles", *SETUP_FIELDS}})
     data["active_preset"] = entry.get("preset")
+    if isinstance(entry.get("local_only"), bool):
+        data["local_only"] = entry["local_only"]
     cfg.models = type(cfg.models).model_validate(data)
     app.save_config(cfg)
     await app.store.set_meta(UNDO_META_KEY, "null")
     return {"preset": cfg.models.active_preset, "changed": _changes(before, cfg), "missing": await missing(cfg),
-            "can_undo": False}
+            "can_undo": False, "local_only": cfg.models.local_only}
 
 
 # ----------------------------------------------------------------------------- saving your own
