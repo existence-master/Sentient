@@ -13,7 +13,7 @@
 // token differently from a person's push: the pull_request runs (CI, Changelog) wait for approval, and
 // pull_request_target workflows (the CLA check) don't run at all. So the bot
 //   - approves the waiting runs, but only when GitHub had already run the checks on the commit before its merge
-//     (otherwise, for example for a first-time contributor, a maintainer still approves them by hand), and
+//     (otherwise, for example for a first-time contributor, a maintainer still approves them by hand), and then
 //   - copies the CLAAssistant result from that commit, which is exactly what the CLA action would decide again:
 //     the merge adds no commit of anyone else's (main's commits aren't part of the PR) and its own author,
 //     github-actions[bot], is on the CLA allowlist.
@@ -38,9 +38,11 @@ const code = (s) => `\`${s}\``;
 const MESSAGES = {
   updated: (base, sha, checks) =>
     `Merged the latest ${code(base)} into this branch (${sha.slice(0, 7)}). Nothing else changed. ` +
-    (checks === 'running'
-      ? 'The checks are running again.'
-      : 'GitHub holds the checks for a commit made by a bot, so a maintainer will start them.'),
+    {
+      running: 'The checks are running again.',
+      held: 'GitHub holds the checks for a commit made by a bot, so a maintainer will start them.',
+      noCla: 'The checks are running again, but the CLA check only runs again with your next push.',
+    }[checks],
   updating: (base) =>
     `GitHub is merging the latest ${code(base)} into this branch now, and the new commit shows up here in a ` +
     'minute. GitHub holds the checks for a commit made by a bot, so a maintainer will start them.',
@@ -189,14 +191,24 @@ async function isOurMerge(github, { owner, repo, oldSha, newSha }) {
   );
 }
 
-/** Copies the CLA check's result from the old head to the merge commit (see the top of this file). */
+/**
+ * Copies the CLA check's result from the old head to the merge commit (see the top of this file). Called once the
+ * approved runs have started: GitHub files a check made with the workflow token under one of that commit's workflow
+ * runs, and one filed before the run was approved is dropped when it starts. Returns true when the check is there.
+ */
 async function carryClaCheck(github, { owner, repo, oldSha, newSha, core }) {
   const latest = async (ref) =>
     (await github.rest.checks.listForRef({ owner, repo, ref, check_name: CLA_CHECK, filter: 'latest' })).data
       .check_runs[0];
-  if (await latest(newSha)) return core.info('The CLA check already ran on the merge commit.');
+  if (await latest(newSha)) {
+    core.info('The CLA check is already on the merge commit.');
+    return true;
+  }
   const old = await latest(oldSha);
-  if (!old || old.status !== 'completed') return core.info('No finished CLA check on the old head to copy.');
+  if (!old || old.status !== 'completed') {
+    core.info('No finished CLA check on the old head to copy.');
+    return false;
+  }
   await github.rest.checks.create({
     owner,
     repo,
@@ -212,7 +224,9 @@ async function carryClaCheck(github, { owner, repo, oldSha, newSha, core }) {
         'no new contributor.',
     },
   });
-  core.info(`Copied the CLA check (${old.conclusion}) from ${oldSha.slice(0, 7)}.`);
+  const ok = !!(await latest(newSha));
+  core.info(`Copied the CLA check (${old.conclusion}) from ${oldSha.slice(0, 7)}${ok ? '' : ', but GitHub does not list it'}.`);
+  return ok;
 }
 
 /**
@@ -239,6 +253,14 @@ async function approveHeldRuns(github, { owner, repo, oldSha, newSha, sleep, pol
   for (const r of held) {
     await github.rest.actions.approveWorkflowRun({ owner, repo, run_id: r.id });
     core.info(`Approved ${r.name} (${r.id}).`);
+  }
+  // Wait until they have left the queue, so a check filed under one of them afterwards stays.
+  for (let i = 0; i < poll.tries; i++) {
+    const waiting = (await runs(newSha)).filter(
+      (r) => r.conclusion === 'action_required' || ['queued', 'waiting', 'pending', 'requested'].includes(r.status),
+    );
+    if (!waiting.length) break;
+    await sleep(poll.ms);
   }
   return 'running';
 }
@@ -315,8 +337,10 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
     newSha = await waitForNewHead(github, { owner, repo, pull_number: issue_number, oldSha, sleep, poll });
     if (newSha && (await isOurMerge(github, { owner, repo, oldSha, newSha }))) {
       try {
-        await carryClaCheck(github, { owner, repo, oldSha, newSha, core });
         checks = await approveHeldRuns(github, { owner, repo, oldSha, newSha, sleep, poll, core });
+        if (checks === 'running' && !(await carryClaCheck(github, { owner, repo, oldSha, newSha, core }))) {
+          checks = 'noCla';
+        }
       } catch (err) {
         core.warning(`Could not restart the checks: ${err.message}`);
       }

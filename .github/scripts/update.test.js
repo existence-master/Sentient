@@ -39,6 +39,8 @@ function fakeGithub(opts = {}) {
     merge = { parents: [{ sha: OLD }, { sha: MAIN }], committer: { login: 'web-flow' }, commit: { verification: { verified: true } } },
   } = opts;
   let updated = false;
+  let created = null;
+  const approved = new Set();
   const pr = {
     state: 'open',
     head: { sha: OLD, repo: { full_name: 'existence-master/Sentient' } },
@@ -66,15 +68,26 @@ function fakeGithub(opts = {}) {
       },
       checks: {
         listForRef: async ({ ref }) => ({
-          data: { check_runs: [ref === OLD ? oldCla : newCla].filter(Boolean) },
+          data: { check_runs: [ref === OLD ? oldCla : newCla || (opts.claListed !== false && created)].filter(Boolean) },
         }),
-        create: async (args) => calls.push(['createCheck', args]),
+        create: async (args) => {
+          calls.push(['createCheck', args]);
+          created = { status: 'completed', conclusion: args.conclusion };
+        },
       },
       actions: {
-        listWorkflowRunsForRepo: async ({ head_sha, status }) => ({
-          data: { workflow_runs: head_sha === OLD ? oldRuns : status === 'action_required' ? heldRuns : [] },
-        }),
-        approveWorkflowRun: async (args) => calls.push(['approve', args.run_id]),
+        // Held runs wait on the merge commit until approved; then they are in progress.
+        listWorkflowRunsForRepo: async ({ head_sha, status }) => {
+          if (head_sha === OLD) return { data: { workflow_runs: oldRuns } };
+          const now = heldRuns.map((r) =>
+            approved.has(r.id) ? { ...r, status: 'in_progress', conclusion: null } : { ...r, status: 'completed', conclusion: 'action_required' },
+          );
+          return { data: { workflow_runs: status === 'action_required' ? now.filter((r) => r.conclusion === 'action_required') : now } };
+        },
+        approveWorkflowRun: async (args) => {
+          calls.push(['approve', args.run_id]);
+          approved.add(args.run_id);
+        },
       },
       issues: {
         getLabel: async () => {
@@ -196,6 +209,8 @@ test('a clean same-repo branch: merges main, restarts the checks, clears the lab
   assert.equal(check.head_sha, NEW);
   assert.equal(check.conclusion, 'success');
   assert.deepEqual(fake.calls.filter((c) => c[0] === 'approve').map((c) => c[1]), [7, 8]);
+  // The CLA check is filed only after the approved runs started, or GitHub drops it when they do.
+  assert.ok(fake.names().indexOf('createCheck') > fake.names().lastIndexOf('approve'));
   assert.ok(fake.names().includes('removeLabel'));
   assert.ok(!fake.names().includes('addLabels'));
   assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.updated('main', NEW, 'running')}`);
@@ -302,6 +317,14 @@ test('the CLA check is copied as it was, and not when one is there already or no
   }
 });
 
+test('a copied CLA check GitHub does not list is reported, not claimed', async () => {
+  const fake = fakeGithub({ claListed: false });
+  await runWith(fake);
+  assert.ok(fake.names().includes('createCheck'));
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.updated('main', NEW, 'noCla')}`);
+  assert.match(reply(fake)[0], /the CLA check only runs again with your next push/);
+});
+
 test('when the merge commit has not shown up yet, the reply says it is on its way', async () => {
   const fake = fakeGithub();
   fake.github.rest.pulls.get = async () => ({ data: { state: 'open', head: { sha: OLD, repo: { full_name: 'existence-master/Sentient' } }, base: { ref: 'main' } } });
@@ -327,7 +350,8 @@ test('clearLabel takes the label off once the branch is up to date, and only the
 
 test('messages are plain: no em-dashes', () => {
   const all = [
-    MESSAGES.updated('main', NEW, 'running'), MESSAGES.updated('main', NEW, 'held'), MESSAGES.updating('main'),
+    MESSAGES.updated('main', NEW, 'running'), MESSAGES.updated('main', NEW, 'held'), MESSAGES.updated('main', NEW, 'noCla'),
+    MESSAGES.updating('main'),
     MESSAGES.upToDate('main'), MESSAGES.conflicts('main', ['a'], true), MESSAGES.conflicts('main', null, false),
     MESSAGES.useButton('main'), MESSAGES.headMoved, MESSAGES.closed, MESSAGES.notAllowed, MESSAGES.failed('main'),
   ];
