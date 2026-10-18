@@ -157,3 +157,19 @@ async def test_moving_other_memory_states_still_updates_timestamp(app, state):
     moved = await mem.set_scope(fid, "work")
 
     assert moved["updated_at"] != before and moved["state"] == state
+
+
+async def test_promotion_skips_superseded_memories_so_their_retention_age_stays(app):
+    """Promotion rewrites ``updated_at``; doing that to superseded history would restart its retention period."""
+    mem = app.memory
+    old = await add_fact(mem, "Maya parks on level 2", memory_type="short-term")
+    new = await add_fact(mem, "Maya parks on level 3", memory_type="short-term")
+    assert await mem.supersede(new, old)
+    await app.store.execute("UPDATE facts SET recall_count = 5, updated_at = ? WHERE id IN (?, ?)", (_ago(181), old, new))
+
+    promoted = await mem.promote_recalled(min_recalls=3)
+
+    assert [m["id"] for m in promoted] == [new]
+    assert (await mem.get_fact(old))["memory_type"] == "short-term"
+    assert await mem.purge_expired() == 1
+    assert await mem.get_fact(old) is None

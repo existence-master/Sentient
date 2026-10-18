@@ -2234,7 +2234,7 @@ class FactMemory:
         await self.ensure_schema()
         rows = await self.store.fetchall(
             f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND memory_type = 'short-term' AND recall_count >= ?"
-            " AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
+            " AND state != 'superseded' AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
             (min_recalls, now_iso(), limit),
         )
         out = []
