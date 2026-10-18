@@ -48,6 +48,7 @@ typedef struct {
     char id[24];
     char capability[40];
     char params[512]; // JSON text; device invokes carry only a handful of small fields
+    uint32_t photo_stops; // caps_photo_stops() when it arrived: a later stop_sensor(camera) drops a queued photo
 } invoke_job_t;
 
 // ------------------------------------------------------------------ sending
@@ -238,6 +239,7 @@ static void handle_text(const char *text) {
                 } else {
                     // Run it on the worker task: a photo takes ~300 ms and must not block this socket.
                     invoke_job_t job = {0};
+                    job.photo_stops = caps_photo_stops();
                     strlcpy(job.id, id->valuestring, sizeof(job.id));
                     strlcpy(job.capability, cap->valuestring, sizeof(job.capability));
                     char *params_text = params ? cJSON_PrintUnformatted(params) : NULL;
@@ -313,7 +315,7 @@ static void worker_task(void *arg) {
     invoke_job_t job;
     while (true) {
         if (xQueueReceive(s_jobs, &job, portMAX_DELAY) == pdTRUE) {
-            caps_handle_invoke(job.id, job.capability, job.params);
+            caps_handle_invoke(job.id, job.capability, job.params, job.photo_stops);
         }
     }
 }

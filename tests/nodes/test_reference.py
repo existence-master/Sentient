@@ -95,3 +95,23 @@ async def test_camera_off_mode_refuses_on_the_device(tmp_path):
     assert "[camera] refused: camera-off mode is on" in lines
     plain, _ = _node(tmp_path)
     assert "camera_off" not in plain.hello()["state"]  # no camera, nothing to report
+
+
+async def test_a_photo_turned_off_in_sentient_is_dropped(tmp_path):
+    node, lines = _node(tmp_path, camera=0)
+    sent: list[dict] = []
+
+    class WS:
+        async def send(self, raw):
+            sent.append(json.loads(raw))
+
+    def photo(params):  # the webcam is never opened in tests
+        node._photo_stops += 1  # stop_sensor camera arrives while the photo is taken
+        return {"mime": "image/jpeg", "base64": "abc"}
+
+    node._photo = photo
+    await node._answer(WS(), {"type": "invoke", "id": "7", "capability": "camera.photo", "params": {}})
+    assert sent[0] == {"type": "state", "camera": True, "camera_for": "Taking a photo"}
+    assert sent[1]["ok"] is False and sent[1]["error"]["code"] == "stopped"  # no image sent
+    assert sent[2] == {"type": "state", "camera": False}
+    assert "[camera] photo dropped: turned off in Sentient" in lines

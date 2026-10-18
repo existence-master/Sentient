@@ -110,7 +110,7 @@ class ReferenceNode:
         self._send_lock = asyncio.Lock()
         self._lines: asyncio.Queue[str] | None = None
         self._answers: set[asyncio.Task] = set()
-        self._photo_stopped = False  # stop_sensor camera arrived while a photo was being taken
+        self._photo_stops = 0  # stop_sensor camera count: a photo asked for before the latest one is dropped
         self.saved: dict[str, Any] = self._load()
 
     # ------------------------------------------------------------------ state file
@@ -383,7 +383,7 @@ class ReferenceNode:
                     elif kind == "stop_sensor":
                         self.out(f"[sentient] asked to turn off the {msg.get('sensor')}")
                         if msg.get("sensor") == "camera":
-                            self._photo_stopped = True  # a photo being taken is dropped, never sent
+                            self._photo_stops += 1  # photos asked for before now are dropped, never sent
             finally:
                 for t in helpers:
                     t.cancel()
@@ -395,13 +395,13 @@ class ReferenceNode:
 
     async def _answer(self, ws: Any, msg: dict) -> None:
         photo = msg.get("capability") == "camera.photo" and self.camera is not None and not self.camera_off
+        stops = self._photo_stops
         if photo:  # tell Sentient the camera is on while the photo is taken (#170)
-            self._photo_stopped = False
             with contextlib.suppress(Exception):
                 await self._send(ws, {"type": "state", "camera": True, "camera_for": "Taking a photo"})
         try:
             result = await self.handle_invoke(msg)
-            if photo and self._photo_stopped:  # turned off in Sentient meanwhile: drop the photo
+            if photo and self._photo_stops != stops:  # turned off in Sentient meanwhile: drop the photo
                 self.out("[camera] photo dropped: turned off in Sentient")
                 result = {"type": "result", "id": msg.get("id"), "ok": False,
                           "error": {"code": "stopped", "message": "The camera was turned off in Sentient."}}  # fmt: skip
