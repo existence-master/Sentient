@@ -68,7 +68,9 @@ _UNKNOWN_RE = re.compile(
     re.IGNORECASE,
 )
 _USER_REF_RE = re.compile(r"(?<![\w-])(the user|USERNAME)(?![\w-])", re.IGNORECASE)
-_USER_POSSESSIVE_RE = re.compile(r"(?<![\w-])(the user|user|USERNAME)['\u2019]s\b", re.IGNORECASE)
+_USER_POSSESSIVE_RE = re.compile(r"(?<![\w-])(the user|USERNAME)['\u2019]s\b", re.IGNORECASE)
+# bare "user's" only where it can't be another user's ("a user's account"): first, or after a comma
+_BARE_USER_POSSESSIVE_RE = re.compile(r"(^\s*|[,;:(]\s*)user['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
@@ -224,6 +226,7 @@ def name_the_user(text: str, user_name: str) -> str:
     name = user_name.strip()
     if not name:
         return text
+    text = _BARE_USER_POSSESSIVE_RE.sub(lambda m: f"{m.group(1)}{name}'s", text)
     text = _USER_POSSESSIVE_RE.sub(lambda _: f"{name}'s", text)
     return _USER_REF_RE.sub(lambda _: name, text)
 
@@ -1609,7 +1612,7 @@ class FactMemory:
                         fid = int(raw["fact_id"]) if raw.get("fact_id") is not None else None
                     except (TypeError, ValueError):
                         fid = None
-                    content = str(raw.get("content") or fact).strip()
+                    content = name_the_user(str(raw.get("content") or fact), user).strip()  # #475
                     topics, memory_type, duration = _analysis_from(raw)
             except Exception as exc:
                 log.warning("CUD decision failed, defaulting to ADD: %s", exc)

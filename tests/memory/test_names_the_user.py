@@ -8,6 +8,7 @@ import pytest
 from sentient.memory.facts import FactMemory, name_the_user
 from sentient.store.db import Store
 from tests.conftest import FakeProvider
+from tests.memory.helpers import add_fact
 
 ANALYSIS = {"topics": ["Family"], "memory_type": "long-term", "duration": None}
 USER = "Maya Rao"
@@ -24,6 +25,10 @@ USER = "Maya Rao"
         ("Maya's sister lives in Mumbai.", "Maya's sister lives in Mumbai."),
         ("Maya built the user-facing screen.", "Maya built the user-facing screen."),
         ("Maya fixed an end-user's bug.", "Maya fixed an end-user's bug."),
+        ("User's sister lives in Mumbai.", "Maya Rao's sister lives in Mumbai."),
+        ("Maya fixed the end user's laptop.", "Maya fixed the end user's laptop."),
+        ("Maya reset another user's password.", "Maya reset another user's password."),
+        ("Maya opened a user's account.", "Maya opened a user's account."),
     ],
 )
 def test_the_user_becomes_the_users_name(text, named):
@@ -42,5 +47,50 @@ async def test_a_saved_fact_says_the_users_name(config, isolated_home):
         out = await mem.remember("Priya, the user's sister, lives in Mumbai.")
         assert out["action"] == "ADD"
         assert (await mem.get_fact(out["id"]))["content"] == "Priya, Maya Rao's sister, lives in Mumbai."
+    finally:
+        await store.close()
+
+
+class SameVectorProvider(FakeProvider):
+    """Every text embeds the same, so a saved fact is always offered to the CUD model next to the new one."""
+
+    async def embed(self, texts, *, model=None):
+        return [[1.0] + [0.0] * (self.dim - 1) for _ in texts]
+
+
+async def _memory(config, isolated_home, name):
+    store = await Store(isolated_home / name).open()
+    config.assistant.user_name = USER
+    config.memory.duplicate_similarity = 1.01  # this embedder scores everything 1.0: no near-duplicate skip
+    llm = SameVectorProvider()
+    return store, llm, FactMemory(store, llm, config)
+
+
+def _cud(action: str, content: str, fact_id: int | None = None) -> dict:
+    return {"action": action, "fact_id": fact_id, "content": content, "analysis": ANALYSIS}
+
+
+async def test_the_models_added_wording_says_the_users_name(config, isolated_home):
+    # the CUD model may hand back its own wording for a new fact, with "the user" in it
+    store, llm, mem = await _memory(config, isolated_home, "add.db")
+    try:
+        llm.json_replies.extend([_cud("ADD", "Priya, the user's sister, lives in Mumbai.")] + [ANALYSIS] * 3)
+        out = await mem.remember("Priya lives in Mumbai.")
+        assert out["action"] == "ADD"
+        assert (await mem.get_fact(out["id"]))["content"] == "Priya, Maya Rao's sister, lives in Mumbai."
+    finally:
+        await store.close()
+
+
+async def test_the_models_updated_wording_says_the_users_name(config, isolated_home):
+    # the model, not the correction shortcut, decides this update ("Her sister" names no one), and writes "the user"
+    store, llm, mem = await _memory(config, isolated_home, "update.db")
+    try:
+        sister = await add_fact(mem, "Maya's sister lives in Pune.")
+        llm.json_replies.extend([_cud("UPDATE", "The user's sister lives in Delhi.", sister)] + [ANALYSIS] * 3)
+        out = await mem.remember("Her sister lives in Delhi.")
+        assert out["action"] == "UPDATE" and out["id"] == sister
+        assert (await mem.get_fact(sister))["content"] == "Maya Rao's sister lives in Delhi."
+        assert any("memory management" in str(c) for c in llm.calls)  # the CUD model was asked
     finally:
         await store.close()
