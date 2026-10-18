@@ -2903,6 +2903,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   overlap ≥ `merge_min_overlap`, never facts whose names/places/numbers conflict; the kept fact keeps its id), settle
   contradictions: facts are paired when they are about the same subject (name, possessive relation like "Maya's sister
   Riya", or the user as "I"/"the user") and share an attribute family or differ in names/places/numbers or negation;
+  families come from English keywords, and a fact they miss (often one that isn't in English) gets the family whose
+  short description its embedding matches with similarity ≥ `memory.family_similarity` (default 0.78);
   place, job, relationship and diet pairs are always checked, broader families (routine, ownership, health) need
   similarity ≥ `contradiction_similarity`; the model confirms and names the current fact (the newer one wins unless the
   model picks the older and only the older has explicit recent wording such as "now" or "this month"); the loser is
