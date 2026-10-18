@@ -225,6 +225,7 @@ async def test_a_namesake_moving_leaves_the_users_home_alone(config, isolated_ho
     [
         ("Her sister lives in Delhi.", "ADD"),  # whose sister is unclear: never stored over Maya's sister's home
         ("Maya's sister lives in Delhi.", "UPDATE"),  # the model named her: it is Maya's sister
+        ("Her sister Priya lives in Delhi.", "ADD"),  # a name, but nothing says Priya is Maya's sister
     ],
 )
 async def test_the_model_must_name_whose_relation_it_updates(config, isolated_home, content, action):
