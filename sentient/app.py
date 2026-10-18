@@ -85,6 +85,8 @@ class SentientApp:
         enable_background: bool = True,
     ):
         self.config = config or load_config()
+        self._claude_code_everywhere = claude_code.everywhere(self.config)  # to notice it being turned off (#444)
+        self._notes: set[asyncio.Task] = set()
         self.enable_background = enable_background  # tests turn schedulers/pollers off
         self.bus = EventBus()
         self.store = Store(db_path, before_migration=self._snapshot_before_migration)
@@ -174,6 +176,7 @@ class SentientApp:
         """Persist and hot-apply configuration."""
         if config is not None:
             self.config = config
+        moved = self._claude_code_switched()
         save_config(self.config)
         if hasattr(self.llm, "config"):
             self.llm.config = self.config  # type: ignore[attr-defined]
@@ -185,6 +188,37 @@ class SentientApp:
         self.approvals.config = self.config.tools.approvals
         self.registry.set_hidden("subagents", not self.config.subagents.enabled)
         self.bus.publish("config.updated", {"sections": list(self.config.model_dump().keys())})
+        if moved:
+            self._note_claude_code(moved)
+
+    def _claude_code_switched(self) -> list[dict]:
+        """Claude Code doing everything (#444, ADR 0032) was just turned off: move the roles still on it that refuse it
+        now to another model (in place, before saving). Returns what moved, or [] when nothing changed."""
+        now = claude_code.everywhere(self.config)
+        was, self._claude_code_everywhere = self._claude_code_everywhere, now
+        if now != was:
+            log.warning("Claude Code for everything turned %s", "on" if now else "off")
+        if not was or now:
+            return []
+        moved = claude_code.move_leftovers(self.config)
+        for item in moved:
+            log.info("Claude Code for everything is off: role %s moves from %s to %s", item["role"], item["model"],
+                     item["to"] or "nothing (no other model)")
+        return moved
+
+    def _note_claude_code(self, moved: list[dict]) -> None:
+        """One notification saying which roles left Claude Code and which still need a model."""
+        off = not self.config.models.experimental_claude_code  # turned off altogether, not just back to chats
+        title = "Claude Code is turned off" if off else "Claude Code is back to chats only"
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self.notify("info", claude_code.leftover_note(moved, off=off), title=title,
+                            payload={"kind": "claude_code_roles", "moved": moved})
+            )
+        except RuntimeError:  # no running loop (a command-line change): the log above says it
+            return
+        self._notes.add(task)
+        task.add_done_callback(self._notes.discard)
 
     # ------------------------------------------------------------------ stop everything
     @property
@@ -224,18 +258,22 @@ class SentientApp:
             self.stop_generation += 1
             self.stop_dropped = self.agent.drop_queued() if self.agent is not None else {}
             cancelled = 0
-            if self.agent is not None:
-                cancelled += await self.agent.halt()
-            for svc in self.services:
-                try:
-                    cancelled += await svc.halt()
+            claude_code.hold()  # a Claude Code call waiting its turn never starts during the stop (#444)
+            try:
+                if self.agent is not None:
+                    cancelled += await self.agent.halt()
+                for svc in self.services:
+                    try:
+                        cancelled += await svc.halt()
+                    except Exception:
+                        log.exception("service %s failed to halt", svc.name)
+                try:  # an import from ChatGPT, Claude or OpenClaw stops too; what it saved stays for review
+                    cancelled += await self.memory_imports.halt()
                 except Exception:
-                    log.exception("service %s failed to halt", svc.name)
-            try:  # an import from ChatGPT, Claude or OpenClaw stops too; what it saved stays for review
-                cancelled += await self.memory_imports.halt()
-            except Exception:
-                log.exception("stopping the memory import failed")
-            claude_code.kill_all()  # a Claude Code reply left running by anything above (ADR 0022)
+                    log.exception("stopping the memory import failed")
+            finally:
+                # a Claude Code reply left running by anything above (ADR 0022), and every call still waiting
+                claude_code.kill_all()
             if changed:  # devices hear about it after the work is cancelled, never before
                 await self._tell_devices()
             return {**self.stop_state, "cancelled": cancelled}
@@ -281,11 +319,11 @@ class SentientApp:
             log.exception("removing the selected text of chat %s failed", session_id)
         self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
 
-    def _after_memory_erased(self, texts: list[str]) -> None:
-        """A memory was deleted (#152): its words leave USER.md and MEMORY.md, and the user model reads its insights
-        again (some may be gone with it)."""
+    def _after_memory_erased(self, erased: Any) -> None:
+        """A memory was deleted (#152): its words leave USER.md and MEMORY.md (not a remaining memory's similar lines,
+        #456), and the user model reads its insights again (some may be gone with it)."""
         try:
-            self.workspace.scrub(texts, self.config.assistant.user_name)
+            self.workspace.scrub(erased.wordings, self.config.assistant.user_name, repeats=erased)
         except OSError:
             log.exception("removing a deleted memory from the workspace files failed")
         model = getattr(self, "user_model", None)

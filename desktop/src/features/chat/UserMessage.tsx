@@ -1,6 +1,7 @@
-import { IconCheck, IconCopy, IconFile, IconPhoto, IconPlayerStop } from '@tabler/icons-react'
+import { IconCheck, IconCopy, IconFile, IconFileOff, IconPhoto, IconPhotoOff, IconPlayerStop } from '@tabler/icons-react'
 import { memo, useState } from 'react'
 import { Button, IconButton } from '@/components/ui'
+import { useFileExists } from '@/hooks/core'
 import { api } from '@/lib/api'
 import type { AttachmentView, UserMessageView } from '@/lib/chatFold'
 import { cn, copyText, formatBytes } from '@/lib/utils'
@@ -15,10 +16,29 @@ export function AttachmentChip({ a, className }: { a: AttachmentView; className?
   const image = isImageAttachment(a)
   const src = a.previewUrl ?? (image ? api.files.contentUrl(a.name) : undefined)
   const base = a.name.split('/').pop() ?? a.name
-  if (image && src) {
+  // an attachment from the chat's history can be gone (deleted, or it went with an incognito chat): say so (#458)
+  const [failed, setFailed] = useState(false)
+  const exists = useFileExists(a.name, !!a.saved && (!image || failed))
+  if (exists.data === false) {
+    return (
+      <div
+        className={cn('flex h-11 max-w-60 items-center gap-2.5 rounded-xl border border-dashed border-border px-3', className)}
+        title={base}
+      >
+        <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-sunken text-fg-subtle">
+          {image ? <IconPhotoOff size={15} /> : <IconFileOff size={15} />}
+        </div>
+        <div className="min-w-0">
+          <div className="truncate text-xs font-medium text-fg-muted">{base}</div>
+          <div className="text-2xs text-fg-subtle">No longer available</div>
+        </div>
+      </div>
+    )
+  }
+  if (image && src && !failed) {
     return (
       <div className={cn('overflow-hidden rounded-xl border border-border bg-sunken', className)} title={base}>
-        <img src={src} alt={base} className="h-28 max-w-56 object-cover" />
+        <img src={src} alt={base} className="h-28 max-w-56 object-cover" onError={() => setFailed(true)} />
       </div>
     )
   }

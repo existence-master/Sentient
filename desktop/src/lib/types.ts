@@ -166,6 +166,10 @@ export interface ModelsConfig {
   budget_at_limit?: 'ask' | 'stop'
   /** Experimental: claude-code/<model> answers chats through the user's own Claude Code (ADR 0022). */
   experimental_claude_code?: boolean
+  /** Claude Code does everything, not just chats (ADR 0032); only counts with experimental_claude_code on. */
+  claude_code_everywhere?: boolean
+  /** Most Claude Code runs at once; more wait their turn, chats first. */
+  claude_code_max_concurrent?: number
   max_tool_rounds: number
   request_timeout_s: number
   /** #149: one local model job at a time, chats first; background waits after a chat and on battery. */
@@ -625,6 +629,8 @@ export interface CostPeriod {
   local_tokens: number
   by_model: Array<CostRow & { model: string; billing: Billing }>
   by_role: Array<CostRow & { role: string; plan_calls: number; local_calls: number }>
+  /** Claude Code calls by the role that made them, most tokens first (#444). Missing from older engines. */
+  claude_code_by_role?: Array<{ role: string; calls: number; prompt_tokens: number; completion_tokens: number }>
 }
 
 export interface BudgetState {
@@ -724,6 +730,16 @@ export interface ClaudeCodeStatus {
   version: string | null
   detail: string
   models: string[]
+  /** The quick-jobs model when Claude Code does everything (claude-code/haiku). */
+  fast_model?: string
+  /** Claude Code does everything, not just chats (`models.claude_code_everywhere`, ADR 0032). Missing from older engines. */
+  everywhere?: boolean
+  /** The roles that may use a Claude Code model (#442, #444). Missing from older engines. */
+  roles?: RoleName[]
+  /** Most Claude Code runs at once, and how many run and wait now. */
+  max_concurrent?: number
+  running?: number
+  waiting?: number
 }
 
 export interface ModelTestResult {
@@ -1535,7 +1551,7 @@ export interface TaskScript {
   /** Recent checks, oldest first (§16). Older engines leave it out. */
   checks?: ScriptCheck[] | null
 }
-export type ScriptCheckOutcome = 'baseline' | 'nothing_new' | 'changed' | 'minor' | 'alert' | 'quiet' | 'reported' | 'failed'
+export type ScriptCheckOutcome = 'baseline' | 'nothing_new' | 'changed' | 'minor' | 'alert' | 'quiet' | 'reported' | 'failed' | 'skipped'
 export interface ScriptCheck {
   at: ISODate
   outcome: ScriptCheckOutcome
@@ -1586,7 +1602,8 @@ export interface TaskRunResult {
   tools_used: string[]
 }
 
-export type RunStatus = 'processing' | 'waiting_for_user' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled'
+/** `skipped` (#161): a routine's run that didn't start because what it reads wasn't there (`error` says why). */
+export type RunStatus = 'processing' | 'waiting_for_user' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled' | 'skipped'
 
 /** The question a `waiting_for_user` run asked (§4). Answer with `POST /api/tasks/{id}/runs/{run_id}/answer`. */
 export interface RunQuestion {
@@ -1633,6 +1650,8 @@ export interface Run {
   would_do?: TryRunAction[]
   /** What code found the run's calls really did (#165). A failure that still stands makes it `completed_with_errors`. */
   checks?: OutcomeCheck[]
+  /** A skipped run set to try again later (#161): when it does. */
+  retry_at?: ISODate | null
 }
 
 /** One call a try run noted instead of making (#142). Built by the engine from the call itself. */
@@ -1711,6 +1730,8 @@ export interface Task {
   deliver_to?: TaskDeliverTo
   /** Recurring tasks: short notes its runs keep for the next run (§4 "Recurring tasks remember"). */
   notepad?: string | null
+  /** Routines: the setup checklist (§4 "Setup checklist", #161). `null` for other tasks; older engines leave it out. */
+  setup?: TaskSetup | null
   original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
@@ -1718,6 +1739,40 @@ export interface Task {
   last_execution_at: ISODate | null
   created_at: ISODate
   updated_at: ISODate
+}
+
+/** What a routine reads (#161): a web page, a connected app, a folder, or nothing to check first. */
+export interface TaskSource {
+  kind: 'page' | 'app' | 'folder' | 'none'
+  /** The web address, app id or folder path; empty for `none`. */
+  target: string
+  /** How to show it: "example.com/events", "Gmail". */
+  label: string
+}
+
+/** What to do when what a routine reads isn't there: skip quietly, skip and tell me, or try again a little later. */
+export type MissingSourcePolicy = 'skip' | 'notify' | 'retry'
+
+/** A routine's setup checklist (§4 "Setup checklist", #161), filled in from its plan for the user to confirm. */
+export interface TaskSetup {
+  source: TaskSource
+  /** What the user gets each time. */
+  output: string
+  /** `plan`: goes ahead with what the plan does. `ask`: asks before it sends, posts, buys, deletes or runs anything. */
+  approval: 'plan' | 'ask'
+  /** The plan's apps that can send or change things, which `plan` lets it use. */
+  acts: string[]
+  if_missing: MissingSourcePolicy
+  confirmed_at: ISODate | null
+}
+
+/** `PATCH /api/tasks/{id}` `{setup}`: answers to merge in; `confirm: true` marks the checklist confirmed. */
+export interface TaskSetupAnswers {
+  source?: { kind: TaskSource['kind']; target?: string }
+  output?: string
+  approval?: TaskSetup['approval']
+  if_missing?: MissingSourcePolicy
+  confirm?: boolean
 }
 
 export interface TaskCreateRequest {
@@ -1756,7 +1811,10 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'memory_scope' | 'deliver_to' | 'notepad' | 'keep_running'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'memory_scope' | 'deliver_to' | 'notepad' | 'keep_running'>> & {
+  /** Routines (#161): answers to the setup checklist, merged in by the engine. */
+  setup?: TaskSetupAnswers
+}
 
 /** `GET /api/tasks/away` (#163): routines pause after a long absence and resume with one click. */
 export interface AwayStatus {

@@ -119,6 +119,7 @@ from sentient.tools.rules import (
     OTHER_ROLE,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
+    TASK_ASKS,
     TRUSTED_EVENT,
     address_carries_data,
     address_host,
@@ -154,6 +155,9 @@ log = logging.getLogger(__name__)
 # ``ToolContext.extra`` flag: this run can pause and ask the user (a single task run), so an "ask" rule holds the
 # call and the run asks instead of stopping (#139)
 CAN_PAUSE_KEY = "can_pause_for_approval"
+# ``ToolContext.extra`` flag: a routine set to ask first (its setup checklist, #161), so a call that sends, posts, buys,
+# deletes or runs something is held like an "ask" rule, unless a rule or a grant already says yes
+ASK_FIRST_KEY = "task_asks_first"
 MAX_ATTACHMENT_CHARS = 60_000
 # A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
 # token is cautious: JSON, ids and escaped text take more tokens per character than prose.
@@ -1114,6 +1118,10 @@ class Agent:
             tool, ctx.user_words, self._app_name(tool), plan.risk, self._other_apps(tool)
         )
         rule = applied_rule(rule, asked=asked, risk=plan.risk)
+        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)  # send or exec, or a write that carries data out
+        if rule is None and ctx.extra.get(ASK_FIRST_KEY) and outgoing and not tool.internal:
+            rule = ASK  # this routine asks first (#161); a lasting rule the user set wins either way
+            plan.level = TASK_ASKS  # the hold and the task's question say why it asks
         if chat_rule == "ask" and pending_asks(self.approvals.config.mode, plan.risk):
             # ask first while the user hasn't answered the proposal, whatever else says yes; with approvals off
             # only for calls that change something, so look-ups never wait on a guess from the chat (#306)
@@ -1133,7 +1141,6 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
-        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
         tried = ctx.extra.get(dry_run.KEY) if ctx.extra else None
         if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk, outgoing=outgoing):
             # a try run (#142): anything above a look-up, or that can send data out, is noted instead of done, decided
@@ -1982,11 +1989,12 @@ class Agent:
 
     async def helper_model(self, session_id: str | None, role: str) -> str | None:
         """The model a helper started from a chat (a subagent) uses instead of ``role``'s: the chat's own model, where
-        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it."""
+        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it, unless it
+        does everything (ADR 0032)."""
         if role != "primary" or not session_id:
             return None
         picked, _ = await self.chat_model(await self.store.get_session(session_id), role)
-        if picked and picked.split("/", 1)[0] == claude_code.PREFIX:
+        if picked and picked.split("/", 1)[0] == claude_code.PREFIX and not claude_code.everywhere(self.config):
             return None
         return picked
 
