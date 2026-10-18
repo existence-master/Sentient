@@ -221,7 +221,7 @@ async def _doctor(models: bool = False) -> None:
                 row(
                     "lan listener",
                     not lan["bind_all"],
-                    f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all) — any host on the network can reach it, pairing required"
+                    f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all); any host on the network can reach it, pairing required"
                     if lan["bind_all"]
                     else f"port {lan['port']}, this computer only (loopback)",
                 )

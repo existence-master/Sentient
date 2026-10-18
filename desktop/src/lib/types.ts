@@ -1440,6 +1440,8 @@ export interface DeviceLanInfo {
   web_urls?: string[]
   fingerprint: string | null
   mdns?: boolean
+  /** True when the listener accepts connections from the whole network (`nodes.lan_bind_all`), false for this computer only. */
+  bind_all?: boolean
   error?: string | null
 }
 

@@ -61,7 +61,7 @@ export function AdvancedSection({ query }: SectionProps) {
         {config.data?.nodes?.lan_enabled && config.data?.nodes?.lan_bind_all && (
           <FormRow
             label="LAN listener"
-            description="The device listener is bound to every network interface (nodes.lan_bind_all). Devices must pair first, but any host on your network can reach it."
+            description="Devices on your network can reach Sentient. They still have to pair first."
           >
             <span className="flex items-center gap-2 text-sm text-fg-muted">
               <StatusDot tone="warning" />

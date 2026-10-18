@@ -2668,7 +2668,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   its voice chats and what was learned in them → `{ok, forgotten: ForgetCounts}`, section 7, #153);
   `POST /api/nodes/{id}/invoke` `{capability, params, timeout_ms?}` → `{ok, data?, error?, code?}` with `code` `offline`, `unsupported`,
   `timeout`, `not_allowed` (desktop screen capture off), `bad_upload` or the device's own code;
-  `GET /api/nodes/lan` → `{enabled, running, port, urls, web_urls, fingerprint, mdns, error}`.
+  `GET /api/nodes/lan` → `{enabled, running, port, urls, web_urls, fingerprint, mdns, bind_all, error}` (`bind_all`
+  true when the listener is bound to every network interface because `nodes.lan_bind_all` is on, false when it
+  listens on this computer only, #177).
 - Domain events `node.updated` → `Node`, `node.deleted` `{node_id}`, `node.event` `{node_id, event, data}`.
 - Tools (plugin `devices`, hidden unless an online device offers a capability the tools use; the desktop node counts only for
   `screen.capture`): `device_list()` read; `device_take_photo(device="", question="")` read (effective risk `send` while
