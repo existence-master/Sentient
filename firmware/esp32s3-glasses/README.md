@@ -118,8 +118,10 @@ live (docs/API.md section 24). On the glasses themselves two things back that up
   photo, so the LED blinks once per photo, plus once at power on while the camera is checked. If `CAM_PIN_PWDN` is
   wired too, the sensor is also held in power-down between photos. With `CAM_POWER_GPIO` left at `-1` the firmware
   still starts the camera only for a photo, but the LED proves nothing: wire it before the glasses leave your desk.
-- **Camera-off mode.** Hold the talk button while switching the glasses on, for 3 seconds
-  (`CAMERA_OFF_TOGGLE_HOLD_MS`), to turn camera-off mode on; do it again to turn it off. The serial log says
+- **Camera-off mode.** Switch the glasses on, then within 5 seconds (`CAMERA_OFF_WINDOW_MS`) press and hold the talk
+  button for 3 seconds (`CAMERA_OFF_TOGGLE_HOLD_MS`) to turn camera-off mode on; do it again to turn it off. Press
+  after switching on, not while: the button is on GPIO0, a strapping pin, and holding it through reset starts the
+  chip's download mode instead of the firmware. The serial log says
   `camera-off mode switched ON with the button`. The choice is kept in NVS, so it survives restarts (`idf.py
   erase-flash` clears it). While it is on, the camera is never powered, every photo request is refused on the glasses
   (`camera_off`), and the glasses tell Sentient (`camera_off: true`), which then never asks for a photo and shows

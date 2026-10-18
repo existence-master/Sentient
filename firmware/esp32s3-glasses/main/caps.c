@@ -10,6 +10,11 @@
 #include "node_client.h"
 
 static const char *TAG = "caps";
+static volatile bool s_photo_cancelled; // set from the socket task, read by the invoke worker
+
+void caps_cancel_photo(void) {
+    s_photo_cancelled = true;
+}
 
 void caps_show(const char *title, const char *text) {
     // The reference board has no screen: the serial console is the display.
@@ -51,10 +56,18 @@ static void do_photo(const char *id) {
         send_error(id, "camera_off", "The camera is switched off on the glasses.");
         return;
     }
+    s_photo_cancelled = false;
     node_client_send_json("{\"type\":\"state\",\"camera\":true,\"camera_for\":\"Taking a photo\"}");
     if (!camera_capture(&data, &len, &width, &height)) {
         node_client_send_json("{\"type\":\"state\",\"camera\":false}");
         send_error(id, "failed", "The camera did not return an image.");
+        return;
+    }
+    if (s_photo_cancelled) { // turned off in Sentient while the photo was taken: drop it, send nothing of it
+        camera_release();
+        node_client_send_json("{\"type\":\"state\",\"camera\":false}");
+        send_error(id, "stopped", "The camera was turned off in Sentient.");
+        ESP_LOGI(TAG, "photo dropped: turned off in Sentient");
         return;
     }
     char header[224];

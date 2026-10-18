@@ -3818,14 +3818,15 @@ microphone or camera they turn on or off to `app.sensors` (`sentient/sensors.py`
     closes (code 1000, reason `mic_stopped`). The reply in progress still finishes and is saved. The desktop ends voice
     mode, or turns "always listening" off, instead of reconnecting.
   - A photo being taken (`stopped`): the invoke ends with `{ok: false, code: "stopped"}`, nothing is saved, and the
-    device gets `stop_sensor` `{sensor: "camera"}`.
+    device gets `stop_sensor` `{sensor: "camera"}`. A device that reported `camera: true` stays in the list (as
+    its own use) until it reports `camera: false`.
   - A microphone or camera a device reported (`asked`): the device gets `stop_sensor` `{sensor}`. It stays in the list
     until the device reports it off.
 - Domain event `sensors.updated` → SensorState after every change. The desktop app's own device connection (node
   `desktop`, section 13) also gets `{"type": "sensors", ...SensorState}` after `welcome` and after every change, so
   the tray shows it without a window.
 - **Camera-off mode.** A device that reports `camera_off: true` (in `hello.state` or `state`) has its camera switched off
-  on the device itself; the reference glasses firmware sets it with the talk button at power on and keeps the camera
+  on the device itself; the reference glasses firmware sets it with the talk button just after power on and keeps the camera
   unpowered (docs/NODES.md section 11.7). While it is on, the engine never sends that device a `camera.photo` invoke:
   `POST /api/nodes/{id}/invoke` and `device_take_photo` get `{ok: false, code: "camera_off", error: "The camera on
   <name> is switched off on the device. Only the device itself can turn it back on."}`. No engine message turns it

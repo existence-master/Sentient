@@ -222,9 +222,11 @@ static void handle_text(const char *text) {
         } else if (strcmp(type->valuestring, "error") == 0) {
             handle_error(msg);
         } else if (strcmp(type->valuestring, "stop_sensor") == 0) {
-            // Turned off in Sentient. A photo takes under a second and the engine already dropped it; the camera
-            // powers off when it is done. The microphone stops with the voice socket the engine closed.
-            ESP_LOGI(TAG, "Sentient turned a sensor off");
+            // Turned off in Sentient: a photo in progress is dropped (caps.c) and the camera powers off when the
+            // capture returns. The microphone stops with the voice socket the engine closed.
+            const cJSON *sensor = cJSON_GetObjectItem(msg, "sensor");
+            if (cJSON_IsString(sensor) && strcmp(sensor->valuestring, "camera") == 0) caps_cancel_photo();
+            ESP_LOGI(TAG, "Sentient turned the %s off", cJSON_IsString(sensor) ? sensor->valuestring : "sensor");
         } else if (strcmp(type->valuestring, "invoke") == 0) {
             const cJSON *id = cJSON_GetObjectItem(msg, "id");
             const cJSON *cap = cJSON_GetObjectItem(msg, "capability");

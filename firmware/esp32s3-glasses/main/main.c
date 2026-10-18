@@ -23,17 +23,18 @@
 static const char *TAG = "glasses";
 static char s_cert_pem[CERT_PEM_MAX];
 
-// Camera-off mode (docs/NODES.md 11.7): kept in NVS and changed only here, on the glasses, by holding the talk
-// button at power on. Nothing the engine sends can change it.
+// Camera-off mode (docs/NODES.md 11.7): kept in NVS and changed only here, on the glasses: press and hold the talk
+// button within CAMERA_OFF_WINDOW_MS of switching on. Nothing the engine sends can change it.
 static bool camera_off_at_boot(void) {
     if (CAMERA_HARD_OFF) return true;
     char saved[4];
     bool off = storage_get(KEY_CAMERA_OFF, saved, sizeof(saved)) && strcmp(saved, "1") == 0;
-    if (button_held_at_boot(CAMERA_OFF_TOGGLE_HOLD_MS)) {
+    ESP_LOGI(TAG, "hold the button now for %d s to switch camera-off mode", CAMERA_OFF_TOGGLE_HOLD_MS / 1000);
+    if (button_held_at_boot(CAMERA_OFF_WINDOW_MS, CAMERA_OFF_TOGGLE_HOLD_MS)) {
         off = !off;
         storage_set(KEY_CAMERA_OFF, off ? "1" : "0");
         ESP_LOGW(TAG, "camera-off mode switched %s with the button", off ? "ON" : "OFF");
-        caps_show("Camera", off ? "Camera off. Hold the button at power on to turn it back on." : "Camera on.");
+        caps_show("Camera", off ? "Camera off. Hold the button just after switching on to turn it back on." : "Camera on.");
     }
     return off;
 }

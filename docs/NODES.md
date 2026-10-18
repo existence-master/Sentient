@@ -168,7 +168,9 @@ When the user presses Turn off on the indicator for something the device reporte
 {"type": "stop_sensor", "sensor": "mic"}
 ```
 
-Turn it off and report `{"type": "state", "mic": false}`; until then it stays on the indicator. Audio on `/ws/voice` is
+Turn it off and report `{"type": "state", "mic": false}`; until then it stays on the indicator. A device that reports
+`camera: true` while Sentient's photo request runs stays shown after Turn off until it reports `camera: false`, and
+should drop the photo instead of sending it (the reference node and the glasses firmware do). Audio on `/ws/voice` is
 stopped by the engine itself: the voice socket gets `{"type": "error", "code": "mic_stopped", ...}` and closes. A photo
 being taken ends with `code: "stopped"` and is never saved. The desktop app alone also receives `sensors` messages
 (the full list, for its tray); other devices never do.
@@ -426,8 +428,9 @@ Two guarantees that do not depend on the engine (or on the firmware being bug fr
   its own, so it is lit exactly while the camera has power. The firmware powers the camera only while a photo is
   taken (section 11.3), so the LED blinks once per photo, and once at power on while the camera is checked. With
   `CAM_PIN_PWDN` wired the sensor is also held in power-down between photos.
-- **Camera-off mode.** Hold the talk button while switching the glasses on, for `CAMERA_OFF_TOGGLE_HOLD_MS` (3 s), to
-  turn camera-off mode on or off. It is kept in NVS (`camera_off`). While it is on the camera is never powered, every
+- **Camera-off mode.** Within `CAMERA_OFF_WINDOW_MS` (5 s) of switching the glasses on, press and hold the talk
+  button for `CAMERA_OFF_TOGGLE_HOLD_MS` (3 s) to turn camera-off mode on or off (after the switch-on, because the
+  default button pin, GPIO0, is a strapping pin). It is kept in NVS (`camera_off`). While it is on the camera is never powered, every
   `camera.photo` is refused with `error.code` `camera_off`, and `hello.state.camera_off` is `true`, so Sentient shows
   "Camera switched off" and never asks for a photo. No message from the engine changes it: only the button does.
   `CAMERA_HARD_OFF 1` builds firmware that never powers the camera and does not offer `camera.photo` at all.

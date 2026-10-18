@@ -88,8 +88,11 @@
 #define CAM_WARMUP_FRAMES 3    // frames dropped after power-up while exposure settles
 
 // Camera-off mode: the camera stays unpowered and every photo is refused on the glasses, whatever the engine asks.
-// Only the glasses change it: hold the talk button while switching them on, for CAMERA_OFF_TOGGLE_HOLD_MS, to turn
-// it on or off. It is kept in NVS across restarts. The engine is told (hello state camera_off) and refuses photos too.
+// Only the glasses change it: within CAMERA_OFF_WINDOW_MS of switching them on, press and hold the talk button for
+// CAMERA_OFF_TOGGLE_HOLD_MS to turn it on or off. Press after the switch-on, not during it: the button is on GPIO0, a
+// strapping pin, and held low through reset it starts the ROM download mode. Kept in NVS across restarts. The
+// engine is told (hello state camera_off) and refuses photos too.
+#define CAMERA_OFF_WINDOW_MS 5000
 #define CAMERA_OFF_TOGGLE_HOLD_MS 3000
 // 1 builds firmware that never powers the camera at all and does not offer camera.photo.
 #define CAMERA_HARD_OFF 0

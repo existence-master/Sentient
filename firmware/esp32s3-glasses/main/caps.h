@@ -7,3 +7,6 @@ void caps_handle_invoke(const char *id, const char *capability, const char *para
 // Where display.text / display.card / notify.show end up. The default prints to the serial
 // console; wire an OLED here (see the README) if the glasses have one.
 void caps_show(const char *title, const char *text);
+
+// Sentient turned the camera off (stop_sensor): a photo being taken is dropped and never sent.
+void caps_cancel_photo(void);

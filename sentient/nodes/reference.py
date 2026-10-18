@@ -110,6 +110,7 @@ class ReferenceNode:
         self._send_lock = asyncio.Lock()
         self._lines: asyncio.Queue[str] | None = None
         self._answers: set[asyncio.Task] = set()
+        self._photo_stopped = False  # stop_sensor camera arrived while a photo was being taken
         self.saved: dict[str, Any] = self._load()
 
     # ------------------------------------------------------------------ state file
@@ -311,7 +312,7 @@ class ReferenceNode:
             if line.lower() == "c":
                 self.camera_off = not self.camera_off
                 await self._send(ws, {"type": "hello", "capabilities": self.capabilities})
-                await self._send(ws, {"type": "state", **self.device_state()})
+                await self._send(ws, {"type": "state", **self.device_state(), "camera_off": self.camera_off})
                 self.out(f"[camera] camera-off mode {'on' if self.camera_off else 'off'}")
                 continue
             if line.lower().startswith("b "):
@@ -381,6 +382,8 @@ class ReferenceNode:
                         self.out(f"[error] {msg.get('message')}")
                     elif kind == "stop_sensor":
                         self.out(f"[sentient] asked to turn off the {msg.get('sensor')}")
+                        if msg.get("sensor") == "camera":
+                            self._photo_stopped = True  # a photo being taken is dropped, never sent
             finally:
                 for t in helpers:
                     t.cancel()
@@ -393,10 +396,15 @@ class ReferenceNode:
     async def _answer(self, ws: Any, msg: dict) -> None:
         photo = msg.get("capability") == "camera.photo" and self.camera is not None and not self.camera_off
         if photo:  # tell Sentient the camera is on while the photo is taken (#170)
+            self._photo_stopped = False
             with contextlib.suppress(Exception):
                 await self._send(ws, {"type": "state", "camera": True, "camera_for": "Taking a photo"})
         try:
             result = await self.handle_invoke(msg)
+            if photo and self._photo_stopped:  # turned off in Sentient meanwhile: drop the photo
+                self.out("[camera] photo dropped: turned off in Sentient")
+                result = {"type": "result", "id": msg.get("id"), "ok": False,
+                          "error": {"code": "stopped", "message": "The camera was turned off in Sentient."}}  # fmt: skip
             with contextlib.suppress(Exception):
                 await self._send(ws, result)
         finally:

@@ -157,3 +157,33 @@ def test_desktop_app_gets_the_live_list(nodes_client):
         assert desktop.receive_json() == {"type": "stop_sensor", "sensor": "mic"}
         desktop.send_json({"type": "state", "mic": False})
         assert desktop.receive_json()["active"] == []
+
+
+def test_a_device_that_reports_its_camera_stays_shown_until_it_says_off(nodes_client):
+    client = nodes_client()
+    node_id, token = pair_device(client)
+    ctx, ws = _connect(client, token)
+    try:
+        FakeDevice(ws, {"camera.photo": lambda m: None})  # never answers
+        results: list[dict] = []
+        caller = threading.Thread(
+            target=lambda: results.append(
+                client.post(f"/api/nodes/{node_id}/invoke", json={"capability": "camera.photo", "timeout_ms": 10_000},
+                            headers=client.api_headers).json()
+            )
+        )  # fmt: skip
+        caller.start()
+        wait_for(lambda: len(_active(client)) == 1)
+        ws.send_json({"type": "state", "camera": True, "camera_for": "Taking a photo"})
+        wait_for(lambda: client.core.nodes._conns[node_id].camera)
+        assert len(_active(client)) == 1  # Sentient's own request and the device's report show once
+        use_id = _active(client)[0]["id"]
+        client.post("/api/sensors/stop", json={"id": use_id}, headers=client.api_headers)
+        caller.join(5)
+        assert results[0]["code"] == "stopped"
+        # the request is over, but the device still says its camera is on: that stays shown
+        assert [u["id"] for u in _active(client)] == [f"device:{node_id}:camera"]
+        ws.send_json({"type": "state", "camera": False})
+        wait_for(lambda: _active(client) == [])
+    finally:
+        ctx.__exit__(None, None, None)

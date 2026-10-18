@@ -33,7 +33,7 @@ static void button_task(void *arg) {
     }
 }
 
-bool button_held_at_boot(int hold_ms) {
+bool button_held_at_boot(int window_ms, int hold_ms) {
     gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << BUTTON_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -43,6 +43,12 @@ bool button_held_at_boot(int hold_ms) {
     };
     gpio_config(&cfg);
     vTaskDelay(pdMS_TO_TICKS(5)); // let the pull-up charge the line
+    int waited_for_press = 0;
+    while (gpio_get_level(BUTTON_GPIO) != 0) { // not pressed yet
+        if (waited_for_press >= window_ms) return false;
+        vTaskDelay(pdMS_TO_TICKS(10));
+        waited_for_press += 10;
+    }
     for (int waited = 0; waited < hold_ms; waited += 10) {
         if (gpio_get_level(BUTTON_GPIO) != 0) return false; // not held, or let go too early
         vTaskDelay(pdMS_TO_TICKS(10));

@@ -64,6 +64,11 @@ export function SensorIndicator() {
   useEffect(() => {
     if (!live && open) setOpen(false) // closed with the last one, so it doesn't pop open by itself next time
   }, [live, open, setOpen])
+  useEffect(() => {
+    // forget "asked" for uses that ended, so a later one with the same id gets its Turn off back
+    const ids = new Set((data?.active ?? []).map((u) => u.id))
+    setAsked((prev) => ([...prev].every((id) => ids.has(id)) ? prev : new Set([...prev].filter((id) => ids.has(id)))))
+  }, [data])
 
   if (!live || !data) return null
   const label = sensorLabel(data)
