@@ -345,6 +345,7 @@ test('nothing is approved or copied for a commit that is not GitHub\'s own merge
     await runWith(fake);
     assert.ok(!fake.names().includes('approve'));
     assert.ok(!fake.names().includes('createCheck'));
+    assert.ok(!fake.names().includes('removeLabel'));
     assert.match(reply(fake)[0], /a maintainer will start them/);
   }
 });

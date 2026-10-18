@@ -334,6 +334,7 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
   );
 
   let newSha = null;
+  let ourMerge = false;
   let checks = 'held';
   if (action === 'updateBranch') {
     try {
@@ -351,7 +352,8 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
   }
   if (action === 'updated') {
     newSha = await waitForNewHead(github, { owner, repo, pull_number: issue_number, oldSha, sleep, poll });
-    if (newSha && (await isOurMerge(github, { owner, repo, oldSha, newSha }))) {
+    ourMerge = !!newSha && (await isOurMerge(github, { owner, repo, oldSha, newSha }));
+    if (ourMerge) {
       try {
         checks = await approveHeldRuns(github, { owner, repo, oldSha, newSha, sleep, poll, core });
         if (checks === 'running' && !(await carryClaCheck(github, { owner, repo, oldSha, newSha, core }))) {
@@ -363,8 +365,9 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
     }
   }
 
-  // Without the new head in sight the branch isn't known to be current yet, so the label stays.
-  if (action === 'upToDate' || (action === 'updated' && newSha)) await removeLabel(github, { owner, repo, issue_number });
+  // Only GitHub's own merge commit proves the branch is current (a push meanwhile could be anything), so
+  // otherwise the label stays.
+  if (action === 'upToDate' || (action === 'updated' && ourMerge)) await removeLabel(github, { owner, repo, issue_number });
   if (['conflicts', 'useButton', 'failed'].includes(action)) await addLabel(github, { owner, repo, issue_number });
 
   const reply = {
