@@ -115,3 +115,23 @@ async def test_a_photo_turned_off_in_sentient_is_dropped(tmp_path):
     assert sent[1]["ok"] is False and sent[1]["error"]["code"] == "stopped"  # no image sent
     assert sent[2] == {"type": "state", "camera": False}
     assert "[camera] photo dropped: turned off in Sentient" in lines
+
+
+async def test_a_photo_stopped_before_it_started_is_never_taken(tmp_path):
+    node, lines = _node(tmp_path, camera=0)
+    sent: list[dict] = []
+
+    class WS:
+        async def send(self, raw):
+            sent.append(json.loads(raw))
+
+    def photo(params):
+        raise AssertionError("the camera must not be used")
+
+    node._photo = photo
+    queued_at = node._photo_stops  # the invoke arrived...
+    node._photo_stops += 1  # ...then stop_sensor camera, before its task ran
+    await node._answer(WS(), {"type": "invoke", "id": "8", "capability": "camera.photo", "params": {}}, queued_at)
+    assert sent == [{"type": "result", "id": "8", "ok": False,
+                     "error": {"code": "stopped", "message": "The camera was turned off in Sentient."}}]  # fmt: skip
+    assert "[camera] photo not taken: turned off in Sentient" in lines

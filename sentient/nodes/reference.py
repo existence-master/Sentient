@@ -374,7 +374,8 @@ class ReferenceNode:
                     msg = json.loads(raw)
                     kind = msg.get("type")
                     if kind == "invoke":
-                        answer = asyncio.create_task(self._answer(ws, msg))
+                        # the stop count when the request arrived: a stop that comes before the task runs counts too
+                        answer = asyncio.create_task(self._answer(ws, msg, self._photo_stops))
                         self._answers.add(answer)
                         answer.add_done_callback(self._answers.discard)
                     elif kind == "error":
@@ -393,9 +394,15 @@ class ReferenceNode:
                     if t.done() and not t.cancelled() and isinstance(t.exception(), NodeFatal):
                         raise t.exception()  # type: ignore[misc]
 
-    async def _answer(self, ws: Any, msg: dict) -> None:
+    async def _answer(self, ws: Any, msg: dict, stops: int | None = None) -> None:
         photo = msg.get("capability") == "camera.photo" and self.camera is not None and not self.camera_off
-        stops = self._photo_stops
+        stops = self._photo_stops if stops is None else stops
+        if photo and self._photo_stops != stops:  # turned off in Sentient before the photo started: never taken
+            self.out("[camera] photo not taken: turned off in Sentient")
+            with contextlib.suppress(Exception):
+                await self._send(ws, {"type": "result", "id": msg.get("id"), "ok": False,
+                                      "error": {"code": "stopped", "message": "The camera was turned off in Sentient."}})  # fmt: skip
+            return
         if photo:  # tell Sentient the camera is on while the photo is taken (#170)
             with contextlib.suppress(Exception):
                 await self._send(ws, {"type": "state", "camera": True, "camera_for": "Taking a photo"})
