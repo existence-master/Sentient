@@ -111,6 +111,7 @@ export function useSetLocalOnly() {
     onSuccess: (res) => {
       qc.setQueryData<SentientConfig>(qk.config, res.config)
       void qc.invalidateQueries({ queryKey: ['usage'] })
+      void qc.invalidateQueries({ queryKey: qk.modelPresets }) // Local only blocks or frees the cloud presets
     }
   })
 }
@@ -126,12 +127,16 @@ function useInvalidateModels() {
     void qc.invalidateQueries({ queryKey: qk.modelPresets })
     void qc.invalidateQueries({ queryKey: qk.config })
     void qc.invalidateQueries({ queryKey: qk.bootstrap })
+    void qc.invalidateQueries({ queryKey: ['usage'] }) // the cost meter shows Local only
   }
 }
 
 export function useApplyPreset() {
   const refresh = useInvalidateModels()
-  return useMutation({ mutationFn: (name: string) => api.models.presets.apply(name), onSuccess: refresh })
+  return useMutation({
+    mutationFn: ({ name, localOnly }: { name: string; localOnly?: boolean }) => api.models.presets.apply(name, localOnly),
+    onSuccess: refresh
+  })
 }
 
 export function useUndoPreset() {

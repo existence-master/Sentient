@@ -1,6 +1,6 @@
 # 0022. Let chats use Claude through the user's own Claude Code, off by default
 
-- **Status:** Accepted
+- **Status:** Accepted, amended by [ADR 0032](0032-claude-code-for-everything-as-an-opt-in.md) (an opt-in for everything)
 - **Date:** 2026-10-10
 
 ## Context

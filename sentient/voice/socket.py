@@ -88,7 +88,10 @@ async def serve_voice_socket(ws: WebSocket, core: Any, *, node: dict[str, Any] |
     async def send_json(obj: dict) -> None:
         await ws.send_text(json.dumps(obj, ensure_ascii=False, default=str))
 
-    session = core.voice.open_session(send_json, ws.send_bytes, node=node)
+    async def abort() -> None:  # the microphone was turned off in Sentient (#170)
+        await ws.close(code=1000, reason="mic_stopped")
+
+    session = core.voice.open_session(send_json, ws.send_bytes, node=node, abort=abort)
     stopped = False
     try:
         while True:

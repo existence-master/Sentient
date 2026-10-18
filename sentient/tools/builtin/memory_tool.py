@@ -171,7 +171,7 @@ async def memory_forget(ctx: ToolContext, fact_id: int) -> dict:
     """Permanently delete a remembered fact by id (from memory_recall). Use when the user asks you to forget something."""
     if ctx.memory is None:
         return {"error": "memory unavailable"}
-    ok = await ctx.memory.forget(fact_id, notify=True)
+    ok = await ctx.memory.erase(fact_id, notify=True)
     return {"deleted": ok, "id": fact_id}
 
 

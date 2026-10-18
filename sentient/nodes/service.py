@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from sentient import __version__, paths
+from sentient.memory.forget import forget as forget_learned
 from sentient.services import Service
 from sentient.store.db import now_iso
 
@@ -103,6 +104,13 @@ class NodeConnection:
     battery: int | None = None
     charging: bool | None = None
     worn: bool | None = None
+    # microphone and camera as the device reports them (#170)
+    mic: bool = False
+    camera: bool = False
+    camera_off: bool = False  # switched off on the device itself; the engine never asks for a photo then
+    mic_for: str = ""
+    camera_for: str = ""
+    photos: set[str] = field(default_factory=set)  # camera.photo invokes in flight (each shown as its own use)
     last_seen_write: float = 0.0
     closed: bool = False
 
@@ -143,6 +151,16 @@ def _battery(v: Any) -> int | None:
     return max(0, min(100, round(v)))
 
 
+def _device_label(conn: NodeConnection) -> str:
+    """How the microphone and camera indicator names a device: the desktop app itself is "This computer"."""
+    return "This computer" if conn.node_id == DESKTOP_ID else conn.name
+
+
+def _purpose(v: Any) -> str:
+    """What a device says its microphone or camera is on for: one short line of plain text."""
+    return " ".join(str(v).split())[:60] if isinstance(v, str) else ""
+
+
 def _normalize_result(msg: dict) -> dict:
     if msg.get("ok"):
         data = msg.get("data")
@@ -161,6 +179,8 @@ def _normalize_result(msg: dict) -> dict:
 
 
 STOP_STATE_SEND_S = 2.0  # deadline per device for a stop_state message
+DEVICE_SENSOR_PURPOSE = "Turned on by the device"
+PHOTO_PURPOSE = "Taking a photo"
 
 
 class NodeService(Service):
@@ -180,6 +200,7 @@ class NodeService(Service):
         # authenticates the LAN app's internal hop into the voice socket; never leaves the process
         self.lan_secret = secrets.token_urlsafe(32)
         self._schema_ready = False
+        self._sends: set[asyncio.Task] = set()  # sensor updates on their way to the desktop app
 
     @property
     def cfg(self) -> NodesConfig:
@@ -194,6 +215,7 @@ class NodeService(Service):
             self.app.registry.register(DevicesPlugin())
         self._refresh_tools()
         self._loops.append(asyncio.create_task(self._watch_config(), name="nodes:config"))
+        self.app.sensors.on_change(self._push_sensors)
         await self.apply_config()
 
     async def stop(self) -> None:
@@ -285,6 +307,7 @@ class NodeService(Service):
             "battery": conn.battery if conn and conn.battery is not None else row.get("battery"),
             "charging": conn.charging if conn else None,
             "worn": conn.worn if conn else None,
+            "camera_off": conn.camera_off if conn else None,
             "created_at": row["created_at"],
         }
 
@@ -325,11 +348,14 @@ class NodeService(Service):
         self.app.bus.publish("node.updated", node)
         return node
 
-    async def delete(self, node_id: str) -> bool:
-        """Forget a device and revoke its token. The built-in desktop node cannot be deleted."""
+    async def delete(self, node_id: str, *, forget: bool = False) -> bool | dict:
+        """Forget a device and revoke its token. The built-in desktop node cannot be deleted. ``forget``: also forget
+        what Sentient learned from it (#153), its voice chats and the facts from them; returns what was deleted
+        instead of True."""
         if node_id == DESKTOP_ID:
             raise ValueError("The desktop app is built in and cannot be removed.")
-        if await self._row(node_id) is None:
+        row = await self._row(node_id)
+        if row is None:
             return False
         await self.app.store.execute("UPDATE nodes SET revoked = 1, token_hash = NULL WHERE id = ?", (node_id,))
         conn = self._conns.get(node_id)
@@ -337,6 +363,8 @@ class NodeService(Service):
             await self._close_conn(conn, CLOSE_CODES["revoked"], ("revoked", "This device was removed in Sentient."))
         self.app.bus.publish("node.deleted", {"node_id": node_id})
         self._refresh_tools()
+        if forget:
+            return await forget_learned(self.app, f"device:{node_id}", str(row["name"] or "the device"))
         return True
 
     # ------------------------------------------------------------------ pairing
@@ -523,6 +551,9 @@ class NodeService(Service):
             return
         self._conns[conn.node_id] = conn
         self._refresh_tools()
+        self._sync_sensors(conn)
+        if conn.node_id == DESKTOP_ID:  # the tray shows live microphones and cameras (#170)
+            await self._safe_send(conn, {"type": "sensors", **self.app.sensors.state()})
         self.app.bus.publish("node.updated", self._node_dict(row))
         log.info("device connected: %s (%s, %s)", conn.name, conn.kind, "lan" if lan else "local")
 
@@ -558,6 +589,7 @@ class NodeService(Service):
             conn.fail_pending("The device disconnected before answering.")
             if self._conns.get(conn.node_id) is conn:
                 del self._conns[conn.node_id]
+                self._forget_sensors(conn)
                 self._refresh_tools()
                 with contextlib.suppress(Exception):
                     await self.app.store.execute(
@@ -594,6 +626,7 @@ class NodeService(Service):
         conn.fail_pending("The device disconnected before answering.")
         if self._conns.get(conn.node_id) is conn:
             del self._conns[conn.node_id]
+            self._forget_sensors(conn)
             self._refresh_tools()
         with contextlib.suppress(Exception):
             await conn.ws.close(code=code)
@@ -614,6 +647,16 @@ class NodeService(Service):
             if key in state and (v := _bool_or_none(state.get(key))) is not None:
                 changed |= v != getattr(conn, key)
                 setattr(conn, key, v)
+        if "camera_off" in state and (off := _bool_or_none(state.get("camera_off"))) is not None:
+            changed |= off != conn.camera_off
+            conn.camera_off = off
+        for key in ("mic", "camera"):
+            if key in state and (v := _bool_or_none(state.get(key))) is not None:
+                setattr(conn, key, v)
+            if f"{key}_for" in state:
+                setattr(conn, f"{key}_for", _purpose(state.get(f"{key}_for")))
+        if self._conns.get(conn.node_id) is conn:
+            self._sync_sensors(conn)
         return changed
 
     async def _publish_conn(self, conn: NodeConnection) -> None:
@@ -724,11 +767,24 @@ class NodeService(Service):
             return {"ok": False, "code": "unsupported", "error": f"{conn.name} does not support {capability}."}
         if node_id == DESKTOP_ID and capability == "screen.capture" and not self.cfg.allow_desktop_screen:
             return {"ok": False, "code": "not_allowed", "error": "Screen capture of this computer is turned off in Settings."}
+        if capability == "camera.photo" and conn.camera_off:
+            # camera-off mode is set on the device and only the device can end it (#170): never ask for a photo
+            return {
+                "ok": False, "code": "camera_off",
+                "error": f"The camera on {conn.name} is switched off on the device. Only the device itself can turn it back on.",
+            }  # fmt: skip
         timeout = timeout_ms if timeout_ms and timeout_ms > 0 else self.cfg.invoke_timeout_s * 1000
         timeout = max(50, min(int(timeout), 120_000))
         call_id = secrets.token_hex(6)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         conn.pending[call_id] = fut
+        photo_use = f"device:{conn.node_id}:photo:{call_id}" if capability == "camera.photo" else None
+        if photo_use is not None:
+            conn.photos.add(call_id)
+            self.app.sensors.start(
+                photo_use, "camera", device_id=conn.node_id, device=_device_label(conn), device_kind=conn.kind,
+                purpose=PHOTO_PURPOSE, stop=lambda: self._stop_photo(conn, fut),
+            )  # fmt: skip
         sent_params = dict(params or {})
         if payload is not None:
             sent_params.update({"binary": True, "bytes": len(payload)})
@@ -746,6 +802,11 @@ class NodeService(Service):
             conn.pending.pop(call_id, None)
             if conn.awaiting_binary and conn.awaiting_binary[0] == call_id:
                 conn.awaiting_binary = None
+            if photo_use is not None:
+                conn.photos.discard(call_id)
+                self.app.sensors.end(photo_use)
+                if self._conns.get(conn.node_id) is conn:
+                    self._sync_sensors(conn)
 
     def resolve(self, device: str, capabilities: list[str]) -> tuple[NodeConnection, str]:
         """Pick a connected device and the first of ``capabilities`` it supports. Raises DeviceError."""
@@ -791,6 +852,48 @@ class NodeService(Service):
         if not result.get("ok"):
             raise DeviceError(f"{conn.name}: {result.get('error') or 'the request failed'}")
         return result.get("data") or {}
+
+    # ------------------------------------------------------------------ microphone and camera state (#170)
+    def _sync_sensors(self, conn: NodeConnection) -> None:
+        """Mirror what a device reports about its microphone and camera into ``app.sensors``."""
+        sensors = self.app.sensors
+        for sensor in ("mic", "camera"):
+            use_id = f"device:{conn.node_id}:{sensor}"
+            # a camera the device reports on while Sentient's own photo request runs is that photo: shown once
+            if getattr(conn, sensor) and not (sensor == "camera" and conn.photos):
+                sensors.start(
+                    use_id, sensor, device_id=conn.node_id, device=_device_label(conn), device_kind=conn.kind,  # type: ignore[arg-type]
+                    purpose=getattr(conn, f"{sensor}_for") or DEVICE_SENSOR_PURPOSE,
+                    stop=lambda c=conn, s=sensor: self._ask_device_stop(c, s),
+                )  # fmt: skip
+            else:
+                sensors.end(use_id)
+        sensors.set_camera_off(conn.node_id, _device_label(conn), conn.camera_off)
+
+    def _forget_sensors(self, conn: NodeConnection) -> None:
+        self.app.sensors.end_prefix(f"device:{conn.node_id}:")
+        self.app.sensors.set_camera_off(conn.node_id, conn.name, False)
+
+    async def _ask_device_stop(self, conn: NodeConnection, sensor: str) -> bool:
+        """Ask the device to turn its microphone or camera off. It stays shown until the device says it is off."""
+        await self._safe_send(conn, {"type": "stop_sensor", "sensor": sensor})
+        return False
+
+    async def _stop_photo(self, conn: NodeConnection, fut: asyncio.Future) -> bool:
+        """Turn off a camera taking a photo: the photo is dropped (never saved) and the device is asked to stop."""
+        if not fut.done():
+            fut.set_result({"ok": False, "code": "stopped", "error": "The camera was turned off in Sentient, so no photo was taken."})
+        await self._safe_send(conn, {"type": "stop_sensor", "sensor": "camera"})
+        return True
+
+    def _push_sensors(self, state: dict) -> None:
+        """Tell the desktop app (its tray) which microphones and cameras are live."""
+        conn = self._conns.get(DESKTOP_ID)
+        if conn is None or conn.closed:
+            return
+        task = asyncio.get_running_loop().create_task(self._safe_send(conn, {"type": "sensors", **state}), name="nodes:sensors")
+        self._sends.add(task)
+        task.add_done_callback(self._sends.discard)
 
     def _refresh_tools(self) -> None:
         from sentient.nodes.tools import DevicesPlugin

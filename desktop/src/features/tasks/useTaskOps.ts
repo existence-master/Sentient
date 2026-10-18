@@ -119,7 +119,8 @@ export function useTaskOps() {
 
       update: (id: string, patch: TaskPatch, success?: string) =>
         perform('update', id, () => api.tasks.update(id, patch), {
-          optimistic: (t) => ({ ...t, ...patch, updated_at: now() }) as Task,
+          // the checklist's answers (#161) are merged by the engine, so the task keeps its own until the reply
+          optimistic: (t) => ({ ...t, ...patch, setup: t.setup, updated_at: now() }) as Task,
           success,
           error: "Couldn't save the change"
         }),

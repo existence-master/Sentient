@@ -14,6 +14,7 @@
  *   notification.deleted  -> remove (id null = all)
  *   integration.updated   -> upsert into ['integrations'], refetch change feeds (+ ['hooks'] for the webhook integration)
  *   memory.updated        -> invalidate ['memories']
+ *   memory.forgotten      -> invalidate ['memories'], ['sessions'] and ['messages'] (a source was forgotten, #153)
  *   skill.updated         -> invalidate ['skills']
  *   mcp.review            -> invalidate ['integrations-mcp'] (an MCP server's tools wait for review, #146)
  *   session.updated       -> rename, set the chat's model or its outside-content mark in ['sessions']
@@ -32,6 +33,7 @@
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
  *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
+ *   sensors.updated       -> ['sensors'] (the title bar's microphone and camera indicator, #170)
  *   model.busy            -> ['models', 'busy'] (the title bar's "model busy" indicator)
  *   backup.updated        -> refetch ['backups'] (Settings > Backups)
  *   folders.updated       -> refetch ['folders'] (Settings > Folders: progress of a look through a folder)
@@ -186,6 +188,13 @@ export function installDomainEvents(qc: QueryClient): () => void {
   // #390: a ringing alarm stopped or snoozed anywhere (a chat, voice, a messaging app) updates the banner
   offs.push(live.onDomain('reminder.updated', (e) => useAlarm.getState().updated(e.data)))
   offs.push(live.onDomain('memory.updated', () => void qc.invalidateQueries({ queryKey: qk.memories.all })))
+  offs.push(
+    live.onDomain('memory.forgotten', () => {
+      void qc.invalidateQueries({ queryKey: qk.memories.all })
+      void qc.invalidateQueries({ queryKey: qk.sessions })
+      void qc.invalidateQueries({ queryKey: qk.allMessages }) // an app's results in chats were replaced
+    })
+  )
   offs.push(live.onDomain('skill.updated', () => void qc.invalidateQueries({ queryKey: qk.skills.all })))
   offs.push(live.onDomain('mcp.review', () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })))
 
@@ -333,6 +342,9 @@ export function installDomainEvents(qc: QueryClient): () => void {
     })
   )
 
+  // #170 live microphones and cameras
+  offs.push(live.onDomain('sensors.updated', (e) => void qc.setQueryData(qk.sensors, e.data)))
+
   // #149 one local model job at a time
   offs.push(live.onDomain('model.busy', (e) => qc.setQueryData(qk.modelBusy, e.data)))
   offs.push(live.onDomain('backup.updated', () => void qc.invalidateQueries({ queryKey: qk.backups })))
@@ -352,7 +364,7 @@ export function installDomainEvents(qc: QueryClient): () => void {
   offs.push(
     live.onState((s) => {
       if (s === 'open' && prev === 'reconnecting') {
-        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, qk.modelBusy, qk.folders, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
+        for (const key of [qk.sessions, qk.notifications, qk.tasks.all, qk.integrations.all, qk.bootstrap, qk.stop, qk.sensors, qk.modelBusy, qk.folders, deviceKeys.all, channelKeys.all, browserKeys.status, browserKeys.profiles]) {
           void qc.invalidateQueries({ queryKey: key })
         }
       }
@@ -388,6 +400,7 @@ const TIMELINE_EVENTS = new Set<string>([
   'notification.new',
   'notification.updated',
   'memory.updated',
+  'memory.forgotten',
   'skill.updated',
   'dream.updated',
   'backup.updated',

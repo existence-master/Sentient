@@ -391,6 +391,12 @@ class VoiceController {
         }))
         break
       case 'error':
+        if (msg.code === 'mic_stopped') {
+          // turned off from the microphone indicator (#170): end voice mode here too, no reconnect
+          this.stop()
+          toast('Microphone turned off', { description: 'Voice mode ended. Start it again whenever you like.' })
+          break
+        }
         if (msg.recoverable === false) {
           this.patchLastAssistant({ error: msg.message, done: true })
           toast.error('Voice error', { description: msg.message })

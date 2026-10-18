@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, StrictBool
 
 from sentient.gateway.deps import AUTH, get_core
 from sentient.integrations.base import IntegrationError
+from sentient.integrations.mcp import plugin_id_for
+from sentient.memory.forget import forget as forget_learned
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.integrations.service import IntegrationManager
@@ -77,9 +79,13 @@ async def add_mcp(request: Request, body: MCPServerBody):
 
 
 @router.delete("/mcp/{name}")
-async def delete_mcp(request: Request, name: str):
+async def delete_mcp(request: Request, name: str, forget: bool = False):
+    """``?forget=true``: also forget what Sentient learned from the server (#153)."""
     if not await _mgr(request).mcp.remove(name):
         raise HTTPException(404, f"no MCP server named {name}")
+    if forget:
+        source = f"app:{plugin_id_for(name)}"
+        return {"ok": True, "forgotten": await forget_learned(get_core(request), source, name)}
     return {"ok": True}
 
 
@@ -212,9 +218,10 @@ async def cancel_connect(request: Request, integration_id: str):
 
 
 @router.post("/{integration_id}/disconnect")
-async def disconnect(request: Request, integration_id: str):
+async def disconnect(request: Request, integration_id: str, forget: bool = False):
+    """``?forget=true``: also forget what Sentient learned from the app (#153)."""
     try:
-        return await _mgr(request).disconnect(integration_id)
+        return await _mgr(request).disconnect(integration_id, forget=forget)
     except KeyError as exc:
         raise HTTPException(404, f"unknown integration {integration_id}") from exc
 

@@ -260,3 +260,13 @@ def test_named_tools_need_the_exact_name():
     assert named_tools("run COMPOSIO_SEARCH_TOOLS first", catalog) == ["mcp_composio_composio_search_tools"]
     assert named_tools("fetch the web page, current weather", catalog) == []
     assert named_tools("use web_fetcher", catalog) == []
+
+
+async def test_the_reader_comes_with_tools_that_read_outside_content():
+    """#144: read_with_reader is offered whenever a mail or web look-up is, and not otherwise."""
+    o = owner(budget_local=9)
+    o.registry.register(plugin("subagents", "large or multi-part work", "delegate_task", "read_with_reader"))
+    mail = await ToolSelector(o).select("check my inbox for the email from Arjun", model="ollama_chat/qwen3:8b")
+    assert "gmail_read" in mail and "read_with_reader" in mail
+    weather = await ToolSelector(o).select("will it rain tomorrow? check the weather forecast", model="ollama_chat/qwen3:8b")
+    assert "read_with_reader" not in weather

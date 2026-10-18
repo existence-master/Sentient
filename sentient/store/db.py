@@ -19,20 +19,17 @@ from typing import Any
 import aiosqlite
 
 from sentient import paths
+from sentient.store import migrations
 
 log = logging.getLogger(__name__)
 
 _SCHEMA = Path(__file__).with_name("schema.sql")
 _PKG_ROOT = Path(__file__).resolve().parents[1]
+# The schema version: the highest numbered step in sentient/store/migrations, never typed by hand (ADR 0030). A
+# database opened with another version gets a snapshot first (issue #151).
+MIGRATIONS = migrations.discover()
+SCHEMA_VERSION = MIGRATIONS[-1].number
 # Feature packages own their tables. Each file must be idempotent. Order matters for foreign keys.
-# Bump when a change to a schema.sql or an ensure_column needs existing databases updated. Opening a database
-# with another version takes a snapshot first (issue #151); so does the first column added to an existing one.
-SCHEMA_VERSION = 12  # 2: sessions.incognito (#154); 3: messages.sources (#290); 4: tasks.notepad (#292); 5: sessions.model (#312)
-# 6: approval_grants (#139); 7: usage.cost_usd (#148); 8: evolution_reviews.activity_mark (#297)
-# 9: messages.approval and the activity timeline's indexes (#147); 10: try runs and file snapshots (#142)
-# 11: memory scopes: facts.scope, sessions.memory_scope, tasks.memory_scope, summaries.scope (#155); also
-#     messages.checks and task_runs.checks (#165), which arrived without a bump
-# 12: folders.scope (#392): folders added before it are recalled in every chat
 PACKAGE_SCHEMAS = [
     "tasks", "integrations", "proactivity", "evolution", "voice", "memory", "nodes", "channels", "browser", "sandbox",
     "folders", "reminders", "snapshots",
@@ -149,41 +146,15 @@ class Store:
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
         self.vec_available = await _load_vec(self._db)
+        if self._existing and version < SCHEMA_VERSION:
+            # columns first, so the schema files' indexes find them; the files then add whatever tables are missing
+            await migrations.migrate(self, version, MIGRATIONS)
+        # a new database is made from these alone (they hold the whole current shape)
         await self._db.executescript(_SCHEMA.read_text(encoding="utf-8"))
-        # additive migrations for databases created by older builds
-        await self.ensure_column("sessions", "context_summary", "TEXT")
-        await self.ensure_column("sessions", "context_upto", "TEXT")
-        await self.ensure_column("sessions", "untrusted", "TEXT")
-        await self.ensure_column("sessions", "visited_hosts", "TEXT")
-        await self.ensure_column("sessions", "incognito", "INTEGER NOT NULL DEFAULT 0")
-        await self.ensure_column("sessions", "model", "TEXT")
-        await self.ensure_column("sessions", "memory_scope", "TEXT")  # #155
-        await self.ensure_column("messages", "attachments", "TEXT")
-        await self.ensure_column("messages", "interjection", "INTEGER NOT NULL DEFAULT 0")
-        await self.ensure_column("messages", "memory_sources", "TEXT")
-        await self.ensure_column("messages", "sources", "TEXT")
-        await self.ensure_column("messages", "approval", "TEXT")
-        await self.ensure_column("messages", "checks", "TEXT")
-        await self.ensure_column("facts", "status", "TEXT NOT NULL DEFAULT 'active'")
-        await self.ensure_column("facts", "review", "TEXT")
-        # memory scopes (#155): every memory saved before them is personal
-        await self.ensure_column("facts", "scope", "TEXT NOT NULL DEFAULT 'personal'")
-        await self.ensure_column("summaries", "untrusted", "TEXT")
-        await self.ensure_column("summaries", "scope", "TEXT")  # the chat's memory scope when written (#155)
-        await self.ensure_column("usage", "cost_usd", "REAL")
-        # the activity timeline's spending lines (#147); after ensure_column: older databases get cost_usd above
-        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts(scope, status)")
-        await self.db.execute("CREATE INDEX IF NOT EXISTS idx_usage_paid ON usage(created_at) WHERE cost_usd > 0")
-        # summaries written before the mark existed take it from their chat (ADR 0021)
-        await self.db.execute(
-            "UPDATE summaries SET untrusted = (SELECT s.untrusted FROM sessions s WHERE s.id = summaries.session_id)"
-            " WHERE untrusted IS NULL AND session_id IS NOT NULL"
-        )
         for pkg in PACKAGE_SCHEMAS:
             extra = _PKG_ROOT / pkg / "schema.sql"
             if extra.exists():
                 await self._db.executescript(extra.read_text(encoding="utf-8"))
-        await self.ensure_column("folders", "scope", "TEXT NOT NULL DEFAULT 'always'")  # #392, after folders/schema.sql
         await self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await self._db.commit()
         return self
@@ -212,10 +183,14 @@ class Store:
         async with self.db.execute(sql, tuple(params)) as cur:
             return list(await cur.fetchall())
 
-    async def ensure_column(self, table: str, column: str, decl: str) -> None:
-        """Add a column if it is missing. Packages use this for additive schema changes."""
+    async def columns(self, table: str) -> set[str]:
+        """The column names of ``table``; empty when there is no such table."""
         async with self.db.execute(f"PRAGMA table_info({table})") as cur:
-            cols = {r[1] for r in await cur.fetchall()}
+            return {r[1] for r in await cur.fetchall()}
+
+    async def ensure_column(self, table: str, column: str, decl: str) -> None:
+        """Add a column if the table exists and lacks it. Migration steps use this (sentient/store/migrations)."""
+        cols = await self.columns(table)
         if cols and column not in cols:
             await self._before_migration(f"before adding {column} to {table}")
             await self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
@@ -239,13 +214,15 @@ class Store:
         incognito: bool = False,
         model: str | None = None,
         memory_scope: str | None = None,
+        node_id: str | None = None,
     ) -> str:
+        """A new chat. ``node_id``: the paired device it was started on (#153)."""
         sid = new_id()
         ts = now_iso()
         await self.execute(
-            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model, memory_scope)"
-            " VALUES(?,?,?,?,?,?,?,?)",
-            (sid, title, channel, ts, ts, int(bool(incognito)), model or None, memory_scope or None),
+            "INSERT INTO sessions(id, title, channel, created_at, updated_at, incognito, model, memory_scope, node_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (sid, title, channel, ts, ts, int(bool(incognito)), model or None, memory_scope or None, node_id or None),
         )
         return sid
 

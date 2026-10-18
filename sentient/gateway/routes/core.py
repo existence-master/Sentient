@@ -1,6 +1,6 @@
 """Core REST routes. OWNER: core. Contract: docs/API.md sections 2 and 3.
 
-health, bootstrap, stop everything, onboarding, config, sessions, chat (NDJSON),
+health, bootstrap, stop everything, microphones and cameras, onboarding, config, sessions, chat (NDJSON),
 approvals, files, tools catalog, usage.
 """
 
@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from sentient import __version__, paths
 from sentient.config import config_json_schema
 from sentient.config.schema import SentientConfig
+from sentient.files import names as file_names
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
 from sentient.llm import availability
@@ -98,6 +99,24 @@ async def stop_all(request: Request, body: StopBody | None = None):
 @router.post("/api/resume", dependencies=_auth)
 async def resume(request: Request, body: StopBody | None = None):
     return await get_core(request).resume(source=_source(body))
+
+
+# ----------------------------------------------------------------------------- microphones and cameras (section 24)
+class SensorStopBody(BaseModel):
+    id: str | None = None
+
+
+@router.get("/api/sensors", dependencies=_auth)
+async def sensors(request: Request):
+    return get_core(request).sensors.state()
+
+
+@router.post("/api/sensors/stop", dependencies=_auth)
+async def sensors_stop(request: Request, body: SensorStopBody | None = None):
+    """Turn off one live microphone or camera (``id``), or all of them. One that is already off is not an error."""
+    registry = get_core(request).sensors
+    result = await registry.stop(body.id if body else None)
+    return {**result, "state": registry.state()}
 
 
 class OnboardingBody(BaseModel):
@@ -533,13 +552,10 @@ async def upload_file(
     # what the user shared from their screen (screens/) or selected in another app (selections/) marks the chat it is
     # sent in (ADR 0018)
     folder = uploads_dir({"screen": SCREEN_FOLDER, "selection": SELECTION_FOLDER}.get(source, "uploads"))
-    name = _safe_name(file.filename or "upload")
-    target = folder / name
-    stem, suffix = target.stem, target.suffix
-    i = 1
-    while target.exists():
-        target = folder / f"{stem} ({i}){suffix}"
-        i += 1
+    # a name is never handed out again while a chat has it attached, and captures always get a random part (#458)
+    target = await file_names.create(
+        folder, _safe_name(file.filename or "upload"), store=get_core(request).store, unique=source != "upload"
+    )
     size = 0
     with target.open("wb") as fh:
         while chunk := await file.read(1024 * 1024):
@@ -571,8 +587,9 @@ async def list_files(request: Request):
     return out
 
 
-@router.get("/api/files/content/{name:path}", dependencies=_auth)
+@router.api_route("/api/files/content/{name:path}", methods=["GET", "HEAD"], dependencies=_auth)
 async def file_content(request: Request, name: str):
+    # HEAD answers whether the file is still there: a chat shows "No longer available" for an attachment that is gone
     p = resolve_file(name)
     if not p.is_file():
         raise HTTPException(404, "not found")

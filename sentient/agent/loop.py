@@ -119,6 +119,7 @@ from sentient.tools.rules import (
     OTHER_ROLE,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
+    TASK_ASKS,
     TRUSTED_EVENT,
     address_carries_data,
     address_host,
@@ -154,6 +155,9 @@ log = logging.getLogger(__name__)
 # ``ToolContext.extra`` flag: this run can pause and ask the user (a single task run), so an "ask" rule holds the
 # call and the run asks instead of stopping (#139)
 CAN_PAUSE_KEY = "can_pause_for_approval"
+# ``ToolContext.extra`` flag: a routine set to ask first (its setup checklist, #161), so a call that sends, posts, buys,
+# deletes or runs something is held like an "ask" rule, unless a rule or a grant already says yes
+ASK_FIRST_KEY = "task_asks_first"
 MAX_ATTACHMENT_CHARS = 60_000
 # A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
 # token is cautious: JSON, ids and escaped text take more tokens per character than prose.
@@ -399,6 +403,8 @@ class LoopResult:
     skills_viewed: list[str] = field(default_factory=list)  # names passed to skill_view
     interjections: list[str] = field(default_factory=list)  # steer messages the model received
     paused: bool = False  # ``stop`` ended the loop after a round of tool results (a task run asked the user)
+    # ``interrupt`` ended the loop at a safe point, before a model call or a tool call (a task the user paused, #408)
+    interrupted: bool = False
     # set when an "ask" rule stopped an unattended run (also copied to ``error``); plain words for the user
     stopped_by_rule: str | None = None
     # set when the loop breaker ended the loop (unattended runs also copy it to ``error``); plain words
@@ -550,6 +556,7 @@ class _CallPlan:
     level: str | None = None  # the lasting rule the call was planned under ("if_asked" before it is applied)
     handed_off: bool = False  # a "Hand it to me" rule: prepared for the user, never run (#140)
     undo: str = ""  # how its undo window ended, when it waited in one (#142)
+    destinations: list[str] = field(default_factory=list)  # who a reply goes to, from its thread's headers (#144)
 
 
 class Agent:
@@ -791,6 +798,7 @@ class Agent:
         budget: Budget | None = None,
         repeat_nudge: bool = False,
         fallback: bool = False,
+        interrupt: Callable[[], bool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream a tool-calling conversation. Mutates ``messages`` and fills ``result``.
 
@@ -805,6 +813,10 @@ class Agent:
         ``stop()`` is checked after each round of tool results; when it returns True the loop ends without
         another model call and sets ``result.paused`` (task runs use it to wait for the user's answer). ``budget`` is checked
         before each model call; when it has run out the loop ends with ``result.stopped_by_budget``.
+        ``interrupt()`` is checked at every safe point: before each model call, and before each tool call (never during
+        one). When it returns True the loop ends there and sets ``result.interrupted``; tool calls of the last answer
+        that did not run are left without a result (``history_to_openai`` drops them), so a run that carries on from
+        the transcript makes them again (a task the user paused, #408).
 
         Loop breaker (``tools.repeated_call_limit``): when the same tool with the same arguments gets
         the same result that many times, the loop ends with ``result.stopped_by_repeat`` (and ``error``).
@@ -829,8 +841,18 @@ class Agent:
         tools_disabled = False
         empty_nudged = False
         round_no = 0
+        def interrupted() -> bool:
+            if interrupt is None or not interrupt():
+                return False
+            result.interrupted = True
+            result.text = ""
+            result.messages = messages
+            return True
+
         while round_no < rounds:
             round_no += 1
+            if interrupted():  # before the model call
+                return
             over = budget.exceeded() if budget is not None else None
             if over:
                 result.stopped_by_budget = result.error = over
@@ -949,6 +971,8 @@ class Agent:
                 result.messages = messages
                 return
 
+            if interrupted():  # before any of this answer's calls (and their second look) start: it is asked again
+                return
             # a delete for good becomes its app's trash version unless the user asked for it to be permanent (#142);
             # swapped before the call is saved, so the transcript, approvals and second look all see the trash call
             swapped = self._prefer_trash(tool_calls, messages, ctx)
@@ -986,7 +1010,7 @@ class Agent:
                     "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
                     "question": question,
                     "preview": preview.build(waiting.tc.name, waiting.tc.arguments, purchase=await is_purchase(
-                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk)),
+                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk), to=waiting.destinations),
                 }
                 if waiting.ask_rule:  # an "ask" rule in a task run: pause and ask, with how wide a yes may be (#139)
                     purchase = await is_purchase(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -997,6 +1021,8 @@ class Agent:
                         question=approval_question(label, waiting.tc.arguments, wording["target"], waiting.level),
                     )
             for group in self._groups(plans):
+                if interrupted():  # between calls: the ones that ran keep their results, the rest are made again
+                    return
                 for p in group:
                     yield ToolCallEvent(call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments, **ev)
                 runnable: list[_CallPlan] = []
@@ -1143,6 +1169,10 @@ class Agent:
             tool, ctx.user_words, self._app_name(tool), plan.risk, self._other_apps(tool)
         )
         rule = applied_rule(rule, asked=asked, risk=plan.risk)
+        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)  # send or exec, or a write that carries data out
+        if rule is None and ctx.extra.get(ASK_FIRST_KEY) and outgoing and not tool.internal:
+            rule = ASK  # this routine asks first (#161); a lasting rule the user set wins either way
+            plan.level = TASK_ASKS  # the hold and the task's question say why it asks
         if chat_rule == "ask" and pending_asks(self.approvals.config.mode, plan.risk):
             # ask first while the user hasn't answered the proposal, whatever else says yes; with approvals off
             # only for calls that change something, so look-ups never wait on a guess from the chat (#306)
@@ -1162,7 +1192,6 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
-        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
         tried = ctx.extra.get(dry_run.KEY) if ctx.extra else None
         if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk, outgoing=outgoing):
             # a try run (#142): anything above a look-up, or that can send data out, is noted instead of done, decided
@@ -1268,7 +1297,10 @@ class Agent:
             if args is None:
                 continue
             if request is None:
-                request = second_look.gather(messages, self.registry, task=bool(ctx.extra.get("task_id"))).request
+                request = second_look.gather(
+                    messages, self.registry, task=bool(ctx.extra.get("task_id")),
+                    brief_from=str(ctx.extra.get(second_look.BRIEF_FROM_KEY) or ""),
+                ).request
             if reversible.asks_for_good(request):
                 return swapped
             log.info("moving to the trash with %s instead of %s", twin.name, tc.name)
@@ -1290,7 +1322,7 @@ class Agent:
         hold = broker.open(undo_id, call_id=p.tc.id, name=p.tc.name, session_id=ctx.session_id, channel=ctx.channel,
                            seconds=seconds)
         yield UndoWindow(undo_id=undo_id, call_id=p.tc.id, name=p.tc.name, seconds=seconds, until=hold.until,
-                         preview=preview.build(p.tc.name, p.tc.arguments), **ev)
+                         preview=preview.build(p.tc.name, p.tc.arguments, to=p.destinations), **ev)
         outcome = await broker.wait(undo_id)
         log.info("undo window for %s ended: %s", p.tc.name, outcome)
         p.undo = outcome
@@ -1319,7 +1351,7 @@ class Agent:
             risk_label=wording["risk_label"], target=wording["target"],
             untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
             grant_minutes=self.approvals.config.grant_minutes,
-            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase), **ev,
+            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase, to=p.destinations), **ev,
         )
         asked_at = now_iso()
         decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
@@ -2020,11 +2052,12 @@ class Agent:
 
     async def helper_model(self, session_id: str | None, role: str) -> str | None:
         """The model a helper started from a chat (a subagent) uses instead of ``role``'s: the chat's own model, where
-        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it."""
+        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it, unless it
+        does everything (ADR 0032)."""
         if role != "primary" or not session_id:
             return None
         picked, _ = await self.chat_model(await self.store.get_session(session_id), role)
-        if picked and picked.split("/", 1)[0] == claude_code.PREFIX:
+        if picked and picked.split("/", 1)[0] == claude_code.PREFIX and not claude_code.everywhere(self.config):
             return None
         return picked
 

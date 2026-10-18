@@ -74,6 +74,8 @@ PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
 
 # Models offered for Claude through the user's own Claude Code (#206, ADR 0022): Claude Code's model aliases.
 CLAUDE_CODE_MODELS: tuple[str, ...] = ("claude-code/sonnet", "claude-code/opus")
+# The quick-jobs model when Claude Code does everything (models.claude_code_everywhere, #444, ADR 0032).
+CLAUDE_CODE_FAST_MODEL = "claude-code/haiku"
 
 # Local model sizing for this computer (#131), used by onboarding, the "Local only" preset and the model check-up.
 # Rows are tried in order and the first one the computer meets is recommended. ``min_vram_gb`` is graphics memory a
@@ -211,8 +213,22 @@ class ModelsConfig(BaseModel):
         False,
         description="Experimental. Uses your own Claude Code install and login. Anthropic may change how this is "
         "counted or allowed. When on, models named claude-code/<model> (claude-code/sonnet, claude-code/opus) answer "
-        "your chats through the claude program on this computer, with Sentient's tools and approvals. Never used for "
-        "work that runs in the background, and it can't make embeddings. Sentient never reads your Claude login.",
+        "your chats through the claude program on this computer, with Sentient's tools and approvals. Not used for "
+        "work that runs in the background unless claude_code_everywhere is on, and it can't make embeddings. Sentient "
+        "never reads your Claude login.",
+    )
+    claude_code_everywhere: bool = Field(
+        False,
+        description="Only with experimental_claude_code on. Lets your Claude Code do everything, not just chats: "
+        "tasks, memory, suggestions, background checks and briefs, including while you're away. Anthropic says Claude "
+        "plans are for its own apps, and other apps running work on your plan may be limited, charged as extra usage "
+        "or not allowed, and this uses your plan limits much faster. Turned on from Settings > Models after a warning. "
+        "Memory search still needs another model.",
+    )
+    claude_code_max_concurrent: int = Field(
+        2, ge=1, le=8,
+        description="Most Claude Code runs at once. More wait their turn, your chats first, so background work can't "
+        "flood this computer or your plan.",
     )
     chatgpt_client_id: str = Field(
         "dynamic_agent_client",
@@ -530,9 +546,55 @@ class MemoryConfig(BaseModel):
         description="Memories waiting for your review (from emails, web pages, imports or work Sentient did on its "
         "own) are let go after this many days without an answer.",
     )
+    keep_superseded_days: int = Field(
+        180, ge=0, le=3650,
+        description="When a newer memory replaces an older one, the older one is kept as history for this many days, "
+        "then deleted for good. Your current memories are never deleted by this. 0 keeps the history forever.",
+    )
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
+class EmailTasksConfig(BaseModel):
+    """Tasks by email (#159): an email forwarded or copied to the user's Sentient address becomes a task."""
+
+    enabled: bool = Field(
+        False,
+        description="Forward or copy an email to your Sentient address and Sentient makes a task from it. Off until "
+        "you turn it on.",
+    )
+    address: str = Field(
+        "",
+        description="Your Sentient address, for example you+sentient@gmail.com. Email sent or copied to it becomes a "
+        "task. Most email services deliver an address with +something to your normal inbox.",
+    )
+    label: str = Field(
+        "",
+        description="Optional. A Gmail label or email folder: email that lands there becomes a task too. Over IMAP, "
+        "also add the folder to the folders the account watches.",
+    )
+    allowed_senders: list[str] = Field(
+        default_factory=list,
+        description="Other people who may give Sentient tasks by email, by their real address. Your own addresses "
+        "(the email accounts you connected) can always send tasks. The name shown next to an address never counts.",
+    )
+
+    @field_validator("address", "label")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("allowed_senders")
+    @classmethod
+    def _senders(cls, value: list[str]) -> list[str]:
+        seen: dict[str, None] = {}
+        for item in value or []:
+            for part in str(item).replace(";", ",").split(","):
+                address = part.strip().lower()
+                if address:
+                    seen.setdefault(address, None)
+        return list(seen)
+
+
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
@@ -572,6 +634,14 @@ class TasksConfig(BaseModel):
         "when Sentient is back if it is less than this many hours late. Later ones are skipped and you're told. "
         "A task never runs more than once to catch up. 0 always skips.",
     )
+    source_retry_minutes: int = Field(
+        15, ge=1, le=1440, description="When a routine is set to try again later and the page, app or folder it reads "
+        "isn't there, it tries again after this many minutes.",
+    )
+    source_retries: int = Field(
+        3, ge=1, le=10, description="How many times a routine set to try again later tries before it tells you the "
+        "page, app or folder it reads is still missing.",
+    )
     away_pause_days: int = Field(
         7, ge=0, le=365, description="Pause recurring tasks and briefs after you haven't used Sentient (the app or a "
         "chat) for this many days. Tasks set to keep running are never paused. 0 never pauses for this.",
@@ -583,6 +653,10 @@ class TasksConfig(BaseModel):
     away_ask_hours: int = Field(
         24, ge=0, le=168, description="Before pausing, ask once and wait this many hours for any sign of you. "
         "0 pauses without asking.",
+    )
+    email: EmailTasksConfig = Field(
+        default_factory=EmailTasksConfig,
+        description="Tasks by email: forward or copy an email to your Sentient address to give it a task (#159).",
     )
 
 

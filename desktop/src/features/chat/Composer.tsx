@@ -16,6 +16,7 @@ import { toast } from 'sonner'
 import { IconButton, Spinner, Textarea, Tooltip } from '@/components/ui'
 import { openBrowserView } from '@/features/browser/state'
 import { useMemoryActions } from '@/hooks/memory'
+import { useSkillActions } from '@/hooks/skills'
 import { useTaskActions } from '@/hooks/tasks'
 import { useVoiceStatus } from '@/hooks/voice'
 import { errorMessage, isNotImplemented } from '@/lib/api'
@@ -76,6 +77,7 @@ export function Composer({
   const voiceStatus = useVoiceStatus()
   const tasks = useTaskActions()
   const memory = useMemoryActions()
+  const skills = useSkillActions()
 
   const dictation = useDictation((t) => {
     setText((cur) => (cur.trim() ? `${cur.trimEnd()} ${t}` : t))
@@ -172,6 +174,40 @@ export function Composer({
           }
         )
         return true
+      case 'learn': {
+        // a file attached to the message works too: /learn on its own learns from it (one file at a time, so no
+        // other attachment is taken from the composer)
+        if (!arg && !streaming && attachments.ready > 1) {
+          toast.message('Attach one file at a time', { description: 'Sentient learns one skill from one file, link or folder.' })
+          return false
+        }
+        const source = arg || (!streaming && attachments.ready === 1 && !attachments.uploading ? (attachments.take()[0]?.name ?? '') : '')
+        if (!source) {
+          toast.message('What should Sentient learn from?', {
+            description: 'Type a link, a file or a folder after /learn, or attach a file. For example: /learn https://docs.example.com/setup'
+          })
+          return false
+        }
+        clear()
+        const id = toast.loading('Learning a new skill…', { description: `Reading ${source}. This can take a minute.` })
+        skills.learn.mutate(source, {
+          onSuccess: (s) => {
+            const high = s.vetting?.verdict === 'high'
+            const files = s.references?.length ?? 0
+            ;(high ? toast.warning : toast.success)(high ? `${s.name} has high-risk problems` : `${s.name} is waiting for your review`, {
+              id,
+              description: high
+                ? 'Read the safety check before you decide. We suggest you decline it.'
+                : files
+                  ? `It keeps the full text in ${files} reference file${files === 1 ? '' : 's'}, read only when the skill is used. Nothing is used until you approve it.`
+                  : 'Nothing is used until you approve it.',
+              action: { label: 'Review', onClick: () => navigate(`/skills?tab=pending&focus=${encodeURIComponent(s.name)}`) }
+            })
+          },
+          onError: (e) => toast.error("Couldn't learn from that", { id, description: errorMessage(e) })
+        })
+        return true
+      }
     }
   }
 

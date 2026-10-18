@@ -13,13 +13,13 @@ from sentient.tasks.delivery import from_stored
 
 TASK_JSON_FIELDS = {
     "schedule", "plan", "chat_history", "clarifying_questions", "swarm_details", "original_context", "script",
-    "deliver_to",
+    "deliver_to", "setup",
 }
 TASK_COLUMNS = {
     "name", "description", "status", "priority", "task_type", "schedule", "plan", "original_prompt",
     "source", "enabled", "assignee", "model", "chat_history", "clarifying_questions", "swarm_details",
     "original_context", "script", "error", "next_execution_at", "last_execution_at", "created_at", "updated_at",
-    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope",
+    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope", "setup",
 }
 TASK_BOOL_FIELDS = {"enabled", "keep_running"}
 RUN_JSON_FIELDS = {
@@ -29,32 +29,9 @@ RUN_JSON_FIELDS = {
 RUN_COLUMNS = {
     "status", "plan", "trigger_data", "messages", "result", "error", "resume_count", "retry_of",
     "pending_question", "limits", "last_activity_at", "started_at", "finished_at", "created_at", "memory_sources",
-    "sources", "dry_run", "would_do", "checks",
+    "sources", "dry_run", "would_do", "checks", "retry_at",
 }
 # Columns added after the first stub schema; ensured on start for older databases.
-_ADDED_TASK_COLUMNS = {
-    "assignee": "TEXT NOT NULL DEFAULT 'ai'",
-    "model": "TEXT",
-    "chat_history": "TEXT",
-    "clarifying_questions": "TEXT",
-    "swarm_details": "TEXT",
-    "original_context": "TEXT",
-    "error": "TEXT",
-    "next_execution_at": "TEXT",
-    "last_execution_at": "TEXT",
-    "script": "TEXT",
-    "browser_profile": "TEXT",
-    "deliver_to": "TEXT",
-    "notepad": "TEXT",
-    "keep_running": "INTEGER NOT NULL DEFAULT 0",  # never paused while the user is away (#163)
-    "memory_scope": "TEXT",  # the memories its runs use and save to (#155); NULL: personal
-}
-_ADDED_RUN_COLUMNS = {
-    "plan": "TEXT", "resume_count": "INTEGER NOT NULL DEFAULT 0", "retry_of": "TEXT", "pending_question": "TEXT",
-    "limits": "TEXT", "last_activity_at": "TEXT", "memory_sources": "TEXT", "sources": "TEXT",
-    "dry_run": "INTEGER NOT NULL DEFAULT 0", "would_do": "TEXT",  # try runs (#142)
-    "checks": "TEXT",  # outcome checks (#165)
-}
 # SQL condition: a real run, not a try run (#142). Try runs never hold a task busy or count as its last result.
 REAL_RUN = "COALESCE(dry_run, 0) = 0"
 
@@ -99,22 +76,6 @@ def _question_to_api(question: Any) -> dict | None:
 class TaskRepo:
     def __init__(self, store: Store):
         self.store = store
-
-    # ------------------------------------------------------------------ schema
-    async def ensure_schema(self) -> None:
-        for col, decl in _ADDED_TASK_COLUMNS.items():
-            await self.store.ensure_column("tasks", col, decl)
-        for col, decl in _ADDED_RUN_COLUMNS.items():
-            await self.store.ensure_column("task_runs", col, decl)
-        await self.store.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tasks_next_exec ON tasks(status, enabled, next_execution_at)"
-        )
-        await self.store.db.execute(
-            "CREATE TABLE IF NOT EXISTS task_trigger_seen ("
-            " task_id TEXT NOT NULL, item_key TEXT NOT NULL, seen_at TEXT NOT NULL,"
-            " PRIMARY KEY (task_id, item_key))"
-        )
-        await self.store.db.commit()
 
     # ------------------------------------------------------------------ tasks
     @staticmethod
@@ -269,6 +230,20 @@ class TaskRepo:
         )
         return (cur.rowcount or 0) > 0
 
+    async def retries_due(self, now: str) -> list[dict]:
+        """Runs skipped for a missing source whose time to try again has come (#161)."""
+        rows = await self.store.fetchall(
+            "SELECT * FROM task_runs WHERE retry_at IS NOT NULL AND retry_at <= ? ORDER BY retry_at, rowid", (now,)
+        )
+        return [self._decode_run(r) for r in rows]
+
+    async def claim_retry(self, run_id: str) -> bool:
+        """Take a skipped run's retry, once: False when it was already taken (or dropped)."""
+        cur = await self.store.execute(
+            "UPDATE task_runs SET retry_at = NULL WHERE id = ? AND retry_at IS NOT NULL", (run_id,)
+        )
+        return (cur.rowcount or 0) > 0
+
     async def pause_run(self, run_id: str, question: dict) -> bool:
         """Compare-and-set a processing run to ``waiting_for_user`` with its question. False if it changed meanwhile."""
         cur = await self.store.execute(
@@ -286,6 +261,18 @@ class TaskRepo:
             (_dumps(messages), _dumps(limits), run_id),
         )
         return (cur.rowcount or 0) > 0
+
+    async def held_runs(self, task_id: str, note: str) -> list[dict]:
+        """A task's runs that ended ``cancelled`` with ``note`` and are still its latest work (#304): not carried on
+        by a retry yet, and with no other run started after them (a Run now since then replaced them)."""
+        rows = await self.store.fetchall(
+            "SELECT * FROM task_runs r WHERE r.task_id = ? AND r.status = 'cancelled' AND r.error = ?"
+            " AND NOT EXISTS (SELECT 1 FROM task_runs n WHERE n.task_id = r.task_id AND (n.retry_of = r.id"
+            " OR (n.rowid > r.rowid AND NOT (n.status = 'cancelled' AND n.error = ?))))"
+            " ORDER BY r.created_at, r.rowid",
+            (task_id, note, note),
+        )
+        return [self._decode_run(r) for r in rows]
 
     async def waiting_runs(self, task_id: str | None = None, *, real: bool = False) -> list[dict]:
         """Runs waiting for an answer; ``real`` leaves out try runs (#142)."""
@@ -369,6 +356,8 @@ class TaskRepo:
             "would_do": (run.get("would_do") or []) if run.get("dry_run") else [],
             # what code found the run's calls really did (#165): each failure that still stands has its ``message``
             "checks": run.get("checks") or [],
+            # skipped because its source was missing, and set to try again then (#161)
+            "retry_at": run.get("retry_at"),
         }
 
     @staticmethod
@@ -396,6 +385,7 @@ class TaskRepo:
             "notepad": task.get("notepad") or None,
             "original_context": task.get("original_context") or {"source": "manual_creation"},
             "script": task.get("script") if task.get("task_type") == "script" else None,
+            "setup": task.get("setup") if isinstance(task.get("setup"), dict) else None,  # routines (#161)
             "error": task.get("error"),
             "next_execution_at": task.get("next_execution_at"),
             "last_execution_at": task.get("last_execution_at"),

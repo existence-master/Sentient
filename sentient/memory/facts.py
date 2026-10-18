@@ -36,7 +36,7 @@ from typing import Any
 
 from sentient.config.schema import SentientConfig
 from sentient.llm.provider import LLMProvider
-from sentient.memory import prompts
+from sentient.memory import origins, prompts
 from sentient.memory import review as reviews
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
@@ -72,10 +72,16 @@ _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.
 
 MEMORY_COLUMNS = (
     "id, content, source, topics, memory_type, created_at, updated_at, expires_at, previous_content, status, review,"
-    " scope"
+    " scope, confidence, state, superseded_by, source_ref"
 )
 KEPT_APART_META = "memory.kept_apart"  # pairs the user split again after the tidy-up merged them (#353)
 ACTIVE = "status = 'active'"  # held memories (``pending``) are left out of every read but ``pending_facts``
+# #152: a memory is current, disputed (the user said it isn't right) or superseded (a newer one replaced it). Only
+# current ones go into prompts; superseded ones are history and never count as the same thing as a new fact.
+STATES = ("current", "disputed", "superseded")
+IN_USE = "status = 'active' AND state = 'current'"
+LIVE = "state != 'superseded'"
+RELEARNED_BOOST = 0.1  # confidence gained each time another source says the same thing
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 STOPWORDS = frozenset(
@@ -612,9 +618,23 @@ def _row_to_memory(r: Any, similarity: float | None = None) -> dict:
         "review": reviews.load(r["review"]) if "review" in r.keys() else None,  # noqa: SIM118
         "scope": (r["scope"] if "scope" in r.keys() else None) or memory_scopes.PERSONAL,  # noqa: SIM118
     }
+    keys = r.keys()
+    if "state" in keys:
+        d["confidence"] = round(float(r["confidence"] if r["confidence"] is not None else 0.8), 2)
+        d["state"] = r["state"] or "current"
+        d["superseded_by"] = r["superseded_by"]
+        d["ref"] = _load_ref(r["source_ref"])
     if similarity is not None:
         d["similarity"] = round(similarity, 4)
     return d
+
+
+def _load_ref(raw: Any) -> dict | None:
+    try:
+        ref = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+    return ref if isinstance(ref, dict) else None
 
 
 def _in_scopes(scopes: list[str] | None, col: str = "scope") -> tuple[str, list[str]]:
@@ -646,6 +666,9 @@ class FactMemory:
         self.vec = VecTable(store, "facts_vec")
         self.episodic = EpisodicMemory(store, llm, config)
         self._qcache: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+        # set by the app: also scrub the words of erased memories from the workspace files and the user model's
+        # caches (#152); called with an ``origins.Erased``: the texts that went, and which lines repeat them (#456)
+        self.on_erase: Any = None
 
     async def ensure_schema(self) -> None:
         await ensure_memory_schema(self.store)
@@ -691,14 +714,16 @@ class FactMemory:
 
     # ------------------------------------------------------------------ recall
     async def _keyword_ids(
-        self, tokens: list[str], limit: int, source: str | None, scopes: list[str] | None = None
+        self, tokens: list[str], limit: int, source: str | None, scopes: list[str] | None = None,
+        current_only: bool = False,
     ) -> list[int]:
         if not tokens:
             return []
         in_scope, scope_params = _in_scopes(scopes, "f.scope")
+        state = "f.state = 'current'" if current_only else "f.state != 'superseded'"
         sql = (
             "SELECT f.id FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid"
-            f" WHERE facts_fts MATCH ? AND f.status = 'active' AND {in_scope}"
+            f" WHERE facts_fts MATCH ? AND f.status = 'active' AND {state} AND {in_scope}"
         )
         params: list[Any] = [" OR ".join(f'"{t}"' for t in tokens), *scope_params]
         if source is not None:
@@ -713,12 +738,15 @@ class FactMemory:
             return []
 
     async def _search(
-        self, query: str, k: int, min_sim: float, source: str | None = None, scopes: list[str] | None = None
+        self, query: str, k: int, min_sim: float, source: str | None = None, scopes: list[str] | None = None,
+        current_only: bool = True,
     ) -> list[dict]:
         """Hybrid recall: vector neighbours plus FTS5 keyword matches, ranked by
         ``similarity + keyword_weight * share of query words present``. Embedding models
         compress similarities (unrelated text still scores ~0.65), so exact words help ordering.
-        ``scopes`` keeps facts in those scopes only (#155); None reads every scope."""
+        ``scopes`` keeps facts in those scopes only (#155); None reads every scope. ``current_only``: leave out
+        disputed memories too (superseded ones are always left out), as everything that goes into a prompt does."""
+        state = "state = 'current'" if current_only else LIVE
         await self.ensure_schema()
         qvec = await self.embed_query(query)
         now = now_iso()
@@ -737,7 +765,7 @@ class FactMemory:
             sims = {int(r["id"]): 1.0 - float(r["distance"]) for r in rows}
         weight = self.config.memory.keyword_weight
         tokens = keyword_tokens(query)
-        kw_ids = await self._keyword_ids(tokens, pool, source, scopes) if weight > 0 else []
+        kw_ids = await self._keyword_ids(tokens, pool, source, scopes, current_only) if weight > 0 else []
         missing = [i for i in kw_ids if i not in sims]
         if missing:
             marks = ",".join("?" * len(missing))
@@ -752,7 +780,7 @@ class FactMemory:
         marks = ",".join("?" * len(sims))
         in_scope, scope_params = _in_scopes(scopes)
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE} AND {in_scope}",
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE} AND {state} AND {in_scope}",
             [*sims, *scope_params],
         )
         qset = set(tokens)
@@ -779,16 +807,18 @@ class FactMemory:
         source: str | None = None,
         track: bool = True,
         scopes: list[str] | None = None,
+        current_only: bool = True,
     ) -> list[dict]:
         """Relevant facts for ``query``. ``track`` counts the recall (dreaming promotes
         short-term facts that keep being recalled); internal lookups pass False. ``scopes``: only facts in these
-        scopes (``memory.scopes.recall_scopes``: a chat's scope plus always); None reads every scope."""
+        scopes (``memory.scopes.recall_scopes``: a chat's scope plus always); None reads every scope.
+        ``current_only``: only current memories (#152), as prompts get; dedup also sees disputed ones."""
         top_k = top_k if top_k is not None else self.config.memory.facts_top_k
         min_sim = min_similarity if min_similarity is not None else self.config.memory.min_similarity
         if top_k <= 0 or not query.strip():
             return []
         try:
-            out = await self._search(query, top_k, min_sim, source, scopes)
+            out = await self._search(query, top_k, min_sim, source, scopes, current_only)
         except Exception as exc:
             log.warning("memory recall skipped: %s", exc)
             return []
@@ -873,6 +903,11 @@ class FactMemory:
         """Delete a fact, with the copies in other languages the tidy-up merged into it (#353)."""
         await self.ensure_schema()
         row = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (fid,))
+        await self.store.execute(
+            "DELETE FROM fact_sources WHERE fact_id = ?"
+            " OR fact_id IN (SELECT id FROM facts WHERE merged_into = ? AND status = 'merged')",
+            (fid, fid),
+        )
         await self.store.execute("DELETE FROM facts WHERE merged_into = ? AND status = 'merged'", (fid,))
         cur = await self.store.execute("DELETE FROM facts WHERE id = ?", (fid,))
         await self.vec.delete(fid)
@@ -881,14 +916,310 @@ class FactMemory:
             self.publish("DELETE", fid, row["content"] if row else None)
         return deleted
 
+    async def erase(self, fid: int, *, notify: bool = False) -> bool:
+        """Delete a memory the user (or a forget) took away, with everything derived from it (#152): its vector, its
+        merged copies and source links (:meth:`forget`), the chat summaries made of the messages it came from that
+        repeat it, the nightly journal's lines about it, the user model's evidence from it (an inferred insight with
+        nothing else behind it goes), the memory chips on replies and task runs that had it in mind, and (through
+        ``on_erase``) the lines of USER.md and MEMORY.md that say it. Its own previous wording goes with it. Text found
+        by its words is left alone when a memory still in use says it as well or better (#456): deleting one of two
+        similar memories never strips the other's lines or evidence."""
+        await self.ensure_schema()
+        row = await self.store.fetchone(
+            "SELECT id, content, previous_content, source_ref, state, superseded_by FROM facts WHERE id = ?", (fid,)
+        )
+        if row is None:
+            return False
+        copies = await self.store.fetchall(
+            "SELECT id, content, previous_content, source_ref FROM facts WHERE merged_into = ? AND status = 'merged'",
+            (fid,),
+        )
+        links = await self.store.fetchall(
+            "SELECT ref FROM fact_sources WHERE fact_id = ?"
+            " OR fact_id IN (SELECT id FROM facts WHERE merged_into = ? AND status = 'merged')",
+            (fid, fid),
+        )
+        if not await self.forget(fid, notify=notify):
+            return False
+        if row["state"] == "superseded" and row["superseded_by"] is not None:
+            await self.store.execute(
+                "UPDATE facts SET previous_content = NULL WHERE id = ? AND previous_content = ?",
+                (row["superseded_by"], row["content"]),
+            )
+        rows = [row, *copies]
+        texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
+        refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
+        try:
+            await self._cascade([int(r["id"]) for r in rows], texts, [r for r in refs if r])
+        except Exception:  # the memory itself is gone; a leftover is logged, never a failed delete
+            log.exception("cleaning up after memory %s failed", fid)
+        return True
+
+    async def _erased(self, texts: list[str], ids: list[int]) -> origins.Erased:
+        """What ``texts`` said, against every memory still in use (#456): what derived data repeats them goes,
+        unless a remaining memory says it as well or better (:class:`origins.Erased`)."""
+        rows = await self.store.fetchall(f"SELECT id, content FROM facts WHERE {IN_USE}")
+        gone = set(ids)
+        remaining = [(int(r["id"]), str(r["content"])) for r in rows if int(r["id"]) not in gone]
+        return origins.Erased(texts, remaining, self.config.assistant.user_name)
+
+    async def _cascade(self, ids: list[int], texts: list[str], refs: list[dict]) -> None:
+        store = self.store
+        repeats = await self._erased(texts, ids)
+
+        # chat summaries made of the messages it came from, that repeat it, and their vectors
+        said_in = {str(r["message_id"]) for r in refs if r.get("message_id")}
+        if said_in:
+            for r in await store.fetchall("SELECT rowid, id, content, message_ids FROM summaries"):
+                try:
+                    made_of = {str(m) for m in json.loads(r["message_ids"] or "[]")}
+                except ValueError:
+                    continue
+                if made_of & said_in and repeats(r["content"]):
+                    await store.execute("DELETE FROM summaries WHERE id = ?", (r["id"],))
+                    await self.episodic.vec.delete(int(r["rowid"]))
+        # the nightly journal's lines about it
+        for r in await store.fetchall("SELECT id, journal_md FROM dreams WHERE journal_md != ''"):
+            lines = str(r["journal_md"]).splitlines()
+            kept = ["- (a memory you deleted)" if line.lstrip().startswith(("-", "*")) and repeats(line) else line
+                    for line in lines]
+            if kept != lines:
+                await store.execute("UPDATE dreams SET journal_md = ? WHERE id = ?", ("\n".join(kept), r["id"]))
+        # the user model's evidence from it: a memory's by its id only, a quote of a chat or summary when it says it
+        wanted = {str(i) for i in ids}
+        try:
+            insights = await store.fetchall("SELECT rid, id, source, evidence FROM user_insights")
+        except Exception:
+            insights = []
+        for r in insights:
+            try:
+                evidence = json.loads(r["evidence"] or "[]")
+            except ValueError:
+                continue
+            if not isinstance(evidence, list):
+                continue
+            kept = [e for e in evidence if not (isinstance(e, dict) and (
+                str(e.get("ref")) in wanted if e.get("kind") == "fact" else bool(e.get("quote")) and repeats(e["quote"])
+            ))]
+            if len(kept) == len(evidence):
+                continue
+            if not kept and r["source"] == "inferred":
+                await store.execute("DELETE FROM user_questions WHERE insight_id = ?", (r["id"],))
+                await store.execute("DELETE FROM user_insights WHERE id = ?", (r["id"],))
+                with contextlib.suppress(Exception):
+                    await store.execute("DELETE FROM user_insights_vec WHERE rowid = ?", (int(r["rid"]),))
+            else:
+                await store.execute("UPDATE user_insights SET evidence = ? WHERE id = ?", (json.dumps(kept), r["id"]))
+        # the memory chips on replies and task runs that had it in mind
+        for table in ("messages", "task_runs"):
+            for fid in ids:
+                try:
+                    rows = await store.fetchall(
+                        f"SELECT rowid, memory_sources FROM {table} WHERE memory_sources LIKE ?", (f'%"id": {fid}%',)
+                    )
+                except Exception:  # no task runs table (a test store)
+                    break
+                for r in rows:
+                    try:
+                        items = json.loads(r["memory_sources"] or "[]")
+                    except ValueError:
+                        continue
+                    kept = [m for m in items if not (isinstance(m, dict) and m.get("kind") == "fact" and m.get("id") == fid)]
+                    if len(kept) != len(items):
+                        await store.execute(
+                            f"UPDATE {table} SET memory_sources = ? WHERE rowid = ?", (json.dumps(kept), r["rowid"])
+                        )
+        if self.on_erase is not None:
+            res = self.on_erase(repeats)
+            if hasattr(res, "__await__"):
+                await res
+
+    async def _out_of_prompts(self, texts: list[str], ids: list[int]) -> None:
+        """A memory left the prompts (disputed or superseded): its lines leave USER.md and MEMORY.md too, which go
+        into every prompt (``on_erase``), unless a memory still in use says them as well (#456)."""
+        if self.on_erase is None:
+            return
+        try:
+            res = self.on_erase(await self._erased(texts, ids))
+            if hasattr(res, "__await__"):
+                await res
+        except Exception:
+            log.exception("removing a memory from the workspace files failed")
+
+    # ------------------------------------------------------------------ state and confidence (#152)
+    async def set_state(self, fid: int, state: str) -> dict:
+        """The user says a memory isn't right (``disputed``: kept, but out of every prompt) or is (``current``:
+        Sentient is as sure as it gets). KeyError when it doesn't exist, ValueError for another state."""
+        if state not in {"current", "disputed"}:
+            raise ValueError("state must be current or disputed")
+        row = await self.store.fetchone("SELECT content, state, status FROM facts WHERE id = ?", (fid,))
+        if row is None:
+            raise KeyError(fid)
+        if state == "current":
+            await self.store.execute(
+                "UPDATE facts SET state = 'current', superseded_by = NULL, confidence = 1.0, updated_at = ?"
+                " WHERE id = ?",
+                (now_iso(), fid),
+            )
+            if row["state"] == "superseded" and row["status"] == "active":  # back in recall
+                [vec] = await self._embed([row["content"]])
+                await self.vec.upsert(fid, vec)
+        elif row["state"] != "disputed":
+            await self.store.execute(
+                "UPDATE facts SET state = 'disputed', updated_at = ? WHERE id = ?", (now_iso(), fid)
+            )
+            await self._out_of_prompts([row["content"]], [fid])
+        if row["state"] != state:
+            self.publish("UPDATE", fid, row["content"], state=state, reason="confirmed" if state == "current" else "disputed")
+        fact = await self.get_fact(fid)
+        assert fact is not None
+        return fact
+
+    # ------------------------------------------------------------------ sources (#153)
+    async def link_sources(
+        self, fid: int, sources: list[str], *, merged_from: int | None = None, refs: dict[str, dict] | None = None
+    ) -> None:
+        """Record that fact ``fid`` was also learned from ``sources`` (its own ``source`` is never linked twice).
+        ``merged_from``: the links come with fact ``merged_from`` merged into it, and :meth:`unmerge` takes exactly
+        those away again. A source learned for ``fid`` itself is never one a merge brought, even if a merge had.
+        ``refs``: exactly where each source said it (#152), kept with its link; a source that wasn't one of its
+        sources yet makes Sentient surer of it (``RELEARNED_BOOST``)."""
+        await self.ensure_schema()
+        row = await self.store.fetchone("SELECT source, source_ref FROM facts WHERE id = ?", (fid,))
+        if row is None:
+            return
+        refs = refs or {}
+        own = refs.get(str(row["source"]))
+        if own and not row["source_ref"] and str(row["source"]) in sources:
+            await self.store.execute("UPDATE facts SET source_ref = ? WHERE id = ?", (json.dumps(own), fid))
+        ts = now_iso()
+        for src in dict.fromkeys(s for s in sources if s and s != row["source"]):
+            ref = json.dumps(refs[src]) if refs.get(src) else None
+            new = await self.store.fetchone(
+                "SELECT 1 AS x FROM fact_sources WHERE fact_id = ? AND source = ?", (fid, src)
+            ) is None
+            if merged_from is None:
+                await self.store.execute(
+                    "INSERT INTO fact_sources(fact_id, source, linked_at, ref) VALUES(?,?,?,?)"
+                    " ON CONFLICT(fact_id, source) DO UPDATE SET merged_from = NULL,"
+                    " ref = COALESCE(fact_sources.ref, excluded.ref)",
+                    (fid, src, ts, ref),
+                )
+                if new:
+                    await self.store.execute(
+                        "UPDATE facts SET confidence = MIN(1.0, confidence + ?) WHERE id = ?", (RELEARNED_BOOST, fid)
+                    )
+            else:  # a link it already had stays its own
+                await self.store.execute(
+                    "INSERT OR IGNORE INTO fact_sources(fact_id, source, linked_at, merged_from, ref) VALUES(?,?,?,?,?)",
+                    (fid, src, ts, merged_from, ref),
+                )
+
+    async def source_links(self, fids: list[int]) -> dict[int, list[dict]]:
+        """Every source of each fact with exactly where it said it (#152): ``{id: [{source, ref, at, own}]}``, its own
+        source first, then the others in the order they came."""
+        if not fids:
+            return {}
+        await self.ensure_schema()
+        marks = ",".join("?" * len(fids))
+        out: dict[int, list[dict]] = {}
+        for r in await self.store.fetchall(
+            f"SELECT id, source, source_ref, created_at FROM facts WHERE id IN ({marks})", list(fids)
+        ):
+            out[int(r["id"])] = [{"source": r["source"], "ref": _load_ref(r["source_ref"]), "at": r["created_at"],
+                                  "own": True}]
+        for r in await self.store.fetchall(
+            f"SELECT fact_id, source, ref, linked_at FROM fact_sources WHERE fact_id IN ({marks}) ORDER BY rowid",
+            list(fids),
+        ):
+            out.setdefault(int(r["fact_id"]), []).append(
+                {"source": r["source"], "ref": _load_ref(r["ref"]), "at": r["linked_at"], "own": False}
+            )
+        return out
+
+    async def _linked(self, fid: int) -> list[str]:
+        rows = await self.store.fetchall(
+            "SELECT source FROM fact_sources WHERE fact_id = ? ORDER BY rowid", (fid,)
+        )
+        return [str(r["source"]) for r in rows]
+
+    async def sources_of(self, fid: int) -> list[str]:
+        """Every source of fact ``fid``: its own first, then the others it was learned from, then those of copies
+        the tidy-up merged into it (#353). Empty when it doesn't exist."""
+        await self.ensure_schema()
+        row = await self.store.fetchone("SELECT source FROM facts WHERE id = ?", (fid,))
+        if row is None:
+            return []
+        out = [str(row["source"]), *await self._linked(fid)]
+        merged = await self.store.fetchall(
+            "SELECT id, source FROM facts WHERE merged_into = ? AND status = 'merged' ORDER BY id", (fid,)
+        )
+        for m in merged:
+            out += [str(m["source"]), *await self._linked(int(m["id"]))]
+        return list(dict.fromkeys(out))
+
+    async def _from_source(self, source: str) -> list[int]:
+        await self.ensure_schema()
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE source = ? UNION SELECT fact_id AS id FROM fact_sources WHERE source = ?"
+            " ORDER BY id",
+            (source, source),
+        )
+        return [int(r["id"]) for r in rows]
+
+    async def source_counts(self, source: str, doomed: list[int] | None = None) -> dict[str, int]:
+        """What forgetting ``source`` would do: ``memories`` deleted (no other source backs them) and ``shared``
+        kept because another source still does. Copies merged into another memory are counted with it. The ids that
+        would be deleted are added to ``doomed``."""
+        deleted = shared = 0
+        for fid in await self._from_source(source):
+            row = await self.store.fetchone("SELECT status FROM facts WHERE id = ?", (fid,))
+            if row is None or row["status"] == "merged":
+                continue
+            if [s for s in await self.sources_of(fid) if s != source]:
+                shared += 1
+            else:
+                deleted += 1
+                if doomed is not None:
+                    doomed.append(fid)
+        return {"memories": deleted, "shared": shared}
+
+    async def purge_source(self, source: str, gone: list[int] | None = None) -> dict[str, int]:
+        """Forget what ``source`` taught: a fact only it backs is deleted with its vector and merged copies; a fact
+        another source backs too loses this source and keeps the others. ``{deleted, unlinked}``; the deleted ids are
+        added to ``gone``."""
+        deleted = unlinked = 0
+        for fid in await self._from_source(source):
+            row = await self.store.fetchone("SELECT source, status FROM facts WHERE id = ?", (fid,))
+            if row is None:  # gone with the fact it was merged into
+                continue
+            merged = row["status"] == "merged"
+            others = [s for s in (await self._linked(fid) if merged else await self.sources_of(fid)) if s != source]
+            if merged and row["source"] != source:
+                others.insert(0, str(row["source"]))
+            if not others:
+                deleted += 0 if merged else 1
+                await self.erase(fid)
+                if gone is not None:
+                    gone.append(fid)
+                continue
+            await self.store.execute("DELETE FROM fact_sources WHERE fact_id = ? AND source = ?", (fid, source))
+            if row["source"] == source:  # its next source becomes its own, with where it said it
+                await self.store.execute(
+                    "UPDATE facts SET source = ?, source_ref = (SELECT ref FROM fact_sources WHERE fact_id = ?"
+                    " AND source = ?) WHERE id = ?",
+                    (others[0], fid, others[0], fid),
+                )
+                await self.store.execute("DELETE FROM fact_sources WHERE fact_id = ? AND source = ?", (fid, others[0]))
+            unlinked += 0 if merged else 1
+        return {"deleted": deleted, "unlinked": unlinked}
+
     async def forget_source(self, source: str) -> int:
-        """v2 delete_memory_by_source."""
-        rows = await self.store.fetchall("SELECT id FROM facts WHERE source = ?", (source,))
-        for r in rows:
-            await self.forget(int(r["id"]))
-        if rows:
-            self.publish("DELETE", None, None, source=source, count=len(rows))
-        return len(rows)
+        """v2 delete_memory_by_source: forget what ``source`` taught (:meth:`purge_source`); the number deleted."""
+        done = await self.purge_source(source)
+        if done["deleted"] or done["unlinked"]:
+            self.publish("DELETE", None, None, source=source, count=done["deleted"], unlinked=done["unlinked"])
+        return done["deleted"]
 
     async def set_scope(self, fid: int, scope: str) -> dict:
         """Move a memory to another scope (#155). KeyError when it doesn't exist, ValueError for an empty scope."""
@@ -900,7 +1231,9 @@ class FactMemory:
             raise KeyError(fid)
         if row["scope"] != target:
             await self.store.execute(
-                "UPDATE facts SET scope = ?, updated_at = ? WHERE id = ?", (target, now_iso(), fid)
+                "UPDATE facts SET scope = ?, updated_at = CASE WHEN state = 'superseded' THEN updated_at ELSE ? END"
+                " WHERE id = ?",
+                (target, now_iso(), fid),
             )
             self.publish("UPDATE", fid, row["content"], scope=target, previous_scope=row["scope"], reason="moved")
         fact = await self.get_fact(fid)
@@ -916,7 +1249,7 @@ class FactMemory:
             "SELECT id FROM facts WHERE scope = ? AND status IN ('active', 'pending')", (target,)
         )
         for r in rows:
-            await self.forget(int(r["id"]))
+            await self.erase(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, scope=target, reason="scope_reset", count=len(rows))
         return len(rows)
@@ -944,7 +1277,7 @@ class FactMemory:
             return []
         marks = ",".join("?" * len(ids))
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE}"
+            f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id IN ({marks}) AND {ACTIVE} AND {LIVE}"
             " AND (expires_at IS NULL OR expires_at > ?)",
             [*ids, now_iso()],
         )
@@ -996,6 +1329,7 @@ class FactMemory:
         own_words: str | None = None,
         session_id: str | None = None,
         scope: str | None = None,
+        ref: dict | None = None,
     ) -> dict[str, Any]:
         """Store one fact with dedup / CUD logic in ``scope`` (#155; personal when None). Returns {action, id, content}
         (an UPDATE adds ``previous``, the words it replaced, so the save can be undone; an ADD adds ``scope``).
@@ -1009,19 +1343,48 @@ class FactMemory:
         only look at facts in ``scope`` and always: a save never changes a memory in another scope."""
         user = self.config.assistant.user_name
         scope = memory_scopes.normalize(scope, memory_scopes.PERSONAL) or memory_scopes.PERSONAL
+        refs: dict[str, dict] = {source: ref} if ref else {}
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
             log.info("kept from the user's own words although the chat read outside content: %r", fact)
             review = None
+        # held because the chat read outside content (decided before an instruction note can replace the reason)
+        outside = review is not None and review.get("reason") != reviews.INSTRUCTION
         if source == "conversation" and reviews.instruction_shaped(fact):
             log.info("held for review as an instruction: %r", fact)
             if review is None:
                 review = reviews.instruction_note(reviews.best_snippet(own_words or "", fact) or fact, session_id)
             else:  # held for outside content already: it keeps that source, and says it is an instruction too
                 review = {**review, "reason": reviews.INSTRUCTION}
+        others: list[str] = []
+        if source == origins.CONVERSATION and session_id:
+            # a chat in a messaging app or on a device is that app's (#153), and also the apps and folders it read
+            try:
+                first, read = await origins.of_session(self.store, session_id)
+                source, *others = origins.sources_for(fact, first, read, held=outside, user_name=user)
+                refs.update(await origins.spans(self.store, fact, [source, *others], session_id, read, user))
+            except Exception as exc:
+                log.debug("sources of chat %s unknown: %s", session_id, exc)
         if review is not None:
             result = await self._hold(fact, source=source, use_llm=use_llm, review=review, scope=scope)
         else:
             result = await self._remember(fact, source=source, use_llm=use_llm, scope=scope)
+        if result.get("id") is not None and result["action"] in {"ADD", "UPDATE", "SKIP"}:
+            fid = int(result["id"])
+            sure = origins.confidence(source, held=outside)
+            if result["action"] == "ADD":  # where exactly it was said, and how sure Sentient is of it (#152)
+                await self.store.execute(
+                    "UPDATE facts SET confidence = ?, source_ref = ? WHERE id = ?",
+                    (sure, json.dumps(refs[source]) if refs.get(source) else None, fid),
+                )
+            elif result["action"] == "UPDATE" or (not outside and origins.is_chat(source)):
+                # a correction, or the user saying it again: it is current, whatever was said about it before
+                await self.store.execute(
+                    "UPDATE facts SET state = 'current', superseded_by = NULL, confidence = MAX(confidence, ?)"
+                    " WHERE id = ? AND state != 'superseded'",
+                    (sure, fid),
+                )
+            # learned here too: forgetting one of its sources keeps it while another still backs it (#153)
+            await self.link_sources(fid, [source, *others], refs=refs)
         if result["action"] == "ADD":
             result["scope"] = scope
         if notify and result["action"] in {"ADD", "UPDATE", "DELETE"}:
@@ -1057,11 +1420,11 @@ class FactMemory:
         family = memory_scopes.recall_scopes(scope)
         in_scope, scope_params = _in_scopes(family)
         exact = await self.store.fetchone(
-            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {in_scope}", (fact, *scope_params)
+            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {LIVE} AND {in_scope}", (fact, *scope_params)
         )
         if exact:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
-        neighbours = await self.recall(fact, top_k=1, min_similarity=0.0, track=False, scopes=family)
+        neighbours = await self.recall(fact, top_k=1, min_similarity=0.0, track=False, scopes=family, current_only=False)
         if neighbours and self._duplicate(fact, neighbours[0]) and not self._corrects(fact, neighbours[0]):
             return {"action": "SKIP", "id": neighbours[0]["id"], "content": neighbours[0]["content"]}
         topics, memory_type, duration = await self.analyze(fact) if use_llm else ([DEFAULT_TOPIC], "long-term", None)
@@ -1081,12 +1444,15 @@ class FactMemory:
         family = memory_scopes.recall_scopes(scope)
         in_scope, scope_params = _in_scopes(family)
         exact = await self.store.fetchone(
-            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE} AND {in_scope}", (fact, *scope_params)
+            f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE} AND {LIVE} AND {in_scope}",
+            (fact, *scope_params),
         )
         if exact:
             return {"action": "SKIP", "id": int(exact["id"]), "content": fact}
         [vec] = await self._embed([fact])
-        neighbours = await self.recall(fact, top_k=5, min_similarity=0.0, track=False, scopes=family)
+        neighbours = await self.recall(
+            fact, top_k=5, min_similarity=0.0, track=False, scopes=family, current_only=False
+        )
         # "Mira starts school in July" embeds almost exactly like "... in June": a correction is never a duplicate
         dup = next((n for n in neighbours if self._duplicate(fact, n) and not self._corrects(fact, n)), None)
         if dup is not None:
@@ -1204,7 +1570,7 @@ class FactMemory:
                 log.info("CUD ADD turned into UPDATE of residence fact %s for %r", peer["id"], fact)
                 action, fid = "UPDATE", peer["id"]
         if action == "DELETE":
-            await self.forget(int(fid))  # type: ignore[arg-type]
+            await self.erase(int(fid))  # type: ignore[arg-type]
             return {"action": "DELETE", "id": int(fid), "content": content}  # type: ignore[arg-type]
         if topics is None:
             topics, memory_type, duration = await self.analyze(content) if use_llm else ([DEFAULT_TOPIC], "long-term", None)
@@ -1251,6 +1617,10 @@ class FactMemory:
         )
         [vec] = await self._embed([content])
         await self._update(fid, content, vec, topics, memory_type, duration)
+        # the user wrote it: as sure as it gets, and current (#152)
+        await self.store.execute(
+            "UPDATE facts SET confidence = 1.0, state = 'current', superseded_by = NULL WHERE id = ?", (fid,)
+        )
         self.publish("UPDATE", fid, content)
         fact = await self.get_fact(fid)
         assert fact is not None
@@ -1371,6 +1741,7 @@ class FactMemory:
     async def extract_and_store(
         self, text: str, username: str, source: str = "conversation", *, notify: bool = False,
         review: dict | None = None, own: bool = False, session_id: str | None = None, scope: str | None = None,
+        ref: dict | None = None,
     ) -> list[dict]:
         """Pull atomic facts out of text and remember each (v2 cud_memory). With ``review`` they are held for review,
         each with the sentence of ``text`` it most likely came from. ``own``: ``text`` is the user's own words (a chat
@@ -1386,6 +1757,7 @@ class FactMemory:
                 results.append(await self.remember(
                     f, source=source, notify=notify, review=reviews.with_snippet(review, text, f),
                     own_words=text if own else None, session_id=session_id, scope=scope,
+                    ref={**ref, "quote": origins.quote(text, f) or None} if ref else None,
                 ))
             except Exception as exc:
                 log.warning("failed to store fact %r: %s", f, exc)
@@ -1404,7 +1776,9 @@ class FactMemory:
         counts = {"added": 0, "updated": 0, "skipped": 0, "pending": 0}
         review = reviews.note(path.name)
         for chunk in chunk_text(text, self.config.memory.import_chunk_chars):
-            for r in await self.extract_and_store(chunk, username, source=source, review=review, scope=scope):
+            for r in await self.extract_and_store(
+                chunk, username, source=source, review=review, scope=scope, ref={"kind": "file", "file": path.name}
+            ):
                 key = {"ADD": "added", "UPDATE": "updated", "DELETE": "updated"}.get(r["action"], "skipped")
                 counts[key] += 1
                 counts["pending"] += r.get("status") == "pending"
@@ -1417,7 +1791,11 @@ class FactMemory:
     # ------------------------------------------------------------------ reads
     async def get_fact(self, fid: int) -> dict | None:
         r = await self.store.fetchone(f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id = ?", (fid,))
-        return _row_to_memory(r) if r else None
+        if r is None:
+            return None
+        m = _row_to_memory(r)
+        m["sources"] = (await self.source_links([fid])).get(fid, [])
+        return m
 
     async def list_facts(
         self,
@@ -1428,27 +1806,43 @@ class FactMemory:
         source: str | None = None,
         q: str | None = None,
         scope: str | None = None,
+        state: str | None = None,
     ) -> list[dict]:
-        """Active facts, newest first. ``scope`` keeps one scope only (the Memory screen's filter, #155)."""
+        """Active facts, newest first, each with its ``sources`` (#152). ``scope`` keeps one scope only (the Memory
+        screen's filter, #155). ``state``: current, disputed or superseded only; ``all``; None is current and
+        disputed (superseded ones are history). ``source`` also finds facts that source said again."""
+        out = await self._list_facts(limit, offset, topic=topic, source=source, q=q, scope=scope, state=state)
+        links = await self.source_links([m["id"] for m in out])
+        for m in out:
+            m["sources"] = links.get(m["id"], [])
+        return out
+
+    async def _list_facts(
+        self, limit: int, offset: int, *, topic: str | None, source: str | None, q: str | None, scope: str | None,
+        state: str | None,
+    ) -> list[dict]:
+        state_sql, state_params = (LIVE, []) if state is None else ("1", []) if state == "all" else ("state = ?", [state])
         if topic:
             topic = normalize_topics([topic])[0]
         one = memory_scopes.normalize(scope)
-        if q and q.strip():
+        if q and q.strip() and state not in {"superseded", "all"}:  # superseded ones have no vector: matched by words
             try:
                 hits = await self._search(
                     q, min(offset + limit, 500) * (3 if topic else 1), self.config.memory.min_similarity, source,
-                    [one] if one else None,
+                    [one] if one else None, current_only=False,
                 )
                 if topic:
                     hits = [h for h in hits if topic in h["topics"]]
+                if state not in {None, "all"}:
+                    hits = [h for h in hits if h.get("state") == state]
                 return hits[offset : offset + limit]
             except Exception as exc:
                 log.debug("semantic list search unavailable, using keyword match: %s", exc)
-        where = [ACTIVE, "(expires_at IS NULL OR expires_at > ?)"]
-        params: list[Any] = [now_iso()]
+        where = [ACTIVE, state_sql, "(expires_at IS NULL OR expires_at > ?)"]
+        params: list[Any] = [*state_params, now_iso()]
         if source:
-            where.append("source = ?")
-            params.append(source)
+            where.append("(source = ? OR id IN (SELECT fact_id FROM fact_sources WHERE source = ?))")
+            params += [source, source]
         if one:
             where.append("scope = ?")
             params.append(one)
@@ -1534,13 +1928,35 @@ class FactMemory:
     # ------------------------------------------------------------------ housekeeping
     async def purge_expired(self) -> int:
         rows = await self.store.fetchall(
-            "SELECT id FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
+            "SELECT id, state FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
         )
         for r in rows:
-            await self.forget(int(r["id"]))
+            # Superseded rows have derived history too; discard it with the same cascade as retention cleanup.
+            if r["state"] == "superseded":
+                await self.erase(int(r["id"]))
+            else:
+                await self.forget(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, reason="expired", count=len(rows))
-        return len(rows)
+        return len(rows) + await self.purge_superseded()
+
+    async def purge_superseded(self) -> int:
+        """Erase memories that were superseded more than ``memory.keep_superseded_days`` ago, with everything derived
+        from them (:meth:`erase`). 0 keeps them forever. Current and disputed memories are never touched."""
+        days = self.config.memory.keep_superseded_days
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE state = 'superseded' AND updated_at < ?", (cutoff,)
+        )
+        erased = 0
+        for r in rows:
+            if await self.erase(int(r["id"])):
+                erased += 1
+        if erased:
+            self.publish("DELETE", None, None, reason="superseded_expired", count=erased)
+        return erased
 
     async def count(self) -> int:
         row = await self.store.fetchone(f"SELECT COUNT(*) AS n FROM facts WHERE {ACTIVE}")
@@ -1573,6 +1989,7 @@ class FactMemory:
             f"SELECT id FROM facts WHERE content = ? COLLATE NOCASE AND {ACTIVE} AND {in_scope}", (text, *scope_params)
         )
         if same is not None:
+            await self.link_sources(int(same["id"]), await self.sources_of(fid))  # #153
             await self.forget(fid)
             self.publish("DELETE", fid, row["content"], reason="approved", merged_into=int(same["id"]))
             return await self.get_fact(int(same["id"]))
@@ -1584,8 +2001,9 @@ class FactMemory:
                 " WHERE id = ?",
                 (text, row["content"], json.dumps(topics), memory_type, expires_for(memory_type, duration), fid),
             )
-        await self.store.execute(
-            "UPDATE facts SET status = 'active', updated_at = ?, embedding_model = ? WHERE id = ?",
+        await self.store.execute(  # the user looked at it and said yes: surer (#152)
+            "UPDATE facts SET status = 'active', updated_at = ?, embedding_model = ?, confidence = MAX(confidence, 0.9)"
+            " WHERE id = ?",
             (now_iso(), self.llm.model_for("embedding"), fid),
         )
         await self.vec.upsert(fid, vec)
@@ -1621,7 +2039,7 @@ class FactMemory:
     async def discard(self, fid: int) -> bool:
         """The user turned a held fact down: it is deleted. False when ``fid`` is not pending."""
         row = await self.store.fetchone("SELECT content FROM facts WHERE id = ? AND status = 'pending'", (fid,))
-        if row is None or not await self.forget(fid):
+        if row is None or not await self.erase(fid):
             return False
         self.publish("DELETE", fid, row["content"], reason="discarded")
         return True
@@ -1642,7 +2060,7 @@ class FactMemory:
         """Unexpired facts, most recently updated first, with ``recall_count`` and ``vector`` (or None)."""
         await self.ensure_schema()
         rows = await self.store.fetchall(
-            f"SELECT {MEMORY_COLUMNS}, recall_count FROM facts WHERE {ACTIVE}"
+            f"SELECT {MEMORY_COLUMNS}, recall_count FROM facts WHERE {IN_USE}"
             " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id DESC LIMIT ?",
             (now_iso(), limit),
         )
@@ -1701,20 +2119,29 @@ class FactMemory:
                 (keep_id, *ids[1:]),
             )
         for i in ids[1:]:
-            if i in rows and await self.forget(i):
-                self.publish("DELETE", i, rows[i]["content"], reason="merged", merged_into=keep_id)
+            if i in rows:
+                await self.link_sources(keep_id, await self.sources_of(i))  # it backs the kept one now (#153)
+                if await self.forget(i):
+                    self.publish("DELETE", i, rows[i]["content"], reason="merged", merged_into=keep_id)
         return await self.get_fact(keep_id)
 
     async def supersede(self, keep_id: int, drop_id: int) -> bool:
-        """Latest wins: delete ``drop_id`` and record its text as ``previous_content`` of ``keep_id``."""
+        """Latest wins: ``drop_id`` is superseded by ``keep_id`` (#152). It stays as history, out of recall and every
+        prompt, and its text is also kept as ``previous_content`` of ``keep_id``."""
         drop = await self.store.fetchone("SELECT content FROM facts WHERE id = ?", (drop_id,))
         keep = await self.store.fetchone("SELECT id FROM facts WHERE id = ?", (keep_id,))
         if drop is None or keep is None:
             return False
+        ts = now_iso()
         await self.store.execute(
-            "UPDATE facts SET previous_content = ?, updated_at = ? WHERE id = ?", (drop["content"], now_iso(), keep_id)
+            "UPDATE facts SET previous_content = ?, updated_at = ? WHERE id = ?", (drop["content"], ts, keep_id)
         )
-        await self.forget(drop_id)
+        await self.store.execute(
+            "UPDATE facts SET state = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?",
+            (keep_id, ts, drop_id),
+        )
+        await self.vec.delete(drop_id)
+        await self._out_of_prompts([drop["content"]], [drop_id])
         self.publish("DELETE", drop_id, drop["content"], reason="contradicted", superseded_by=keep_id)
         return True
 
@@ -1728,6 +2155,8 @@ class FactMemory:
         if drop is None or keep is None or keep_id == drop_id:
             return False
         indexed = self.vec.ready or await self.vec.exists()
+        # its sources (and those of copies merged into it before) back the kept one now (#153)
+        await self.link_sources(keep_id, await self.sources_of(drop_id), merged_from=drop_id)
         db = self.store.db
         try:  # the row and its vector change together (one commit)
             await db.execute(
@@ -1763,6 +2192,8 @@ class FactMemory:
             )
             await db.execute(f"DELETE FROM {self.vec.name} WHERE rowid = ?", (fid,))
             await db.execute(f"INSERT INTO {self.vec.name}(rowid, embedding) VALUES(?, ?)", (fid, pack(vec)))
+            # the sources its merge gave the other memory go back with it (#153), and nothing else
+            await db.execute("DELETE FROM fact_sources WHERE merged_from = ?", (fid,))
             await db.commit()
         except BaseException:
             await db.rollback()
@@ -1803,7 +2234,7 @@ class FactMemory:
         await self.ensure_schema()
         rows = await self.store.fetchall(
             f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND memory_type = 'short-term' AND recall_count >= ?"
-            " AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
+            " AND state != 'superseded' AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
             (min_recalls, now_iso(), limit),
         )
         out = []

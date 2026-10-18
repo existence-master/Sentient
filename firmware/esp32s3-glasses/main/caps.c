@@ -10,6 +10,15 @@
 #include "node_client.h"
 
 static const char *TAG = "caps";
+static volatile uint32_t s_photo_stops; // stop_sensor(camera) count: bumped by the socket task, read by the worker
+
+void caps_cancel_photo(void) {
+    s_photo_stops++;
+}
+
+uint32_t caps_photo_stops(void) {
+    return s_photo_stops;
+}
 
 void caps_show(const char *title, const char *text) {
     // The reference board has no screen: the serial console is the display.
@@ -41,13 +50,31 @@ static const char *string_field(cJSON *params, const char *key, const char *fall
 }
 
 // camera.photo: send the result first, then the JPEG as one binary frame straight from PSRAM
-// (docs/NODES.md 4.4 / 11.3). No base64, no copy of a 30-60 KB buffer.
-static void do_photo(const char *id) {
+// (docs/NODES.md 4.4 / 11.3). No base64, no copy of a 30-60 KB buffer. Sentient is told the camera is on while
+// the photo is taken (docs/API.md section 24); in camera-off mode nothing is powered and the request is refused.
+static void do_photo(const char *id, uint32_t stops_when_queued) {
     const uint8_t *data = NULL;
     size_t len = 0;
     int width = 0, height = 0;
+    if (camera_off_mode()) {
+        send_error(id, "camera_off", "The camera is switched off on the glasses.");
+        return;
+    }
+    if (s_photo_stops != stops_when_queued) { // turned off in Sentient while this request waited: never powered
+        send_error(id, "stopped", "The camera was turned off in Sentient.");
+        return;
+    }
+    node_client_send_json("{\"type\":\"state\",\"camera\":true,\"camera_for\":\"Taking a photo\"}");
     if (!camera_capture(&data, &len, &width, &height)) {
+        node_client_send_json("{\"type\":\"state\",\"camera\":false}");
         send_error(id, "failed", "The camera did not return an image.");
+        return;
+    }
+    if (s_photo_stops != stops_when_queued) { // turned off in Sentient while the photo was taken: drop it
+        camera_release();
+        node_client_send_json("{\"type\":\"state\",\"camera\":false}");
+        send_error(id, "stopped", "The camera was turned off in Sentient.");
+        ESP_LOGI(TAG, "photo dropped: turned off in Sentient");
         return;
     }
     char header[224];
@@ -58,10 +85,11 @@ static void do_photo(const char *id) {
     if (!node_client_send_result_json(header, data, len)) {
         ESP_LOGW(TAG, "could not send the photo (%u bytes)", (unsigned)len);
     }
-    camera_release(); // always hand the frame buffer back, even when the send failed
+    camera_release(); // always hand the frame buffer back (and power the camera off), even when the send failed
+    node_client_send_json("{\"type\":\"state\",\"camera\":false}");
 }
 
-void caps_handle_invoke(const char *id, const char *capability, const char *params_json) {
+void caps_handle_invoke(const char *id, const char *capability, const char *params_json, uint32_t stops_when_queued) {
     cJSON *params = cJSON_Parse(params_json ? params_json : "{}");
     if (params == NULL) params = cJSON_CreateObject();
 
@@ -79,7 +107,7 @@ void caps_handle_invoke(const char *id, const char *capability, const char *para
         snprintf(data, sizeof(data), "{\"battery\":%d,\"charging\":false}", battery_percent());
         send_ok(id, data);
     } else if (strcmp(capability, "camera.photo") == 0) {
-        do_photo(id);
+        do_photo(id, stops_when_queued);
     } else {
         send_error(id, "unsupported", "These glasses cannot do that.");
     }

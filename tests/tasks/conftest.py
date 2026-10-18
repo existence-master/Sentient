@@ -98,6 +98,18 @@ def skip_clock(monkeypatch) -> SkipClock:
     return clock
 
 
+@pytest.fixture(autouse=True)
+def pages_answer(monkeypatch):
+    """A routine looks whether the page it reads answers before each run (#161): tests stay offline, so every page
+    answers unless a test says otherwise (``tests/tasks/test_setup_checklist.py``)."""
+    from sentient.tasks import checklist
+
+    async def answers(url: str) -> str | None:
+        return None
+
+    monkeypatch.setattr(checklist, "probe_page", answers)
+
+
 @pytest.fixture
 def clock():
     return Clock(datetime(2026, 9, 15, 2, 0, tzinfo=UTC))

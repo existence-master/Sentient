@@ -51,10 +51,12 @@ async def update_folder(request: Request, folder_id: str, body: PatchBody):
 
 
 @router.delete("/{folder_id}")
-async def remove_folder(request: Request, folder_id: str):
-    if not await get_core(request).folders.remove(folder_id):
+async def remove_folder(request: Request, folder_id: str, forget: bool = False):
+    """``?forget=true``: also forget the memories learned from its notes (#153)."""
+    done = await get_core(request).folders.remove(folder_id, forget=forget)
+    if not done:
         raise HTTPException(404, "no such folder")
-    return {"removed": True}
+    return {"removed": True, "forgotten": done} if isinstance(done, dict) else {"removed": True}
 
 
 @router.post("/{folder_id}/rescan", status_code=202)

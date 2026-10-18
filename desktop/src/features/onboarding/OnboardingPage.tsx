@@ -1,4 +1,5 @@
 import { IconArrowLeft, IconArrowRight, IconCheck } from '@tabler/icons-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
@@ -6,8 +7,10 @@ import { toast } from 'sonner'
 import { TitleBar } from '@/components/shell/TitleBar'
 import { Button } from '@/components/ui'
 import { useConfig, useOnboarding } from '@/hooks/core'
-import { useSetRoles } from '@/hooks/models'
+import { useClaudeCodeStatus, useSetRoles } from '@/hooks/models'
+import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
+import { allowedForRole, isClaudeCode } from '@/lib/claudeCode'
 import type { RoleName } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { BrainStep } from './BrainStep'
@@ -25,6 +28,8 @@ export function OnboardingPage() {
   const onboarding = useOnboarding()
   const setRoles = useSetRoles()
   const config = useConfig()
+  const claude = useClaudeCodeStatus(!!config.data?.models.experimental_claude_code)
+  const qc = useQueryClient()
   const [nameError, setNameError] = useState(false)
   const [direction, setDirection] = useState(1)
 
@@ -41,7 +46,16 @@ export function OnboardingPage() {
       const v = draft[r].trim()
       if (v && v !== roles?.[r]) patch[r] = v
     }
+    if (isClaudeCode(draft.primary)) {
+      if (!draft.fast.trim() || !allowedForRole(draft.fast, 'fast', claude.data?.roles)) throw new Error('Claude Code only answers your chats. Pick another background model.')
+      if (!config.data?.models.experimental_claude_code) await api.config.patch({ models: { experimental_claude_code: true } })
+      // tasks would fall back to the main model, which refuses them: they use the background model instead (#442)
+      for (const r of ['planner', 'executor'] as const) {
+        if (!allowedForRole(roles?.[r] || draft.primary, r, claude.data?.roles)) patch[r] = draft.fast.trim()
+      }
+    }
     if (Object.keys(patch).length) await setRoles.mutateAsync(patch)
+    void qc.invalidateQueries({ queryKey: qk.config })
     const ctx = draft.brainMode === 'local' ? draft.context_length : null
     if (ctx && ctx !== config.data?.models.context_length) await api.config.patch({ models: { context_length: ctx } })
   }

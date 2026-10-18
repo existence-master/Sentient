@@ -28,6 +28,7 @@ from sentient.agent import preview as previews
 from sentient.agent import undo as undo_rules
 from sentient.agent.grants import decision_label
 from sentient.channels.store import PairingResult
+from sentient.files import names as file_names
 from sentient.llm import availability
 from sentient.llm import presets as model_presets
 from sentient.llm.events import (
@@ -162,17 +163,11 @@ def safe_filename(name: str) -> str:
     return base[:160]
 
 
-def save_upload(name: str, data: bytes) -> str:
-    """Save bytes under files/uploads and return the Files API name (``uploads/<name>``)."""
-    folder = paths.files_dir() / "uploads"
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / safe_filename(name)
-    stem, suffix = target.stem, target.suffix
-    i = 1
-    while target.exists():
-        target = folder / f"{stem} ({i}){suffix}"
-        i += 1
-    target.write_bytes(data)
+async def save_upload(name: str, data: bytes, store: Any = None) -> str:
+    """Save bytes under files/uploads and return the Files API name (``uploads/<name>``). A name a chat still has
+    attached is never reused (#458)."""
+    target = await file_names.create(paths.files_dir() / "uploads", safe_filename(name), store=store)
+    await asyncio.to_thread(target.write_bytes, data)
     return f"uploads/{target.name}"
 
 
@@ -286,6 +281,7 @@ class Channel:
         self.sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep
         self._chats: dict[str, ChatRuntime] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._learning: dict[asyncio.Task, str] = {}  # /learn drafts running, and the chat waiting for each
         self._runtime: asyncio.Task | None = None
         self._button_text: dict[tuple[str, str], str] = {}
         # approval id -> the chat its request was sent to; only that chat may answer it (#139)
@@ -521,6 +517,9 @@ class Channel:
         if cmd == "trust":
             await self._trust_command(rt, chat, arg)
             return
+        if cmd == "learn":
+            await self._learn_command(chat, arg, msg)
+            return
         if cmd == "stop":
             rt.queued.clear()
             if await self.cancel_turn(chat_id):
@@ -540,7 +539,7 @@ class Channel:
         for fetch in msg.files:
             try:
                 data, name = await fetch()
-                attachments.append(await asyncio.to_thread(save_upload, name, data))
+                attachments.append(await save_upload(name, data, self.app.store))
             except ChannelError as exc:
                 await self.reply(chat_id, exc.message)
             except Exception as exc:
@@ -708,6 +707,15 @@ class Channel:
             if dropped:
                 await self.reply(chat_id, "Stopped. Your queued message wasn't sent." if dropped == 1
                                  else f"Stopped. Your {dropped} queued messages weren't sent.")
+        for task, chat_id in list(self._learning.items()):  # a /learn draft stops too, and nothing is saved
+            self._learning.pop(task, None)
+            if task.done():
+                continue
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            stopped += 1
+            await self.reply(chat_id, "Stopped. I didn't finish drafting the skill, so nothing was saved.")
         return stopped
 
     async def cancel_turn(self, chat_id: str) -> bool:
@@ -742,6 +750,7 @@ class Channel:
             "/model chat <model> - use a model in this chat only (/model chat default to go back)",
             "/scope - which memories this chat uses: /scope work, /scope personal or /scope <project>",
             "/trust - see why sending asks first here, and trust this chat again after you've checked it",
+            "/learn <link> - turn a web page or a workflow into a skill for you to review (or send a file with /learn)",
             "/help - show this message",
         ]
         if chat and chat.get("is_group"):
@@ -1070,6 +1079,9 @@ class Channel:
         listing = await model_presets.listing(self.app)
         usable = [p for p in listing["presets"] if p["available"]]
         arg = arg.strip()
+        confirmed = arg.lower().endswith(" yes")  # "/model Local only yes" answers the question below (#446)
+        if confirmed:
+            arg = arg[:-4].rstrip()
         if arg.lower() == "undo":
             await self.reply(chat_id, await self._preset_outcome(None))
             return
@@ -1080,7 +1092,13 @@ class Channel:
             if pick is None:
                 await self.reply(chat_id, f"I don't have a model setup called {arg!r}. Send /model to see them.")
                 return
-            await self.reply(chat_id, await self._preset_outcome(pick["name"]))
+            # the window asks before Local only goes on with its preset (#335); a chat has no dialog, so it asks here
+            wants_switch = pick["name"] == model_presets.LOCAL_PRESET and not self.app.config.models.local_only
+            if wants_switch and pick["available"] and not confirmed:
+                await self.reply(chat_id, "Turn on Local only too, so nothing leaves this computer? "
+                                          f"Reply /model {pick['name']} yes")
+                return
+            await self.reply(chat_id, await self._preset_outcome(pick["name"], local_only=wants_switch))
             return
         primary = self.app.config.models.roles.primary
         if listing["active"]:
@@ -1089,7 +1107,10 @@ class Channel:
         else:
             lines = [f"Models: your own setup, chatting with {primary}."]
         for p in listing["presets"]:
-            if not p["available"]:
+            if p["blocked_by"] == "local_only":
+                lines.append(f"{p['name']}: Local only is on, and it uses cloud models. Turn Local only off in "
+                             "Sentient's model menu to use it.")
+            elif not p["available"]:
                 lines.append(f"{p['name']}: {p['reason']} Add one in Sentient under Settings, Models.")
         lines.append("Pick a setup to switch every model at once." + (" Send /model undo to go back." if listing["can_undo"] else ""))
         buttons = [[Button(p["name"] + (" (current)" if p["active"] else ""), f"mp:a:{self.preset_ref(p['name'])}",
@@ -1129,6 +1150,59 @@ class Channel:
             await self.reply(chat_id, f"This chat follows your default model again, {default}.")
         else:
             await self.reply(chat_id, f"This chat now uses {availability.label(model)}. Send /model chat default to go back.")
+
+    # ------------------------------------------------------------------ /learn
+    async def _learn_command(self, chat: dict, arg: str, msg: Incoming) -> None:
+        """``/learn <link|file|folder>``, or a file sent with ``/learn`` as its caption: draft a skill from it (#167).
+        Only the chat's owner gets here (a group's other members are outside content). Drafting takes a while, so it
+        runs in the background and the chat hears back when the skill waits for review in Skills."""
+        chat_id = str(chat["chat_id"])
+        source = " ".join(arg.split())
+        if not source and msg.files:
+            try:
+                data, name = await msg.files[0]()
+                source = await save_upload(name, data, self.app.store)
+            except ChannelError as exc:
+                await self.reply(chat_id, exc.message)
+                return
+            except Exception as exc:
+                log.warning("%s: download for /learn failed: %s", self.id, self.redact(str(exc)))
+                await self.reply(chat_id, "I couldn't download that file. Please try sending it again.")
+                return
+        if not source:
+            await self.reply(chat_id, "Send /learn followed by a link to a page, or send a file with /learn as its "
+                                      "caption. I'll turn it into a skill for you to review.")
+            return
+        evolution = getattr(self.app, "evolution", None)
+        if evolution is None:
+            await self.reply(chat_id, "Learning skills isn't available right now.")
+            return
+        await self.reply(chat_id, "Reading it now. I'll tell you here when the skill is ready for you to review.")
+        task = self.spawn(self._learn(chat_id, source))
+        self._learning[task] = chat_id
+        task.add_done_callback(lambda t: self._learning.pop(t, None))
+
+    async def _learn(self, chat_id: str, source: str) -> None:
+        from sentient.skills.learn import LearnError
+
+        try:
+            res = await self.app.evolution.learn_skill(source, via=self.id)
+        except LearnError as exc:
+            await self.reply(chat_id, f"I couldn't learn from that. {exc}")
+            return
+        except Exception as exc:
+            log.warning("%s: /learn failed: %s", self.id, self.redact(str(exc)))
+            await self.reply(chat_id, "Something went wrong while I was drafting the skill. Please try again.")
+            return
+        lines = [f"Done. I drafted the skill **{res['name']}**: {res['description']}"]
+        if res.get("references"):
+            n = len(res["references"])
+            lines.append(f"It keeps the full text in {n} reference file{'s' if n != 1 else ''}, read only when the "
+                         "skill is used.")
+        if res.get("verdict") == "high":
+            lines.append("The safety check found high-risk problems in it, so read it carefully before you approve it.")
+        lines.append("It waits for your review in Sentient under **Skills** and isn't used until you approve it.")
+        await self.reply(chat_id, "\n\n".join(lines))
 
     # ------------------------------------------------------------------ /scope
     async def _scope_command(self, chat: dict, value: str) -> None:
@@ -1175,16 +1249,20 @@ class Channel:
             lines.append(f"{now} is a new project, so it has no memories yet.")
         await self.reply(chat_id, "\n".join(lines))
 
-    async def _preset_outcome(self, name: str | None) -> str:
-        """Apply a preset (None = undo the last switch) and describe the result in plain words."""
+    async def _preset_outcome(self, name: str | None, *, local_only: bool = False) -> str:
+        """Apply a preset (None = undo the last switch) and describe the result in plain words. ``local_only`` also
+        turns the Local only switch on in the same save (#446)."""
         try:
-            result = await (model_presets.undo(self.app) if name is None else model_presets.apply(self.app, name))
+            result = await (model_presets.undo(self.app) if name is None
+                            else model_presets.apply(self.app, name, local_only=local_only))
         except model_presets.PresetError as exc:
             return exc.message
         if name is None:
             head = f"Back to {result['preset']}." if result["preset"] else "Back to your previous models."
         else:
             head = f"Switched to {result['preset']}." if result["changed"] else f"Already using {result['preset']}."
+            if local_only and result["local_only"]:  # the switch itself may be the only thing that changed
+                head = f"Switched to {result['preset']}, and Local only is on."
         lines = [head] + [f"Still needed: {item['detail']} {item['fix']}" for item in result["missing"]]
         if result["missing"]:
             lines.append("You can do that in Sentient on your computer.")

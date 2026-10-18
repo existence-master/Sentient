@@ -56,6 +56,36 @@ export interface UIConfig {
 }
 
 /** §17 Stop everything. `source`: desktop | tray | hotkey | telegram | discord | device. */
+/** §24 A microphone or camera that is live right now, here or on a paired device (#170). */
+export interface SensorUse {
+  id: string
+  sensor: 'mic' | 'camera'
+  device_id: string
+  /** "This computer" for the desktop app itself, else the device's name. */
+  device: string
+  device_kind: string
+  /** What it is on for, in plain words: "Voice chat", "Push to talk", "Taking a photo". */
+  purpose: string
+  since: ISODate
+  can_stop: boolean
+}
+
+export interface SensorState {
+  mic: boolean
+  camera: boolean
+  active: SensorUse[]
+  /** Devices whose camera is switched off on the device itself. */
+  camera_off: Array<{ device_id: string; device: string }>
+}
+
+export interface SensorStopResult {
+  /** Off now. */
+  stopped: string[]
+  /** The device was asked; it stays shown until the device says it is off. */
+  asked: string[]
+  state: SensorState
+}
+
 export interface StopState {
   stopped: boolean
   stopped_at: ISODate | null
@@ -113,6 +143,29 @@ export interface OkResponse {
   ok: boolean
 }
 
+/** §7 "Also forget what Sentient learned from it" (#153): how much a source taught, before and after forgetting it.
+ *  ``memories`` are deleted; ``shared`` memories another source also backs stay, without this one. */
+export interface ForgetCounts {
+  source: string
+  memories: number
+  shared: number
+  chats: number
+  messages: number
+  summaries: number
+  /** what its tools returned in chats, replaced by a short note */
+  results: number
+  /** emails or other items proactivity kept from it */
+  items: number
+  /** insights about the user inferred only from what goes */
+  insights: number
+  item_noun: 'emails' | 'items'
+}
+
+/** A disconnect or removal with ``?forget=true`` carries what was forgotten. */
+export interface Forgotten {
+  forgotten?: ForgetCounts
+}
+
 // ---------------------------------------------------------------------------- config (sentient/config/schema.py)
 export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high'
 
@@ -130,7 +183,10 @@ export interface ModelsConfig {
   context_length_per_role: Record<string, number>
   providers: Record<string, ProviderConfig>
   /** The user's own saved model setups (built-ins are not stored). */
-  presets: Record<string, Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'active'>>
+  presets: Record<
+    string,
+    Omit<ModelPreset, 'name' | 'builtin' | 'available' | 'reason' | 'provider' | 'description' | 'cloud' | 'blocked_by' | 'active'>
+  >
   active_preset: string | null
   /** #148: no request goes to a model outside this computer (switched from the title bar model menu). */
   local_only?: boolean
@@ -140,6 +196,10 @@ export interface ModelsConfig {
   budget_at_limit?: 'ask' | 'stop'
   /** Experimental: claude-code/<model> answers chats through the user's own Claude Code (ADR 0022). */
   experimental_claude_code?: boolean
+  /** Claude Code does everything, not just chats (ADR 0032); only counts with experimental_claude_code on. */
+  claude_code_everywhere?: boolean
+  /** Most Claude Code runs at once; more wait their turn, chats first. */
+  claude_code_max_concurrent?: number
   max_tool_rounds: number
   request_timeout_s: number
   /** #149: one local model job at a time, chats first; background waits after a chat and on battery. */
@@ -265,7 +325,51 @@ export interface TasksConfig {
   max_tool_rounds: number
   require_plan_approval: boolean
   swarm_max_agents: number
+  /** Tasks by email (#159). */
+  email?: EmailTasksConfig
   [key: string]: unknown
+}
+
+/** `tasks.email` (#159): forward or copy an email to the Sentient address to give it a task. */
+export interface EmailTasksConfig {
+  enabled: boolean
+  address: string
+  label: string
+  /** Other real addresses that may send tasks; your own addresses always can. */
+  allowed_senders: string[]
+}
+
+/** `GET /api/tasks/email` (#159). */
+export interface EmailTasksStatus {
+  enabled: boolean
+  /** On, with an address or label picked. */
+  active: boolean
+  address: string
+  label: string
+  allowed_senders: string[]
+  /** Who may send tasks right now. */
+  allowed: string[]
+  own_addresses: string[]
+  /** The connected email accounts. */
+  accounts: string[]
+  suggested_address: string
+  /** Connected mail apps new email arrives through: `gmail`, `email_imap`. */
+  watching: string[]
+  recent: EmailTaskLogEntry[]
+}
+
+export interface EmailTaskLogEntry {
+  at: ISODate
+  app: string
+  /** The real address the From line names ("" when it names none clearly). */
+  sender: string
+  /** The From line as written, display name included. */
+  from: string
+  subject: string
+  outcome: 'task' | 'ignored'
+  reason: string | null
+  code: 'not_allowed' | 'unclear_sender' | 'failed_check' | 'automated' | 'too_many' | null
+  task_id: string | null
 }
 
 export interface McpServerConfig {
@@ -599,6 +703,8 @@ export interface CostPeriod {
   local_tokens: number
   by_model: Array<CostRow & { model: string; billing: Billing }>
   by_role: Array<CostRow & { role: string; plan_calls: number; local_calls: number }>
+  /** Claude Code calls by the role that made them, most tokens first (#444). Missing from older engines. */
+  claude_code_by_role?: Array<{ role: string; calls: number; prompt_tokens: number; completion_tokens: number }>
 }
 
 export interface BudgetState {
@@ -698,6 +804,16 @@ export interface ClaudeCodeStatus {
   version: string | null
   detail: string
   models: string[]
+  /** The quick-jobs model when Claude Code does everything (claude-code/haiku). */
+  fast_model?: string
+  /** Claude Code does everything, not just chats (`models.claude_code_everywhere`, ADR 0032). Missing from older engines. */
+  everywhere?: boolean
+  /** The roles that may use a Claude Code model (#442, #444). Missing from older engines. */
+  roles?: RoleName[]
+  /** Most Claude Code runs at once, and how many run and wait now. */
+  max_concurrent?: number
+  running?: number
+  waiting?: number
 }
 
 export interface ModelTestResult {
@@ -712,9 +828,13 @@ export interface ModelTestResult {
 export interface ModelPreset {
   name: string
   builtin: boolean
-  /** False for Cloud and Mixed until a cloud key is set; `reason` says why. */
+  /** False for Cloud and Mixed until a cloud key is set, or while Local only blocks it; `reason` says why. */
   available: boolean
   reason: string | null
+  /** #335: the preset sets a model outside this computer. */
+  cloud: boolean
+  /** #335: `local_only` when Local only is on and this preset uses cloud models. */
+  blocked_by: 'local_only' | null
   /** The cloud provider a built-in uses. */
   provider: string | null
   description: string | null
@@ -753,6 +873,8 @@ export interface PresetApplyResult {
   changed: { role: RoleName; from: string | null; to: string | null }[]
   missing: PresetMissing[]
   can_undo: boolean
+  /** Local only after the switch (#335: applying Local only can turn it on, and undo puts it back). */
+  local_only: boolean
 }
 
 /** `POST /api/models/checkup` (docs/API.md §3). */
@@ -1110,6 +1232,8 @@ export interface DomainEventMap {
   'notification.deleted': { id: string | null }
   'integration.updated': Integration
   'memory.updated': MemoryUpdatedData
+  /** "Also forget what Sentient learned from it" ran for a source (#153). */
+  'memory.forgotten': { id: string; source: string; label: string; counts: Omit<ForgetCounts, 'source'>; at: string }
   'skill.updated': { name: string; state: SkillState }
   /** A server's tools wait for review, or the user answered (#146). */
   'mcp.review': { server: string; reason?: 'new' | 'changed'; tools?: string[]; needed: boolean }
@@ -1142,6 +1266,8 @@ export interface DomainEventMap {
   'source.items': SourceItemsData
   // §17
   'stop.updated': StopState
+  // §24
+  'sensors.updated': SensorState
   // #149
   'model.busy': ModelBusy
   // §20
@@ -1191,6 +1317,8 @@ export interface Subagent {
   session_id: string | null
   parent_call_id: string | null
   goal: string
+  /** `reader`: the tool-less reader behind `read_with_reader` (#144); it never makes tool calls. */
+  kind?: 'worker' | 'reader'
   status: SubagentStatus
   background: boolean
   summary: string | null
@@ -1353,6 +1481,8 @@ export interface DeviceNode {
   /** `lan` = over the home network, `local` = on this computer (gateway). */
   connection?: 'lan' | 'local' | null
   worn?: boolean | null
+  /** The camera is switched off on the device itself; Sentient can't turn it on (#170). null while offline. */
+  camera_off?: boolean | null
 }
 
 export interface DevicePairing {
@@ -1499,7 +1629,7 @@ export interface TaskScript {
   /** Recent checks, oldest first (§16). Older engines leave it out. */
   checks?: ScriptCheck[] | null
 }
-export type ScriptCheckOutcome = 'baseline' | 'nothing_new' | 'changed' | 'minor' | 'alert' | 'quiet' | 'reported' | 'failed'
+export type ScriptCheckOutcome = 'baseline' | 'nothing_new' | 'changed' | 'minor' | 'alert' | 'quiet' | 'reported' | 'failed' | 'skipped'
 export interface ScriptCheck {
   at: ISODate
   outcome: ScriptCheckOutcome
@@ -1550,7 +1680,8 @@ export interface TaskRunResult {
   tools_used: string[]
 }
 
-export type RunStatus = 'processing' | 'waiting_for_user' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled'
+/** `skipped` (#161): a routine's run that didn't start because what it reads wasn't there (`error` says why). */
+export type RunStatus = 'processing' | 'waiting_for_user' | 'completed' | 'completed_with_errors' | 'error' | 'cancelled' | 'skipped'
 
 /** The question a `waiting_for_user` run asked (§4). Answer with `POST /api/tasks/{id}/runs/{run_id}/answer`. */
 export interface RunQuestion {
@@ -1597,6 +1728,8 @@ export interface Run {
   would_do?: TryRunAction[]
   /** What code found the run's calls really did (#165). A failure that still stands makes it `completed_with_errors`. */
   checks?: OutcomeCheck[]
+  /** A skipped run set to try again later (#161): when it does. */
+  retry_at?: ISODate | null
 }
 
 /** One call a try run noted instead of making (#142). Built by the engine from the call itself. */
@@ -1675,13 +1808,49 @@ export interface Task {
   deliver_to?: TaskDeliverTo
   /** Recurring tasks: short notes its runs keep for the next run (§4 "Recurring tasks remember"). */
   notepad?: string | null
-  original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
+  /** Routines: the setup checklist (§4 "Setup checklist", #161). `null` for other tasks; older engines leave it out. */
+  setup?: TaskSetup | null
+  original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | 'email' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
   next_execution_at: ISODate | null
   last_execution_at: ISODate | null
   created_at: ISODate
   updated_at: ISODate
+}
+
+/** What a routine reads (#161): a web page, a connected app, a folder, or nothing to check first. */
+export interface TaskSource {
+  kind: 'page' | 'app' | 'folder' | 'none'
+  /** The web address, app id or folder path; empty for `none`. */
+  target: string
+  /** How to show it: "example.com/events", "Gmail". */
+  label: string
+}
+
+/** What to do when what a routine reads isn't there: skip quietly, skip and tell me, or try again a little later. */
+export type MissingSourcePolicy = 'skip' | 'notify' | 'retry'
+
+/** A routine's setup checklist (§4 "Setup checklist", #161), filled in from its plan for the user to confirm. */
+export interface TaskSetup {
+  source: TaskSource
+  /** What the user gets each time. */
+  output: string
+  /** `plan`: goes ahead with what the plan does. `ask`: asks before it sends, posts, buys, deletes or runs anything. */
+  approval: 'plan' | 'ask'
+  /** The plan's apps that can send or change things, which `plan` lets it use. */
+  acts: string[]
+  if_missing: MissingSourcePolicy
+  confirmed_at: ISODate | null
+}
+
+/** `PATCH /api/tasks/{id}` `{setup}`: answers to merge in; `confirm: true` marks the checklist confirmed. */
+export interface TaskSetupAnswers {
+  source?: { kind: TaskSource['kind']; target?: string }
+  output?: string
+  approval?: TaskSetup['approval']
+  if_missing?: MissingSourcePolicy
+  confirm?: boolean
 }
 
 export interface TaskCreateRequest {
@@ -1720,7 +1889,10 @@ export interface DeliveryChat {
 /** `default`: paired chats with delivery on; `desktop`: the app only; a list: only those chats. */
 export type TaskDeliverTo = 'default' | 'desktop' | DeliveryChat[]
 
-export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'memory_scope' | 'deliver_to' | 'notepad' | 'keep_running'>>
+export type TaskPatch = Partial<Pick<Task, 'name' | 'description' | 'priority' | 'schedule' | 'plan' | 'enabled' | 'status' | 'model' | 'browser_profile' | 'memory_scope' | 'deliver_to' | 'notepad' | 'keep_running'>> & {
+  /** Routines (#161): answers to the setup checklist, merged in by the engine. */
+  setup?: TaskSetupAnswers
+}
 
 /** `GET /api/tasks/away` (#163): routines pause after a long absence and resume with one click. */
 export interface AwayStatus {
@@ -2115,6 +2287,43 @@ export interface Memory {
   review?: ReviewNote | null
   /** Where it is kept (#155): "personal" (default), "work", "always" (every chat) or a project's name. */
   scope?: string
+  /** #152: how sure Sentient is (0..1), from where it came and how often it was learned again. */
+  confidence?: number
+  /** #152: only `current` memories go into chats and tasks. */
+  state?: MemoryState
+  /** The memory that replaced it (state `superseded`). */
+  superseded_by?: number | null
+  /** Its words, on `GET /api/memories/{id}` of a superseded memory. */
+  superseded_by_content?: string | null
+  /** Exactly where its own source said it. */
+  ref?: MemorySourceRef | null
+  /** Every source, its own first (#152). */
+  sources?: MemorySourceLink[]
+}
+
+export type MemoryState = 'current' | 'disputed' | 'superseded'
+
+/** Exactly where a source said a memory (#152): a chat message, an email or app result, a note, a file. */
+export interface MemorySourceRef {
+  kind?: 'message' | 'email' | 'app' | 'note' | 'file' | string
+  session_id?: string
+  message_id?: string
+  quote?: string | null
+  title?: string
+  url?: string
+  id?: string
+  app?: string
+  path?: string
+  folder_id?: string
+  file?: string
+}
+
+export interface MemorySourceLink {
+  source: string
+  ref: MemorySourceRef | null
+  at: string
+  /** its own source (the first one) */
+  own: boolean
 }
 
 /** One memory scope (#155) from `GET /api/memories/scopes`. */
@@ -2182,6 +2391,8 @@ export interface MemoryQuery {
   q?: string
   source?: string
   scope?: string
+  /** None: current and disputed; `all` adds superseded ones (#152). */
+  state?: MemoryState | 'all'
   limit?: number
   offset?: number
 }
@@ -2289,10 +2500,32 @@ export interface Skill {
   lint?: SkillLintFinding[]
   /** Skills from outside (a link or Hermes): the safety check, run again on the files as they are now (#146). */
   vetting?: SkillVetting | null
+  /** How to check the skill works, from its `validate` header (#386). */
+  validate?: SkillCheck[]
+  /** The last run of those checks, or null when it declares none or they haven't run. */
+  check?: SkillCheckReport | null
+  /** Reference files in its `references` folder (#167), read one at a time only when the skill is used. */
+  references?: string[]
+}
+
+/** One check in a skill's `validate` header: a file that must exist, or Python run in the code sandbox. */
+export interface SkillCheck {
+  file?: string
+  run?: string
+  /** Text the file or the output must contain. */
+  expect?: string
+  timeout_s?: number
+}
+
+/** `waiting`: a code check runs when the user approves. `not_run`: it can't run here (the detail says why). */
+export interface SkillCheckReport {
+  status: 'passed' | 'failed' | 'waiting' | 'not_run'
+  results: { kind: 'file' | 'run'; target: string; ok: boolean | null; detail: string }[]
+  checked_at: string
 }
 
 export interface SkillLintFinding {
-  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | string
+  rule: 'frontmatter' | 'required' | 'size' | 'reference' | 'danger' | 'hidden' | 'outbound' | 'log_shaped' | 'sections' | 'validate' | string
   level: 'error' | 'warning'
   message: string
 }
@@ -2316,8 +2549,8 @@ export interface SkillVetting {
   programs: string[]
   hash: string
   scanner: string
-  source: 'link' | 'hermes' | string | null
-  /** The web address or Hermes folder it came from. */
+  source: 'link' | 'hermes' | 'learn' | string | null
+  /** The web address or Hermes folder it came from (for `learn`: the page, file or folder it was learned from). */
   origin: string | null
   imported_at?: ISODate
   decision?: 'approved' | null
@@ -2377,6 +2610,7 @@ export type EvolutionKind =
   | 'skill_patched'
   | 'skill_archived'
   | 'skill_reset'
+  | 'skill_learned'
   | 'profile_updated'
   | 'curator_run'
   | 'summary_created'
@@ -2435,6 +2669,25 @@ export interface VoiceStatus {
   }
   /** Wake-word engine (§16). */
   wake?: WakeStatus
+  /** Where the sound from each microphone goes (#170). */
+  privacy?: VoicePrivacy
+}
+
+/** One way Sentient hears you, and where that sound goes (`GET /api/voice/status` → `privacy`, #170). */
+export interface VoicePrivacyItem {
+  id: 'dictation' | 'wake' | 'voice' | 'voice_notes' | string
+  label: string
+  /** True when the recording stays on this computer. */
+  local: boolean
+  where: string
+}
+
+export interface VoicePrivacy {
+  /** No recording leaves this computer. */
+  audio_local: boolean
+  items: VoicePrivacyItem[]
+  /** Spoken replies: what goes out for them is text, not your voice. */
+  replies: { local: boolean; where: string }
 }
 
 export interface TranscribeResult {
@@ -2490,7 +2743,8 @@ export type VoiceServerMessage =
   /** Followed by one binary frame: a complete PCM16 mono WAV for this sentence. */
   | { type: 'audio'; format: 'wav'; sentence_index: number; text: string; session_id?: string }
   | { type: 'audio_end'; session_id?: string; sentences?: number; metrics?: VoiceAudioMetrics; interrupted?: boolean; reason?: 'client' | 'barge_in' | 'cancelled' }
-  | { type: 'error'; message: string; recoverable?: boolean; session_id?: string }
+  /** `code: "mic_stopped"`: the microphone was turned off from the indicator (#170); the socket closes next. */
+  | { type: 'error'; message: string; recoverable?: boolean; session_id?: string; code?: string }
   | ApprovalAckEvent
   | PongEvent
   | AgentEvent

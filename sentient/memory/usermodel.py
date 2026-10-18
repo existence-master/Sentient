@@ -637,7 +637,7 @@ class UserModelService(Service):
             mark = marks.get("facts")
             after, params = after_watermark(mark, "updated_at", "id")
             rows = await store.fetchall(
-                f"SELECT id, content, updated_at FROM facts WHERE status = 'active' AND {after}"
+                f"SELECT id, content, updated_at FROM facts WHERE status = 'active' AND state = 'current' AND {after}"
                 " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id DESC LIMIT ?",
                 (*params, now_iso(), cfg.recent_facts),
             )

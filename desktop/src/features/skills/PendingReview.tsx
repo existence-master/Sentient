@@ -1,4 +1,4 @@
-import { IconAlertTriangle, IconArrowUpRight, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPackageImport, IconPencil, IconSparkles, IconUserEdit, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconArrowUpRight, IconBooks, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPackageImport, IconPencil, IconSparkles, IconUserEdit, IconX } from '@tabler/icons-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -14,6 +14,7 @@ import { ReviewNowButton } from './actions'
 import { DiffView } from './DiffView'
 import { LintList } from './LintList'
 import { SafetyReport, vetSourceLabel } from './SafetyReport'
+import { SkillChecks, checkWaits } from './SkillChecks'
 import { AuthorBadge } from './SkillCard'
 import { SkillBody } from './SkillDetail'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
@@ -21,7 +22,7 @@ import { isRepairProposal, splitFrontmatter } from './meta'
 
 function proposalFor(log: EvolutionLogEntry[] | undefined, name: string) {
   return log?.find(
-    (e) => e.detail?.name === name && (e.kind === 'skill_repair_proposed' || ((e.kind === 'skill_created' || e.kind === 'skill_patched') && e.detail?.pending === true))
+    (e) => e.detail?.name === name && (e.kind === 'skill_repair_proposed' || ((e.kind === 'skill_created' || e.kind === 'skill_patched' || e.kind === 'skill_learned') && e.detail?.pending === true))
   )
 }
 
@@ -164,6 +165,7 @@ function ReviewCard({
       })
     } catch (e) {
       if (prev) qc.setQueryData(qk.skills.all, prev)
+      void qc.invalidateQueries({ queryKey: qk.skills.all }) // a failed check is shown on the card (#386)
       toast.error("Couldn't approve", { description: errorMessage(e) })
       setBusy(null)
     }
@@ -255,6 +257,23 @@ function ReviewCard({
         ) : null}
         <LintList findings={vetting ? pending.lint?.filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule)) : pending.lint} title={pending.lint?.some((f) => f.level === 'error') ? 'Check this proposal carefully' : 'Suggestions for this proposal'} />
 
+        <SkillChecks skill={pending} />
+
+        {!!pending.references?.length && (
+          <div className="rounded-xl border border-border bg-sunken/50 px-4 py-3">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
+              <IconBooks size={13} /> Reference files, read only when the skill is used
+            </div>
+            <ul className="mt-1.5 flex flex-wrap gap-1.5">
+              {pending.references.map((f) => (
+                <li key={f} className="rounded-md border border-border bg-surface px-1.5 py-0.5 font-mono text-2xs text-fg-subtle">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* content */}
         {draft ? (
           <SkillEditor draft={draft} onChange={setDraft} minHeight={360} />
@@ -334,7 +353,7 @@ function ReviewCard({
               Edit
             </Button>
             <Button variant="primary" leftIcon={<IconCheck size={15} />} disabled={!!busy} loading={busy === 'approve'} onClick={() => void approve()}>
-              {repair ? 'Approve fix' : isUpdate ? 'Approve update' : 'Approve skill'}
+              {checkWaits(pending) ? 'Approve and run check' : repair ? 'Approve fix' : isUpdate ? 'Approve update' : 'Approve skill'}
             </Button>
           </>
         )}
