@@ -1,0 +1,65 @@
+# "/update" comments on pull requests: bring main into the branch (CONTRIBUTING.md, "We do the chores"). The logic is
+# in .github/scripts/update.js (tested by .github/scripts/update.test.js). It reads the comment only to compare it
+# with "/update", and never checks out or runs the pull request's code: conflicts are found with git merge-tree on
+# the git objects alone.
+name: Update pull requests
+
+on:
+  issue_comment:
+    types: [created]
+  # A push to a pull request labelled "needs update" takes the label off once the branch is up to date (for example
+  # after the author clicked "Update branch", or a maintainer merged main in by hand).
+  pull_request_target:
+    types: [synchronize]
+
+permissions: {}
+
+jobs:
+  update:
+    # Pull requests only (an issue comment also fires issue_comment), and only a comment that is exactly the command
+    # (allowing a trailing space or line break), so other comments never queue here.
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      contains(fromJSON('["/update", "/update ", "/update\n", "/update\r\n"]'), github.event.comment.body)
+    concurrency:
+      group: update-pr-${{ github.event.issue.number }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # update-branch writes the merge commit to the pull request's branch
+      pull-requests: write # the reply and the "needs update" label
+    steps:
+      # issue_comment always runs on the default branch, so this is our own script, never a contributor's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const run = require('./.github/scripts/update.js');
+            await run({ github, context, core });
+
+  clear-label:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      contains(github.event.pull_request.labels.*.name, 'needs update')
+    concurrency:
+      group: update-pr-${{ github.event.pull_request.number }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write # removing the label
+    steps:
+      # pull_request_target checks out the base branch: our script, never the pull request's code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { clearLabel } = require('./.github/scripts/update.js');
+            await clearLabel({ github, context, core });
