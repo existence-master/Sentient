@@ -108,7 +108,7 @@ export function useMcpServers() {
 }
 
 export function useMcpCatalog() {
-  return useQuery({ queryKey: [...qk.integrations.mcp, 'catalog'], queryFn: api.integrations.mcp.catalog })
+  return useQuery({ queryKey: qk.integrations.mcpCatalog, queryFn: api.integrations.mcp.catalog })
 }
 
 export function useMcpActions() {

@@ -50,6 +50,7 @@ export const qk = {
     privacyFilters: (id: string) => ['integrations', id, 'privacy-filters'] as const,
     entities: (id: string) => ['integrations', id, 'entities'] as const,
     mcp: ['integrations-mcp'] as const,
+    mcpCatalog: ['integrations-mcp', 'catalog'] as const,
     feeds: ['integrations', 'feeds'] as const
   },
   hooks: ['hooks'] as const,

@@ -1354,7 +1354,7 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
   404 unknown integration, 422 any other value)
 - `GET /api/integrations/{id}/privacy-filters` → `{keywords: [], emails: [], labels: []}`
 - `PUT /api/integrations/{id}/privacy-filters` same shape → `{ok}`
-- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, access: "read|read_write", status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk, per_call}], review, error}]`
+- `GET /api/integrations/mcp` → `[{name, transport: "stdio|http", command, args, url, env_keys, auth: "none|headers|oauth", header_keys, missing_values, signed_in, signing_in, enabled, access: "read|read_write", status: "connecting|connected|needs_sign_in|error|disconnected|disabled", tools: [{name, mcp_name, description, risk, per_call}], review, error, health, last_check_at, usage_count}]`
   (`name` is the Sentient tool name `mcp_<server>_<tool>`; `env` and header values are kept in the keychain, only `env_keys` and `header_keys` are returned)
   - `tools` lists only the tools Sentient offers: ones the user approved exactly as they are now (#146, ADR 0027).
   - `review` (null until the server has connected): `{needed, reason: "new"|"changed"|null, verdict: "high|check|clear",
@@ -1382,15 +1382,16 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
   - `auth` (remote servers only): `none`, `headers` (static headers such as `Authorization: Bearer ...` sent on every request) or `oauth` (sign-in with the MCP authorization spec). Header values are sent in every mode when `header_keys` is not empty.
   - `signed_in`: an OAuth sign-in is stored (only with `auth: "oauth"`). `signing_in`: a browser sign-in is waiting for the user.
   - `status: "needs_sign_in"`: the server answered 401, or `auth` is `oauth` with no stored sign-in, or the stored sign-in expired and could not be refreshed. `error` says what to do: `"This server asks you to sign in."` (none), `"The server didn't accept the saved headers. Change their values with the key button on the server."` (headers), `"Sign in to use this server."` (oauth). The engine retries a server in this state every 5 minutes, and at once after a sign-in or a test.
+  - `health`: `healthy` or `failing` for an active connection, `null` when disabled, disconnected, connecting, or awaiting authentication. A failing health value means an enabled server was checked and its MCP transport did not answer. `last_check_at`: ISO timestamp of the most recent connection or active health result. `usage_count`: attempted tool calls, kept in the local database.
 - `POST /api/integrations/mcp` `{name, transport, command?, args?, url?, env?, headers?, auth?, enabled?, access?}` → server object (waits up to 15 s for the first connection; replaces a server with the same name; 400 on invalid input; `access` is saved before the server starts, and left out keeps the current choice)
-  - MCP server objects also include `health` (`healthy` or `failing` for an active connection, `null` when disabled, disconnected, connecting, or awaiting authentication), `last_check_at` (ISO timestamp of the most recent connection or active health result), and `usage_count`. A failing health value means an enabled server was checked and its MCP transport did not answer. Usage counts are attempted tool calls and persist in the local database.
-  - `GET /api/integrations/mcp/catalog` → curated templates with official documentation URLs. `POST /api/integrations/mcp/catalog/{id}` adds a disabled template without executing its command; required values are entered separately through `/values`. Unknown or duplicate entries return 400.
   - `headers`: `{name: value}`; values go to the keychain. `auth` defaults to `headers` when headers are given, else `none`. 400 when `auth` is `headers` without headers, a header name or value is invalid, or a stdio server has headers or `auth` other than `none`.
   - Headers not given are deleted. The keychain is shared by every Sentient setup in the same keychain namespace (§3), so a stored sign-in
     (tokens and client registration) records the server URL it was made for (`server_url`) and is kept when a
     server with the same name and URL is added (in this setup or another), then used. It is dropped when the URL
     differs, and an older record without `server_url` is dropped only when this setup had the server at another
     URL. Adding a local (stdio) server with the same name leaves a stored sign-in alone.
+- `GET /api/integrations/mcp/catalog` → `[{id, name, description, documentation_url, transport, command, args, required_values, enabled}]`, curated templates with official documentation URLs.
+- `POST /api/integrations/mcp/catalog/{id}` → server object. Adds a disabled template without executing its command; required values are entered separately through `/values`. Unknown or duplicate entries return 400.
 - `DELETE /api/integrations/mcp/{name}` → `{ok}` (also deletes the server's env values, headers and sign-in from the keychain, and its Read only setting). `?forget=true` also forgets what Sentient learned from it (`app:mcp_<name>`) → `{ok, forgotten: ForgetCounts}` (section 7, #153)
 - `POST /api/integrations/mcp/{name}/access` `{access: "read"|"read_write"}` → server object; the server keeps running
   (404 unknown server, 422 any other value)
