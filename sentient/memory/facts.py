@@ -67,8 +67,8 @@ _UNKNOWN_RE = re.compile(
     r"not provided|unclear)\b",
     re.IGNORECASE,
 )
-_USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
-_USER_POSSESSIVE_RE = re.compile(r"\b(the user|user|USERNAME)['\u2019]s\b", re.IGNORECASE)
+_USER_REF_RE = re.compile(r"(?<![\w-])(the user|USERNAME)(?![\w-])", re.IGNORECASE)
+_USER_POSSESSIVE_RE = re.compile(r"(?<![\w-])(the user|user|USERNAME)['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 

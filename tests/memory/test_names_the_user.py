@@ -22,6 +22,8 @@ USER = "Maya Rao"
         ("The user moved to Bengaluru.", "Maya Rao moved to Bengaluru."),
         ("USERNAME's dog is called Biscuit.", "Maya Rao's dog is called Biscuit."),
         ("Maya's sister lives in Mumbai.", "Maya's sister lives in Mumbai."),
+        ("Maya built the user-facing screen.", "Maya built the user-facing screen."),
+        ("Maya fixed an end-user's bug.", "Maya fixed an end-user's bug."),
     ],
 )
 def test_the_user_becomes_the_users_name(text, named):
