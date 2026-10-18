@@ -10,6 +10,7 @@ import {
   IconDots,
   IconFileDescription,
   IconFlask,
+  IconMailForward,
   IconHelpCircle,
   IconPencil,
   IconPlayerPause,
@@ -570,6 +571,8 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         <SetupChecklist task={task} tz={tz} ops={ops} canTry={canTryFirst(task) && missing.length === 0} onTry={() => void ops.dryRun(id).then((t) => t && onShowRuns())} />
       )}
 
+      {task.original_context?.source === 'email' && <EmailOriginCard task={task} />}
+
       <DescriptionCard task={task} onSave={(description) => ops.update(id, { description }, 'Description saved')} />
 
       <ScheduleCard task={task} tz={tz} onSave={(schedule) => ops.update(id, { schedule }, 'Schedule updated')} saving={ops.isBusy('update', id)} />
@@ -617,6 +620,32 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         <p className="text-sm text-fg-subtle">Waiting for the first matching event.</p>
       )}
     </>
+  )
+}
+
+/** Where a task by email came from (#159): who sent it, its subject and how Sentient treats its text. */
+function EmailOriginCard({ task }: { task: Task }) {
+  const email = (task.original_context?.email ?? {}) as { from?: string; sender_email?: string; subject?: string; date?: string; app_name?: string; to?: string }
+  const from = (email.from ?? email.sender_email ?? '').replace(/\s+/g, ' ').trim()
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2">
+        <IconMailForward size={16} className="text-fg-subtle" />
+        <h3 className="text-sm font-semibold text-fg">From an email</h3>
+        {email.app_name && <span className="text-xs text-fg-subtle">{email.app_name}</span>}
+      </div>
+      <div className="rounded-lg border border-border bg-surface px-3.5 py-3 text-sm">
+        <div className="selectable text-fg">{email.subject || '(no subject)'}</div>
+        <div className="selectable mt-0.5 text-xs text-fg-subtle">
+          {from || 'Unknown sender'}
+          {email.sender_email && !from.toLowerCase().includes(email.sender_email) ? ` (really ${email.sender_email})` : ''}
+          {email.date ? ` · ${formatDateTime(email.date)}` : ''}
+        </div>
+        <p className="mt-2 text-xs leading-relaxed text-fg-muted">
+          Sentient planned this from the email. Its text says what to do, but addresses and links in it don't count as yours, so anything this task would send asks you first and says where each address came from.
+        </p>
+      </div>
+    </section>
   )
 }
 

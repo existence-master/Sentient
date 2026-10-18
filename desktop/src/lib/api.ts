@@ -15,6 +15,7 @@ import type {
   ForgetCounts,
   Forgotten,
   AwayStatus,
+  EmailTasksStatus,
   BackupEntry,
   BackupInspect,
   BackupOverview,
@@ -605,6 +606,8 @@ export const api = {
     away: () => http.get<AwayStatus>('/api/tasks/away'),
     awayResume: () => http.post<{ resumed: number; status: AwayStatus }>('/api/tasks/away/resume'),
     awayKeep: () => http.post<AwayStatus>('/api/tasks/away/keep'),
+    /** Tasks by email (#159). */
+    email: (limit = 20) => http.get<EmailTasksStatus>(`/api/tasks/email?limit=${limit}`),
     get: (id: string) => http.get<Task>(`/api/tasks/${enc(id)}`),
     create: (body: TaskCreateRequest) => http.post<Task>('/api/tasks', body),
     preview: (prompt: string) => http.post<TaskPreview>('/api/tasks/preview', { prompt }),

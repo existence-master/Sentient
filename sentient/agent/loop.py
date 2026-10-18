@@ -1246,7 +1246,10 @@ class Agent:
             if args is None:
                 continue
             if request is None:
-                request = second_look.gather(messages, self.registry, task=bool(ctx.extra.get("task_id"))).request
+                request = second_look.gather(
+                    messages, self.registry, task=bool(ctx.extra.get("task_id")),
+                    brief_from=str(ctx.extra.get(second_look.BRIEF_FROM_KEY) or ""),
+                ).request
             if reversible.asks_for_good(request):
                 return swapped
             log.info("moving to the trash with %s instead of %s", twin.name, tc.name)

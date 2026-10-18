@@ -831,7 +831,7 @@ Routes:
   "deliver_to": "default" | "desktop" | [{"channel": "telegram|discord|whatsapp", "chat_id": "..."}],
   "notepad": "...|null",
   "setup": Setup | null,
-  "original_context": {"source": "manual_creation|chat|proactive|trigger", "...": "..."},
+  "original_context": {"source": "manual_creation|chat|proactive|trigger|email", "...": "..."},
   "error": "...|null",
   "next_execution_at": "...|null", "last_execution_at": "...|null", "created_at": "...", "updated_at": "..."
 }
@@ -1312,6 +1312,43 @@ Routines are enabled `active` tasks whose schedule is `recurring` or `triggered`
 - `POST /api/activity` → `{ok, last_active_at}`
 - Event `tasks.away` carries the AwayStatus after every change.
 
+### Tasks by email (#159, ADR 0033)
+Forwarding or copying an email to the user's Sentient address gives Sentient a task. Off until the user turns it on
+in Settings > Tasks (`tasks.email`):
+- `enabled` (default false); `address`, the Sentient address, usually a plus-address such as `you+sentient@gmail.com`
+  (most services deliver it to the normal inbox); `label` (optional), a Gmail label or IMAP folder whose mail counts
+  too (over IMAP the folder must also be one the account watches; Gmail mail must stay in the inbox);
+  `allowed_senders`, real addresses that may send tasks (comma or semicolon separated values are split and
+  lower-cased). Empty means the user's own addresses: the connected Gmail and IMAP accounts and the address the
+  plus-address is built on.
+- New mail arrives through the push feeds as `source.items` (section 16). The tasks package looks at every `gmail` and
+  `email_imap` item first: one sent to the address (its To, Cc, `headers.delivered-to` or `headers.x-original-to`) or
+  in the label is handled here, once per email whichever app brings it (keyed by Message-ID), and proactivity makes no
+  suggestion from it. Gmail lets the user's own mail to the address through although it is also `SENT`.
+- **The sender check, in code** (`integrations/inbox.check_sender`): the From line must name exactly one address,
+  clearly, on one From line (`mail.real_address`: the display name never counts, so `"Maya Rao" <attacker@evil.example>`
+  is attacker@evil.example); an `Authentication-Results` header with `dmarc=fail` (or `spf=fail` with no DMARC result
+  and no `dkim=pass`) is refused; auto-replies and list or bulk mail (`Auto-Submitted`, `Precedence`, `List-Id`,
+  `List-Unsubscribe`) are refused; the address must be allowed. At most 10 tasks are made from email per hour.
+  Anything refused is logged with its reason (engine log and `GET /api/tasks/email`) and never reaches a model.
+- **The task**: `source: "email"`, `original_context = {source: "email", email: {app, app_name, id, from,
+  sender_email, to, cc, subject, date, body (up to 4000 characters), mailbox?}}` (`id` is the id the app's tools take), named `Email from
+  <name>: <subject>` in code (the planner never renames it). No refining step: the planner reads the email marked as
+  outside content, and the plan always waits in `approval_pending`, also with `tasks.require_plan_approval` off, so
+  "Try it first" (#142) is there before it runs. Every run is marked from the start with the app's name (ADR 0018), so
+  every send asks, and the executor reads the email as its trigger data (marked). Its brief (description, plan,
+  context) was written from the email, so the second look counts it as outside content, never as the user's words: an
+  address or link only the email has is flagged on the approval card with where it came from ("That address came from
+  the text of an email from Maya Rao <maya@example.com> (Email (IMAP)), not from you."). The second look's model
+  check reads the fixed request `second_look.BRIEF_REQUEST` ("Do what the email I forwarded asks.") instead, never the
+  email. Replies never copy the Sentient address in again.
+- `GET /api/tasks/email?limit=20` → **EmailTasksStatus** `{enabled, active, address, label, allowed_senders, allowed,
+  own_addresses, accounts, suggested_address, watching, recent: [{at, app, sender, from, subject, outcome:
+  "task"|"ignored", reason, code: null|"not_allowed"|"unclear_sender"|"failed_check"|"automated"|"too_many",
+  task_id}]}`. `active` is `enabled` with an address or label; `allowed` is who may send tasks now; `accounts` are the
+  connected email accounts; `suggested_address` is a plus-address on the first one; `watching` lists the connected
+  mail apps (`gmail`, `email_imap`); `from` is the From line as written. Settings change through `PATCH /api/config`.
+
 ---
 
 ## 5. Integrations
@@ -1541,6 +1578,11 @@ Backend-only API used by tasks/proactivity (not HTTP):
 
 Item shapes. gmail: `{id, thread_id, from, sender_email, to, subject, snippet, body, date, labels, url}`;
 email_imap: the gmail shape plus `message_id` (`id` is the IMAP UID, `url` is null, `labels` are `INBOX` plus `UNREAD`/`STARRED`);
+`sender_email` is the one address the From line really names (`""` when it names none clearly), never an address
+written in its display name (#159). Items from the Gmail change feed and IMAP push also carry `cc`, `message_id` (gmail)
+and `headers` `{delivered-to?, x-original-to?, authentication-results?, auto-submitted?, precedence?, list-id?,
+list-unsubscribe?, from?}` (a header given more than once keeps every value; `from` only when there is more than one
+From line), and a Gmail item in the label tasks by email watch has `label_names: [label]` (section 4, "Tasks by email");
 gcalendar: `{id, summary, description, start, end, all_day, location, attendees, organizer_email, url, status, created, updated, meet_link}`.
 
 One-time codes and sign-in links in email. While `integrations.hide_one_time_codes` is on (the default), every gmail
@@ -2312,8 +2354,9 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     number in an argument whose key names a recipient (`to`, `cc`, `bcc`, `recipient_email`, `attendees`, `guests`,
     `phone`...; nested arguments such as Composio's multi-execute are walked) must appear in the user's own words
     (user messages, without outside-content blocks or the time note; in a task run, also its brief in the system
-    prompt; the blocks, such as a group member's message, count as outside content with the source in their marker,
-    ADR 0029), in trusted records read in the run (results of tools that bring no outside content, Google Contacts, a
+    prompt, except for a task made from an email, whose brief is outside content from that app, ADR 0033; a task run's
+    trigger data is outside content; the blocks, such as a group member's message, count as outside content with the
+    source in their marker, ADR 0029), in trusted records read in the run (results of tools that bring no outside content, Google Contacts, a
     chat's system prompt) or in an active saved memory, or belong to a name the user gave ("email Arjun" and
     `arjun.mehta@...`; the user's own name counts). Every amount of money (`$1,200`, `500 rupees`, a number in an
     `amount`/`price`/`total`... field) must appear there too. After outside content, a link in the call that came
@@ -2951,7 +2994,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   every `integrations.fast_sync_seconds` (default 60; 0 turns feeds off); this costs no model calls. IMAP email
   (`email_imap`, app password) uses IDLE push, or a NOOP check every `fast_sync_seconds` when the server lacks IDLE.
   - Gmail: the first sync takes the mailbox `historyId` (nothing emitted); later syncs emit messages added to INBOX
-    (not SENT/DRAFT/SPAM/TRASH, at most 50 per sync). Expired history (HTTP 404) re-baselines from now without emitting.
+    (not SENT/DRAFT/SPAM/TRASH, at most 50 per sync; SENT ones only when they went to the Sentient address, #159). Expired history (HTTP 404) re-baselines from now without emitting.
   - Calendar: the first sync is a full sync for a sync token (nothing emitted); later syncs emit `new_event` (created
     within 2 minutes of its last update) or `updated_event`, skipping cancelled and already-ended events. HTTP 410
     triggers a full resync without re-emitting.
@@ -2968,7 +3011,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   found by a change feed, by `poll_source`, or arrived on a webhook. The integrations package keeps the shared
   "already seen" record so a feed and a poll never emit the same item twice.
 - Consumers: the tasks package fires triggered tasks for every origin (proactivity no longer calls tasks for polled
-  items). Proactivity keeps processing the items its own poll returns and also processes `feed` and `webhook` origins
+  items), and first makes a task from any email sent to the Sentient address (section 4, "Tasks by email"). Proactivity keeps processing the items its own poll returns and also processes `feed` and `webhook` origins
   from the bus. When change feeds are active for a source, proactivity skips timer polling for it.
 - Proactivity details (owner: evolution): `poll` origins on the bus are ignored (those items come back from `poll_source`).
   `feed` items are processed for sources in `proactivity.sources`; `webhook` items when `proactivity.webhook_suggestions`

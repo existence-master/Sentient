@@ -68,6 +68,12 @@ DESTINATIONS_WAIT_S = 20.0  # reading a reply's headers to see where it goes
 CONTACT_PLUGINS = frozenset({"gpeople"})
 
 UNCHECKED = "Sentient couldn't double-check this against what you asked, so it checks with you first."
+# ``ToolContext.extra`` key: the run's brief (objective, plan, context) was written from outside content, not by the
+# user, so it is outside content too; the value names where it came from ("Email (IMAP)" for a task by email, #159)
+BRIEF_FROM_KEY = "brief_from"
+# what such a run's user asked, in Sentient's words (it holds no outside text): the model check reads it, so a reply
+# the email asked for isn't flagged as "not requested"
+BRIEF_REQUEST = "Do what the email I forwarded asks."
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
 _PHONE = re.compile(r"^\+?[\d\s().\-]{7,24}$")
@@ -77,7 +83,7 @@ _MARKED_BLOCK = re.compile(
     r"(?P<body>.*?)\n\[end of outside content (?P=code)\]",
     re.DOTALL,
 )
-_TRIGGER_BLOCK = re.compile(r"---BEGIN TRIGGER DATA---.*?---END TRIGGER DATA---", re.DOTALL)
+_TRIGGER_BLOCK = re.compile(r"---BEGIN TRIGGER DATA---\n?(?P<body>.*?)\n?---END TRIGGER DATA---", re.DOTALL)
 _TIME_NOTE = re.compile(r"\[Current time: [^\]\n]*\]")
 _KEY_SPLIT = re.compile(r"[^a-z0-9]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -296,10 +302,14 @@ def _unmark(text: str) -> str:
     return text
 
 
-def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", task: bool = False) -> Evidence:
+def gather(
+    messages: list[dict] | None, registry: Any, *, user_name: str = "", task: bool = False, brief_from: str = "",
+) -> Evidence:
     """Sort a run's messages into the user's request, trusted records and outside content. In a task run the system
     prompt is the user's brief (objective, plan, context) and counts as the request; in a chat it is Sentient's own
-    text (memories, rules) and counts as a trusted record."""
+    text (memories, rules) and counts as a trusted record. The event that started a task run (its trigger data: an
+    email, a webhook body) is outside content. ``brief_from``: the task's brief itself was written from outside
+    content (a task by email, #159), so it is outside content from there and never the user's request."""
     ev = Evidence()
     request: list[str] = []
     trusted: list[str] = []
@@ -316,7 +326,19 @@ def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", t
             for b in _MARKED_BLOCK.finditer(text):
                 ev.add_outside(b["source"], b["body"], structured=False)
         elif role == "system":
-            (request if task else trusted).append(own_words(text_of(m.get("content"))))
+            text = text_of(m.get("content"))
+            if task:
+                for block in _TRIGGER_BLOCK.finditer(text):
+                    marked = _MARKED_BLOCK.search(block["body"])
+                    if marked:
+                        ev.add_outside(marked["source"], marked["body"])
+                    else:
+                        ev.add_outside(brief_from or "the event that started this task", block["body"])
+            if task and brief_from:
+                ev.add_outside(brief_from, own_words(text), structured=False)
+                request.append(BRIEF_REQUEST)
+            else:
+                (request if task else trusted).append(own_words(text))
         elif role == "tool":
             text = text_of(m.get("content"))
             body = _unmark(text)
@@ -728,7 +750,7 @@ class Look:
             extra = getattr(self.ctx, "extra", None) or {}
             self._evidence = gather(
                 self.messages, self.agent.registry, user_name=self.agent.config.assistant.user_name,
-                task=bool(extra.get("task_id")),
+                task=bool(extra.get("task_id")), brief_from=str(extra.get(BRIEF_FROM_KEY) or ""),
             )
         return self._evidence
 

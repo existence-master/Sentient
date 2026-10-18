@@ -80,9 +80,9 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   {
     id: 'tasks',
     label: 'Tasks',
-    description: 'Long-running work, scheduling and plan approval.',
+    description: 'Long-running work, scheduling, plan approval and tasks by email.',
     icon: IconListCheck,
-    keywords: ['scheduler', 'runs', 'swarm', 'plan', 'timeout', 'away', 'pause', 'routines', 'vacation'],
+    keywords: ['scheduler', 'runs', 'swarm', 'plan', 'timeout', 'away', 'pause', 'routines', 'vacation', 'email', 'forward', 'tasks by email', 'sentient address'],
     schemaSections: ['tasks']
   },
   {

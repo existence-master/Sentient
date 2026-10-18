@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import aioimaplib
 
-from sentient.integrations import mail, redact
+from sentient.integrations import inbox, mail, redact
 from sentient.integrations.base import (
     IntegrationError,
     IntegrationPlugin,
@@ -288,10 +288,37 @@ def normalize_raw(uid: int, raw: bytes, flags: list[str], *, mailbox: str = "INB
     if "\\flagged" in lowered:
         labels.append("STARRED")
     return {
-        "id": str(uid), "thread_id": thread_id, "from": frm, "sender_email": email_of(frm), "to": _header(msg, "To"),
+        # the one address From really names, never one written in its display name (#159)
+        "id": str(uid), "thread_id": thread_id, "from": frm, "sender_email": mail.real_address(frm),
+        "to": _header(msg, "To"),
         "subject": subject, "snippet": snippet, "body": body, "date": date, "labels": labels,
         "url": None, "message_id": message_id or None,
     }
+
+
+# header lines a new-mail push carries for email-to-task (#159): who else it went to, how it was delivered, whether
+# the provider could verify the sender, and the marks of automated mail
+INBOX_HEADERS = ("delivered-to", "x-original-to", "authentication-results", "auto-submitted", "precedence",
+                 "list-id", "list-unsubscribe")
+
+
+def inbox_fields(msg: EmailMessage) -> dict:
+    """``cc`` and ``headers`` for a pushed new email (``email_inbox`` reads them). A header given more than once
+    (Delivered-To, Authentication-Results) keeps every value, and more than one From line is kept as ``from`` so
+    the sender check can refuse it."""
+    headers: dict[str, str] = {}
+    for name in INBOX_HEADERS:
+        try:
+            values = [str(v) for v in msg.get_all(name) or []]
+        except Exception:
+            values = []
+        if values:
+            headers[name] = " | ".join(values) if name == "authentication-results" else ", ".join(values)
+    with contextlib.suppress(Exception):
+        froms = [str(v) for v in msg.get_all("From") or []]
+        if len(froms) > 1:
+            headers["from"] = ", ".join(froms)
+    return {"cc": _header(msg, "Cc") or None, "headers": headers}
 
 
 def _port(value: Any, default: int) -> int:
@@ -623,11 +650,13 @@ def _new_message(c: dict, m: EmailMessage) -> EmailMessage:
     return m
 
 
-async def _reply_parts(c: dict, message_id: str, mailbox: str, reply_all: bool) -> tuple[EmailMessage, dict]:
+async def _reply_parts(c: dict, message_id: str, mailbox: str, reply_all: bool,
+                       sentient: str = "") -> tuple[EmailMessage, dict]:
     """The original message and who a reply to it goes to, from its headers alone (#144)."""
     orig = parse_message((await _fetch_one(c, message_id, mailbox))["raw"])
     headers = {k: _header(orig, k) for k in ("From", "To", "Cc", "Reply-To")}
-    me = {str(c.get("username") or "").strip().lower()} - {""}
+    # the Sentient address (#159) counts as the user's: a reply-all never copies Sentient in again
+    me = {str(c.get("username") or "").strip().lower(), sentient} - {""}
     # only a message in the account's own Sent mailbox is the user's; a received one claiming their From is not
     own = False
     if str(mailbox or "INBOX").strip().upper() != "INBOX":
@@ -643,7 +672,8 @@ async def reply_destinations(arguments: dict, ctx: ToolContext) -> list[dict] | 
     if not mid:
         return None
     c = await creds(ctx, PID)
-    _, targets = await _reply_parts(c, mid, str(arguments.get("mailbox") or "INBOX"), bool(arguments.get("reply_all")))
+    _, targets = await _reply_parts(c, mid, str(arguments.get("mailbox") or "INBOX"), bool(arguments.get("reply_all")),
+                                    inbox.sentient_address(getattr(manager_from(ctx), "app", None)))
     return targets["destinations"]
 
 
@@ -653,7 +683,8 @@ async def email_imap_reply(ctx: ToolContext, message_id: str, body: str, reply_a
     """Reply to an email (the `id` from email_imap_search) in its conversation: to the sender, or everyone with
     reply_all=true. Body is plain text. Who it goes to comes from the email's own headers, never from its text."""
     c = await creds(ctx, PID)
-    orig, targets = await _reply_parts(c, message_id, mailbox, reply_all)
+    sentient = inbox.sentient_address(getattr(manager_from(ctx), "app", None))
+    orig, targets = await _reply_parts(c, message_id, mailbox, reply_all, sentient)
     if not targets["to"]:
         return {"error": "That email has no sender address to reply to."}
     m = EmailMessage()
@@ -908,6 +939,7 @@ class EmailImapPlugin(IntegrationPlugin):
             items = []
             for r in sorted(rows, key=lambda r: r["uid"]):
                 item = normalize_raw(r["uid"], r["raw"], r["flags"], mailbox=mailbox, hide_codes=redact.enabled(mgr))
+                item.update(inbox_fields(parse_message(r["raw"])))
                 item["_key"] = item.get("message_id") or f"{mailbox}:{validity}:{r['uid']}"
                 items.append(item)
             kept = await mgr.emit_items(PID, "feed", items, event="new_email")

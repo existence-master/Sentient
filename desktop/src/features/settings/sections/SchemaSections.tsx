@@ -14,6 +14,7 @@ import { WAKE_KEYS, WakeWordSection } from './AbilitySections'
 import { ApprovalGrantsSection } from './ApprovalGrants'
 import { ApprovalRulesSection } from './ApprovalRules'
 import { DICTATION_KEYS, DictationSection } from './Dictation'
+import { EmailTasksSection } from './EmailTasks'
 
 export function MemorySection({ query }: SectionProps) {
   const navigate = useNavigate()
@@ -36,7 +37,12 @@ export function MemorySection({ query }: SectionProps) {
 }
 
 export function TasksSection({ query }: SectionProps) {
-  return <SchemaForm section="tasks" title="Running tasks" filter={query} />
+  return (
+    <div className="space-y-8">
+      <EmailTasksSection query={query} />
+      <SchemaForm section="tasks" title="Running tasks" filter={query} />
+    </div>
+  )
 }
 
 export function ProactivitySection({ query }: SectionProps) {
