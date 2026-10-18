@@ -88,7 +88,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `notification.updated` | full **Notification** after its payload changed (suggestion approved/dismissed, approval answered, task plan approved/declined: a `task` notification with `payload.event = "approval_needed"` gains `payload.status = "approved"\|"declined"`; a task question (`payload.event = "question"`) gains `payload.status = "answered"` with `payload.answer`, or `"cancelled"`) |
 | `notification.read` / `notification.deleted` | `{id}` (`null` = all) |
 | `integration.updated` | **Integration** (§5) |
-| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE). Memory scopes (#155, section 7): a save carries `scope` (where it was kept); moving a memory sends UPDATE with `reason: "moved"`, `scope` and `previous_scope`; resetting a scope sends a bulk DELETE with `reason: "scope_reset"`, `scope` and `count`. Forgetting a source (#153) sends a bulk DELETE with `source`, `count` (deleted) and `unlinked` (kept because another source backs them), and `reason: "forgotten"` when it came with a disconnect |
+| `memory.updated` | `{action: "ADD"\|"UPDATE"\|"DELETE", id, content?, status?: "pending", reason?, previous?, session_id?}`; `status: "pending"` means the memory waits in the review inbox (section 7), with `reason: "instruction"` when it reads like an instruction (#234); `previous` is an UPDATE's words before it and `session_id` the chat a memory was learned in (extraction after a turn, `memory_remember`): that chat shows "Remembered: ... Undo" (Undo is `DELETE /api/memories/{id}`, or `PUT` with `previous` for an update) or "Waiting for your review: ..." with Review (#234); bulk changes (import, delete by source, expiry purge) send `id: null` plus `source?`/`reason?` and `count`. Superseded-history retention sends a bulk DELETE with `reason: "superseded_expired"` and `count` (the number erased). Review sends `reason: "approved"` (ADD, or DELETE with `merged_into` when the same words were already remembered), `"discarded"` (DELETE) and `"review_expired"` (bulk DELETE). Memory scopes (#155, section 7): a save carries `scope` (where it was kept); moving a memory sends UPDATE with `reason: "moved"`, `scope` and `previous_scope`; resetting a scope sends a bulk DELETE with `reason: "scope_reset"`, `scope` and `count`. Forgetting a source (#153) sends a bulk DELETE with `source`, `count` (deleted) and `unlinked` (kept because another source backs them), and `reason: "forgotten"` when it came with a disconnect |
 | `memory.forgotten` | `{id, source, label, counts, at}` (`counts`: **ForgetCounts** without `source`): "Also forget what Sentient learned from it" ran when a source was disconnected (#153, section 7); the window refreshes memories, chats and Activity |
 | `skill.updated` | `{name, state: "active"\|"pending_review"\|"stale"\|"archived"\|"rejected"\|"deleted"}` |
 | `mcp.review` | `{server, reason?: "new"\|"changed", tools?: [tool names on the server], needed}`: an MCP server's tools wait for review, or the user answered (section 5) |
@@ -1814,7 +1814,11 @@ attribute and no word of what it says in common ("a piano recital in July" for "
   found a newer memory that contradicts it). Only current memories are recalled into chats, tasks, proactivity, the
   user model, USER.md and MEMORY.md (a memory that becomes disputed or superseded also leaves those two files); dedup
   still sees disputed ones, so saying one again in a chat makes it current.
-  A superseded memory stays as history (out of recall, not listed unless `state` asks for it).
+  A superseded memory stays as history (out of recall, not listed unless `state` asks for it) until
+  `memory.keep_superseded_days` has elapsed since it was replaced (default 180 days; 0 disables this retention
+  cleanup, keeping history indefinitely unless explicitly deleted or expired). Changing its scope does not restart
+  the retention period. Expiry cleanup erases older superseded memories and their derived data through the delete
+  cascade below; this retention rule never selects current or disputed memories.
 - Deleting a memory (`DELETE /api/memories/{id}`, the `memory_forget` tool, discarding one from review, resetting a
   scope, forgetting a source) also removes everything derived from it: its vector, merged copies and source links, its
   earlier wording, chat summaries made of the message it came from that repeat it (with their vectors), the nightly
@@ -1994,7 +1998,8 @@ facts of that source too. Engine: `sentient.memory.review` (`for_context(ctx)`, 
 Engine notes: recall used by the system prompt and `memory_recall` is hybrid (same ranking as `q` above) and
 counts each recalled fact (`facts.recall_count`, `last_recalled_at`; dreaming promotes often-recalled short-term
 facts). Saying a memory isn't right or is publishes UPDATE with `state` and `reason: "disputed"|"confirmed"` (#152). Bulk and consolidation changes publish `memory.updated` with `reason` (`merged` | `contradicted` (the older one is superseded, #152) |
-`promoted` | `expired`) and, for merges/contradictions, `merged_into` / `superseded_by`.
+`promoted` | `expired` | `superseded_expired` (bulk DELETE after superseded-history retention, with `count`)) and, for
+merges/contradictions, `merged_into` / `superseded_by`.
 
 ---
 
