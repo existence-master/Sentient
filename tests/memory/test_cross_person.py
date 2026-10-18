@@ -183,3 +183,38 @@ async def test_a_hindi_fact_about_the_sister_never_updates_the_users_home(config
         assert (await mem.get_fact(lives))["content"] == "Maya lives in Bengaluru."
     finally:
         await store.close()
+
+
+@pytest.mark.parametrize(
+    ("new", "old"),
+    [
+        # "her" may be anyone: a code-decided update needs an owner it can name (CodeRabbit on #471)
+        ("Her sister lives in Delhi.", "Maya's sister lives in Pune."),
+        ("उसकी बहन दिल्ली में रहती है।", "Maya's sister lives in Pune."),
+        # a namesake of the user is someone else
+        ("Maya Singh moved to Mumbai.", "Maya Rao lives in Bengaluru."),
+        ("Maya Singh moved to Mumbai.", "Maya lives in Bengaluru."),
+        ("Maya Singh's sister lives in Delhi.", "Maya's sister lives in Pune."),
+    ],
+)
+def test_no_code_update_without_a_clear_same_person(new, old):
+    assert not same_person(new, old, USER)
+    assert correction_of(new, old, USER) is None
+
+
+def test_a_pronoun_relation_still_counts_by_a_shared_name():
+    assert same_person("Her sister Priya lives in Delhi.", "Maya's sister Priya lives in Pune.", USER)
+    assert fact_subjects("Maya Singh moved to Mumbai.", USER) == {"maya singh"}
+    assert fact_subjects("Maya Rao moved to Mumbai.", USER) == {"maya"}
+
+
+async def test_a_namesake_moving_leaves_the_users_home_alone(config, isolated_home):
+    store, llm, mem = await _memory(config, isolated_home, "namesake.db")
+    try:
+        [home] = await _seed(mem, "Maya Rao lives in Bengaluru.")
+        llm.json_replies.extend([_cud("ADD", "Maya Singh moved to Mumbai.")] + [ANALYSIS] * 3)
+        out = await mem.remember("Maya Singh moved to Mumbai.")
+        assert out["action"] == "ADD"
+        assert (await mem.get_fact(home))["content"] == "Maya Rao lives in Bengaluru."
+    finally:
+        await store.close()

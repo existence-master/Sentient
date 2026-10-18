@@ -267,6 +267,11 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
         end = i
         while not words[end].lower().endswith("'s") and end - i < 3 and joined(end) and name_at(end + 1):
             end += 1
+        # the first name stands for the person, except a namesake of the user: "Maya Singh" is not "Maya Rao"
+        run = [x.lower().removesuffix("'s") for x in words[i:end + 1]]
+        mine = user.split()
+        if len(run) > 1 and len(mine) > 1 and run[0] == mine[0] and run != mine:
+            root = " ".join(run)
         if words[end].lower().endswith("'s"):
             return relation(root, end + 1) or {root}
         aliases = {root}
@@ -374,7 +379,11 @@ def same_subject(a: str, b: str, user_name: str = "") -> bool:
     "प्रिया" vs "Riya"). Names match across scripts ("माया" is "Maya"). Unclear subjects count as the same, and so
     does "the user" next to a name while the user's name isn't set."""
     sa, sb = subject_aliases(a, user_name), subject_aliases(b, user_name)
-    if not sa or not sb or sa & sb:
+    return not sa or not sb or _aliases_match(sa, sb, user_name)
+
+
+def _aliases_match(sa: set[str], sb: set[str], user_name: str) -> bool:
+    if sa & sb:
         return True
     full = (user_name or "").strip().lower()
     # the user by full or first name: "I" (Maya Rao) is "Maya" (#463)
@@ -394,10 +403,12 @@ def same_subject(a: str, b: str, user_name: str = "") -> bool:
 def same_person(a: str, b: str, user_name: str = "") -> bool:
     """Both facts say who they are about, and it is the same person or thing (:func:`same_subject`). What Sentient
     decides in code, without the model (a correction, a new home), needs this: "She moved to Delhi" says nobody, and
-    "Maya Rao's sister Priya lives in Mumbai" is never about Maya (#463)."""
-    return bool(subject_aliases(a, user_name)) and bool(subject_aliases(b, user_name)) and same_subject(
-        a, b, user_name
-    )
+    "Maya Rao's sister Priya lives in Mumbai" is never about Maya (#463). "Her sister" names no owner either, so it
+    only counts by a name it shares ("her sister Priya" and "Priya")."""
+    unknown_owner = f"{SOMEONE}'s "
+    sa = {s for s in subject_aliases(a, user_name) if not s.startswith(unknown_owner)}
+    sb = {s for s in subject_aliases(b, user_name) if not s.startswith(unknown_owner)}
+    return bool(sa) and bool(sb) and _aliases_match(sa, sb, user_name)
 
 
 def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
