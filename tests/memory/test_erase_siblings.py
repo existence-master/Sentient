@@ -40,6 +40,10 @@ def test_a_line_a_remaining_memory_says_as_well_stays():
     assert not gone("- Maya's car (id 7) was a red Honda City")  # names the remaining memory
     assert gone("- Maya's car (id 8) is a red Honda City")  # names a memory that isn't there
     assert not gone("- Maya plays the veena")
+    # only a written reference counts, and never a number the deleted memory itself says
+    assert gone("- Maya drives a red Honda City, memory 7 of her notes")
+    phone = origins.Erased(["Maya's phone has memory 7 GB"], [(7, "Maya likes filter coffee")], "Maya")
+    assert phone("- Maya's phone has memory 7 GB") and phone("- Maya's phone (memory 7) has 7 GB")
     # a tie goes to the remaining memory
     pune = origins.Erased([PUNE], [(3, MOVED)], "Maya")
     assert not pune("- Maya moved from Pune to Bengaluru and lives there now")

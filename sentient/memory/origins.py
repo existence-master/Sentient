@@ -203,7 +203,9 @@ def says(fact: str, text: str, user_name: str = "") -> bool:
 
 
 _QUOTED = re.compile(r'"([^"\n]+)"|“([^”\n]+)”')
-_NAMES_ID = re.compile(r"\b(?:id|memory|fact)\s*[:#]?\s*(\d+)\b", re.IGNORECASE)
+# a reference to a memory by its id, as derived text writes one: "(memory 7)", "(id: 7)", "[fact #7]"
+_NAMES_ID = re.compile(r"[(\[]\s*(?:id|memory|fact)\s*[:#]?\s*(\d+)\s*[)\]]", re.IGNORECASE)
+_NUMBER = re.compile(r"\d+")
 
 
 class Erased:
@@ -211,7 +213,7 @@ class Erased:
 
     Called with a line of derived text (a MEMORY.md bullet, a journal line, a summary, an evidence quote), it says
     whether the line repeats a deleted wording (:func:`says`) and so goes. A line stays when a remaining current
-    memory says it as well or better, or when it names a remaining memory's id: then it is that memory's line, not
+    memory says it as well or better, or when it names a remaining memory's id ("(memory 7)"): then it is that memory's line, not
     the deleted one's. Each quoted part of a line is weighed on its own as well, so a journal line like
     ``I used to remember "A", but now "B"`` goes when A (or B) is deleted, even though B (or A) remains."""
 
@@ -222,6 +224,7 @@ class Erased:
         self._left = [_words(c) - self.user for _, c in remaining]
         self._ids = {str(i) for i, _ in remaining}
         self._held = {" ".join(str(c).lower().split()) for _, c in remaining}
+        self._own = {n for t in self.texts for n in _NUMBER.findall(t)}  # a number the deleted words say is no reference
 
     @property
     def wordings(self) -> list[str]:
@@ -236,7 +239,7 @@ class Erased:
 
     def __call__(self, text: str) -> bool:
         text = str(text or "")
-        if any(m.group(1) in self._ids for m in _NAMES_ID.finditer(text)):
+        if any(m.group(1) in self._ids and m.group(1) not in self._own for m in _NAMES_ID.finditer(text)):
             return False
         return any(self._repeats(p) for p in (text, *(a or b for a, b in _QUOTED.findall(text))))
 
