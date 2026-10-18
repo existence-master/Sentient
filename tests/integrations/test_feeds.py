@@ -303,7 +303,7 @@ async def test_gmail_feed_lets_mail_to_the_sentient_address_through(app, keychai
     app.config.tasks.email.label = "Sentient"
     from sentient.integrations.plugins import gmail as gmail_mod
 
-    gmail_mod._label_ids.clear()
+    gmail_mod._inbox_label_cache.clear()
     to_sentient = gmail_message("s1", "Me <me@example.com>", "Fwd: Offsite", "Find a time", labels=("SENT", "INBOX"))
     to_sentient["payload"]["headers"] += [
         {"name": "To", "value": "me+sentient@example.com"}, {"name": "Delivered-To", "value": "me+sentient@example.com"},

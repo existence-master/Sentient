@@ -1473,7 +1473,8 @@ class TaskService(Service):
         """Start planning a task left ``planning`` with no planner working on it."""
         if task.get("task_type") == "swarm":
             self._spawn(self._orchestrate_swarm(task["id"]), f"swarm:{task['id']}")
-        elif task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions"):
+        elif (task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions")
+              or email_inbox.is_email_task(task)):  # a task by email is never refined (#159)
             self._spawn(self._plan_job(task["id"]), f"plan:{task['id']}")
         else:
             self._spawn(self._refine_and_plan(task["id"]), f"plan:{task['id']}")

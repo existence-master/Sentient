@@ -23,6 +23,7 @@ _SPF_FAIL = re.compile(r"\bspf\s*=\s*fail\b", re.IGNORECASE)
 _DKIM_PASS = re.compile(r"\bdkim\s*=\s*pass\b", re.IGNORECASE)
 _DMARC_ANY = re.compile(r"\bdmarc\s*=", re.IGNORECASE)
 _BULK_PRECEDENCE = {"bulk", "junk", "list"}
+AUTH_RESULTS_JOIN = " | "  # how the mail apps join repeated Authentication-Results headers in ``headers``
 
 
 def settings(app: object) -> Any:
@@ -90,10 +91,12 @@ def check_sender(item: dict, allowed: Iterable[str]) -> Sender:
     if not address:
         return Sender("", "Its sender address couldn't be read clearly, so Sentient can't tell who sent it.",
                       "unclear_sender")
-    auth = h.get("authentication-results", "")
-    if _DMARC_FAIL.search(auth) or (not _DMARC_ANY.search(auth) and _SPF_FAIL.search(auth)
-                                    and not _DKIM_PASS.search(auth)):
-        return Sender(address, f"Its email service couldn't confirm it really came from {address}.", "failed_check")
+    # each Authentication-Results header on its own: a pass written into one header can't cancel a fail in another
+    for auth in h.get("authentication-results", "").split(AUTH_RESULTS_JOIN):
+        if _DMARC_FAIL.search(auth) or (not _DMARC_ANY.search(auth) and _SPF_FAIL.search(auth)
+                                        and not _DKIM_PASS.search(auth)):
+            return Sender(address, f"Its email service couldn't confirm it really came from {address}.",
+                          "failed_check")
     auto = h.get("auto-submitted", "").strip().lower()
     if (auto and auto != "no") or h.get("precedence", "").strip().lower() in _BULK_PRECEDENCE or h.get("list-id") \
             or h.get("list-unsubscribe"):

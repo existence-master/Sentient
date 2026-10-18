@@ -423,7 +423,7 @@ def feed_item(msg: dict, *, hide_codes: bool = True) -> dict:
                  "list-unsubscribe"):
         values = _header_values(msg, name)
         if values:
-            headers[name] = " | ".join(values) if name == "authentication-results" else ", ".join(values)
+            headers[name] = (inbox.AUTH_RESULTS_JOIN if name == "authentication-results" else ", ").join(values)
     froms = _header_values(msg, "from")
     if len(froms) > 1:
         headers["from"] = ", ".join(froms)
@@ -432,7 +432,7 @@ def feed_item(msg: dict, *, hide_codes: bool = True) -> dict:
 
 
 _LABELS_TTL_S = 600.0
-_label_ids: dict[str, tuple[float, str | None]] = {}
+_inbox_label_cache: dict[str, tuple[float, str | None]] = {}
 
 
 async def _inbox_label_id(mgr: IntegrationManager) -> str | None:
@@ -442,13 +442,13 @@ async def _inbox_label_id(mgr: IntegrationManager) -> str | None:
     if not name:
         return None
     now = asyncio.get_running_loop().time()
-    cached = _label_ids.get(name.lower())
+    cached = _inbox_label_cache.get(name.lower())
     if cached is not None and now - cached[0] < _LABELS_TTL_S:
         return cached[1]
     listing = await gapi(None, PID, "GET", f"{API}/labels", mgr=mgr)
     found = next((lab["id"] for lab in listing.get("labels") or [] if str(lab.get("name", "")).lower() == name.lower()),
                  None)
-    _label_ids[name.lower()] = (now, found)
+    _inbox_label_cache[name.lower()] = (now, found)
     return found
 
 

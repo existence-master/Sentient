@@ -313,7 +313,7 @@ def inbox_fields(msg: EmailMessage) -> dict:
         except Exception:
             values = []
         if values:
-            headers[name] = " | ".join(values) if name == "authentication-results" else ", ".join(values)
+            headers[name] = (inbox.AUTH_RESULTS_JOIN if name == "authentication-results" else ", ").join(values)
     with contextlib.suppress(Exception):
         froms = [str(v) for v in msg.get_all("From") or []]
         if len(froms) > 1:

@@ -306,3 +306,30 @@ def test_the_model_check_reads_a_request_with_no_outside_text():
                             task=True, brief_from="Email (IMAP)", user_name="Maya")
     assert second_look.BRIEF_REQUEST in ev.request and "evil" not in ev.request and "Offsite" not in ev.request
     assert ev.names == []
+
+
+def test_each_authentication_results_header_counts_on_its_own():
+    # a pass written into one header (by the sender) can't cancel the receiving server's fail in another
+    mixed = email(headers={"authentication-results": "attacker.example; dkim=pass | mx.example.com; spf=fail"})
+    assert inbox.check_sender(mixed, [ME]).code == "failed_check"
+
+
+def test_the_gmail_label_lookup_tool_is_still_a_function():
+    from sentient.integrations.plugins import gmail as gmail_mod
+
+    assert callable(gmail_mod._label_ids) and isinstance(gmail_mod._inbox_label_cache, dict)
+
+
+async def test_planning_again_after_a_restart_never_refines_an_email_task(make_app, turn_on):
+    llm = FakeProvider(json_replies=[dict(PLAN), dict(PLAN)])
+    app = await make_app(llm)
+    await app.tasks.handle_source_items(items(email()))
+    await app.tasks.drain()
+    task_id = (await app.tasks.list())[0]["task_id"]
+    await app.tasks.repo.update_task(task_id, {"status": "planning", "plan": []})
+    app.tasks._plan_again(await app.tasks.repo.get_task(task_id))
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "approval_pending" and task["name"] == "Email from Maya Rao: Fwd: Offsite next week"
+    planner = json_calls(llm, "planner")
+    assert len(planner) == 2 and all(c["messages"][-1]["content"].startswith("Please create a plan") for c in planner)
