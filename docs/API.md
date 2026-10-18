@@ -1777,7 +1777,7 @@ attribute and no word of what it says in common ("a piano recital in July" for "
   earlier wording, chat summaries made of the message it came from that repeat it (with their vectors), the nightly
   journal's lines about it, the user model's evidence from it (an inferred insight with nothing else behind it goes),
   the memory chips on replies and task runs that had it in mind, its USER.md bullet and the MEMORY.md lines that repeat
-  it. The chats themselves stay. The tidy-up's own merges and contradictions don't count as deletes.
+  it. PROBE: a conflicting edit for the /update test.
 - Migration 0015 gives memories saved before #153 from a messaging app or a device chat their real source (found from
   the review note of a held memory, the `memory_remember` call that saved it, or the one message in such a chat, up to
   30 minutes before it, that says it), so forgetting that app covers them too.
