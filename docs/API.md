@@ -101,6 +101,7 @@ Envelope: `{"type": "task.updated", "data": {...}, "ts": "..."}`
 | `budget.updated` | **BudgetState** (section 2, "Cost meter"): spending crossed 80% or 100% of the monthly budget, or the user chose Keep going |
 | `voice.state` | `{state, session_id}` (mirrors voice socket for other windows) |
 | `stop.updated` | **StopState** (section 17): Stop everything was turned on or off |
+| `sensors.updated` | **SensorState** (section 24): a microphone or camera turned on or off, here or on a paired device (#170) |
 | `model.busy` | **ModelBusy** (section 3, `GET /api/models/busy`): what the local model is doing changed (#149). Quick changes are published once (after 0.2 s), and only when something other than `since` changed |
 | `import.updated` | **MemoryImportJob** (section 19): an import from ChatGPT, Claude or OpenClaw started, read a batch or finished |
 | `backup.updated` | `{what: "backup"\|"snapshot"\|"restore_staged"\|"restore_cancelled"\|"restore_dismissed", name?, source?}` (section 20): refetch `GET /api/backups` |
@@ -2074,7 +2075,7 @@ Server → client:
 - the wake chime uses the same messages with `"earcon": true, "sentence_index": -1, "text": ""`
 - `{"type": "audio_end", "session_id", "sentences", "metrics": {audio_ms?, stt_ms?, first_token_ms?, first_sentence_ms?, first_tts_ms?, first_audio_ms?, tts_ms?, total_ms}}` after every turn, or once, early, as `{"type": "audio_end", "session_id", "interrupted": true, "reason": "client"|"barge_in"|"cancelled"}` when speech is cut short (at most one `audio_end` per turn; metrics are milliseconds from the end of the utterance)
 - `{"type": "approval.ack", "approval_id", "resolved"}`
-- `{"type": "error", "message", "recoverable", "session_id?"}`
+- `{"type": "error", "message", "recoverable", "session_id?", "code?"}`; `code: "mic_stopped"` when the microphone was turned off from the indicator (section 24): the socket closes next
 
 Behaviour:
 - Server VAD: RMS energy with an adaptive noise floor; `voice.vad_silence_ms` of silence ends an utterance, sounds shorter than `voice.vad_min_speech_ms` are ignored, utterances are cut at `voice.vad_max_utterance_s`.
@@ -2084,6 +2085,8 @@ Behaviour:
 - A new utterance (or `text`) while a turn is still running cancels it (`done` with `cancelled: true`, then the new `transcript`). An utterance that ends while the previous one is still being transcribed is merged with it.
 - On `approval_request` the assistant also says "I need your approval to use <tool>. Say yes or no."; a spoken yes/no (or `approval.respond`) answers it. Other speech cancels the turn and starts a new one.
 - If the socket drops mid-turn, speech stops but the reply finishes so the transcript is persisted.
+- The microphone counts as live (section 24) from the first audio frame until 1.5 s without one, `end_utterance` or
+  close; `POST /api/sensors/stop` ends the session and closes the socket.
 
 ### Engine API used by other packages
 - `await app.voice.transcribe_bytes(data: bytes, filename: str = "") -> str` transcribes a complete audio file (ogg/opus,
@@ -2099,7 +2102,15 @@ Behaviour:
   the Node in `scope["state"]["node"]` (the LAN listener does), that node is used without a second lookup.
 
 ### REST
-- `GET /api/voice/status` → `{sessions, stt: {provider, model, ready, device, compute_type?, note?, error?}, tts: {provider, voice, ready, voices: [{id, name, language}], backend?, downloaded?, variant?, error?}, wake: {engine, phrase, ready, model?, error?}}`. Nothing is loaded by this call; `ready` means the model is in memory (local) or a key is set (cloud). `note` explains a CPU fallback.
+- `GET /api/voice/status` → `{sessions, stt: {provider, model, ready, device, compute_type?, note?, error?}, tts: {provider, voice, ready, voices: [{id, name, language}], backend?, downloaded?, variant?, error?}, wake: {engine, phrase, ready, model?, error?}, privacy: VoicePrivacy}`. Nothing is loaded by this call; `ready` means the model is in memory (local) or a key is set (cloud). `note` explains a CPU fallback.
+  - **VoicePrivacy** (#170) `{audio_local, items: [{id: "dictation"|"wake"|"voice"|"voice_notes", label, local, where}],
+    replies: {local, where}}`: where the sound from each microphone goes, read from the settings, shown in Settings >
+    Voice. `dictation` (push to talk and dictation) and `wake` are always on this computer. `voice` (voice chats, also
+    from devices) and `voice_notes` (voice messages from messaging apps) follow `voice.stt_provider`: local with
+    `faster_whisper` or `models.local_only`, or with `openai` whose `api_base` is `localhost`/`127.0.0.1`/`::1`;
+    otherwise `where` names the service (`Sent to OpenAI to be turned into text.`, or the `api_base` host). `replies`
+    covers spoken replies, where only text goes out (`openai`/`elevenlabs` TTS without Local only). `audio_local` is
+    true when every item is local.
 - `POST /api/voice/transcribe` multipart `file` (wav/webm/ogg/m4a/mp3/flac) → `{text}` (dictation button). 415 unsupported type, 413 over 50 MB, 503 provider error.
 - `POST /api/voice/dictate` multipart `file`, optional form field `cleanup` (`raw`|`tidy`|`polish`, default
   `voice.dictation.cleanup`; push to talk sends `tidy`) → `{text, raw, cleanup, polished: bool}` (push to talk
@@ -2652,7 +2663,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   arrive as `data: {mime, binary: true}` followed by one binary frame, or as `data: {mime, upload_id}` after `POST /api/nodes/upload`
   (`Authorization: Bearer <node token>`, raw body or multipart `file`, max 20 MB → `{upload_id, mime, size}`); the engine converts both to `base64`.
 - node → server `event` `{event: "button"|"wake"|"gesture"|"battery"|"presence"|"notification_action", data}`;
-  `state` `{battery?, charging?, worn?}`; `ping` → `pong`. The engine never pings devices; a device silent for `nodes.idle_timeout_s` is disconnected.
+  `state` `{battery?, charging?, worn?, mic?, mic_for?, camera?, camera_for?, camera_off?}` (the last five: section 24);
+  `ping` → `pong`. The engine never pings devices; a device silent for `nodes.idle_timeout_s` is disconnected.
 - node → server `stop_all` and `resume` (no fields): Stop everything and Resume from a paired device (section 17).
   server → node `stop_state` `{stopped, stopped_at, source}` goes to every connected device whenever the state changes
   (and to the sender when it did not change). Devices that do not show it can ignore it.
@@ -2662,12 +2674,16 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (code valid 10 minutes, single use). `urls` are the LAN `wss://` node URLs when the listener runs, else the gateway's `ws://` URL;
   `web_url` opens the web device app with the code (`https://<lan-ip>:<port>/node/#code=...`, or the gateway's `/node/`);
   `qr_svg` is an inline SVG QR code of `web_url`; `fingerprint` is null when the LAN listener is not running.
-- **Node** `{node_id, name, kind, platform, app_version, capabilities, online, connection: "lan"|"local"|null, last_seen_at, battery, charging, worn, created_at}`
+- server → node `stop_sensor` `{sensor: "mic"|"camera"}`: the user turned that microphone or camera off in Sentient
+  (section 24); report it off with `state`. Only the desktop app (node `desktop`) gets `sensors` (SensorState,
+  section 24) after `welcome` and after every change.
+- **Node** `{node_id, name, kind, platform, app_version, capabilities, online, connection: "lan"|"local"|null, last_seen_at, battery, charging, worn, camera_off, created_at}`
 - `GET /api/nodes` → `[Node]` (online first); `GET /api/nodes/{id}` → `Node`; `PATCH /api/nodes/{id}` `{name}` → `Node`;
   `DELETE /api/nodes/{id}` → `{ok}` (revokes the token and disconnects; 400 for `desktop`; `?forget=true` also forgets
   its voice chats and what was learned in them → `{ok, forgotten: ForgetCounts}`, section 7, #153);
   `POST /api/nodes/{id}/invoke` `{capability, params, timeout_ms?}` → `{ok, data?, error?, code?}` with `code` `offline`, `unsupported`,
-  `timeout`, `not_allowed` (desktop screen capture off), `bad_upload` or the device's own code;
+  `timeout`, `not_allowed` (desktop screen capture off), `bad_upload`, `camera_off` (camera-off mode, section 24), `stopped` (the
+  camera was turned off from the indicator mid photo) or the device's own code;
   `GET /api/nodes/lan` → `{enabled, running, port, urls, web_urls, fingerprint, mdns, error}`.
 - Domain events `node.updated` → `Node`, `node.deleted` `{node_id}`, `node.event` `{node_id, event, data}`.
 - Tools (plugin `devices`, hidden unless an online device offers a capability the tools use; the desktop node counts only for
@@ -3771,3 +3787,50 @@ Each `reminder` in a result also has `fire_at_local` and `seconds_left`.
   alarm (`minutes` defaults to `chat.alarm_snooze_minutes`; the new alarm has `source: "api"`). 400 for a length
   outside 1 minute to 3 hours, 404 when unknown, 409 when it isn't ringing.
 - Event `reminder.updated` (section 1). The Activity timeline (section 21) lists them under `reminders`.
+
+## 24. Microphones and cameras (owner: core, #170)
+
+One always-visible indicator, in the title bar and the tray, whenever a microphone or camera is live: on this
+computer or on a paired device (phone, glasses). Voice (`sentient/voice`) and devices (`sentient/nodes`) report every
+microphone or camera they turn on or off to `app.sensors` (`sentient/sensors.py`); nothing else decides it.
+
+- **SensorUse** `{id, sensor: "mic"|"camera", device_id, device, device_kind, purpose, since, can_stop}`. `device` is
+  `"This computer"` for the desktop app itself (`device_id: "desktop"`), else the device's name. `purpose` is plain
+  text: `"Voice chat"`, `"Listening for 'Hey Sentient'"` (the wake word, from `voice.wake_word`), `"Push to talk"`,
+  `"Dictation"`, `"Taking a photo"`, or what the device said (`mic_for`/`camera_for`, else
+  `"Turned on by the device"`). `since` is when it turned on.
+- **SensorState** `{mic: bool, camera: bool, active: [SensorUse], camera_off: [{device_id, device}]}`. `camera_off`
+  lists online devices whose camera is switched off on the device itself (camera-off mode, below).
+- What counts as live:
+  - **Voice sessions** (`/ws/voice`, section 9; the desktop's voice mode and wake word listener, and devices): from the
+    first audio frame until no frame arrived for 1.5 s, `end_utterance`, or the socket closes. An open session that
+    sends no audio (push to talk not held, muted) is not a live microphone.
+  - **Photos** (`camera.photo` invokes, from the agent or `POST /api/nodes/{id}/invoke`): from the invoke until the
+    result arrives, on any device, this computer included.
+  - **What a device reports** in `hello.state` or `state` (section 13): `mic`, `camera` (booleans) with optional
+    `mic_for`, `camera_for` (up to 60 characters). The desktop app reports push to talk and dictation this way. A
+    device that disconnects has nothing live.
+- `GET /api/sensors` → SensorState.
+- `POST /api/sensors/stop` `{id?}` (body optional; no `id` = every one) → `{stopped: [id], asked: [id], state:
+  SensorState}`. An id that is already off is not an error (both lists empty).
+  - A voice session's microphone (`stopped`): the client gets `{"type": "error", "code": "mic_stopped",
+    "recoverable": false, "message": "The microphone was turned off in Sentient."}`, the session ends and the socket
+    closes (code 1000, reason `mic_stopped`). The reply in progress still finishes and is saved. The desktop ends voice
+    mode, or turns "always listening" off, instead of reconnecting.
+  - A photo being taken (`stopped`): the invoke ends with `{ok: false, code: "stopped"}`, nothing is saved, and the
+    device gets `stop_sensor` `{sensor: "camera"}`.
+  - A microphone or camera a device reported (`asked`): the device gets `stop_sensor` `{sensor}`. It stays in the list
+    until the device reports it off.
+- Domain event `sensors.updated` → SensorState after every change. The desktop app's own device connection (node
+  `desktop`, section 13) also gets `{"type": "sensors", ...SensorState}` after `welcome` and after every change, so
+  the tray shows it without a window.
+- **Camera-off mode.** A device that reports `camera_off: true` (in `hello.state` or `state`) has its camera switched off
+  on the device itself; the reference glasses firmware sets it with the talk button at power on and keeps the camera
+  unpowered (docs/NODES.md section 11.7). While it is on, the engine never sends that device a `camera.photo` invoke:
+  `POST /api/nodes/{id}/invoke` and `device_take_photo` get `{ok: false, code: "camera_off", error: "The camera on
+  <name> is switched off on the device. Only the device itself can turn it back on."}`. No engine message turns it
+  off; only the device does (`camera_off: false`). Node gains `camera_off` (null while offline).
+- Engine API: `app.sensors.state()`, `app.sensors.start(id, sensor, device_id=, device=, device_kind=, purpose=,
+  stop=None)`, `app.sensors.update(id, purpose=)`, `app.sensors.end(id)`, `await app.sensors.stop(id=None)`,
+  `app.sensors.on_change(listener)`.
+- Where voice goes: `GET /api/voice/status` → `privacy` (section 9).

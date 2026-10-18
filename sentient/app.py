@@ -59,6 +59,7 @@ from sentient.presence import Presence
 from sentient.proactivity import ProactiveEngine
 from sentient.reminders import ReminderService
 from sentient.sandbox import SandboxService
+from sentient.sensors import SensorRegistry
 from sentient.services import Service
 from sentient.skills.loader import SkillLibrary
 from sentient.snapshots import FileSnapshots
@@ -114,6 +115,7 @@ class SentientApp:
         self.approvals.grants = GrantStore(self)
         self.undo = UndoBroker()  # emails, messages and posts waiting in their undo window (#142)
         self.presence = Presence(self.bus)  # is the person looking at the window? (#139)
+        self.sensors = SensorRegistry(self.bus)  # live microphones and cameras, here and on devices (#170)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
 

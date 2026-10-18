@@ -1,6 +1,6 @@
 """Core REST routes. OWNER: core. Contract: docs/API.md sections 2 and 3.
 
-health, bootstrap, stop everything, onboarding, config, sessions, chat (NDJSON),
+health, bootstrap, stop everything, microphones and cameras, onboarding, config, sessions, chat (NDJSON),
 approvals, files, tools catalog, usage.
 """
 
@@ -99,6 +99,24 @@ async def stop_all(request: Request, body: StopBody | None = None):
 @router.post("/api/resume", dependencies=_auth)
 async def resume(request: Request, body: StopBody | None = None):
     return await get_core(request).resume(source=_source(body))
+
+
+# ----------------------------------------------------------------------------- microphones and cameras (section 24)
+class SensorStopBody(BaseModel):
+    id: str | None = None
+
+
+@router.get("/api/sensors", dependencies=_auth)
+async def sensors(request: Request):
+    return get_core(request).sensors.state()
+
+
+@router.post("/api/sensors/stop", dependencies=_auth)
+async def sensors_stop(request: Request, body: SensorStopBody | None = None):
+    """Turn off one live microphone or camera (``id``), or all of them. One that is already off is not an error."""
+    registry = get_core(request).sensors
+    result = await registry.stop(body.id if body else None)
+    return {**result, "state": registry.state()}
 
 
 class OnboardingBody(BaseModel):

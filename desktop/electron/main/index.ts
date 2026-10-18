@@ -46,6 +46,7 @@ import { BackendManager } from './backend'
 import { CH } from './channels'
 import { DictationController, dictationSettingsFromConfig } from './dictation'
 import { DesktopNode } from './node'
+import { liveSensors, LOCAL_MIC_ID, type LiveSensors } from './sensors-logic'
 import { homePaths, sentientHome } from './paths'
 import { shellState, THEME_BG } from './prefs'
 import { ScreenSharer } from './share'
@@ -70,6 +71,7 @@ let smokeRunner: SmokeRunner | null = null
 let engineStopped: boolean | undefined // §17 Stop everything, as the engine last reported it
 let dictation: DictationController | null = null // #169 push to talk and dictation into any app
 let ask: AskController | null = null // #173 ask about selected text
+let sensorState: LiveSensors | null = null // #170 live microphones and cameras, as the engine last reported them
 const liveNotifications = new Set<Notification>()
 
 function showWindow(): void {
@@ -197,6 +199,23 @@ async function setStopped(stop: boolean, source: 'tray' | 'hotkey'): Promise<voi
   tray?.refresh()
 }
 
+// ------------------------------------------------------------------ microphones and cameras (#170)
+/** Every live microphone and camera: the engine's list, plus push to talk or dictation the shell knows about first. */
+function currentSensors() {
+  return liveSensors(sensorState, dictation?.micPurpose ?? null)
+}
+
+/** Turn off one (`id`) or every live microphone and camera, from the tray. */
+async function stopSensor(id?: string): Promise<void> {
+  if (!id || id === LOCAL_MIC_ID) dictation?.cancel() // this computer's microphone goes off at once
+  if (backend.status.state !== 'ready') return
+  try {
+    await api('/api/sensors/stop', { method: 'POST', body: JSON.stringify(id ? { id } : {}) })
+  } catch (err) {
+    dialog.showErrorBox('Sentient', `Couldn't turn it off: ${String(err)}`)
+  }
+}
+
 // ------------------------------------------------------------------ this computer as a device (§13)
 const CAPTURE_TEXT: Record<CaptureNotice['kind'], { tray: string; title: string; body: string }> = {
   screen: { tray: 'looked at your screen', title: 'Sentient looked at your screen', body: 'A single screenshot was taken because you asked.' },
@@ -211,6 +230,13 @@ const desktopNode = new DesktopNode({
   icon: notificationIcon,
   onState: (state) => {
     if (win && !win.isDestroyed()) win.webContents.send(CH.desktopNodeState, state)
+  },
+  onSensors: (state) => {
+    sensorState = state
+    tray?.refresh()
+  },
+  onStopSensor: (sensor) => {
+    if (sensor === 'mic') dictation?.cancel() // Turn off in the title bar or on another device
   },
   onStopState: (stopped) => {
     engineStopped = stopped
@@ -635,7 +661,10 @@ function boot(): void {
       shareWindow: () => void sharer.shareWindow(),
       shareRegion: () => void sharer.shareRegion(),
       shareAccelerators: () => ({ window: shortcuts.accelerator('shareWindow'), region: shortcuts.accelerator('shareRegion') }),
-      micOn: () => dictation?.micOn === true
+      micOn: () => dictation?.micOn === true,
+      sensors: currentSensors,
+      stopSensor: (id) => void stopSensor(id),
+      showSensors: () => sendCommand({ type: 'show-sensors' })
     })
 
     dictation = new DictationController({
@@ -643,7 +672,10 @@ function boot(): void {
       notify: (title, body) => {
         if (Notification.isSupported()) new Notification({ title, body, silent: true, icon: notificationIcon }).show()
       },
-      micChanged: () => tray?.refresh()
+      micChanged: () => {
+        desktopNode.reportMic(dictation?.micPurpose ?? null) // the engine's indicator, in the title bar too
+        tray?.refresh()
+      }
     })
 
     ask = new AskController({

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router'
 import { Logo } from '@/components/brand/Logo'
 import { IconButton, Kbd, StatusDot, Tooltip, type Tone } from '@/components/ui'
 import { ModelSwitcher } from '@/features/models/ModelSwitcher'
-import { useBootstrap, useConfig } from '@/hooks/core'
+import { useBootstrap, useConfig, useSensors } from '@/hooks/core'
 import { useModelPresets } from '@/hooks/models'
 import { getBridge } from '@/lib/bridge'
 import { modelShortName } from '@/lib/models'
@@ -11,6 +11,7 @@ import { cn, modKey } from '@/lib/utils'
 import { useConnection } from '@/stores/connection'
 import { useUI } from '@/stores/ui'
 import { ModelBusyIndicator } from './ModelBusy'
+import { SensorIndicator } from './SensorIndicator'
 import { StopButton } from './StopControls'
 
 /** Height matches the native title bar overlay (electron/main/window.ts). */
@@ -83,6 +84,8 @@ export function TitleBar({ minimal = false }: { minimal?: boolean }) {
   const toggleSidebar = useUI((s) => s.toggleSidebar)
   const collapsed = useUI((s) => s.sidebarCollapsed)
   const setPaletteOpen = useUI((s) => s.setPaletteOpen)
+  const sensors = useSensors().data
+  const live = !!(sensors?.mic || sensors?.camera) // the microphone and camera indicator needs room (#170)
 
   return (
     <div
@@ -102,6 +105,8 @@ export function TitleBar({ minimal = false }: { minimal?: boolean }) {
       <div className="flex items-center gap-2 pl-1">
         <Logo size={18} />
         <span className="text-sm font-semibold tracking-tight text-fg">Sentient</span>
+        {/* #170 next to the name, where it is always seen and never pushed off by other controls */}
+        {!minimal && <SensorIndicator />}
       </div>
 
       {!minimal && (
@@ -109,7 +114,10 @@ export function TitleBar({ minimal = false }: { minimal?: boolean }) {
           <button
             type="button"
             onClick={() => setPaletteOpen(true)}
-            className="no-drag pointer-events-auto flex h-7 w-[min(360px,34vw)] items-center gap-2 rounded-lg border border-border bg-surface/70 px-2.5 text-sm text-fg-subtle transition-colors hover:border-border-strong hover:text-fg-muted"
+            className={cn(
+              'no-drag pointer-events-auto flex h-7 items-center gap-2 rounded-lg border border-border bg-surface/70 px-2.5 text-sm text-fg-subtle transition-colors hover:border-border-strong hover:text-fg-muted',
+              live ? 'w-[min(280px,24vw)]' : 'w-[min(360px,34vw)]'
+            )}
           >
             <IconSearch size={14} />
             <span className="flex-1 text-left">Search or jump to…</span>

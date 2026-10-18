@@ -56,6 +56,8 @@ import type {
   ApprovalDecision,
   ApprovalGrant,
   Bootstrap,
+  SensorState,
+  SensorStopResult,
   StopResult,
   StopState,
   ChatRequest,
@@ -439,6 +441,12 @@ export const api = {
   onboarding: (body: OnboardingRequest) => http.post<OkResponse>('/api/onboarding', body),
   /** The window is in use: resets the timer that pauses routines while you are away (#163). */
   activity: () => http.post<{ ok: boolean; last_active_at: string | null }>('/api/activity'),
+
+  // §24 live microphones and cameras (#170)
+  sensors: {
+    get: () => http.get<SensorState>('/api/sensors'),
+    stop: (id?: string) => http.post<SensorStopResult>('/api/sensors/stop', id ? { id } : {})
+  },
 
   // §17 stop everything
   stop: {

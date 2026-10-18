@@ -33,6 +33,7 @@
  *   dream.updated         -> upsert into ['memories', 'dreams'] (and refetch the user model when one completes)
  *   source.items          -> webhook calls refresh ['hooks'] (last called / call count)
  *   stop.updated          -> ['stop'] (Stop everything banner and title bar button; cancels dictation)
+ *   sensors.updated       -> ['sensors'] (the title bar's microphone and camera indicator, #170)
  *   model.busy            -> ['models', 'busy'] (the title bar's "model busy" indicator)
  *   backup.updated        -> refetch ['backups'] (Settings > Backups)
  *   folders.updated       -> refetch ['folders'] (Settings > Folders: progress of a look through a folder)
@@ -340,6 +341,9 @@ export function installDomainEvents(qc: QueryClient): () => void {
       if (e.data?.stopped) void getBridge().dictation.cancel() // push to talk or dictation: microphone off now
     })
   )
+
+  // #170 live microphones and cameras
+  offs.push(live.onDomain('sensors.updated', (e) => void qc.setQueryData(qk.sensors, e.data)))
 
   // #149 one local model job at a time
   offs.push(live.onDomain('model.busy', (e) => qc.setQueryData(qk.modelBusy, e.data)))

@@ -20,6 +20,7 @@ against when something here misbehaves.
 | INMP441 | I2S microphone | `L/R` to GND, so it drives the left slot |
 | MAX98357A | I2S amplifier + speaker | `SD` high for always-on, `GAIN` floating = 9 dB |
 | OV3660 | camera | JPEG straight from the sensor, VGA |
+| load switch + LED | camera power and privacy LED | the LED sits on the camera's switched supply (see "Camera privacy") |
 | push button | talk button | to GND, the internal pull-up is enabled in firmware |
 | battery divider | battery percentage | two equal resistors into an ADC1 pin |
 
@@ -31,6 +32,7 @@ MAX98357A    BCLK-> GPIO15     LRC -> GPIO16     DIN -> GPIO7      SD  -> 3V3
 Button       GPIO0 -> button -> GND
 Battery      divider -> GPIO4 (ADC1_CH3)        <-- clashes with the mic SCK default, move one of them
 OV3660       XCLK/SIOD/SIOC/D0-D7/VSYNC/HREF/PCLK: see CAM_PIN_* in app_config.h
+Camera power CAM_POWER_GPIO -> load switch EN; load switch OUT -> camera supply AND privacy LED (+ resistor) -> GND
 ```
 
 **Untested / must check:** the camera pins are the ones used by the common ESP32-S3 camera carrier
@@ -92,7 +94,7 @@ notifications, battery in the Devices list, and holding the button to talk to th
 | file | contents |
 |---|---|
 | `main/app_config.h` | every pin, buffer size and tunable, with comments |
-| `main/main.c` | start-up order, engine lookup, certificate pinning, button wiring, battery reports |
+| `main/main.c` | start-up order, camera-off mode at power on, engine lookup, certificate pinning, button wiring, battery reports |
 | `main/net.c` | Wi-Fi join and the 1→30 s reconnect backoff |
 | `main/discovery.c` | mDNS query for `_sentient._tcp.local.`, reads the TXT fingerprint |
 | `main/cert_pin.c` | fetches the engine certificate, checks its SHA-256, converts it to PEM |
@@ -101,8 +103,31 @@ notifications, battery in the Devices list, and holding the button to talk to th
 | `main/caps.c` | what each capability actually does, including the photo binary frame |
 | `main/voice.c` | `/ws/voice?node_token=`: streams the microphone, plays replies |
 | `main/audio.c` | I2S capture (INMP441) and playback (MAX98357A) with a ring buffer |
-| `main/camera.c` | OV3660 setup and JPEG capture |
+| `main/camera.c` | OV3660 capture, camera power (and so the privacy LED), camera-off mode |
 | `main/button.c`, `main/battery.c` | debounced button polling, ADC battery percentage |
+
+## Camera privacy: the LED and camera-off mode
+
+Sentient shows a microphone and camera indicator on the computer whenever the glasses' camera or microphone is
+live (docs/API.md section 24). On the glasses themselves two things back that up (docs/NODES.md section 11.7):
+
+- **The LED is tied to the camera's power.** Feed the camera module through a small load switch (or a P-MOSFET)
+  whose enable pin is `CAM_POWER_GPIO`, and put the privacy LED with its resistor on the switched output, next to the
+  camera. It then lights whenever the camera has power and is dark whenever it has none, so no firmware bug and no
+  message from the engine can use the camera with the LED off. The firmware powers the camera only while it takes a
+  photo, so the LED blinks once per photo, plus once at power on while the camera is checked. If `CAM_PIN_PWDN` is
+  wired too, the sensor is also held in power-down between photos. With `CAM_POWER_GPIO` left at `-1` the firmware
+  still starts the camera only for a photo, but the LED proves nothing: wire it before the glasses leave your desk.
+- **Camera-off mode.** Hold the talk button while switching the glasses on, for 3 seconds
+  (`CAMERA_OFF_TOGGLE_HOLD_MS`), to turn camera-off mode on; do it again to turn it off. The serial log says
+  `camera-off mode switched ON with the button`. The choice is kept in NVS, so it survives restarts (`idf.py
+  erase-flash` clears it). While it is on, the camera is never powered, every photo request is refused on the glasses
+  (`camera_off`), and the glasses tell Sentient (`camera_off: true`), which then never asks for a photo and shows
+  "Camera switched off". Nothing Sentient sends can turn it back on. `#define CAMERA_HARD_OFF 1` builds firmware
+  that never powers the camera and does not offer photos at all.
+
+A photo takes a little longer now (estimated 0.3 to 0.6 s more, for powering up and starting the sensor), because the
+camera is no longer left running between photos.
 
 ## Memory notes
 
@@ -141,7 +166,9 @@ call short: it runs on the invoke worker task, which the engine is waiting on.
 ## Known gaps
 
 - **Untested on hardware** (see the top of this file): pin defaults, the INMP441 gain shift, the ADC
-  battery mapping and the OV3660 tuning are all first guesses.
+  battery mapping and the OV3660 tuning are all first guesses. So are the camera power switching (powering the camera
+  up and down for every photo, `CAM_POWER_SETTLE_MS`, `CAM_WARMUP_FRAMES`) and camera-off mode: written against
+  the ESP-IDF and esp32-camera APIs, never compiled or flashed.
 - The engine does not implement `audio_format: "pcm16"` on the voice socket yet, so replies arrive as
   WAV. `voice.c` handles both: it detects the `RIFF` header, reads the sample rate from it and skips
   the 44 bytes. Nothing needs to change here when the engine adds raw PCM.

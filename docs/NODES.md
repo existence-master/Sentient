@@ -116,6 +116,7 @@ Answer once, with the same `id`, before `timeout_ms` (late answers are dropped):
 {"type": "event", "event": "button", "data": {"action": "press"}}
 {"type": "event", "event": "wake", "data": {"phrase": "hey sentient"}}
 {"type": "state", "battery": 64, "charging": false, "worn": true}
+{"type": "state", "mic": true, "mic_for": "Recording a voice memo", "camera": false, "camera_off": false}
 {"type": "ping", "ts": 12345}          → {"type": "pong", "ts": 12345}
 ```
 
@@ -123,6 +124,12 @@ Answer once, with the same `id`, before `timeout_ms` (late answers are dropped):
   `notification_action` (`data: {id, action}`); any `[a-z0-9_.-]{1,40}` name is accepted and published to the
   desktop as `node.event`.
 - `state`: `battery` 0..100, `charging` and `worn` booleans; send when they change.
+- Microphone and camera (#170, `docs/API.md` section 24): Sentient shows an indicator whenever a microphone or camera
+  is live. It already knows about audio on `/ws/voice` and its own `camera.photo` requests. Report anything else your
+  device turns on with `mic` / `camera` (booleans) and an optional short `mic_for` / `camera_for` ("Recording a voice
+  memo"), and send `false` when it goes off. `camera_off: true` says the camera is switched off on the device itself
+  (camera-off mode, section 11.7): Sentient then never asks for a photo and shows "Camera switched off". Only the device
+  can end it (`camera_off: false`).
 - Sending `hello` again on an open connection updates the capability list.
 
 ### 4.4 Large payloads (photos)
@@ -153,6 +160,18 @@ through the model.
 
 `stop_state` is also sent to every connected device when the user stops or resumes anywhere else (desktop, tray,
 Telegram, Discord). A phone app can show a Stop or Resume button from it; other devices may ignore it.
+
+### 4.6 Turning a microphone or camera off from Sentient
+When the user presses Turn off on the indicator for something the device reported, the engine sends
+
+```json
+{"type": "stop_sensor", "sensor": "mic"}
+```
+
+Turn it off and report `{"type": "state", "mic": false}`; until then it stays on the indicator. Audio on `/ws/voice` is
+stopped by the engine itself: the voice socket gets `{"type": "error", "code": "mic_stopped", ...}` and closes. A photo
+being taken ends with `code: "stopped"` and is never saved. The desktop app alone also receives `sensors` messages
+(the full list, for its tray); other devices never do.
 
 ## 5. Capabilities
 
@@ -219,7 +238,9 @@ Open `wss://<host>:7778/ws/voice?node_token=<token>` (same TLS pinning) and foll
 | `unknown_type` | none | ignore |
 
 Invoke failures seen by the engine (`POST /api/nodes/{id}/invoke`) add: `offline`, `unsupported`, `timeout`,
-`not_allowed`, `bad_upload`, plus whatever `error.code` the device returned.
+`not_allowed`, `bad_upload`, `camera_off` (the device reported camera-off mode, so the photo was never requested),
+`stopped` (the user turned the camera off mid photo), plus whatever `error.code` the device returned. A device in
+camera-off mode should itself answer a `camera.photo` with `error.code` `camera_off` too.
 
 ## 8. Reconnect, keepalive and battery
 
@@ -276,6 +297,9 @@ Invoke failures seen by the engine (`POST /api/nodes/{id}/invoke`) add: `offline
 - Reference node: `sentient node --url "sentient://pair?url=…&code=…&fp=…"` or
   `sentient node --url wss://192.168.1.20:7778/ws/node --code 123456 --fingerprint <fp> --camera 0`.
   Press Enter to send a button press, type `b 40` to report 40% battery, `q` to quit. `--insecure` skips pinning (dev only).
+  `--camera-off` starts in camera-off mode (it offers `camera.photo`, reports `camera_off: true` and refuses photos
+  without opening a webcam); type `c` to switch it, as the glasses' button would. While a photo is taken it reports
+  `camera: true`.
 
 ---
 
@@ -340,6 +364,10 @@ VGA at quality 12 gives a **30-60 KB** JPEG, which decides how to return it:
 
 Always `esp_camera_fb_return()` the buffer immediately after the send, and keep only one capture in flight.
 
+The camera is powered only for a photo (section 11.7): power on, `esp_camera_init()`, drop `CAM_WARMUP_FRAMES` dark
+frames, grab one JPEG, send it, `esp_camera_deinit()`, power off. That adds roughly 0.3 to 0.6 s to each photo
+(estimated, not measured on hardware), and the firmware reports `camera: true` / `false` around it.
+
 ### 11.4 TLS on the ESP32-S3
 
 An mbedTLS session costs roughly 35-45 KB of heap with default buffers. Two sockets (node + voice) means two sessions.
@@ -388,3 +416,20 @@ One GPIO with an internal pull-up, 30 ms debounce, polled in a small task:
   `VOICE_IDLE_CLOSE_MS` (default 20 s) of silence.
 - **Press while the assistant is speaking**: send `{"type":"interrupt"}` and stop playback immediately (barge-in).
 - A long press (2 s) can send `{"event":"button","data":{"action":"long_press"}}`; the engine just forwards it as `node.event`.
+
+### 11.7 Camera privacy: the LED and camera-off mode
+
+Two guarantees that do not depend on the engine (or on the firmware being bug free, for the first):
+
+- **The LED follows the camera's power.** The camera module is fed through a load switch whose enable pin is
+  `CAM_POWER_GPIO`. The privacy LED and its resistor sit on the switched side of that load switch, not on a GPIO of
+  its own, so it is lit exactly while the camera has power. The firmware powers the camera only while a photo is
+  taken (section 11.3), so the LED blinks once per photo, and once at power on while the camera is checked. With
+  `CAM_PIN_PWDN` wired the sensor is also held in power-down between photos.
+- **Camera-off mode.** Hold the talk button while switching the glasses on, for `CAMERA_OFF_TOGGLE_HOLD_MS` (3 s), to
+  turn camera-off mode on or off. It is kept in NVS (`camera_off`). While it is on the camera is never powered, every
+  `camera.photo` is refused with `error.code` `camera_off`, and `hello.state.camera_off` is `true`, so Sentient shows
+  "Camera switched off" and never asks for a photo. No message from the engine changes it: only the button does.
+  `CAMERA_HARD_OFF 1` builds firmware that never powers the camera and does not offer `camera.photo` at all.
+
+Neither has run on hardware yet (see the firmware README).

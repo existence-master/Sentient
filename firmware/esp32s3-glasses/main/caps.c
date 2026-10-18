@@ -41,12 +41,19 @@ static const char *string_field(cJSON *params, const char *key, const char *fall
 }
 
 // camera.photo: send the result first, then the JPEG as one binary frame straight from PSRAM
-// (docs/NODES.md 4.4 / 11.3). No base64, no copy of a 30-60 KB buffer.
+// (docs/NODES.md 4.4 / 11.3). No base64, no copy of a 30-60 KB buffer. Sentient is told the camera is on while
+// the photo is taken (docs/API.md section 24); in camera-off mode nothing is powered and the request is refused.
 static void do_photo(const char *id) {
     const uint8_t *data = NULL;
     size_t len = 0;
     int width = 0, height = 0;
+    if (camera_off_mode()) {
+        send_error(id, "camera_off", "The camera is switched off on the glasses.");
+        return;
+    }
+    node_client_send_json("{\"type\":\"state\",\"camera\":true,\"camera_for\":\"Taking a photo\"}");
     if (!camera_capture(&data, &len, &width, &height)) {
+        node_client_send_json("{\"type\":\"state\",\"camera\":false}");
         send_error(id, "failed", "The camera did not return an image.");
         return;
     }
@@ -58,7 +65,8 @@ static void do_photo(const char *id) {
     if (!node_client_send_result_json(header, data, len)) {
         ESP_LOGW(TAG, "could not send the photo (%u bytes)", (unsigned)len);
     }
-    camera_release(); // always hand the frame buffer back, even when the send failed
+    camera_release(); // always hand the frame buffer back (and power the camera off), even when the send failed
+    node_client_send_json("{\"type\":\"state\",\"camera\":false}");
 }
 
 void caps_handle_invoke(const char *id, const char *capability, const char *params_json) {

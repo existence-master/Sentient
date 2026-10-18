@@ -84,3 +84,14 @@ def test_auth_errors_are_fatal(tmp_path):
     assert node.saved["token"] is None
     with pytest.raises(ConnectionError):
         node._on_auth_error({"code": "disabled", "message": "off"})
+
+
+async def test_camera_off_mode_refuses_on_the_device(tmp_path):
+    node, lines = _node(tmp_path, camera_off=True)
+    h = node.hello()
+    assert "camera.photo" in h["capabilities"] and h["state"]["camera_off"] is True
+    res = await node.handle_invoke({"id": "6", "capability": "camera.photo"})
+    assert res["ok"] is False and res["error"]["code"] == "camera_off"  # the webcam is never opened
+    assert "[camera] refused: camera-off mode is on" in lines
+    plain, _ = _node(tmp_path)
+    assert "camera_off" not in plain.hello()["state"]  # no camera, nothing to report

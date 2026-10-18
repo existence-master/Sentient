@@ -76,6 +76,24 @@
 #define CAM_JPEG_QUALITY 12 // 0 best .. 63 worst; 12 at VGA gives a 30-60 KB photo
 #define CAM_FB_COUNT 2
 
+// ---------------------------------------------------------------- camera privacy (docs/NODES.md 11.7)
+// The camera is powered only while a photo is taken. CAM_POWER_GPIO drives the enable pin of a load switch that
+// feeds the camera module. Put the privacy LED (with its resistor) on the switched side of that load switch, not on
+// a GPIO of its own: then it is lit exactly while the camera has power, and no firmware bug or engine message can
+// run the camera with the LED dark. -1 = not wired: the firmware still never starts the camera outside a photo, but
+// the LED then proves nothing. Wire it before these glasses leave your desk.
+#define CAM_POWER_GPIO -1
+#define CAM_POWER_ON_LEVEL 1   // the level that powers the camera (1 for an active-high load switch EN pin)
+#define CAM_POWER_SETTLE_MS 20 // supply and sensor regulators settle before the driver talks to the sensor
+#define CAM_WARMUP_FRAMES 3    // frames dropped after power-up while exposure settles
+
+// Camera-off mode: the camera stays unpowered and every photo is refused on the glasses, whatever the engine asks.
+// Only the glasses change it: hold the talk button while switching them on, for CAMERA_OFF_TOGGLE_HOLD_MS, to turn
+// it on or off. It is kept in NVS across restarts. The engine is told (hello state camera_off) and refuses photos too.
+#define CAMERA_OFF_TOGGLE_HOLD_MS 3000
+// 1 builds firmware that never powers the camera at all and does not offer camera.photo.
+#define CAMERA_HARD_OFF 0
+
 // ---------------------------------------------------------------- button
 #define BUTTON_GPIO 0            // internal pull-up, button shorts to GND
 #define BUTTON_DEBOUNCE_MS 30

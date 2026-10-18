@@ -128,12 +128,14 @@ static void send_hello(void) {
     } else if (s_pair_code[0] != '\0') {
         cJSON_AddStringToObject(msg, "pair_code", s_pair_code);
     }
+    cJSON *state = cJSON_AddObjectToObject(msg, "state");
     int percent = battery_percent();
     if (percent >= 0) {
-        cJSON *state = cJSON_AddObjectToObject(msg, "state");
         cJSON_AddNumberToObject(state, "battery", percent);
         cJSON_AddBoolToObject(state, "charging", false);
     }
+    // camera-off mode is set on the glasses only; Sentient shows it and never asks for a photo (docs/API.md 24)
+    if (camera_available()) cJSON_AddBoolToObject(state, "camera_off", camera_off_mode());
     char *text = cJSON_PrintUnformatted(msg);
     if (text != NULL) {
         node_client_send_json(text);
@@ -219,6 +221,10 @@ static void handle_text(const char *text) {
             handle_welcome(msg);
         } else if (strcmp(type->valuestring, "error") == 0) {
             handle_error(msg);
+        } else if (strcmp(type->valuestring, "stop_sensor") == 0) {
+            // Turned off in Sentient. A photo takes under a second and the engine already dropped it; the camera
+            // powers off when it is done. The microphone stops with the voice socket the engine closed.
+            ESP_LOGI(TAG, "Sentient turned a sensor off");
         } else if (strcmp(type->valuestring, "invoke") == 0) {
             const cJSON *id = cJSON_GetObjectItem(msg, "id");
             const cJSON *cap = cJSON_GetObjectItem(msg, "capability");

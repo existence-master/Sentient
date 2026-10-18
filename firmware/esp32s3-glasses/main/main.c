@@ -1,5 +1,6 @@
 // Sentient glasses: ESP32-S3 + INMP441 microphone + MAX98357A amplifier + OV3660 camera.
 // Protocol: docs/NODES.md (section 11 covers this board). Flashing: README.md.
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,6 +22,21 @@
 
 static const char *TAG = "glasses";
 static char s_cert_pem[CERT_PEM_MAX];
+
+// Camera-off mode (docs/NODES.md 11.7): kept in NVS and changed only here, on the glasses, by holding the talk
+// button at power on. Nothing the engine sends can change it.
+static bool camera_off_at_boot(void) {
+    if (CAMERA_HARD_OFF) return true;
+    char saved[4];
+    bool off = storage_get(KEY_CAMERA_OFF, saved, sizeof(saved)) && strcmp(saved, "1") == 0;
+    if (button_held_at_boot(CAMERA_OFF_TOGGLE_HOLD_MS)) {
+        off = !off;
+        storage_set(KEY_CAMERA_OFF, off ? "1" : "0");
+        ESP_LOGW(TAG, "camera-off mode switched %s with the button", off ? "ON" : "OFF");
+        caps_show("Camera", off ? "Camera off. Hold the button at power on to turn it back on." : "Camera on.");
+    }
+    return off;
+}
 
 static void on_button(button_event_t event) {
     switch (event) {
@@ -110,7 +126,8 @@ void app_main(void) {
     storage_init();
     battery_init();
     audio_init();
-    if (!camera_start()) ESP_LOGW(TAG, "continuing without a camera");
+    camera_setup(camera_off_at_boot());
+    if (!camera_available()) ESP_LOGW(TAG, "continuing without a camera");
 
     net_start();
     if (!net_wait_connected(30000)) {
