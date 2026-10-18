@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import { api } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
 import type { ConnectionAccess, EntityChoice, Integration, IntegrationEntities, McpServerCreate, PrivacyFilters } from '@/lib/types'
+import { invalidateForgotten } from './memory'
 import { qk } from './queryKeys'
 
 export function upsertIntegration(qc: QueryClient, integration: Integration) {
@@ -59,11 +60,14 @@ export function useIntegrationActions() {
         else upsertIntegration(qc, res)
       }
     }),
+    /** ``forget``: also forget what Sentient learned from it (#153). */
     disconnect: useMutation({
-      mutationFn: (id: string) => api.integrations.disconnect(id),
+      mutationFn: ({ id, forget = false }: { id: string; forget?: boolean }) => api.integrations.disconnect(id, forget),
       onSuccess: (res) => {
-        upsertIntegration(qc, res)
+        const { forgotten: _forgotten, ...integration } = res
+        upsertIntegration(qc, integration)
         void qc.invalidateQueries({ queryKey: qk.tasks.all })
+        if (res.forgotten) invalidateForgotten(qc)
       }
     }),
     test: useMutation({ mutationFn: (id: string) => api.integrations.test(id) }),
@@ -113,7 +117,13 @@ export function useMcpActions() {
   return {
     add: useMutation({ mutationFn: (body: McpServerCreate) => api.integrations.mcp.add(body), onSuccess: invalidate }),
     addCatalog: useMutation({ mutationFn: (id: string) => api.integrations.mcp.addCatalog(id), onSuccess: invalidate }),
-    remove: useMutation({ mutationFn: (name: string) => api.integrations.mcp.remove(name), onSuccess: invalidate }),
+    remove: useMutation({
+      mutationFn: ({ name, forget = false }: { name: string; forget?: boolean }) => api.integrations.mcp.remove(name, forget),
+      onSuccess: (res) => {
+        invalidate()
+        if (res.forgotten) invalidateForgotten(qc)
+      }
+    }),
     test: useMutation({ mutationFn: (name: string) => api.integrations.mcp.test(name) }),
     /** Starts a browser sign-in and opens the provider's page; the server list shows when it finishes. */
     signIn: useMutation({

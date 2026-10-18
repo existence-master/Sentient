@@ -3,7 +3,7 @@
 // Run with `npm test` (no Electron needed).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { approvalRisk, engineWording, resolveWording } from '../src/features/chat/approvalRisk.ts'
+import { approvalCardReason, approvalRisk, engineWording, resolveWording, waitingSmallPrint } from '../src/features/chat/approvalRisk.ts'
 
 const email = (name: string, body: string, reason = 'mcp_mailer: Send an email to one address') => ({
   risk: 'send' as const,
@@ -325,4 +325,59 @@ test('a priced subscribe button still reads as a purchase', () => {
   const w = approvalRisk(click('Purchase'))
   assert.equal(w.label, 'Purchase')
   assert.equal(w.verb, 'make a purchase')
+})
+
+// #409: the small-print reason skips the reason when it matches the badge label,
+// so a free Subscribe card doesn't repeat "Signs up" twice.
+test('approval card small print skips the reason when it repeats the badge label (#409)', () => {
+  assert.equal(approvalCardReason('Signs up', 'Signs up'), null)
+  assert.equal(approvalCardReason('  signs up  ', 'Signs up'), null)
+  assert.equal(approvalCardReason('Purchase', 'Purchase'), null)
+  assert.equal(approvalCardReason('Deletes', 'Deletes'), null)
+  assert.equal(approvalCardReason('Unlocks a door', 'Home security'), 'Unlocks a door')
+  assert.equal(approvalCardReason('Send payment', 'Purchase'), 'Send payment')
+  assert.equal(approvalCardReason('', 'Signs up'), null)
+  assert.equal(approvalCardReason(undefined, 'Signs up'), null)
+})
+
+
+// #409 with #367 and #404: the badge comes from resolveWording and the reason is the
+// tool's plain label, so a free Subscribe click's reason and badge are the same words.
+test('a free Subscribe click shows "Signs up" once, a delete click keeps its own reason (#409)', () => {
+  const subscribe = { ...click('Signs up'), reason: 'Signs up' }
+  assert.equal(resolveWording(subscribe).label, 'Signs up')
+  assert.equal(approvalCardReason(subscribe.reason, resolveWording(subscribe).label), null)
+  const remove = { ...click('Deletes'), reason: 'Click "Delete account"' }
+  assert.equal(resolveWording(remove).label, 'Deletes')
+  assert.equal(approvalCardReason(remove.reason, resolveWording(remove).label), 'Click "Delete account"')
+})
+
+// A waiting card with no reason of its own (every browser click since #404 and #412) used to read
+// "Clicked using browser_click": past tense before anything happened, and a developer name.
+test('a waiting approval card never says what already happened or names the tool', () => {
+  // the action line already says what will happen: no small print under it
+  assert.equal(waitingSmallPrint('Click “Subscribe”', 'Would click'), null)
+  assert.equal(waitingSmallPrint('Type “hello” and submit', 'Would type'), null)
+  // no action line: the tool's plain wording, about what would happen
+  assert.equal(waitingSmallPrint(null, 'Would write file'), 'Would write file')
+  assert.equal(waitingSmallPrint(undefined, 'Would send a notification'), 'Would send a notification')
+  assert.equal(waitingSmallPrint('', 'Would use Gmail: send email'), 'Would use Gmail: send email')
+  // nothing to say: no line at all
+  assert.equal(waitingSmallPrint(null, null), null)
+  assert.equal(waitingSmallPrint('  ', '  '), null)
+})
+
+// #450 review: a known tool without `would` wording left a waiting card with only its heading
+// (a browser_screenshot under an Ask rule). Every known tool now says what it would do. toolMeta.ts imports
+// through the `@/` alias, which node's test runner can't load, so this reads its table as text.
+test('every known tool says what it would do while it waits', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/features/chat/toolMeta.ts', import.meta.url), 'utf8')
+  const lines = src.slice(src.indexOf('export const KNOWN')).split(/\r?\n/)
+  const table = lines.slice(1, lines.findIndex((line) => line === '}'))
+  const entries = table.filter((line) => /^ {2}[a-z_]+: \{/.test(line))
+  assert.ok(entries.length > 40, 'found the tool table')
+  const missing = entries.filter((line) => !/would: '/.test(line)).map((line) => line.trim().split(':')[0])
+  assert.deepEqual(missing, [])
+  assert.ok(entries.some((line) => line.includes("browser_screenshot") && line.includes("would: 'Would take a screenshot'")))
 })

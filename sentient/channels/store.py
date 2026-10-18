@@ -34,10 +34,6 @@ class ChannelStore:
 
     async def migrate(self) -> None:
         await self.store.db.executescript(SCHEMA.read_text(encoding="utf-8"))
-        await self.store.ensure_column("channel_questions", "request", "TEXT")  # #337
-        # a group chat (ADR 0029): only the person who paired it (``owner_id``) talks to Sentient there
-        await self.store.ensure_column("channel_chats", "is_group", "INTEGER NOT NULL DEFAULT 0")
-        await self.store.ensure_column("channel_chats", "owner_id", "TEXT")
         await self.store.db.commit()
         await self.prune_deliveries()  # on every start too, so old rows go even when nothing is sent any more
 

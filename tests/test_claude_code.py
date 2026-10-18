@@ -23,7 +23,7 @@ from sentient.app import SentientApp
 from sentient.llm import claude_code, meter
 from sentient.llm.claude_code_tools import NOT_HERE, handle
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
-from sentient.llm.provider import LiteLLMProvider, ModelRefused, ProviderError
+from sentient.llm.provider import LiteLLMProvider, ModelRefused, ProviderError, Stopped
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider
 
@@ -490,7 +490,9 @@ async def test_startup_sweeps_old_scratch_folders(make_app, isolated_home):
 # ---------------------------------------------------------------------------- status, check-up, pieces
 async def test_status_and_checkup(cc_config, fake_claude, monkeypatch):
     status = await claude_code.status(cc_config)
-    assert status == {"enabled": True, "installed": True, "version": "9.9.9 (Claude Code)", "detail": status["detail"]}
+    assert status == {"enabled": True, "installed": True, "version": "9.9.9 (Claude Code)", "detail": status["detail"],
+                      "everywhere": False, "roles": ["primary", "voice", "vision"], "max_concurrent": 2,
+                      "running": 0, "waiting": 0}
     assert "Test" in status["detail"]
 
     cc_config.models.experimental_claude_code = False
@@ -502,8 +504,13 @@ async def test_status_and_checkup(cc_config, fake_claude, monkeypatch):
         missing = await claude_code.status(cc_config)
     assert not missing["installed"] and "can't find Claude Code" in missing["detail"]
 
+    from sentient.llm import checkup as checkup_mod
     from sentient.llm.checkup import checkup
 
+    async def none_installed(self, base):
+        return []
+
+    monkeypatch.setattr(checkup_mod._Ollama, "installed", none_installed)  # never asks a real Ollama
     cc_config.models.experimental_claude_code = True
     cc_config.models.roles.fast = MODEL
     report = await checkup(cc_config, Provider(cc_config), {"primary": MODEL, "fast": MODEL})
@@ -524,6 +531,68 @@ def test_status_route(cc_config, fake_claude, isolated_home):
     assert r.status_code == 200
     body = r.json()
     assert body["enabled"] and body["installed"] and body["models"] == ["claude-code/sonnet", "claude-code/opus"]
+    assert body["roles"] == ["primary", "voice", "vision"]  # the window offers it only for these (#442)
+
+
+def test_roles_that_refuse_it_cannot_be_given_it(cc_config, fake_claude, isolated_home):
+    """#442: background roles never get a Claude Code model, so onboarding's context can't silently go nowhere."""
+    from fastapi.testclient import TestClient
+
+    from sentient.gateway.app import create_app
+
+    with TestClient(create_app(SentientApp(cc_config, llm=FakeProvider(), db_path=isolated_home / "r.db",
+                                           enable_background=False))) as client:
+        auth = {"Authorization": "Bearer not-for-claude"}
+        fast = client.put("/api/models/roles", json={"fast": MODEL}, headers=auth)
+        assert fast.status_code == 400 and fast.json()["detail"] == claude_code.CHATS_ONLY
+        planner = client.put("/api/models/roles", json={"planner": "claude-code/opus"}, headers=auth)
+        assert planner.status_code == 400 and planner.json()["detail"] == claude_code.ROLE_REFUSALS["planner"]
+        embedding = client.put("/api/models/roles", json={"embedding": MODEL}, headers=auth)
+        assert embedding.status_code == 400 and embedding.json()["detail"] == claude_code.NO_EMBEDDINGS
+        roles = client.put("/api/models/roles", json={"voice": MODEL, "fast": "ollama_chat/qwen3:8b"}, headers=auth)
+        assert roles.status_code == 200 and roles.json()["voice"] == MODEL
+    assert cc_config.models.roles.fast != MODEL
+
+
+async def test_checkup_names_roles_that_inherit_claude_code(cc_config, fake_claude, monkeypatch):
+    """#442: an empty planner or executor uses the main model; with Claude Code there, the check-up says it refuses
+    the work and offers the background model instead, without calling Claude Code."""
+    from sentient.llm.checkup import checkup
+
+    cc_config.models.roles.fast = "fake/background"
+    cc_config.models.roles.planner = None
+    cc_config.models.roles.executor = None
+    cc_config.models.roles.voice = None
+    # every role but embedding, whose Ollama model the check-up would really ask
+    roles = {"primary": MODEL, "fast": "fake/background", "planner": None, "executor": None, "voice": None}
+    report = await checkup(cc_config, Provider(cc_config), roles, timeout_s=5)
+    by_role = {r["role"]: r for r in report["roles"]}
+    planner = by_role["planner"]
+    assert planner["model"] == MODEL and planner["inherits"] == "primary" and planner["status"] == "fail"
+    assert planner["checks"][0]["detail"] == claude_code.ROLE_REFUSALS["planner"]
+    assert planner["checks"][0]["action"] == {"kind": "use_model", "role": "planner", "model": "fake/background",
+                                              "label": "Use background"}
+    assert by_role["executor"]["status"] == "fail" and by_role["executor"]["inherits"] == "primary"
+    assert by_role["voice"] == {**by_role["voice"], "model": None, "status": "skip"}  # voice may use Claude Code
+    assert fake_claude.runs() == []
+
+    cc_config.models.experimental_claude_code = False  # off: still "pick another model", never "turn it on"
+    report = await checkup(cc_config, Provider(cc_config), {"primary": MODEL, "planner": None}, timeout_s=5)
+    planner = {r["role"]: r for r in report["roles"]}["planner"]
+    assert planner["checks"][0]["detail"] == claude_code.ROLE_REFUSALS["planner"]
+
+    # every chat role on Claude Code: the fix is the local model sized for this computer, when it is downloaded
+    from sentient.llm import checkup as checkup_mod
+
+    async def installed(self, base):
+        return ["qwen3:8b", "nomic-embed-text:latest"]
+
+    monkeypatch.setattr(checkup_mod._Ollama, "installed", installed)
+    cc_config.models.roles.fast = MODEL
+    report = await checkup(cc_config, Provider(cc_config), {"primary": MODEL, "fast": MODEL}, timeout_s=5)
+    fast = {r["role"]: r for r in report["roles"]}["fast"]
+    assert fast["checks"][0]["action"] == {"kind": "use_model", "role": "fast", "model": "ollama_chat/qwen3:8b",
+                                           "label": "Use qwen3:8b"}
 
 
 def test_transcript_and_tool_names():
@@ -675,3 +744,197 @@ async def test_meter_marks_usage_for_claude_code_models(monkeypatch, config):
                                     None, {"prompt_tokens": 180_000, "completion_tokens": 0}, "chat")
     assert long_chat["context_percent"] == 90
     assert long_chat["context_warning"] and "90%" in long_chat["context_warning"]
+
+
+# ---------------------------------------------------------------------------- Claude Code for everything (#444)
+@pytest.fixture
+def everywhere(cc_config):
+    cc_config.models.claude_code_everywhere = True
+    cc_config.models.roles.fast = MODEL
+    cc_config.models.roles.planner = MODEL
+    return cc_config
+
+
+def test_everything_needs_the_experimental_switch(cc_config, fake_claude):
+    cc_config.models.claude_code_everywhere = True
+    cc_config.models.experimental_claude_code = False
+    assert not claude_code.everywhere(cc_config)
+    assert claude_code.accepting_roles(cc_config) == claude_code.CHAT_ROLES
+    cc_config.models.experimental_claude_code = True
+    assert claude_code.everywhere(cc_config)
+    assert claude_code.accepting_roles(cc_config) == ("primary", "fast", "planner", "executor", "vision", "voice")
+    assert claude_code.refusal(cc_config, "fast") is None
+    assert claude_code.refusal(cc_config, "embedding") == claude_code.NO_EMBEDDINGS
+
+
+async def test_everything_runs_background_work_and_counts_it_by_role(make_app, fake_claude, everywhere):
+    app = await make_app()
+    hi = [{"role": "system", "content": "Answer with JSON."}, {"role": "user", "content": "What do you know?"}]
+    fake_claude.scenario("json")
+    assert await app.llm.complete_json("fast", hi) == {"facts": ["Maya likes chai"]}  # memory notes and other jobs
+    assert "Maya likes chai" in await app.llm.complete_text("planner", hi)
+    text = ""
+    async for chunk in app.llm.stream("executor", hi):  # nobody waits on it: a task step
+        text += chunk.text
+    assert "facts" in text
+    with pytest.raises(ProviderError, match="embeddings"):
+        await app.llm.embed(["hi"], model=MODEL)
+    runs = fake_claude.runs()
+    assert len(runs) == 3 and all(r["argv"][r["argv"].index("--tools") + 1] == "" for r in runs)
+
+    month = next(p for p in (await app.spending.report())["periods"] if p["key"] == "month")
+    by_role = {r["role"]: r["calls"] for r in month["claude_code_by_role"]}
+    assert by_role == {"fast": 1, "planner": 1, "executor": 1}
+    assert month["plan_calls"] == 3 and month["cost_usd"] == 0
+
+
+async def test_at_most_max_concurrent_run_at_once(fake_claude, everywhere, caplog, monkeypatch):
+    everywhere.models.claude_code_max_concurrent = 2
+    fake_claude.scenario("slow")
+    monkeypatch.setenv("FAKE_CLAUDE_SLEEP", "2")
+    llm = Provider(everywhere)
+
+    async def one() -> str:
+        return await llm.complete_text("fast", [{"role": "user", "content": "hi"}])
+
+    caplog.set_level("INFO", logger="sentient.llm.claude_code")
+    calls = [asyncio.create_task(one()) for _ in range(3)]
+    for _ in range(300):
+        if claude_code._gate.waiting == 1 and claude_code._gate.running == 2:
+            break
+        await asyncio.sleep(0.02)
+    assert (claude_code._gate.running, claude_code._gate.waiting) == (2, 1)  # the third waits its turn
+    results = await asyncio.wait_for(asyncio.gather(*calls), 60)
+    assert results == ["Hello from Claude"] * 3
+    assert claude_code._gate.running == 0 and claude_code._gate.waiting == 0
+    queued = [r.getMessage() for r in caplog.records if "Claude Code queued" in r.getMessage()]
+    assert len(queued) == 1 and "2 running, at most 2 at once" in queued[0]
+    assert any("after waiting" in r.getMessage() for r in caplog.records)
+
+
+async def test_stop_everything_drops_calls_still_waiting(fake_claude, everywhere):
+    everywhere.models.claude_code_max_concurrent = 1
+    everywhere.models.fallbacks["fast"] = ["fake/next"]  # never tried: everything was meant to stop
+    fake_claude.scenario("hang")
+    llm = Provider(everywhere)
+
+    async def one() -> str:
+        return await llm.complete_text("fast", [{"role": "user", "content": "hi"}])
+
+    first = asyncio.create_task(one())
+    for _ in range(300):
+        if claude_code._live:
+            break
+        await asyncio.sleep(0.05)
+    second = asyncio.create_task(one())
+    for _ in range(100):
+        if claude_code._gate.waiting:
+            break
+        await asyncio.sleep(0.02)
+    assert claude_code._gate.waiting == 1
+    assert claude_code.kill_all() == 1
+    done = await asyncio.wait_for(asyncio.gather(first, second, return_exceptions=True), 30)
+    assert all(isinstance(r, ProviderError) for r in done)
+    assert isinstance(done[1], Stopped) and str(done[1]) == claude_code.STOPPED
+    assert not claude_code._live and claude_code._gate.running == 0 and claude_code._gate.waiting == 0
+    assert len(fake_claude.runs()) == 1  # the waiting call never started Claude Code
+
+
+async def test_turning_it_off_moves_the_roles_with_a_note(make_app, fake_claude, everywhere):
+    everywhere.models.fallbacks["fast"] = ["ollama_chat/qwen3:8b"]
+    app = await make_app()
+    cfg = app.config.model_copy(deep=True)
+    cfg.models.claude_code_everywhere = False
+    app.save_config(cfg)
+    assert app.config.models.roles.fast == "ollama_chat/qwen3:8b"  # moved to its fallback
+    assert app.config.models.roles.planner == "ollama_chat/qwen3:8b"  # no fallback of its own: the background model
+    assert app.config.models.roles.executor == "ollama_chat/qwen3:8b"  # empty, it used the main model: moved too
+    assert app.config.models.roles.primary == MODEL  # chats keep Claude Code
+    await asyncio.gather(*list(app._notes))
+    notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("kind") == "claude_code_roles"]
+    assert len(notes) == 1
+    assert notes[0]["message"] == ("Claude Code answers only your chats again. Fast / background now uses qwen3:8b. "
+                                   "Planner now uses qwen3:8b. Executor now uses qwen3:8b.")
+    app.save_config()  # saving again changes nothing more
+    assert not app._notes
+    assert fake_claude.runs() == []
+
+
+def test_status_route_reports_the_roles_that_accept_it(everywhere, fake_claude, isolated_home):
+    from fastapi.testclient import TestClient
+
+    from sentient.gateway.app import create_app
+
+    with TestClient(create_app(SentientApp(everywhere, llm=FakeProvider(), db_path=isolated_home / "r.db",
+                                           enable_background=False))) as client:
+        body = client.get("/api/models/claude-code", headers={"Authorization": "Bearer not-for-claude"}).json()
+    assert body["everywhere"] and body["max_concurrent"] == 2
+    assert body["roles"] == ["primary", "fast", "planner", "executor", "vision", "voice"]
+
+
+async def test_checkup_passes_background_roles_when_it_does_everything(everywhere, fake_claude):
+    from sentient.llm.checkup import checkup
+
+    report = await checkup(everywhere, Provider(everywhere), {"primary": MODEL, "fast": MODEL, "embedding": MODEL})
+    by_role = {r["role"]: r for r in report["roles"]}
+    assert by_role["fast"]["status"] == "pass"
+    assert by_role["embedding"]["status"] == "fail"
+    assert fake_claude.runs() == []
+
+
+async def test_a_place_freed_during_stop_everything_goes_to_nobody(monkeypatch):
+    """Cancelling a running reply frees its place while Stop everything is still going: a waiting call must not
+    take it and start Claude Code after the stop."""
+    gate = claude_code._Gate()
+    monkeypatch.setattr(claude_code, "_gate", gate)
+    await gate.acquire(1, "a reply")
+    waiter = asyncio.create_task(gate.acquire(1, "a chat title"))
+    await asyncio.sleep(0.01)
+    assert gate.waiting == 1
+    claude_code.hold()
+    gate.release()  # the reply was cancelled
+    await asyncio.sleep(0.01)
+    assert not waiter.done() and gate.running == 0
+    claude_code.kill_all()
+    with pytest.raises(ProviderError, match="Stop everything"):
+        await waiter
+    assert not gate.held and gate.waiting == 0
+    assert await gate.acquire(1, "the next chat") == 0.0  # after the stop, new work starts as usual
+
+
+async def test_turning_claude_code_off_altogether_says_so(make_app, fake_claude, everywhere):
+    everywhere.models.fallbacks["fast"] = ["ollama_chat/qwen3:8b"]
+    app = await make_app()
+    cfg = app.config.model_copy(deep=True)
+    cfg.models.experimental_claude_code = False  # the chats switch clears both
+    cfg.models.claude_code_everywhere = False
+    app.save_config(cfg)
+    await asyncio.gather(*list(app._notes))
+    notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("kind") == "claude_code_roles"]
+    assert len(notes) == 1 and notes[0]["title"] == "Claude Code is turned off"
+    assert notes[0]["message"].startswith("Claude Code is turned off. Fast / background now uses qwen3:8b.")
+
+
+def test_with_everything_on_background_roles_can_be_given_it(everywhere, fake_claude, isolated_home):
+    """#444 changes what #442 guards: with Claude Code doing everything, every role but embeddings may use it."""
+    from fastapi.testclient import TestClient
+
+    from sentient.gateway.app import create_app
+
+    with TestClient(create_app(SentientApp(everywhere, llm=FakeProvider(), db_path=isolated_home / "r.db",
+                                           enable_background=False))) as client:
+        auth = {"Authorization": "Bearer not-for-claude"}
+        roles = client.put("/api/models/roles", json={"fast": "claude-code/haiku", "executor": MODEL}, headers=auth)
+        assert roles.status_code == 200 and roles.json()["fast"] == "claude-code/haiku"
+        embedding = client.put("/api/models/roles", json={"embedding": MODEL}, headers=auth)
+        assert embedding.status_code == 400 and embedding.json()["detail"] == claude_code.NO_EMBEDDINGS
+
+
+def test_a_role_with_no_other_model_stays_and_says_so(everywhere):
+    everywhere.models.roles.fast = MODEL
+    everywhere.models.claude_code_everywhere = False
+    moved = claude_code.move_leftovers(everywhere)
+    assert {m["role"]: m["to"] for m in moved} == {"fast": None, "planner": None, "executor": None}
+    assert everywhere.models.roles.planner == MODEL and everywhere.models.roles.executor is None
+    assert claude_code.leftover_note(moved).endswith("Executor has no other model, so pick one in Settings > Models.")
+

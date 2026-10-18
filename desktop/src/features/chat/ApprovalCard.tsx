@@ -29,8 +29,8 @@ import type { ApprovalDecision } from '@/lib/types'
 import { cn, humanize, truncate } from '@/lib/utils'
 import { ActionPreview } from './ActionPreview'
 import { hostOf, refLabel } from './cards/bits'
-import { toolMeta } from './toolMeta'
-import { resolveWording, type RiskLabel } from './approvalRisk'
+import { askingLabel } from './toolMeta'
+import { approvalCardReason, resolveWording, waitingSmallPrint, type RiskLabel } from './approvalRisk'
 
 const STATUS_TEXT: Partial<Record<ApprovalView['status'], string>> = {
   allow: 'You allowed this once',
@@ -152,7 +152,6 @@ export function ApprovalCard({
   onRespond?: (approvalId: string, decision: ApprovalDecision) => void
 }) {
   const risk = effectiveRisk(approval)
-  const meta = toolMeta(approval.name)
 
   if (approval.status !== 'pending') {
     const allowed = approval.status !== 'deny' && approval.status !== 'expired'
@@ -188,6 +187,13 @@ export function ApprovalCard({
     (c) => c !== 'allow' && c !== 'deny' && c !== 'allow_task' && !single
   )
 
+  const reason = approvalCardReason(approval.reason, risk.label)
+  const smallPrint =
+    (command && 'It runs on this computer with your permissions, in this folder:') ||
+    purpose ||
+    reason ||
+    waitingSmallPrint(action, askingLabel(approval.name))
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 4 }}
@@ -216,15 +222,7 @@ export function ApprovalCard({
               <span className="selectable min-w-0 break-words">{approval.warning}</span>
             </div>
           )}
-          <p className="mt-0.5 text-sm text-fg-muted">
-            {(command && 'It runs on this computer with your permissions, in this folder:') ||
-              purpose ||
-              approval.reason?.trim() || (
-                <>
-                  {meta.done} using <span className="font-mono text-xs">{approval.name}</span>
-                </>
-              )}
-          </p>
+          {smallPrint && <p className="mt-0.5 text-sm text-fg-muted">{smallPrint}</p>}
           {command && (
             <div className="mt-1 flex items-center gap-1 text-xs text-fg-subtle">
               <IconFolder size={12} className="shrink-0" />

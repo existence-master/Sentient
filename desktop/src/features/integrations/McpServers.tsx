@@ -34,6 +34,7 @@ import {
   StatusDot,
   type Tone
 } from '@/components/ui'
+import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
 import { useMcpActions, useMcpCatalog, useMcpServers } from '@/hooks/integrations'
 import { errorMessage, isNotImplemented } from '@/lib/api'
 import type { ConnectionAccess, McpAuth, McpServer } from '@/lib/types'
@@ -167,6 +168,7 @@ export function McpServersSection({ id }: { id?: string }) {
 function McpServerRow({ server: s }: { server: McpServer }) {
   const { test, remove, signIn, signOut, setEnabled, setAccess } = useMcpActions()
   const [confirm, setConfirm] = useState(false)
+  const forget = useForgetChoice()
   const [open, setOpen] = useState(false)
   const [editingValues, setEditingValues] = useState(false)
   const [reviewing, setReviewing] = useState(false)
@@ -277,7 +279,15 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         >
           Test
         </Button>
-        <IconButton size="sm" label="Remove server" icon={<IconTrash size={15} />} onClick={() => setConfirm(true)} />
+        <IconButton
+          size="sm"
+          label="Remove server"
+          icon={<IconTrash size={15} />}
+          onClick={() => {
+            forget.reset()
+            setConfirm(true)
+          }}
+        />
       </div>
 
       {s.signing_in ? (
@@ -396,18 +406,26 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         onOpenChange={setConfirm}
         title={`Remove ${s.name}?`}
         description="The server is stopped and its tools disappear from Sentient. Saved values and sign-ins are deleted from your keychain."
-        confirmLabel="Remove"
+        confirmLabel={forget.forget ? 'Remove and forget' : 'Remove'}
         onConfirm={async () => {
           try {
-            await remove.mutateAsync(s.name)
-            toast.success(`${s.name} removed`)
+            const res = await remove.mutateAsync({ name: s.name, forget: forget.forget })
+            toast.success(`${s.name} removed`, { description: forgottenMessage(res.forgotten) })
           } catch (e) {
             toast.error("Couldn't remove the server", { description: errorMessage(e) })
           }
         }}
-      />
+      >
+        <ForgetLearned source={`app:${mcpPluginId(s.name)}`} open={confirm} checked={forget.forget} onCheckedChange={forget.setForget} />
+      </ConfirmDialog>
     </li>
   )
+}
+
+/** The engine's plugin id for a server (``mcp_`` and its name in lower case, other characters as ``_``). */
+function mcpPluginId(name: string): string {
+  const id = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '')
+  return `mcp_${id || 'x'}`
 }
 
 /** "Add values": fill in the header or environment values a server lists by name. They go to the keychain. */

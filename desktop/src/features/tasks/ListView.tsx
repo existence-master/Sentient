@@ -123,11 +123,22 @@ export function ListView({
 
 const HELD_STATUSES: string[] = ['planning', 'pending', 'active']
 
+/** What a paused task's working run does (#408), or null when the task isn't paused while it runs. A swarm's run and
+ *  a one-step action can't be stopped part-way: they finish first. */
+export function pausingNote(task: Task): string | null {
+  if (task.enabled || task.status !== 'processing') return null
+  if (task.task_type === 'swarm') return "Its agents work side by side, so this run can't be stopped part-way. It will finish, then the task stays paused."
+  if (task.original_context?.fixed_call) return "This one-step action can't be stopped part-way, so it will finish. Then the task stays paused."
+  return 'Pausing. Sentient stops before its next step and keeps what it has done so far.'
+}
+
 /** Second line of a task row: what's going on right now. */
 export function taskHeadline(task: Task): string {
   const run = processingRun(task)
   // a paused task whose work a restart held says so (#304)
   if (!task.enabled && task.error && HELD_STATUSES.includes(task.status)) return truncate(task.error, 140)
+  const pausing = pausingNote(task) // paused while a run works (#408)
+  if (pausing) return truncate(pausing, 140)
   switch (task.status) {
     case 'planning':
       return task.task_type === 'swarm' ? 'Splitting the work across agents…' : 'Sentient is drafting a plan…'

@@ -152,7 +152,6 @@ class EvolutionService(Service):
     async def start(self) -> None:
         app = self.app
         app.skills.store = app.store
-        await app.store.ensure_column("evolution_reviews", "activity_mark", "TEXT")  # #297
         if app.memory is not None:
             app.memory.bus = app.bus
         with contextlib.suppress(Exception):
@@ -896,7 +895,7 @@ class EvolutionService(Service):
         after, params = after_watermark(facts_mark, "updated_at", "id")
         # MEMORY.md and USER.md are personal: work and project memories never go in them (#155)
         new_facts = await store.fetchall(
-            "SELECT id, content, topics, source, updated_at FROM facts WHERE status = 'active'"
+            "SELECT id, content, topics, source, updated_at FROM facts WHERE status = 'active' AND state = 'current'"
             f" AND memory_type = 'long-term' AND {after} AND (expires_at IS NULL OR expires_at > ?)"
             f" AND {PROFILE_SCOPES} ORDER BY updated_at, id",
             (*params, nowiso),
@@ -927,7 +926,8 @@ class EvolutionService(Service):
 
         budget = cfg.memory.workspace_budget_chars
         all_facts = await store.fetchall(
-            "SELECT content FROM facts WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)"
+            "SELECT content FROM facts WHERE status = 'active' AND state = 'current'"
+            " AND (expires_at IS NULL OR expires_at > ?)"
             f" AND {PROFILE_SCOPES} ORDER BY updated_at DESC, id DESC LIMIT 80",
             (nowiso,),
         )

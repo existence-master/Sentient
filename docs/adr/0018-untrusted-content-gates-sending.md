@@ -3,7 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-10-09
 - **Amended by:** [ADR 0023](0023-mark-outside-content-in-prompts.md) (the same tools' results reach the model marked as outside content),
-  [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md) (other people in a group chat are outside content; the user can trust a chat again)
+  [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md) (other people in a group chat are outside content; the user can trust a chat again),
+  [ADR 0031](0031-recipients-first-and-a-tool-less-reader.md) (a reader result of only dates, numbers, yes or no, ids and choices doesn't mark a run)
 
 ## Context
 

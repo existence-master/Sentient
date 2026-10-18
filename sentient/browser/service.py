@@ -65,6 +65,8 @@ STORAGE_FLAG = "--enable-aggressive-domstorage-flushing"
 STORAGE_FLUSH_S = 1.5
 PAGE_CLOSE_TIMEOUT_S = 5.0
 DOWNLOAD_APPEAR_GRACE_S = 0.3
+# #307: how long a blank tab a click opened gets to turn into a page, a download or nothing
+DOWNLOAD_TAB_WAIT_S = 3.0
 DOWNLOAD_MAX_DURATION_S = 120.0
 DOWNLOAD_CANCEL_TIMEOUT_S = 5.0
 DOWNLOAD_TASK_RETENTION_S = 300.0
@@ -234,6 +236,9 @@ class BrowserService(Service):
         self._attached = False
         self._download_pages: set[Any] = set()
         self._internal_pages: set[Any] = set()
+        # a new tab -> the tab that was active when it opened (its opener when known), to go back to when the new
+        # tab closes or turns out to be Edge's downloads hub (#307)
+        self._came_from: dict[Any, Any] = {}
         self._profile = DEFAULT_PROFILE  # the running profile, or the next one to start
         self._for_user = False  # the open window was shown for the user (Open to sign in): don't switch under them
         self._engine: str | None = None
@@ -724,6 +729,7 @@ class BrowserService(Service):
             self._focused = None
             self._download_pages.clear()
             self._internal_pages.clear()
+            self._came_from.clear()
             if self._browser_cdp is not None:
                 with contextlib.suppress(Exception):
                     await self._browser_cdp.detach()
@@ -822,6 +828,7 @@ class BrowserService(Service):
         self._snap = None
         self._focused = None
         self._download_pages.clear()
+        self._came_from.clear()
         self._browser_cdp = None
         self._clear_attached_downloads()
         if not self._closing:  # the user closed the visible window (or their attached browser)
@@ -854,23 +861,27 @@ class BrowserService(Service):
 
     def _mark_internal_page(self, page: Any) -> None:
         self._internal_pages.add(page)
+        back = self._came_from.pop(page, None)
         if self._active is page:
             context = self._context
             pages = [
                 candidate for candidate in (self._usable_pages(context) if context is not None else [])
                 if not self._attached or candidate in self._download_pages
             ]
-            self._active = pages[-1] if pages else None
+            self._active = back if back in pages else (pages[-1] if pages else None)
 
     def _on_page(self, page: Any) -> None:
         self._wire_page(page)
         if self._is_downloads_hub(page.url):
             self._mark_internal_page(page)
         elif not self._attached:  # a link opened a new tab: keep working in it
+            if self._active is not None and self._active is not page:
+                self._came_from.setdefault(page, self._active)
             self._active = page
         self._spawn(self._publish_status())
 
     def _on_popup(self, opener: Any, popup: Any) -> None:
+        self._came_from[popup] = opener
         if self._is_downloads_hub(popup.url):
             self._mark_internal_page(popup)
             return
@@ -882,6 +893,7 @@ class BrowserService(Service):
     def _on_page_closed(self, page: Any) -> None:
         self._download_pages.discard(page)
         self._internal_pages.discard(page)
+        back = self._came_from.pop(page, None)
         if self._snap and self._snap.get("page") is page:
             self._snap = None
         ctx = self._context
@@ -890,7 +902,8 @@ class BrowserService(Service):
                 p for p in (self._usable_pages(ctx) if ctx else [])
                 if p is not page and (not self._attached or p in self._download_pages)
             ]
-            self._active = remaining[-1] if remaining else None
+            # back to the tab it came from (a file link's blank tab closes once the download starts, #307)
+            self._active = back if back in remaining else (remaining[-1] if remaining else None)
         if ctx is not None and not self._closing:
             self._spawn(self._publish_status())
 
@@ -1621,7 +1634,8 @@ class BrowserService(Service):
             refusal = self._guard("click", info["ref"], live_risk)
             if refusal:
                 return {"error": refusal}
-            pages_before = len(self._usable_pages(self._context))
+            tabs_before = list(self._usable_pages(self._context))
+            pages_before = len(tabs_before)
             self._accept_confirm = live_risk >= Risk.send or self.app.config.tools.approvals.mode == "off"
             try:
                 await loc.click(timeout=10_000)
@@ -1641,6 +1655,23 @@ class BrowserService(Service):
             if self._context is None:
                 raise BrowserError("The browser window was closed. Call the tool again and it will reopen.")
             active = self._active or page
+            # an older tab took over because the tab the click opened is gone again
+            fell_back = active in tabs_before and not any(
+                p not in tabs_before for p in self._usable_pages(self._context)
+            )
+            if (
+                active is not page
+                and not page.is_closed()
+                and (fell_back or await self._download_only_tab(active, downloads_before))
+            ):
+                # #307: the tab the click opened only carried a download (or is Edge's downloads hub): the page that
+                # was clicked is still the one to work in, and the one to report. A real page that opened meanwhile
+                # in yet another new tab is kept.
+                now = self._active
+                if now is None or now is active or now.is_closed() or now in tabs_before or now in self._internal_pages:
+                    active = self._active = page
+                else:
+                    active = now
             await self._settle(active)
             await self._enforce_domains(active)
             out = {
@@ -1649,7 +1680,7 @@ class BrowserService(Service):
                 "url": active.url,
                 "message": "Clicked. Call browser_snapshot to see the page now.",
             }
-            if len(self._usable_pages(self._context)) > pages_before:
+            if active is not page and len(self._usable_pages(self._context)) > pages_before:
                 out["new_tab"] = True
                 out["message"] = "Clicked; it opened a new tab, which is now active. Call browser_snapshot to see it."
             await self._after_action(ctx, active)
@@ -1657,6 +1688,22 @@ class BrowserService(Service):
                 out, downloads_before, wait_for_download_start=True
             )
             return self._take_dialogs(out)
+
+    async def _download_only_tab(self, tab: Any, downloads_before: set[asyncio.Task[str]]) -> bool:
+        """True when ``tab``, made active by a click, holds no page: Edge's downloads hub, or a blank tab that a
+        download started from (a link to a file with ``target=_blank``) or that closed again. A blank tab gets
+        ``DOWNLOAD_TAB_WAIT_S`` to show a page instead."""
+        deadline = time.monotonic() + DOWNLOAD_TAB_WAIT_S
+        while True:
+            if tab.is_closed() or tab in self._internal_pages or self._is_downloads_hub(tab.url):
+                return True
+            if str(tab.url or "") not in ("", "about:blank"):
+                return False
+            if self._download_tasks - downloads_before:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.05)
 
     async def type(self, ctx: Any, ref: str, text: str, submit: bool = False) -> dict:
         async with self._lock:

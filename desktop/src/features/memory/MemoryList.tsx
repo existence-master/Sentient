@@ -29,6 +29,22 @@ function MemoryCard({ memory, selected, onSelect, now, compact }: { memory: Memo
           <TopicPill key={t} topic={t} size="xs" />
         ))}
         <ExpiryBadge memory={memory} now={now} className="h-4.5" />
+        {memory.state === 'disputed' && (
+          <span className="rounded-full bg-warning/15 px-1.5 text-2xs font-medium text-warning" title="You said this isn't right: left out of chats and tasks">
+            Not right?
+          </span>
+        )}
+        {memory.state === 'superseded' && <span className="rounded-full bg-sunken px-1.5 text-2xs font-medium text-fg-subtle">Replaced</span>}
+        {memory.state !== 'disputed' && typeof memory.confidence === 'number' && memory.confidence < 0.7 && (
+          <span className="rounded-full bg-sunken px-1.5 text-2xs font-medium text-fg-subtle" title={`Sentient is ${Math.round(memory.confidence * 100)}% sure`}>
+            Not sure yet
+          </span>
+        )}
+        {(memory.sources?.length ?? 0) > 1 && (
+          <span className="rounded-full bg-sunken px-1.5 text-2xs font-medium text-fg-subtle" title={memory.sources!.map((s) => s.source).join(', ')}>
+            {memory.sources!.length} sources
+          </span>
+        )}
         {typeof memory.similarity === 'number' && (
           <span className="rounded-full bg-accent/12 px-1.5 text-2xs font-medium text-accent-text">{Math.round(memory.similarity * 100)}% match</span>
         )}

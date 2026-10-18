@@ -104,7 +104,8 @@ async def test_an_approval_a_paused_task_waits_on_is_held_and_asked_again_on_res
     task = await app.tasks.get(task_id)
     run_id = task["runs"][-1]["run_id"]
     assert task["status"] == "waiting_for_user" and task["runs"][-1]["pending_question"]["kind"] == "approval"
-    await app.tasks.update(task_id, {"enabled": False})
+    # paused by a version before #408 (which holds the approval at once): the approval was left waiting
+    await app.tasks.repo.update_task(task_id, {"enabled": False})
     await app.stop()
 
     llm = FakeProvider(replies=[WRITE_A, "Saved the notes."], json_replies=[dict(RESULT)])

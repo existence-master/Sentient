@@ -155,7 +155,23 @@ export function useOptimisticMemoryActions() {
     onSettled: settle
   })
 
-  return useMemo(() => ({ update, remove, move }), [update, remove, move])
+  const setState = useMutation({
+    mutationFn: ({ id, state }: { id: number; state: 'current' | 'disputed' }) => api.memories.setState(id, state),
+    onMutate: async ({ id, state }) => {
+      const snap = await snapshot()
+      patchLists((list) => list.map((m) => (m.id === id ? ({ ...m, state, ...(state === 'current' ? { confidence: 1 } : {}) } as Memory) : m)))
+      return snap
+    },
+    onError: (e, _v, snap) => {
+      restore(snap)
+      toast.error("Couldn't change that memory", { description: errorMessage(e) })
+    },
+    onSuccess: (m) =>
+      toast.success(m.state === 'disputed' ? 'Sentient will leave this out of chats and tasks' : 'Sentient will use this memory again'),
+    onSettled: settle
+  })
+
+  return useMemo(() => ({ update, remove, move, setState }), [update, remove, move, setState])
 }
 
 function scopeName(scope: string | undefined): string {

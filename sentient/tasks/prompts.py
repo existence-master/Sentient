@@ -446,8 +446,10 @@ def build_executor_prompt(
     earlier: str = "",
     mark_outside_content: bool = False,
     trigger_source: str = "",
+    confirmed: str = "",
 ) -> str:
-    """``earlier``: what the last runs of a recurring task found and its notepad (``tasks/continuity.py``)."""
+    """``earlier``: what the last runs of a recurring task found and its notepad (``tasks/continuity.py``).
+    ``confirmed``: what the user confirmed in a routine's setup checklist (``tasks/checklist.py``, #161)."""
     trigger_section = ""
     if trigger_event_data:
         data = json.dumps(trigger_event_data, indent=2, default=str)[:12000]
@@ -473,6 +475,7 @@ def build_executor_prompt(
         f"Your task ID is '{task_id}' and the current run ID is '{run_id}'.\n\n"
         f"The original context that triggered this plan is:\n---BEGIN CONTEXT---\n{context_str}\n---END CONTEXT---\n\n"
         f"**Primary Objective:** '{objective}'\n\n"
+        f"{confirmed}"
         f"**The Plan to Execute:**\n{_plan_lines(plan)}\n\n"
         f"**Plan tools and the functions you can call for them:**\n{tools_section}\n\n"
         f"{earlier}"

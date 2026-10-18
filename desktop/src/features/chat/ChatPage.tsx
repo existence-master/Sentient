@@ -145,6 +145,27 @@ function ChatView({
     return [...history, ...liveItems(liveSession)]
   }, [messages.data, liveSession])
 
+  // ?message=<id> (a memory's source, #152): scroll to that message once it is on screen, and mark it a moment
+  const focusId = new URLSearchParams(useLocation().search).get("message")
+  const loadedAll = !messages.isFetching
+  const focused = useRef<string | null>(null) // done once per link, not again when the chat refetches
+  useEffect(() => {
+    if (!focusId || items.length === 0 || !loadedAll || focused.current === focusId) return
+    const t = window.setTimeout(() => {
+      focused.current = focusId
+      const el = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(focusId)}"]`)
+      if (!el) {
+        // this view shows a chat's newest 500 messages: say so rather than leave the user guessing
+        if (!(messages.data ?? []).some((m) => m.id === focusId)) toast.info('That message is further back in this chat than Sentient shows here.')
+        return
+      }
+      el.scrollIntoView({ block: 'center' })
+      el.classList.add('ring-2', 'ring-accent/60')
+      window.setTimeout(() => el.classList.remove('ring-2', 'ring-accent/60'), 2400)
+    }, 350)
+    return () => window.clearTimeout(t)
+  }, [focusId, items.length, loadedAll])
+
   const streaming = !!liveSession?.streaming
   const lastAssistantIndex = items.map((i) => i.kind).lastIndexOf('assistant')
 
@@ -397,8 +418,9 @@ function Timeline({ items, streaming, loading, children }: { items: TimelineItem
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
   }, [])
 
-  // `?at=top` keeps the first message in view (deep links from search, screenshots).
-  const atTop = useRef(/(^|[?&])at=top\b/.test(useLocation().search))
+  // `?at=top` keeps the first message in view (deep links from search, screenshots); `?message=` (a memory's source,
+  // #152) doesn't jump to the bottom either, so the page can scroll to that message.
+  const atTop = useRef(/(^|[?&])(at=top\b|message=)/.test(useLocation().search))
   if (atTop.current) stick.current = false
 
   useLayoutEffect(() => {

@@ -1,6 +1,7 @@
 # 0003. Keep all state in one SQLite file
 
-- **Status:** Accepted
+- **Status:** Accepted (how columns are added: amended by [ADR 0030](0030-numbered-migration-files.md), numbered
+  migration files instead of `store.ensure_column` calls in each package)
 - **Date:** 2026-09-12
 
 ## Context

@@ -131,14 +131,15 @@ async def rename_node(request: Request, node_id: str, body: RenameBody):
 
 
 @router.delete("/api/nodes/{node_id}", dependencies=AUTH)
-async def delete_node(request: Request, node_id: str):
+async def delete_node(request: Request, node_id: str, forget: bool = False):
+    """``?forget=true``: also forget what Sentient learned from the device (#153)."""
     try:
-        ok = await get_core(request).nodes.delete(node_id)
+        ok = await get_core(request).nodes.delete(node_id, forget=forget)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not ok:
         raise HTTPException(404, "device not found")
-    return {"ok": True}
+    return {"ok": True, "forgotten": ok} if isinstance(ok, dict) else {"ok": True}
 
 
 @router.post("/api/nodes/{node_id}/invoke", dependencies=AUTH)

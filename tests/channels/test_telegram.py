@@ -503,6 +503,7 @@ async def test_approval_buttons_deny_and_stale(tg, llm):
 # ---------------------------------------------------------------------------- polling
 
 
+@pytest.mark.flaky(reruns=2)  # 5 s wall-clock budget, timed out on Windows CI: #420
 async def test_polling_backoff_recovery_and_revoked_token(tg):
     app, ch, api = tg.app, tg.ch, tg.api
     waits: list[float] = []

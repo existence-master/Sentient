@@ -47,6 +47,38 @@ def version():
     console.print(f"sentient {__version__}")
 
 
+# Modules the engine imports lazily or only on first use (a model call, voice, a migration). An installer whose
+# frozen engine misses one of them still starts and answers `version`, then fails the first real request, which is
+# how v3.0.0-beta.1's first build shipped without numpy and tokenizers. packaging/build_engine.py runs this.
+_SELFCHECK_MODULES = (
+    "sentient.app",
+    "sentient.gateway.app",
+    "sentient.store.migrations",
+    "litellm",
+    "numpy",
+)
+
+
+@app.command("selfcheck", hidden=True)
+def selfcheck():
+    """Import everything the engine needs at runtime and fail loudly if anything is missing."""
+    import importlib
+
+    missing = []
+    for name in _SELFCHECK_MODULES:
+        try:
+            importlib.import_module(name)
+        except Exception as exc:  # any import-time failure counts, not only ModuleNotFoundError
+            missing.append(f"{name}: {type(exc).__name__}: {exc}")
+    if missing:
+        console.print("selfcheck failed:\n" + "\n".join(missing))
+        raise typer.Exit(1)
+    # the schema version is derived from the migration files, so this also proves they were bundled
+    from sentient.store.db import SCHEMA_VERSION
+
+    console.print(f"selfcheck ok ({len(_SELFCHECK_MODULES)} modules, database version {SCHEMA_VERSION})")
+
+
 @app.command()
 def serve(
     host: str | None = typer.Option(None, help="Override gateway.host"),
