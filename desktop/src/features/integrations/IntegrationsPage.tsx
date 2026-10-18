@@ -18,7 +18,9 @@ import { cn } from '@/lib/utils'
 /**
  * Integrations: connect apps, manage privacy filters and custom MCP servers.
  *
- * Deep links (also used by screenshots): `?connect=<id>`, `?open=<id>[&focus=privacy|tools|triggers|upgrades]`,
+ * Deep links (also used by screenshots): `?connect=<id>`,
+ *   `?open=<id>[&focus=privacy|tools|triggers|upgrades|disconnect|forget]` (`forget`: the disconnect question with
+ *   "Also forget" ticked, #153),
  * `?section=mcp|webhooks`, `?q=<search>`, `?category=<id>`.
  */
 export function IntegrationsPage() {

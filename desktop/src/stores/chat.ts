@@ -12,7 +12,7 @@ import { create } from 'zustand'
 import { api, errorMessage, isApiError } from '@/lib/api'
 import { applyAgentEvent, emptyTurn, meterFrom, type AssistantTurnView, type AttachmentView, type TimelineItem, type UserMessageView } from '@/lib/chatFold'
 import { queryClient } from '@/lib/queryClient'
-import type { AgentEvent, ApprovalDecision, ChatEvent, ContextMeter, Session, TranscriptMessage } from '@/lib/types'
+import type { AgentEvent, ApprovalDecision, ChatEvent, ContextMeter, Session, TranscriptMessage, UndoAction, UndoWindowEvent } from '@/lib/types'
 import { uid } from '@/lib/utils'
 import { live } from '@/lib/ws'
 import { qk } from '@/hooks/queryKeys'
@@ -57,6 +57,9 @@ interface ChatState {
   cancel: (sessionId: string) => void
   retry: (sessionId: string) => Promise<void>
   respondApproval: (sessionId: string, approvalId: string, decision: ApprovalDecision) => Promise<void>
+  /** Undo, or send now, an email, message or post waiting in its undo window (#142). */
+  /** False when the answer couldn't be sent, so the buttons can be pressed again. */
+  respondUndo: (undoId: string, action: UndoAction) => Promise<boolean>
   handleEvent: (ev: ChatEvent) => void
   dropLive: (key: string) => void
   /** Close an incognito chat: stop its reply and delete it (#154). */
@@ -161,6 +164,9 @@ export const useChat = create<ChatState>((set, get) => ({
             get().handleEvent({ ...ev, session_id: ev.session_id ?? get().live[currentKey]?.sessionId ?? undefined } as ChatEvent)
           }
         }
+        // §1: every turn ends with done; settle the reply anyway if the stream closed without one (#334)
+        const left = get().live[currentKey]
+        if (left?.streaming && left.sessionId) get().handleEvent({ type: 'done', content: '', message_id: null, session_id: left.sessionId })
       } catch (err) {
         if ((err as Error)?.name === 'AbortError') {
           get().handleEvent({ type: 'done', content: '', message_id: null, cancelled: true, session_id: get().live[currentKey]?.sessionId })
@@ -204,12 +210,30 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
+  respondUndo: async (undoId, action) => {
+    toast.dismiss(`undo-${undoId}`)
+    if (live.send({ type: 'undo.respond', undo_id: undoId, action })) return true
+    try {
+      await api.undo.respond(undoId, action)
+      return true
+    } catch (err) {
+      toast.error(action === 'undo' ? "Couldn't undo it" : "Couldn't send it now", {
+        description: isApiError(err) && err.status === 404 ? 'It already went out.' : errorMessage(err)
+      })
+      return false
+    }
+  },
+
   handleEvent: (ev) => {
     const state = get()
     switch (ev.type) {
       case 'hello':
       case 'pong':
         return
+      case 'undo.ack': {
+        if (!ev.done && ev.action === 'undo') toast.message('Too late to undo', { description: 'It already went out.' })
+        return
+      }
       case 'session': {
         const pk = ev.client_id ? pendingKey(ev.client_id) : null
         const pending = pk ? state.live[pk] : undefined
@@ -308,6 +332,11 @@ export const useChat = create<ChatState>((set, get) => ({
           if (ev.type === 'error' && !sid) toast.error(ev.message)
           return
         }
+        if (ev.type === 'undo_window') undoToast(ev)
+        if (ev.type === 'tool_result') {
+          const waiting = state.live[key].turn.tools[ev.call_id]?.undo
+          if (waiting) toast.dismiss(`undo-${waiting.undoId}`)
+        }
         const next = applyAgentEvent(state.live[key].turn, ev as AgentEvent)
         const finished = ev.type === 'done'
         if (ev.type === 'user_interjection') {
@@ -318,12 +347,14 @@ export const useChat = create<ChatState>((set, get) => ({
         }
         // "A reply is already in progress." arrives without a turn: settle the optimistic entry.
         const orphanError = ev.type === 'error' && !ev.turn_id && !state.live[key].turn.segments.length
+        // §1: a non-recoverable error ends the reply even if its done never arrives (#334)
+        const fatal = ev.type === 'error' && ev.recoverable === false
         // A stopped reply drops what was queued behind it (steers, §17 dropped turns): show them as not sent.
         const stopped = ev.type === 'done' && ev.cancelled
         set(patchLive(state, key, (l) => ({
           ...l,
           turn: orphanError ? { ...next, status: 'error' } : next,
-          streaming: finished || orphanError ? false : l.streaming,
+          streaming: finished || orphanError || fatal ? false : l.streaming,
           user: { ...l.user, pending: false },
           steers: stopped ? [] : l.steers,
           unsent: stopped ? [...(l.unsent ?? []), ...l.steers] : l.unsent
@@ -369,6 +400,18 @@ export const useChat = create<ChatState>((set, get) => ({
       .finally(() => closing.delete(sessionId))
   }
 }))
+
+/** A toast with Undo while an email, message or post waits to go (#142); the chat shows the same as a card. */
+function undoToast(ev: UndoWindowEvent) {
+  const to = ev.preview?.fields.find((f) => f.label === 'To' || f.label === 'Where')?.value
+  const what = (ev.preview?.title ?? 'Message').toLowerCase()
+  toast(`Sending ${what}${to ? ` to ${to}` : ''}`, {
+    id: `undo-${ev.undo_id}`,
+    description: `It goes in ${ev.seconds} seconds.`,
+    duration: Math.max(1000, new Date(ev.until).getTime() - Date.now()),
+    action: { label: 'Undo', onClick: () => void useChat.getState().respondUndo(ev.undo_id, 'undo') }
+  })
+}
 
 /** True when `sessionId` is an incognito chat this window knows about (#154). */
 export function isIncognito(sessionId: string | null | undefined): boolean {

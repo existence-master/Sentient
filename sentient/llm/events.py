@@ -54,6 +54,9 @@ class ToolResultEvent(_Event):
     result: Any = None
     is_error: bool = False
     duration_ms: int | None = None
+    # what code found the call really did (#165, ``sentient.agent.outcomes``): {tool, app, kind, action, ok, detail,
+    # how, targets, missed}; None for calls that aren't checked
+    check: dict[str, Any] | None = None
 
 
 class ApprovalRequest(_Event):
@@ -68,10 +71,27 @@ class ApprovalRequest(_Event):
     target: str | None = None      # short human label of what is acted on, e.g. "Place order"
     # why this asks although rules or modes would let it run: the chat read outside content (ADR 0018)
     untrusted: str | None = None
+    # what a second look found off about this call (#143): "You asked to email Arjun, but this goes to x@..."
+    warning: str | None = None
     # the answers offered, in button order (#139): allow, allow_session, allow_timed, allow_always, deny. Only
     # "allow" and "deny" for a purchase, a raised risk, running code or a call after outside content
     choices: list[str] | None = None
     grant_minutes: int | None = None  # how long allow_timed lasts ("Allow for 1 hour")
+    # what will be sent or changed, the way a person reads it (#142): {kind, title, fields: [{label, value}], body}
+    preview: dict[str, Any] | None = None
+
+
+class UndoWindow(_Event):
+    """An email, message or post waiting ``seconds`` before it goes, so the user can still undo it (#142). It runs
+    only when the window ends; its ``tool_result`` follows then (``{"undone": true}`` when the user pressed Undo)."""
+
+    type: Literal["undo_window"] = "undo_window"
+    undo_id: str
+    call_id: str
+    name: str
+    seconds: int
+    until: str  # ISO time the window ends
+    preview: dict[str, Any] | None = None
 
 
 class UserInterjection(_Event):
@@ -119,10 +139,15 @@ class Done(_Event):
     content: str = ""
     message_id: str | None = None
     cancelled: bool = False
+    # set when the turn ended in an error before any reply (the ``error`` event before it has the message to show);
+    # nothing was saved then and ``message_id`` is null
+    error: str | None = None
     # memories this reply had in mind (sentient.memory.sources): what was in its prompt or returned by memory tools
     memory_sources: list[dict[str, Any]] = Field(default_factory=list)
     # pages, emails, files and apps this reply used (sentient.agent.sources, #174)
     sources: list[dict[str, Any]] = Field(default_factory=list)
+    # the outcome checks of this reply's calls (#165), each failure that still stands with its plain ``message``
+    checks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 AgentEvent = (
@@ -132,6 +157,7 @@ AgentEvent = (
     | ToolProgress
     | ToolResultEvent
     | ApprovalRequest
+    | UndoWindow
     | UserInterjection
     | Usage
     | Error

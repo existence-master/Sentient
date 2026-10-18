@@ -28,6 +28,22 @@ export const LABELS: Record<string, FieldLabel> = {
   'chat.compress_after_messages': { label: 'Summarize long chats after', unit: 'messages' },
   'chat.show_thinking': { label: 'Show thinking', description: "Show the model's reasoning in a collapsible block." },
   'chat.auto_title': { label: 'Name chats automatically' },
+  'chat.quick_commands': {
+    label: 'Quick timers, reminders and alarms',
+    description:
+      'Simple requests like "set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "wake me at 7" or "what\'s next on my calendar" happen at once, without the model. English for now.'
+  },
+  'chat.alarm_snooze_minutes': {
+    label: 'Snooze length',
+    unit: 'min',
+    description: 'How long "snooze" puts off a ringing alarm, unless you say how long ("snooze for 5 minutes").'
+  },
+  // channels (#359)
+  'channels.deliver_reminders': {
+    label: 'Reminders and alarms on your phone too',
+    description:
+      'Reminders and alarms you set on this computer or by voice also go off in your paired chats that get notifications. Ones you set in a chat always go off in that chat.'
+  },
   // memory
   'memory.facts_top_k': { label: 'Facts recalled per message', unit: 'facts' },
   'memory.min_similarity': { label: 'Recall threshold', percent: true },
@@ -37,6 +53,10 @@ export const LABELS: Record<string, FieldLabel> = {
   'memory.graph_link_similarity': { label: 'Graph link threshold', percent: true },
   'memory.summarize_after_minutes': { label: 'Summarize conversations after', unit: 'min' },
   'memory.summary_chunk_messages': { label: 'Messages per summary', unit: 'messages' },
+  // folders: matching pieces of notes that go along with each message (#354)
+  'folders.prompt_notes': { label: 'Note pieces with each message', unit: 'pieces' },
+  'folders.prompt_min_similarity': { label: 'How closely a note must match', percent: true },
+  'folders.prompt_note_chars': { label: 'Length of each note piece', unit: 'chars' },
   // models (#149)
   'models.local_queue': { label: 'One job at a time, your chats first' },
   'models.background_quiet_s': { label: 'Background work waits after you chat', unit: 's' },
@@ -48,6 +68,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'models.battery_max_wait_s': { label: 'Upkeep never waits longer than', unit: 's' },
   // models (#148)
   'models.local_only': { label: 'Local only' },
+  'models.claude_code_max_concurrent': { label: 'Claude Code runs at once' },
+  'models.claude_code_everywhere': { label: 'Use my Claude Code for everything' },
   'models.monthly_budget_usd': { label: 'Monthly budget', unit: 'USD' },
   'models.budget_at_limit': { label: 'When the budget is used up', options: { ask: 'Ask', stop: 'Stop' } },
   // tasks
@@ -82,7 +104,7 @@ export const LABELS: Record<string, FieldLabel> = {
   // approvals & tools
   'tools.approvals.mode': {
     label: 'Ask before acting',
-    description: 'Sentient checks with you before it changes, sends, deletes or runs something. You can also require a yes for every tool. Even with Never ask, it still checks before a purchase, for apps you set to Ask, before sending anything once a chat has read an email or web page, and before a change you just told it never to make until you answer its suggested rule.',
+    description: 'Sentient checks with you before it changes, sends, deletes or runs something. You can also require a yes for every tool. Even with Never ask, it still checks before a purchase, before unlocking a door, turning off the alarm or opening a garage door, for apps you set to Ask, before sending anything once a chat has read an email or web page, and before a change you just told it never to make until you answer its suggested rule.',
     options: { off: 'Never ask', ask: 'When it changes or sends', always: 'Before every tool' }
   },
   'tools.approvals.remember_session': {
@@ -101,6 +123,13 @@ export const LABELS: Record<string, FieldLabel> = {
     description: "If nobody answers a task's request in time, the task stops without doing that step. A late answer can't approve it."
   },
   'tools.repeated_call_limit': { label: 'Stop when the same step repeats', unit: 'times' },
+  'tools.snapshots': { label: 'Copies before code changes files' },
+  'tools.snapshots.enabled': { label: 'Keep copies of files before code changes them' },
+  'tools.snapshots.max_file_mb': { label: 'Skip files bigger than', unit: 'MB' },
+  'tools.snapshots.max_total_mb': { label: 'Most copied each time', unit: 'MB' },
+  'tools.snapshots.max_files': { label: 'Most files copied each time', unit: 'files' },
+  'tools.snapshots.keep_days': { label: 'Keep copies for', unit: 'days' },
+  'tools.snapshots.max_kept_mb': { label: 'All copies together stay under', unit: 'MB' },
   'tools.disabled': { label: 'Disabled tools', hidden: true },
   'tools.approvals.rules': { label: 'Rules for apps and tools', hidden: true },
   'tools.approvals.rule_origins': { label: 'Where rules came from', hidden: true },
@@ -183,6 +212,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'dreaming.role': { hidden: true },
   'dreaming.max_facts': { hidden: true },
   'dreaming.merge_similarity': { hidden: true },
+  'dreaming.merge_languages': { label: 'Keep a memory saved in two languages just once', description: 'Only when the model is sure they say exactly the same thing. Undo any merge in Memory > Review.' },
+  'dreaming.language_merge_similarity': { hidden: true },
   'dreaming.merge_min_overlap': { hidden: true },
   'dreaming.contradiction_similarity': { hidden: true },
   // code execution

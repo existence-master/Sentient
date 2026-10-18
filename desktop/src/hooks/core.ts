@@ -139,6 +139,18 @@ export function useSetChatModel() {
   })
 }
 
+/** The memories one chat uses (#155). */
+export function useSetChatScope() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: string | null }) => api.sessions.setScope(id, scope),
+    onMutate: ({ id, scope }) => {
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === id ? { ...s, memory_scope: scope ?? 'personal' } : s)))
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.sessions })
+  })
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient()
   return useMutation({
@@ -156,6 +168,11 @@ export function useDeleteSession() {
 // ---------------------------------------------------------------------------- files, tools, usage
 export function useFiles() {
   return useQuery({ queryKey: qk.files, queryFn: api.files.list })
+}
+
+/** Whether an attachment's file is still there (#458); only asked when `enabled`. */
+export function useFileExists(name: string, enabled: boolean) {
+  return useQuery({ queryKey: qk.fileExists(name), queryFn: () => api.files.exists(name), enabled, staleTime: 60_000 })
 }
 
 export function useTools() {

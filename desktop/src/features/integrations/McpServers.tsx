@@ -33,12 +33,14 @@ import {
   StatusDot,
   type Tone
 } from '@/components/ui'
+import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
 import { useMcpActions, useMcpServers } from '@/hooks/integrations'
 import { errorMessage, isNotImplemented } from '@/lib/api'
 import type { ConnectionAccess, McpAuth, McpServer } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { AccessChoice, accessHint } from './AccessChoice'
 import { BrandIcon } from './BrandIcon'
+import { McpReviewPanel } from './McpReview'
 import { plainDescription, RISK_LABEL, riskOf, toolLabel } from './meta'
 
 const STATUS: Record<string, { tone: Tone; label: string }> = {
@@ -115,8 +117,12 @@ export function McpServersSection({ id }: { id?: string }) {
 function McpServerRow({ server: s }: { server: McpServer }) {
   const { test, remove, signIn, signOut, setEnabled, setAccess } = useMcpActions()
   const [confirm, setConfirm] = useState(false)
+  const forget = useForgetChoice()
   const [open, setOpen] = useState(false)
   const [editingValues, setEditingValues] = useState(false)
+  const [reviewing, setReviewing] = useState(false)
+  const toCheck = s.review?.needed ? s.review.tools.filter((t) => t.status === 'new' || t.status === 'changed').length : 0
+  const declined = s.review?.tools.filter((t) => t.status === 'declined').length ?? 0
   const missing = s.missing_values ?? []
   const valueKeys = s.transport === 'http' ? s.header_keys : s.env_keys
   const status = STATUS[s.status] ?? { tone: 'neutral' as Tone, label: s.status }
@@ -142,6 +148,11 @@ function McpServerRow({ server: s }: { server: McpServer }) {
               {s.status === 'connecting' ? <Spinner size={11} /> : <StatusDot tone={status.tone} />}
               {status.label}
             </span>
+            {toCheck > 0 && (
+              <Badge size="xs" tone={s.review?.verdict === 'high' || s.review?.reason === 'changed' ? 'danger' : 'warning'} icon={<IconAlertTriangle />}>
+                {s.review?.reason === 'changed' ? 'Tools changed' : `${toCheck} tool${toCheck === 1 ? '' : 's'} to check`}
+              </Badge>
+            )}
           </div>
           <div className="mt-0.5 truncate font-mono text-xs text-fg-subtle" title={target ?? ''}>
             {target}
@@ -208,7 +219,15 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         >
           Test
         </Button>
-        <IconButton size="sm" label="Remove server" icon={<IconTrash size={15} />} onClick={() => setConfirm(true)} />
+        <IconButton
+          size="sm"
+          label="Remove server"
+          icon={<IconTrash size={15} />}
+          onClick={() => {
+            forget.reset()
+            setConfirm(true)
+          }}
+        />
       </div>
 
       {s.signing_in ? (
@@ -244,6 +263,8 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         </div>
       )}
 
+      {(toCheck > 0 || reviewing) && <McpReviewPanel server={s} onDone={() => setReviewing(false)} />}
+
       <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-sunken/30 px-4 py-2.5">
         {s.env_keys.map((k) => (
           <Badge key={k} size="xs" icon={<IconKey />} tone={missing.includes(k) ? 'warning' : undefined}>
@@ -266,7 +287,14 @@ function McpServerRow({ server: s }: { server: McpServer }) {
             {s.tools.length} tool{s.tools.length === 1 ? '' : 's'} discovered
           </button>
         ) : (
-          <span className="text-xs text-fg-subtle">{s.status === 'connected' ? 'No tools exposed' : 'Tools appear once the server connects'}</span>
+          <span className="text-xs text-fg-subtle">
+            {s.status !== 'connected' ? 'Tools appear once the server connects' : toCheck ? 'No tools allowed yet' : declined ? 'No tools allowed' : 'No tools exposed'}
+          </span>
+        )}
+        {!toCheck && !!s.review?.tools.length && (
+          <button type="button" onClick={() => setReviewing((r) => !r)} className="text-xs font-medium text-fg-muted hover:text-fg">
+            {reviewing ? 'Hide safety check' : declined ? `Safety check (${declined} declined)` : 'Safety check'}
+          </button>
         )}
         {s.access && (
           <span className="ml-auto" title={accessHint(s.access, s.name)}>
@@ -318,18 +346,26 @@ function McpServerRow({ server: s }: { server: McpServer }) {
         onOpenChange={setConfirm}
         title={`Remove ${s.name}?`}
         description="The server is stopped and its tools disappear from Sentient. Saved values and sign-ins are deleted from your keychain."
-        confirmLabel="Remove"
+        confirmLabel={forget.forget ? 'Remove and forget' : 'Remove'}
         onConfirm={async () => {
           try {
-            await remove.mutateAsync(s.name)
-            toast.success(`${s.name} removed`)
+            const res = await remove.mutateAsync({ name: s.name, forget: forget.forget })
+            toast.success(`${s.name} removed`, { description: forgottenMessage(res.forgotten) })
           } catch (e) {
             toast.error("Couldn't remove the server", { description: errorMessage(e) })
           }
         }}
-      />
+      >
+        <ForgetLearned source={`app:${mcpPluginId(s.name)}`} open={confirm} checked={forget.forget} onCheckedChange={forget.setForget} />
+      </ConfirmDialog>
     </li>
   )
+}
+
+/** The engine's plugin id for a server (``mcp_`` and its name in lower case, other characters as ``_``). */
+function mcpPluginId(name: string): string {
+  const id = name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '')
+  return `mcp_${id || 'x'}`
 }
 
 /** "Add values": fill in the header or environment values a server lists by name. They go to the keychain. */
@@ -563,6 +599,8 @@ function AddMcpDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
             })
           } else if (srv.status === 'needs_sign_in') toast.warning(`${srv.name} asks you to sign in`, { description: srv.error ?? 'Use Sign in on the server.' })
           else if (srv.status === 'error') toast.warning(`${srv.name} was added but couldn't start`, { description: srv.error ?? undefined })
+          else if (srv.status === 'connected' && srv.review?.needed)
+            toast.warning(`${srv.name} is connected. Check its tools`, { description: "Sentient won't use them until you approve them below." })
           else if (srv.status === 'connected') toast.success(`${srv.name} is connected`, { description: `${srv.tools.length} tools available` })
           else toast.success(`${srv.name} added`, { description: 'Still connecting in the background.' })
           reset()

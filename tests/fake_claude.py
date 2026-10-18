@@ -114,6 +114,8 @@ def main() -> int:
         return 0
     if scenario == "linger":  # like the tool bridge: something it started still runs in the scratch folder
         subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"])
+    if scenario == "slow":  # a reply that takes a moment, to see how many run at once
+        time.sleep(float(os.environ.get("FAKE_CLAUDE_SLEEP", "1")))
     usage = {"input_tokens": 10, "cache_read_input_tokens": 5, "output_tokens": 7}
     if scenario == "tools" and "<tool_result" not in prompt:
         emit({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_t"}}})
@@ -127,7 +129,9 @@ def main() -> int:
             "parent_tool_use_id": None})
         emit({"type": "result", "subtype": "error_max_turns", "is_error": True, "errors": ["Reached max turns (1)"]})
         return 1
-    reply = ["All done, ", "the postcard is on its way."] if scenario == "tools" else ["Hello ", "from Claude"]
+    reply = (["All done, ", "the postcard is on its way."] if scenario == "tools"
+             else ['Here it is: {"facts": ', '["Maya likes chai"]}'] if scenario == "json"
+             else ["Hello ", "from Claude"])
     emit({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_1"}}})
     for piece in reply:
         emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,

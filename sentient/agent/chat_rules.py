@@ -2,15 +2,16 @@
 
 Anything said once in a chat can be lost when the conversation is summarized; a rule in code cannot. When a user
 message reads like a standing prohibition or a must-ask instruction about an action, Sentient proposes the matching
-Never or Ask rule as a card in the chat. Only the user's click (``decide``) creates the rule. The model only maps the
-words to rule keys, and every key is checked against the tool registry in code; nothing a model says can create,
-accept or loosen a rule.
+Never, Ask, "Only if I asked" or "Hand it to me" rule as a card in the chat. Only the user's click (``decide``) creates
+the rule. The model only maps the words to rule keys, and every key is checked against the tool registry in code;
+nothing a model says can create, accept or loosen a rule. The level is decided in code from the words (``level_for``):
+the model only ever picks between Never and Ask.
 
 Checks, cheapest first:
 
-1. ``standing_text``: a deterministic pre-filter (never, don't, do not, always ask, ask me first ...). Most messages
-   stop here without a model call. A sentence that limits itself to this request ("don't cc her this time", "do
-   not open it again in part A") is no standing instruction and is left out.
+1. ``standing_text``: a deterministic pre-filter (never, don't, do not, always ask, ask me first, unless I ask, I'll
+   send it myself ...). Most messages stop here without a model call. A sentence that limits itself to this request
+   ("don't cc her this time", "do not open it again in part A") is no standing instruction and is left out.
 2. ``candidate_tools``: tools whose names or descriptions share a word with the message (plus a few synonyms). No
    candidates, no model call ("I never eat breakfast").
 3. One short ``fast``-role prompt maps the words to candidate keys and a level, parsed tolerantly. Keys outside the
@@ -44,14 +45,16 @@ from sentient.llm import claude_code
 from sentient.llm.provider import ModelRefused, parse_json_loose
 from sentient.store.db import new_id, now_iso
 from sentient.tools.base import Risk, Tool
-from sentient.tools.rules import rule_for, tool_title
+from sentient.tools.rules import ALLOW, ASK, HAND_OFF, IF_ASKED, NEVER, rule_for, tool_title
 
 log = logging.getLogger(__name__)
 
 PENDING, ACCEPTED, DECLINED = "pending", "accepted", "declined"
-LEVELS = ("ask", "never")
-# how strict a rule is; a proposal is only made (and only applied) where it tightens
-STRICTNESS: dict[str | None, int] = {"allow": 0, None: 1, "ask": 2, "never": 3}
+LEVELS = (IF_ASKED, ASK, HAND_OFF, NEVER)
+# how strict a rule is; a proposal is only made (and only applied) where it tightens. "Only if I asked" sits just above
+# no rule: it never lets work nobody asked for in a chat run unasked; "Hand it to me" sits between Ask and Never: it
+# never runs the action, but Sentient may still prepare it
+STRICTNESS: dict[str | None, int] = {ALLOW: 0, None: 1, IF_ASKED: 2, ASK: 3, HAND_OFF: 4, NEVER: 5}
 # longest a reply waits for its message's rule check (loop.RULE_CHECK_WAIT_S). Claude Code answers the check only
 # inside that wait: it never works on after the reply moved on (ADR 0022)
 WAIT_S = 20.0
@@ -75,6 +78,21 @@ _LOOSEN = re.compile(r"\b(don't|dont|do not|never|no need to|stop|quit) (ask|ask
 _ASK_HINT = re.compile(
     r"\b(ask|asking|check with me|checking with me|my (ok|okay|permission|approval|go-ahead)|unless i)\b"
 )
+# "unless I ask", "only when I tell you to": the rule is "Only if I asked" (#140)
+_IF_ASKED_HINT = re.compile(
+    r"\b(unless (i|you're|you are) (ask|asked|tell|told|say|request)|unless asked|unless told|"
+    r"only\b[^.?!;]{0,40}?\b(when|if|after) (i('ve| have)? )?(ask|asked|tell|told|say|said|request)|"
+    r"only (when|if) (asked|told))"
+)
+# "I'll send it myself", "hand it to me", "let me press send": the rule is "Hand it to me" (#140)
+_HAND_OFF_HINT = re.compile(
+    r"\b((i'll|i will|i'd rather|let me|i can|i want to) (\w+ ){1,3}(it |them |that |this )?myself|"
+    r"hand (it|them|that|this|those|these) (over )?to me|give (it|them) to me|"
+    r"let me (send|post|press|click|hit|submit|do|finish|pay|buy|book|run|reply)|"
+    r"leave (it|them|that|the \w+) (for|to) me|for me to (send|post|press|click|submit|do|finish|run))\b"
+)
+# deciding the level only, once the words passed the pre-filter: "don't send it, just draft it" hands it over too
+_HAND_OFF_LEVEL = re.compile(r"\b(just|only) (draft|prepare|write|fill|set)\b")
 # a limit on this request only ("don't cc her this time", "do not open it again in part A"): a one-off instruction for
 # the reply at hand, never a standing rule. Kept narrow: a missed standing rule costs more than a needless card
 _ONE_OFF = re.compile(r"\b(this time|just this once|for now|in (part|step) [a-z0-9]{1,3})\b")
@@ -150,7 +168,8 @@ def standing_text(text: str) -> str:
             sentence = " ".join(c for c in _cut(sentence) if not _ONE_OFF.search(_plain(c)))
             plain = _plain(sentence)
         plain = _BENIGN.sub(" ", plain)
-        if _NEGATION.search(plain) or _ASK_FIRST.search(plain):
+        hints = (_NEGATION, _ASK_FIRST, _IF_ASKED_HINT, _HAND_OFF_HINT)
+        if any(h.search(plain) for h in hints):
             kept.append(" ".join(sentence.split()))
     return " ".join(kept)[:MAX_SAID].strip()
 
@@ -165,6 +184,20 @@ def pending_asks(mode: str, risk: Risk) -> bool:
 def asks_first(text: str) -> bool:
     """True when the words name a condition ("without asking me", "always ask"): the rule is Ask, not Never."""
     return bool(_ASK_HINT.search(_plain(text)))
+
+
+def level_for(text: str, model_level: str | None = None) -> str:
+    """The level the words ask for, decided in code (#140): "I'll send it myself" or "just draft it" -> Hand it to
+    me; "unless I ask" -> Only if I asked; "without asking me", "always ask" -> Ask; else the model's level, else
+    Never. The model only ever chooses between Never and Ask."""
+    plain = _plain(text)
+    if _HAND_OFF_HINT.search(plain) or _HAND_OFF_LEVEL.search(plain):
+        return HAND_OFF
+    if _IF_ASKED_HINT.search(plain):
+        return IF_ASKED
+    if asks_first(plain):
+        return ASK
+    return model_level if model_level in {ASK, NEVER} else NEVER
 
 
 def _stem(word: str) -> str:
@@ -291,14 +324,17 @@ def narrow_app_keys(
 
 def candidate_tools(text: str, tools: Iterable[Tool], app_names: dict[str, str]) -> list[Tool]:
     """Tools sharing a word with ``text`` (names, app, description, a few synonyms), best first, at most
-    ``MAX_CANDIDATES``. Actions rank above look-ups on a tie."""
+    ``MAX_CANDIDATES``. A word that names the tool's app counts twice, so an app the user names ("never use Slack")
+    keeps its place however many tools another app has. Actions rank above look-ups on a tie."""
     terms = _terms(text)
     if not terms:
         return []
     scored: list[tuple[int, int, str, Tool]] = []
     for t in tools:
         tokens = _tokens(t, app_names.get(t.plugin, ""))
+        app = {_stem(w) for w in _WORD.findall(_plain(f"{t.plugin.replace('_', ' ')} {app_names.get(t.plugin, '')}"))}
         score = sum(1 for term in terms if any(_match(term, tok) for tok in tokens))
+        score += sum(1 for term in terms if any(_match(term, tok) for tok in app))
         if score:
             scored.append((score, int(Risk(t.risk)), t.name, t))
     scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
@@ -354,7 +390,7 @@ def parse_detection(data: Any, candidates: list[Tool]) -> tuple[list[str], str |
     app_keys = {k for k in keys if k in apps and k not in names}
     keys = [k for k in keys if k in app_keys or names[k].plugin not in app_keys][:MAX_KEYS]
     level = str(data.get("rule") or data.get("level") or "").strip().lower()
-    return keys, (level if level in LEVELS else None)
+    return keys, (level if level in {ASK, NEVER} else None)
 
 
 # ----------------------------------------------------------------------------- service
@@ -520,7 +556,7 @@ class ChatRules:
         keys = narrow_app_keys(keys, said, self.app.registry.tools(include_hidden=True), names)
         if not keys:
             return None
-        level = "ask" if asks_first(said) else (level or "never")
+        level = level_for(said, level)
         rules = dict(self.app.config.tools.approvals.rules)
         pending = await self._session_pending(session_id)
         keys = [

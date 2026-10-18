@@ -21,9 +21,11 @@ made for another address (``stale_sign_in``).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import anyio
 import httpx2
@@ -75,43 +77,216 @@ class _QuietExpected(logging.Filter):
 logging.getLogger("mcp.client.auth.oauth2").addFilter(_QuietExpected())
 
 
+SERVER_URL_KEY = "server_url"
+
+
+def canonical_url(url: str | None) -> str:
+    """Normalize a server address for deterministic key hashing, safely handling IPv6 literals."""
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw)
+    except Exception:
+        return raw.rstrip("/")
+
+    scheme = parts.scheme.lower()
+    if not scheme or not parts.netloc:
+        return raw.rstrip("/")
+
+    try:
+        port = parts.port
+        hostname = parts.hostname or ""
+    except ValueError:
+        # Invalid port syntax (e.g. non-numeric port): preserve lowercased netloc safely
+        path = parts.path.rstrip("/")
+        canon = f"{scheme}://{parts.netloc.lower()}{path}"
+        return f"{canon}?{parts.query}" if parts.query else canon
+
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    is_default = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    userinfo = ""
+    if parts.username:
+        userinfo = f"{parts.username}:{parts.password}@" if parts.password else f"{parts.username}@"
+    host_port = f"{host}:{port}" if (port is not None and not is_default) else host
+    netloc = f"{userinfo}{host_port}"
+    path = parts.path.rstrip("/")
+    canonical = f"{scheme}://{netloc}{path}"
+    if parts.query:
+        canonical = f"{canonical}?{parts.query}"
+    return canonical
+
+
+def url_hash(url: str | None) -> str:
+    """A deterministic 12-character hex hash of the canonical server URL."""
+    canon = canonical_url(url)
+    if not canon:
+        return ""
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:12]
+
+
 def headers_secret(server: str) -> str:
     return f"mcp:{server}:headers"
 
 
-def tokens_secret(server: str) -> str:
-    return f"mcp:{server}:oauth"
+def tokens_secret(server: str, url: str | None = None) -> str:
+    h = url_hash(url)
+    return f"mcp:{server}:{h}:oauth" if h else f"mcp:{server}:oauth"
 
 
-def client_secret(server: str) -> str:
-    return f"mcp:{server}:client"
+def client_secret(server: str, url: str | None = None) -> str:
+    h = url_hash(url)
+    return f"mcp:{server}:{h}:client" if h else f"mcp:{server}:client"
 
 
-# Chunked keychain JSON lives in sentient.secrets; these names stay for existing callers.
+def _has_valid_tokens(data: Any) -> bool:
+    """Whether a stored OAuth token record has valid access or refresh tokens."""
+    if not isinstance(data, dict):
+        return False
+    toks = data.get("tokens")
+    return isinstance(toks, dict) and bool(toks.get("access_token") or toks.get("refresh_token"))
 
-SERVER_URL_KEY = "server_url"
+
+def _has_valid_client_info(data: Any) -> bool:
+    """Whether a stored OAuth client info record has a valid client_id."""
+    return isinstance(data, dict) and bool(data.get("client_id"))
 
 
-def stale_sign_in(server: str, url: str | None, *, changed_here: bool) -> list[str]:
-    """The sign-in entries (tokens, registered client) that belong to another address than ``url``.
+def migrate_server_credentials(server: str, url: str | None) -> None:
+    """Migrate legacy unhashed keychain entries to the new hashed format for this server URL.
 
-    A record names its address and is stale when ``url`` is another one (a local server, ``url=None``, leaves it to
-    the setup that uses it). An older record without an address counts as stale only when this setup had the server
-    at another address (``changed_here``), since another setup may be using it."""
+    Compatibility rules (#269):
+    - Never assume an untagged legacy credential (saved is None) belongs to this URL.
+      Preserve untagged legacy entries so other setups sharing the keychain are not starved.
+    - Legacy entries are copied to URL-specific keys but preserved in place for backward
+      compatibility with older installations sharing the keychain.
+    - Untagged legacy client info is copied only when the legacy token record is tagged for
+      this same server URL.
+    - Never overwrite a destination record with conflicting or malformed data.
+    """
+    if not url:
+        return
+
+    canon = canonical_url(url)
+
+    # 1. Tokens
+    legacy_tok = tokens_secret(server, None)
+    new_tok = tokens_secret(server, url)
+    leg_data = None
+    if legacy_tok != new_tok:
+        dest_data = load_json(new_tok)
+        leg_data = load_json(legacy_tok)
+        if isinstance(leg_data, dict):
+            saved = leg_data.get(SERVER_URL_KEY)
+            if saved is not None and canonical_url(saved) == canon:
+                if dest_data is not None:
+                    if not _has_valid_tokens(dest_data):
+                        new_rec = {**leg_data, SERVER_URL_KEY: url}
+                        save_json(new_tok, new_rec)
+                    elif dest_data.get("tokens") != leg_data.get("tokens"):
+                        log.warning("Preserving legacy tokens for %s: destination key contains conflicting credentials", server)
+                else:
+                    new_rec = {**leg_data, SERVER_URL_KEY: url}
+                    if not save_json(new_tok, new_rec):
+                        log.warning("Could not save migrated tokens for %s", server)
+            # If saved is None: NEVER migrate untagged legacy bearer tokens across server URLs (CWE-522).
+            # The untagged legacy record is preserved without modification so other setups are not starved.
+            # Require explicit OAuth sign-in for each URL whose token ownership cannot be verified.
+
+    # 2. Client info
+    legacy_cli = client_secret(server, None)
+    new_cli = client_secret(server, url)
+    if legacy_cli != new_cli:
+        dest_cli = load_json(new_cli)
+        leg_cli = load_json(legacy_cli)
+        if isinstance(leg_cli, dict):
+            saved = leg_cli.get(SERVER_URL_KEY)
+            should_copy = False
+            if saved is not None and canonical_url(saved) == canon:
+                should_copy = True
+            elif saved is None and _has_valid_client_info(leg_cli) and isinstance(leg_data, dict):
+                # Copy untagged client info ONLY when legacy tokens are tagged for this same address
+                tok_saved = leg_data.get(SERVER_URL_KEY)
+                if tok_saved is not None and canonical_url(tok_saved) == canon:
+                    should_copy = True
+
+            if should_copy:
+                if dest_cli is not None:
+                    if not _has_valid_client_info(dest_cli):
+                        new_rec = {**leg_cli, SERVER_URL_KEY: url}
+                        save_json(new_cli, new_rec)
+                    elif dest_cli.get("client_id") != leg_cli.get("client_id"):
+                        log.warning("Preserving legacy client info for %s: destination contains conflicting client info", server)
+                else:
+                    new_rec = {**leg_cli, SERVER_URL_KEY: url}
+                    if not save_json(new_cli, new_rec):
+                        log.warning("Could not save migrated client info for %s", server)
+
+
+def stale_sign_in(
+    server: str,
+    url: str | None,
+    *,
+    changed_here: bool,
+    previous_url: str | None = None,
+) -> list[str]:
+    """The sign-in entries that belong to another address and can safely be cleared.
+
+    When a server's address changes on this setup (changed_here=True and previous_url is set),
+    the previous URL's URL-specific tokens and client info secrets are cleared so live tokens
+    are not left behind in the keychain.
+    A legacy entry tagged with another server URL must NEVER be deleted, as another setup
+    sharing the OS keychain may own it (#269).
+    An untagged legacy entry is only considered stale if this setup previously moved the server
+    elsewhere (changed_here=True)."""
     stale = []
-    for name in (tokens_secret(server), client_secret(server)):
+    canon = canonical_url(url) if url else None
+    prev_canon = canonical_url(previous_url) if previous_url else None
+
+    # URL-specific entries from previous_url when address changes to another address
+    if changed_here and prev_canon and prev_canon != canon:
+        for s in (tokens_secret(server, previous_url), client_secret(server, previous_url)):
+            if s not in stale:
+                stale.append(s)
+
+    for name in (tokens_secret(server, None), client_secret(server, None)):
         rec = load_json(name)
         if not isinstance(rec, dict):
             continue
         saved = rec.get(SERVER_URL_KEY)
-        if (url is not None and saved != url) if saved else changed_here:
+        if saved is not None:
+            # If explicitly tagged with previous_url and changed here to another address,
+            # this setup owned it and moved away:
+            if (
+                changed_here
+                and prev_canon
+                and prev_canon != canon
+                and canonical_url(saved) == prev_canon
+                and name not in stale
+            ):
+                stale.append(name)
+            continue
+        # Untagged record: only clear if this setup previously configured this server elsewhere
+        if changed_here and name not in stale:
             stale.append(name)
     return stale
 
 
-def forget_server(server: str) -> None:
-    for name in (headers_secret(server), tokens_secret(server), client_secret(server)):
+def forget_server(server: str, url: str | None = None) -> None:
+    delete_json(headers_secret(server))
+    for name in (tokens_secret(server, url), client_secret(server, url)):
         delete_json(name)
+    if url:
+        canon = canonical_url(url)
+        for fn in (tokens_secret, client_secret):
+            leg_key = fn(server, None)
+            rec = load_json(leg_key)
+            if isinstance(rec, dict):
+                saved = rec.get(SERVER_URL_KEY)
+                # Only delete legacy entry if it was explicitly tagged for THIS url.
+                # Never delete an untagged entry (saved is None) or another URL's entry!
+                if saved is not None and canonical_url(saved) == canon:
+                    delete_json(leg_key)
 
 
 # ---------------------------------------------------------------------------- OAuth storage
@@ -129,11 +304,34 @@ class KeychainTokenStorage:
         self.saved = False
         self.context: Any = None  # the provider's OAuthContext: its discovered metadata is saved with the tokens
 
+    @property
+    def effective_url(self) -> str | None:
+        if self.url:
+            return self.url
+        if self.context is not None:
+            return getattr(self.context, "server_url", None)
+        return None
+
     def _tag(self, rec: dict) -> dict:
-        return {**rec, SERVER_URL_KEY: self.url} if self.url else rec
+        url = self.effective_url
+        return {**rec, SERVER_URL_KEY: url} if url else rec
 
     def record(self) -> dict | None:
-        return load_json(tokens_secret(self.server))
+        url = self.effective_url
+        if url:
+            rec = load_json(tokens_secret(self.server, url))
+            if rec is not None:
+                return rec
+            # Only fall back to legacy key if it is explicitly tagged for this URL.
+            # Never fall back if saved is None!
+            leg = load_json(tokens_secret(self.server, None))
+            if isinstance(leg, dict):
+                saved = leg.get(SERVER_URL_KEY)
+                if saved is not None and canonical_url(saved) == canonical_url(url):
+                    return leg
+            return None
+        rec = load_json(tokens_secret(self.server, None))
+        return rec if isinstance(rec, dict) else None
 
     def has_tokens(self) -> bool:
         rec = self.record()
@@ -152,7 +350,7 @@ class KeychainTokenStorage:
         if not rec or not (rec.get("tokens") or {}).get("refresh_token"):
             return False
         rec["expires_at"] = 1.0  # long past; the SDK treats 0 as "never expires"
-        return save_json(tokens_secret(self.server), rec)
+        return save_json(tokens_secret(self.server, self.effective_url), rec)
 
     async def get_tokens(self) -> OAuthToken | None:
         if self.fresh and not self.saved:
@@ -169,7 +367,7 @@ class KeychainTokenStorage:
         expires_at = time.time() + int(tokens.expires_in) - EXPIRY_MARGIN_S if tokens.expires_in is not None else None
         rec = self._tag({"tokens": tokens.model_dump(mode="json", exclude_none=True), "expires_at": expires_at,
                          **_metadata_of(self.context)})
-        if not save_json(tokens_secret(self.server), rec):
+        if not save_json(tokens_secret(self.server, self.effective_url), rec):
             raise SignInFailed("The system keychain is unavailable, so the sign-in can't be saved.")
         self.saved = True
 
@@ -180,13 +378,24 @@ class KeychainTokenStorage:
         meta = _metadata_of(self.context)
         if not rec or not meta:
             return False
-        if save_json(tokens_secret(self.server), {**rec, **meta}):
+        key = tokens_secret(self.server, self.effective_url)
+        if save_json(key, {**rec, **meta}):
             return True
-        save_json(tokens_secret(self.server), rec)
+        save_json(key, rec)
         return False
 
     async def get_client_info(self) -> OAuthClientInformationFull | None:
-        data = load_json(client_secret(self.server))
+        url = self.effective_url
+        if url:
+            data = load_json(client_secret(self.server, url))
+            if data is None:
+                leg = load_json(client_secret(self.server, None))
+                if isinstance(leg, dict):
+                    saved = leg.get(SERVER_URL_KEY)
+                    if saved is not None and canonical_url(saved) == canonical_url(url):
+                        data = leg
+        else:
+            data = load_json(client_secret(self.server, None))
         if not data:
             return None
         try:
@@ -195,7 +404,7 @@ class KeychainTokenStorage:
             return None
 
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
-        if not save_json(client_secret(self.server), self._tag(client_info.model_dump(mode="json", exclude_none=True))):
+        if not save_json(client_secret(self.server, self.effective_url), self._tag(client_info.model_dump(mode="json", exclude_none=True))):
             raise SignInFailed("The system keychain is unavailable, so the sign-in can't be saved.")
 
 

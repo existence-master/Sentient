@@ -31,6 +31,8 @@ import math
 import re
 from typing import Any
 
+from sentient.tools.rules import brings_untrusted
+
 log = logging.getLogger(__name__)
 
 ALWAYS_TOOLS = (
@@ -40,6 +42,12 @@ ALWAYS_TOOLS = (
     "skill_view",
     "create_task_from_prompt",
 )
+# Offered on every turn too, but only while their app is visible: folder_search exists once the user added folders
+# (#176), and their notes may answer anything.
+ALWAYS_WHEN_AVAILABLE = ("folder_search",)
+# Offered with any tool that reads outside content (email, the web, messages): the tool-less reader that returns only
+# the fields asked for (#144, ADR 0031).
+READER_TOOL = "read_with_reader"
 LOCAL_PREFIXES = ("ollama", "ollama_chat", "lm_studio", "llamafile", "vllm", "hosted_vllm")
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = {
@@ -74,6 +82,10 @@ TOOL_TRIGGERS: dict[str, tuple[str, ...]] = {
         "url", "http", "https", "www", "link", "web page", "webpage", "article", "blog post", "this page",
     ),
     "channel_": ("telegram", "discord", "whatsapp", "message me", "text me"),
+    "folder_": (
+        "note", "notes", "my notes", "obsidian", "vault", "journal", "diary", "wrote down", "written down", "jotted",
+        "documents", "my docs", "my files", "my folder", "meeting notes", "according to my",
+    ),
     "terminal_": (
         "terminal", "command", "commands", "command line", "shell", "powershell", "bash", "git", "npm", "pip",
         "compile", "run the tests", "my repo", "repository",
@@ -267,6 +279,8 @@ class ToolSelector:
         for name in named_tools(text, plugins) if text.strip() else []:
             if name not in chosen and len(chosen) < budget:
                 chosen.append(name)
+        # after the tools the user named, so those always fit first
+        chosen += [n for n in ALWAYS_WHEN_AVAILABLE if n in visible_names and n not in chosen and len(chosen) < budget]
         scores: dict[str, float] = {}
         triggered: set[str] = set()
         for p in plugins:
@@ -316,4 +330,9 @@ class ToolSelector:
                 if n and reserve + n <= room - keep:
                     reserve += n
             chosen.extend(_best_tools(tools, scored, room - reserve))
+        if READER_TOOL in visible_names and READER_TOOL not in chosen and any(
+            (t := registry.get(n)) is not None and brings_untrusted(t)
+            for n in chosen if n not in ALWAYS_TOOLS and n not in ALWAYS_WHEN_AVAILABLE
+        ):
+            chosen.append(READER_TOOL)
         return chosen

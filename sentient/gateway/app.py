@@ -90,6 +90,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
             me = asyncio.current_task()
             turn = None
             stopped: dict = {}
+            ended = False  # the last event sent was a done
             try:
                 if previous is not None and not previous.done():
                     await asyncio.wait({previous})
@@ -100,7 +101,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                     await send({"type": "error", "message": DROPPED_NOTE, "session_id": session_id, "recoverable": True,
                                 "dropped": True, "client_id": client_id})
                     await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True,
-                                "dropped": [str(msg.get("text", ""))], "client_id": client_id})
+                                "dropped": [str(msg.get("text", ""))], "checks": [], "client_id": client_id})
                     return
                 turn = s.agent.run_turn(
                     session_id,
@@ -113,6 +114,7 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 async for event in turn:
                     # keep consuming even if the window went away so the turn is fully persisted
                     await send(event.model_dump())
+                    ended = event.type == "done"
             except asyncio.CancelledError:
                 if turn is not None:  # stopped between events: close it now so the kept reply is saved first
                     with contextlib.suppress(Exception):
@@ -122,11 +124,16 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 kept = {"message_id": stopped["message_id"]} if stopped.get("message_id") else {}
                 await send({"type": "done", "content": "", "session_id": session_id, "cancelled": True, **kept,
                             "memory_sources": stopped.get("memory_sources") or [],
-                            "sources": stopped.get("sources") or []})
+                            "sources": stopped.get("sources") or [], "checks": stopped.get("checks") or []})
                 raise
             except Exception as exc:
                 log.exception("chat turn failed")
+                if ended:  # it broke after its done: the turn already ended
+                    return
                 await send({"type": "error", "message": str(exc), "session_id": session_id, "recoverable": False})
+                # every turn ends with one done, also when it broke (docs/API.md section 1, #334)
+                await send({"type": "done", "content": "", "session_id": session_id, "message_id": None,
+                            "error": str(exc), "checks": []})
             finally:
                 chain = turns.get(session_id) or []
                 if me in chain:
@@ -178,6 +185,10 @@ def create_app(sentient: SentientApp | None = None) -> FastAPI:
                 elif kind == "approval.respond":
                     ok = s.approvals.resolve(str(msg.get("approval_id")), str(msg.get("decision", "deny")))
                     await send({"type": "approval.ack", "approval_id": msg.get("approval_id"), "resolved": ok})
+                elif kind == "undo.respond":  # Undo or Send now on a waiting email, message or post (#142)
+                    ok = s.undo.respond(str(msg.get("undo_id")), str(msg.get("action", "undo")))
+                    await send({"type": "undo.ack", "undo_id": msg.get("undo_id"), "action": msg.get("action", "undo"),
+                                "done": ok})
                 elif kind == "presence":  # the window is focused and visible, or not (#139)
                     s.presence.set(presence_id, msg.get("active") is True)
                 else:

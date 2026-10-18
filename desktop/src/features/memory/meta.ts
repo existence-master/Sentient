@@ -13,6 +13,9 @@ import {
   IconUserCircle,
   IconUsers,
   IconBox,
+  IconDeviceMobile,
+  IconFolder,
+  IconPlug,
   type Icon
 } from '@tabler/icons-react'
 import { MEMORY_TOPICS, type Memory } from '@/lib/types'
@@ -61,9 +64,28 @@ export interface SourceMeta {
   description: string
 }
 
+const CHANNEL_NAMES: Record<string, string> = { telegram: 'Telegram', discord: 'Discord', whatsapp: 'WhatsApp' }
+const APP_NAMES: Record<string, string> = { gmail: 'Gmail', email_imap: 'Email', home_assistant: 'Home Assistant', gcalendar: 'Google Calendar' }
+
+function appName(id: string): string {
+  if (APP_NAMES[id]) return APP_NAMES[id]
+  if (id.startsWith('mcp_')) return id.slice(4).replace(/_/g, ' ')
+  return id.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
 export function sourceMeta(source: string): SourceMeta {
   if (source.startsWith('file:')) return { label: source.slice(5), icon: IconFileText, description: 'Imported document' }
   if (source.startsWith('task:')) return { label: 'Task', icon: IconListCheck, description: 'Learned while running a task' }
+  if (source.startsWith('channel:')) {
+    const name = CHANNEL_NAMES[source.slice(8)] ?? source.slice(8)
+    return { label: name, icon: IconMessageCircle, description: `Learned in a chat in ${name}` }
+  }
+  if (source.startsWith('device:')) return { label: 'Device', icon: IconDeviceMobile, description: 'Learned in a chat on one of your devices' }
+  if (source.startsWith('folder:')) return { label: 'Your notes', icon: IconFolder, description: 'Learned from a folder of notes' }
+  if (source.startsWith('app:')) {
+    const name = appName(source.slice(4))
+    return { label: name, icon: IconPlug, description: `Learned from ${name}` }
+  }
   switch (source) {
     case 'conversation':
       return { label: 'Conversation', icon: IconMessageCircle, description: 'Learned in chat' }

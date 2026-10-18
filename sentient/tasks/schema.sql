@@ -1,8 +1,7 @@
 -- Owned by sentient.tasks. Loaded by Store.open() after the core schema.
--- Must stay idempotent (CREATE ... IF NOT EXISTS). Columns added after the first
--- stub are also ensured by TaskRepo.ensure_schema() (store.ensure_column), and
--- indexes on those columns are created there, so databases created by older
--- builds still open.
+-- Must stay idempotent (CREATE ... IF NOT EXISTS) and describe the whole current shape: a new
+-- database is made from these files alone. An older database first gets its missing columns from
+-- sentient/store/migrations (docs/DEVELOPING.md, "Changing the database").
 
 CREATE TABLE IF NOT EXISTS tasks (
     id                    TEXT PRIMARY KEY,
@@ -26,17 +25,21 @@ CREATE TABLE IF NOT EXISTS tasks (
     browser_profile       TEXT,                       -- named browser profile the task's browser calls use (NULL: default)
     deliver_to            TEXT,                       -- JSON (tasks/delivery.py): "desktop" or [{channel, chat_id}]; NULL: default
     notepad               TEXT,                       -- recurring tasks: notes the runs keep for the next run (tasks/continuity.py)
+    memory_scope          TEXT,                       -- the memories its runs use and save to (#155); NULL: personal
+    keep_running          INTEGER NOT NULL DEFAULT 0, -- never paused while the user is away (#163)
+    setup                 TEXT,                       -- JSON (routines): the setup checklist (#161, tasks/checklist.py)
     error                 TEXT,
     next_execution_at     TEXT,                       -- UTC ISO-8601, seconds precision (lexicographically comparable)
     last_execution_at     TEXT,
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_tasks_next_exec ON tasks(status, enabled, next_execution_at);
 
 CREATE TABLE IF NOT EXISTS task_runs (
     id            TEXT PRIMARY KEY,
     task_id       TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    status        TEXT NOT NULL,                  -- processing | waiting_for_user | completed | completed_with_errors | error | cancelled
+    status        TEXT NOT NULL,                  -- processing | waiting_for_user | completed | completed_with_errors | error | cancelled | skipped
     plan          TEXT,                           -- JSON plan snapshot (swarm: worker configurations)
     trigger_data  TEXT,                           -- JSON event that started this run (triggered tasks)
     messages      TEXT,                           -- JSON checkpoint of the agent transcript (resumable)
@@ -46,13 +49,19 @@ CREATE TABLE IF NOT EXISTS task_runs (
     retry_of      TEXT,                           -- run id this run retries (continues from its transcript)
     pending_question TEXT,                        -- JSON {question, options, tool_call_id, asked_at, limit?, stop_error?} while waiting_for_user
     limits        TEXT,                           -- JSON {base, max, used} of steps, seconds, tokens, cost_usd (tasks/limits.py)
+    last_activity_at TEXT,                        -- when the run last made progress (a stuck run is noticed)
     memory_sources TEXT,                          -- JSON list: memories the run had in mind (sentient/memory/sources.py)
     sources       TEXT,                           -- JSON list: pages, emails, files and apps the run used (sentient/agent/sources.py)
+    dry_run       INTEGER NOT NULL DEFAULT 0,     -- 1: a try run (#142), which only notes what it would send, change or run
+    would_do      TEXT,                           -- JSON list (try runs): what a real run would do (sentient/agent/dry_run.py)
+    checks        TEXT,                           -- JSON list: outcome checks of the calls it made (#165, sentient/agent/outcomes.py)
+    retry_at      TEXT,                           -- skipped for a missing source: when it is tried again (#161)
     started_at    TEXT,
     finished_at   TEXT,
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_task ON task_runs(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_runs_created ON task_runs(created_at);   -- the activity timeline (#147)
 
 CREATE TABLE IF NOT EXISTS run_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

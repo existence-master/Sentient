@@ -9,6 +9,7 @@ import {
   IconCopy,
   IconDots,
   IconFileDescription,
+  IconFlask,
   IconHelpCircle,
   IconPencil,
   IconPlayerPause,
@@ -49,7 +50,7 @@ import { isApiError } from '@/lib/api'
 import { modelShortName } from '@/lib/models'
 import type { Task, TaskSchedule } from '@/lib/types'
 import { cn, copyText, formatDateTime, relativeTime } from '@/lib/utils'
-import { taskHeadline } from '../ListView'
+import { pausingNote, taskHeadline } from '../ListView'
 import { useMissingIntegrations, useNow, useUserTimezone, type MissingIntegration } from '../hooks'
 import { KIND_META, PRIORITY_META, SOURCE_META, displayName, isScriptJob, latestRun, processingRun, scriptOf, taskKind, taskSource, waitingRun } from '../meta'
 import { KindTile, TaskStatusBadge } from '../parts'
@@ -63,7 +64,8 @@ import { NotepadCard } from './NotepadCard'
 import { Clarifications } from './Clarifications'
 import { RunQuestion } from './RunQuestion'
 import { PlanSection } from './PlanSection'
-import { RunHistory, RunResult } from './RunHistory'
+import { RunHistory, RunResult, skippedReason } from './RunHistory'
+import { SetupChecklist, hasChecklist } from './SetupChecklist'
 import { FilterRulesView, ScheduleEditor } from './ScheduleEditor'
 import { SwarmSection } from './SwarmSection'
 import { TaskChat } from './TaskChat'
@@ -278,14 +280,26 @@ function DetailHeader({ task, layout, onClose, ops, missing, onShowRuns }: { tas
   )
 }
 
+/** Try it first (#142): one run that only notes what it would send, change or run. */
+function canTryFirst(task: Task): boolean {
+  return !['planning', 'clarification_pending'].includes(task.status) && task.task_type === 'single' && task.plan.length > 0 && !task.runs.some((r) => r.dry_run && (r.status === 'processing' || r.status === 'waiting_for_user'))
+}
+
 function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: Task; ops: Ops; missing: MissingIntegration[]; layout: 'panel' | 'page'; onClose?: () => void; onShowRuns: () => void }) {
   const navigate = useNavigate()
   const [confirmDelete, setConfirmDelete] = useState(false)
   const id = task.task_id
   const kind = taskKind(task)
   const run = processingRun(task)
-  const waiting = waitingRun(task)
+  const waiting = (task.runs ?? []).find((r) => r.status === 'waiting_for_user' && !r.dry_run) // the run the task waits on
   const schedulable = kind === 'recurring' || kind === 'triggered' || kind === 'script' || task.status === 'pending'
+  const canTry = canTryFirst(task)
+  const tryIt = () => void ops.dryRun(id).then((t) => t && onShowRuns())
+  // approving a routine confirms its setup checklist as it stands (#161)
+  const approve = async () => {
+    if (hasChecklist(task) && !task.setup?.confirmed_at && !(await ops.update(id, { setup: { confirm: true } }))) return
+    void ops.approve(id)
+  }
   const canRunNow = !['planning', 'clarification_pending', 'archived', 'declined'].includes(task.status) && (task.plan.length > 0 || task.task_type === 'swarm' || isScriptJob(task)) && !(task.task_type === 'swarm' && task.status === 'processing') && !((task.status === 'processing' || task.status === 'waiting_for_user') && !schedulable)
 
   const rerun = async () => {
@@ -303,9 +317,16 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
         <Button key="decline" size="sm" variant="ghost" leftIcon={<IconX size={15} />} loading={ops.isBusy('decline', id)} onClick={() => void ops.decline(id)}>
           Decline
         </Button>,
+        <Tooltip key="try" content={missing.length ? `Connect ${missing.map((m) => m.label).join(', ')} first` : 'Run it once without sending, changing or running anything, and see what it would do'}>
+          <span>
+            <Button size="sm" variant="secondary" leftIcon={<IconFlask size={15} />} disabled={missing.length > 0 || !canTry} loading={ops.isBusy('dryRun', id)} onClick={tryIt}>
+              Try it first
+            </Button>
+          </span>
+        </Tooltip>,
         <Tooltip key="approve" content={missing.length ? `Connect ${missing.map((m) => m.label).join(', ')} first` : ''}>
           <span>
-            <Button size="sm" variant="primary" leftIcon={<IconCheck size={15} />} disabled={missing.length > 0 || !task.plan.length} loading={ops.isBusy('approve', id)} onClick={() => void ops.approve(id)}>
+            <Button size="sm" variant="primary" leftIcon={<IconCheck size={15} />} disabled={missing.length > 0 || !task.plan.length} loading={ops.isBusy('approve', id)} onClick={() => void approve()}>
               {approveLabel}
             </Button>
           </span>
@@ -398,6 +419,11 @@ function ActionBar({ task, ops, missing, layout, onClose, onShowRuns }: { task: 
               Run now
             </DropdownMenuItem>
           )}
+          {canTry && task.status !== 'approval_pending' && (
+            <DropdownMenuItem icon={<IconFlask />} onSelect={tryIt}>
+              Try it first
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem icon={<IconRepeat />} onSelect={() => void rerun()}>
             Rerun as a new task
           </DropdownMenuItem>
@@ -450,12 +476,15 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
   const waiting = waitingRun(task)
   const away = useAway()
   const pausedWhileAway = away.data?.state === 'paused' && away.data.task_ids.includes(id)
+  const pausing = pausingNote(task) // paused while a run works: it stops at its next step, or finishes (#408)
+  const finishing = task.task_type === 'swarm' || !!task.original_context?.fixed_call
 
   return (
     <>
       {waiting && <RunQuestion task={task} run={waiting} />}
 
-      {task.status === 'planning' && (
+      {/* a paused task whose planning a restart held shows the paused banner instead (#304) */}
+      {task.status === 'planning' && (task.enabled || !task.error) && (
         <div className="flex items-center gap-3 rounded-xl border border-info/20 bg-info/5 px-4 py-3">
           <span className="relative flex size-8 shrink-0 items-center justify-center rounded-lg bg-info/12 text-info">
             <span className="absolute inset-0 animate-ping rounded-lg bg-info/20" />
@@ -489,7 +518,22 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         </Alert>
       )}
 
-      {!task.enabled && ['active', 'pending'].includes(task.status) && (
+      {pausing && (
+        <Alert
+          tone="neutral"
+          icon={<IconPlayerPause />}
+          title={finishing ? "This run can't be stopped part-way" : 'Pausing this task'}
+          action={
+            <Button size="xs" variant="secondary" loading={ops.isBusy('enabled', id)} onClick={() => void ops.setEnabled(id, true)}>
+              Resume
+            </Button>
+          }
+        >
+          {pausing}
+        </Alert>
+      )}
+
+      {!task.enabled && (['active', 'pending'].includes(task.status) || (task.status === 'planning' && !!task.error)) && (
         <Alert
           tone="neutral"
           icon={<IconPlayerPause />}
@@ -500,11 +544,13 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
             </Button>
           }
         >
-          {task.original_context?.imported_from && !task.plan.length
-            ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
-            : pausedWhileAway
-              ? "Sentient paused it while you were away. It won't run until you resume it."
-              : "It won't run on its schedule or triggers until you resume it."}
+          {task.error
+            ? task.error
+            : task.original_context?.imported_from && !task.plan.length
+              ? 'Brought over from Hermes. Resume it and Sentient makes a plan for you to approve before it runs.'
+              : pausedWhileAway
+                ? "Sentient paused it while you were away. It won't run until you resume it."
+                : "It won't run on its schedule or triggers until you resume it."}
         </Alert>
       )}
 
@@ -518,6 +564,10 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
         </div>
       ) : (
         <PropertiesCard task={task} tz={tz} ops={ops} compact />
+      )}
+
+      {hasChecklist(task) && (
+        <SetupChecklist task={task} tz={tz} ops={ops} canTry={canTryFirst(task) && missing.length === 0} onTry={() => void ops.dryRun(id).then((t) => t && onShowRuns())} />
       )}
 
       <DescriptionCard task={task} onSave={(description) => ops.update(id, { description }, 'Description saved')} />
@@ -555,8 +605,8 @@ function Overview({ task, tz, ops, missing, layout, onShowRuns }: { task: Task; 
           {last.result ? (
             <RunResult result={last.result} memorySources={last.memory_sources} sources={last.sources} />
           ) : last.error ? (
-            <Alert tone="danger" icon={<IconAlertCircle />}>
-              {last.error}
+            <Alert tone={last.status === 'cancelled' ? 'neutral' : last.status === 'skipped' ? 'warning' : 'danger'} icon={<IconAlertCircle />} title={last.status === 'skipped' ? 'Skipped: what it reads wasn’t there' : undefined}>
+              {last.status === 'skipped' ? skippedReason(last.error) : last.error}
             </Alert>
           ) : (
             <p className="text-sm text-fg-subtle">No result recorded for this run.</p>

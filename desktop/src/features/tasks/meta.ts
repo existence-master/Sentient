@@ -12,6 +12,7 @@ import {
   IconMessageQuestion,
   IconPlayerPlay,
   IconPlayerPause,
+  IconPlayerSkipForward,
   IconRepeat,
   IconShieldCheck,
   IconSparkles,
@@ -45,7 +46,8 @@ export const STATUS_META: Record<TaskStatus, StatusMeta> = {
   processing: { label: 'Running', tone: 'info', icon: IconLoader2, live: true },
   waiting_for_user: { label: 'Waiting for you', tone: 'warning', icon: IconMessageQuestion },
   completed: { label: 'Completed', tone: 'success', icon: IconCircleCheck },
-  completed_with_errors: { label: 'Completed with errors', tone: 'warning', icon: IconAlertTriangle },
+  // finished, but something it did didn't work: a swarm agent failed, or a check found an action didn't happen (#165)
+  completed_with_errors: { label: 'Needs attention', tone: 'warning', icon: IconAlertTriangle },
   error: { label: 'Failed', tone: 'danger', icon: IconAlertCircle },
   declined: { label: 'Declined', tone: 'neutral', icon: IconBan },
   cancelled: { label: 'Cancelled', tone: 'neutral', icon: IconX },
@@ -58,7 +60,9 @@ export const RUN_STATUS_META: Record<RunStatus, StatusMeta> = {
   completed: STATUS_META.completed,
   completed_with_errors: STATUS_META.completed_with_errors,
   error: STATUS_META.error,
-  cancelled: STATUS_META.cancelled
+  cancelled: STATUS_META.cancelled,
+  // what it reads wasn't there, so it didn't start (#161)
+  skipped: { label: 'Skipped', tone: 'warning', icon: IconPlayerSkipForward }
 }
 
 const UNKNOWN: StatusMeta = { label: 'Unknown', tone: 'neutral', icon: IconClock }
@@ -122,7 +126,7 @@ export function taskSource(task: Pick<Task, 'original_context'>): TaskSource {
 }
 
 // ---------------------------------------------------------------------------- grouping
-export const ATTENTION_STATUSES: TaskStatus[] = ['approval_pending', 'clarification_pending', 'waiting_for_user', 'error']
+export const ATTENTION_STATUSES: TaskStatus[] = ['approval_pending', 'clarification_pending', 'waiting_for_user', 'error', 'completed_with_errors']
 
 export const needsAttention = (t: Pick<Task, 'status'>) => ATTENTION_STATUSES.includes(t.status)
 
@@ -143,6 +147,7 @@ export function taskGroup(task: Task): GroupId {
     case 'clarification_pending':
     case 'waiting_for_user':
     case 'error':
+    case 'completed_with_errors':
       return 'attention'
     case 'planning':
     case 'processing':
@@ -150,7 +155,6 @@ export function taskGroup(task: Task): GroupId {
     case 'archived':
       return 'archived'
     case 'completed':
-    case 'completed_with_errors':
     case 'declined':
     case 'cancelled':
       return 'completed'
@@ -162,20 +166,22 @@ export function taskGroup(task: Task): GroupId {
 /** Board columns (kanban by status). */
 export const BOARD_COLUMNS: Array<{ id: string; label: string; statuses: TaskStatus[]; tone: Tone }> = [
   { id: 'planning', label: 'Planning', statuses: ['planning'], tone: 'info' },
-  { id: 'you', label: 'Needs you', statuses: ['approval_pending', 'clarification_pending', 'waiting_for_user', 'error'], tone: 'accent' },
+  { id: 'you', label: 'Needs you', statuses: ['approval_pending', 'clarification_pending', 'waiting_for_user', 'error', 'completed_with_errors'], tone: 'accent' },
   { id: 'scheduled', label: 'Scheduled', statuses: ['pending', 'active'], tone: 'neutral' },
   { id: 'running', label: 'Running', statuses: ['processing'], tone: 'info' },
-  { id: 'done', label: 'Done', statuses: ['completed', 'completed_with_errors', 'declined', 'cancelled'], tone: 'success' }
+  { id: 'done', label: 'Done', statuses: ['completed', 'declined', 'cancelled'], tone: 'success' }
 ]
 
 // ---------------------------------------------------------------------------- misc helpers
+/** The newest real run; a try run (#142) is never the task's last result. */
 export function latestRun(task: Pick<Task, 'runs'>) {
-  const runs = task.runs ?? []
+  const runs = (task.runs ?? []).filter((r) => !r.dry_run)
   return runs.length ? runs[runs.length - 1] : undefined
 }
 
+/** The newest real run in progress (a try run, #142, is cancelled from its own card). */
 export function processingRun(task: Pick<Task, 'runs'>) {
-  return [...(task.runs ?? [])].reverse().find((r) => r.status === 'processing')
+  return [...(task.runs ?? [])].reverse().find((r) => r.status === 'processing' && !r.dry_run)
 }
 
 /** The oldest run waiting for the user's answer (`ask_user`), with its question. */

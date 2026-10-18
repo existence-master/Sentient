@@ -3,8 +3,9 @@
  * in mind. Recorded by the engine from tool results (docs/API.md §2 "Answer sources"), never the model's own claim.
  * A chip shows the excerpt Sentient read; "Open" goes to the page, email or file.
  */
-import { IconArrowUpRight, IconBrain, IconFileText, IconMail, IconPlugConnected, IconWorld, type Icon } from '@tabler/icons-react'
+import { IconArrowUpRight, IconBrain, IconFileText, IconMail, IconNotebook, IconPlugConnected, IconWorld, type Icon } from '@tabler/icons-react'
 import { useState } from 'react'
+import { toast } from 'sonner'
 import { Button, Popover, PopoverContent, PopoverTrigger } from '@/components/ui'
 import { getBridge } from '@/lib/bridge'
 import type { AnswerSource, MemorySource } from '@/lib/types'
@@ -13,10 +14,11 @@ import { openOutputFile } from './files'
 import { MemorySources } from './MemorySources'
 import { toolMeta } from './toolMeta'
 
-const KIND: Record<AnswerSource['kind'], { icon: Icon; label: string }> = {
+const KIND: Record<AnswerSource['kind'] | 'note', { icon: Icon; label: string }> = {
   web: { icon: IconWorld, label: 'Web page' },
   email: { icon: IconMail, label: 'Email' },
   file: { icon: IconFileText, label: 'File' },
+  note: { icon: IconNotebook, label: 'Your notes' },
   app: { icon: IconPlugConnected, label: 'App' }
 }
 
@@ -27,6 +29,13 @@ function host(url?: string): string {
   } catch {
     return ''
   }
+}
+
+/** A note's path inside its folder ("Projects/Kestrel.md"), from its full path and the folder's name. */
+function notePath(path?: string, folder?: string): string {
+  const parts = (path ?? '').split(/[\\/]/)
+  const at = folder ? parts.lastIndexOf(folder) : -1
+  return (at >= 0 ? parts.slice(at + 1) : parts.slice(-1)).join('/')
 }
 
 function chipText(s: AnswerSource): string {
@@ -78,14 +87,28 @@ const chipClass =
   'inline-flex h-7 max-w-[240px] items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 text-xs text-fg-muted transition-colors hover:border-border-strong hover:bg-elevated hover:text-fg'
 
 function SourceChip({ source: s }: { source: AnswerSource }) {
-  const meta = KIND[s.kind] ?? KIND.app
+  // a note from a folder the user added (#176): opens in Obsidian (obsidian:// link) or its own app
+  const note = s.kind === 'file' && !!s.path
+  const obsidian = note && !!s.url?.startsWith('obsidian://')
+  const meta = (note ? KIND.note : KIND[s.kind]) ?? KIND.app
   const Icon = meta.icon
-  const canOpen = (s.kind === 'web' || s.kind === 'email') ? !!s.url : s.kind === 'file' ? !!s.file : false
+  // a note opens through the desktop app only (the browser can't reach files on this computer)
+  const canOpen = note
+    ? getBridge().isDesktop
+    : (s.kind === 'web' || s.kind === 'email') ? !!s.url : s.kind === 'file' ? !!s.file : false
   const open = () => {
-    if (s.kind === 'file' && s.file) void openOutputFile(s.file)
+    if (note && s.path) {
+      void getBridge()
+        .openFolderFile({ path: s.path, url: s.url })
+        .then((ok) => {
+          if (!ok) toast.error("That note can't be opened", { description: 'It may have been moved, or its folder removed.' })
+        })
+    } else if (s.kind === 'file' && s.file) void openOutputFile(s.file)
     else if (s.url) void getBridge().openExternal(s.url)
   }
-  const where = s.kind === 'web' ? host(s.url) : s.kind === 'email' ? s.from : s.kind === 'file' ? s.file : undefined
+  const where = note
+    ? [s.folder, notePath(s.path, s.folder)].filter(Boolean).join(' · ')
+    : s.kind === 'web' ? host(s.url) : s.kind === 'email' ? s.from : s.kind === 'file' ? s.file : undefined
   const tools = s.kind === 'app' ? (s.tools?.length ? s.tools : [s.tool]) : []
 
   return (
@@ -103,6 +126,9 @@ function SourceChip({ source: s }: { source: AnswerSource }) {
         </div>
         <div className="selectable break-words text-sm font-medium text-fg">{s.title}</div>
         {where && <div className="selectable truncate text-xs text-fg-subtle">{where}</div>}
+        {s.via === 'prompt' && (
+          <div className="text-xs text-fg-subtle">It matched your message, so Sentient read it before replying.</div>
+        )}
         {s.snippet && (
           <blockquote className="selectable max-h-40 overflow-y-auto border-l-2 border-border-strong pl-2.5 text-xs leading-relaxed text-fg-muted">
             {s.snippet}
@@ -117,7 +143,7 @@ function SourceChip({ source: s }: { source: AnswerSource }) {
         )}
         {canOpen && (
           <Button size="sm" variant="secondary" rightIcon={<IconArrowUpRight size={14} />} onClick={open}>
-            {s.kind === 'email' ? 'Open email' : s.kind === 'file' ? 'Open file' : 'Open page'}
+            {obsidian ? 'Open in Obsidian' : note ? 'Open note' : s.kind === 'email' ? 'Open email' : s.kind === 'file' ? 'Open file' : 'Open page'}
           </Button>
         )}
       </PopoverContent>

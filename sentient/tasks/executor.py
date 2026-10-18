@@ -9,9 +9,13 @@ A run that read outside content (a tool result, or the event that started it) an
 to send something pauses the same way and asks first (ADR 0018). So does a run that reaches a tool set to Ask
 (#139), unless the user already allowed that tool for this task or for a while (``sentient.agent.grants``).
 A run that gets stuck (``tasks/stuck.py``) pauses the same way with a plain reason.
+A try run (``run.dry_run``, #142) notes every call that would send, post, buy, delete, change or run something instead
+of making it (``sentient/agent/dry_run.py``); its look-ups run for real, and what it noted is kept on the run.
 The memories a run had in mind (facts in its prompt, facts memory tools returned that the model read) are kept on
 the run as ``memory_sources``, merged across pauses, resumes and restarts (``sentient/memory/sources.py``). The pages,
 emails, files and apps it used are kept the same way as ``sources`` (``sentient/agent/sources.py``, #291).
+What code found each call really did (``sentient/agent/outcomes.py``, #165) is kept as ``checks``, saved as they come;
+the service decides from them whether the run is done or needs attention.
 """
 
 from __future__ import annotations
@@ -23,12 +27,14 @@ import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from sentient.agent.loop import CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
+from sentient.agent import dry_run, outcomes, preview, rule_levels
+from sentient.agent.loop import ASK_FIRST_KEY, CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.sources import MemorySources
-from sentient.tasks import ask, continuity, limits, stuck
+from sentient.tasks import ask, checklist, continuity, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -40,7 +46,7 @@ from sentient.tasks.prompts import (
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk, effective_risk
-from sentient.tools.rules import never_message, untrusted_in
+from sentient.tools.rules import hands_off, is_purchase, never_message, sends_out, untrusted_in
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.tasks.service import TaskService
@@ -94,6 +100,11 @@ class RunPaused(Exception):
     def __init__(self, question: dict):
         super().__init__(question.get("question") or "")
         self.question = question
+
+
+class RunHeld(Exception):
+    """The user paused the task while this run worked: it stopped at a safe point, before a model or tool call (#408).
+    The service holds it (``TaskService._hold_run``) until the task is resumed."""
 
 
 def is_first_retry_attempt(run: dict) -> bool:
@@ -160,10 +171,11 @@ def select_tools(
 class ProgressMapper:
     """Turns streamed agent events into persisted ProgressUpdates."""
 
-    def __init__(self, svc: TaskService, task_id: str, run_id: str):
+    def __init__(self, svc: TaskService, task_id: str, run_id: str, checks: list[dict] | None = None):
         self.svc = svc
         self.task_id = task_id
         self.run_id = run_id
+        self.checks: list[dict] = list(checks or [])  # outcome checks so far, carried across pauses (#165)
         self.thought = ""
         self.text = ""
         self.warned = False  # the context warning goes into the log once per run
@@ -188,9 +200,13 @@ class ProgressMapper:
                 await self._emit({"type": "thought", "content": narration})
             await self._emit({"type": "tool_call", "tool_name": event.name, "parameters": event.arguments})
         elif isinstance(event, ToolResultEvent):
-            await self._emit(
-                {"type": "tool_result", "tool_name": event.name, "result": truncate(event.result), "is_error": event.is_error}
-            )
+            # a call handed to the user (#140) keeps its whole preview: the run log shows it to finish from
+            shown = event.result if rule_levels.is_handed_off(event.result) else truncate(event.result)
+            await self._emit({"type": "tool_result", "tool_name": event.name, "result": shown, "is_error": event.is_error,
+                              **({"check": event.check} if event.check else {})})
+            if event.check:  # what really happened (#165), saved at once so a restart keeps it
+                self.checks.append(event.check)
+                await self.svc.repo.update_run(self.run_id, {"checks": self.checks})
             # run_loop appends the tool message right after yielding this event; include it now
             tool_msg = {
                 "role": "tool",
@@ -241,7 +257,8 @@ async def _executor_system_prompt(
             str(x) for x in (task.get("name"), task.get("description"), (run.get("trigger_data") or {}).get("subject")) if x
         )[:500]
         try:
-            facts = [f for f in await app.memory.recall(query) if f.get("content")]
+            scopes = memory_scopes.recall_scopes(memory_scopes.of_task(task))  # the task's scope plus always (#155)
+            facts = [f for f in await app.memory.recall(query, scopes=scopes) if f.get("content")]
         except Exception as exc:
             log.debug("memory recall for task %s skipped: %s", task["id"], exc)
     earlier, remembered = await _earlier_section(svc, task, run)
@@ -264,6 +281,7 @@ async def _executor_system_prompt(
         earlier=earlier,
         mark_outside_content=app.config.chat.mark_outside_content,
         trigger_source=_trigger_source(app, task, run),
+        confirmed=checklist.prompt_lines(task),
     ), facts, kickoff
 
 
@@ -291,9 +309,19 @@ async def _run_approved_call(
         return messages
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
     res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx, role="executor", model=model)
-    await svc.progress(
-        task_id, run_id, {"type": "tool_result", "tool_name": call["name"], "result": truncate(res), "is_error": is_error}
-    )
+    handed = rule_levels.is_handed_off(res)  # set to "Hand it to me" while the run waited (#140): handed over
+    tool = svc.app.registry.get(call["name"])
+    check = await svc.app.agent.check_outcome(tool, call["arguments"], res, is_error, ctx) if tool is not None else None
+    await svc.progress(task_id, run_id, {
+        "type": "tool_result", "tool_name": call["name"], "result": res if handed else truncate(res), "is_error": is_error,
+        **({"check": check} if check else {}),
+    })
+    if check:
+        await add_check(svc, run_id, check)
+    if handed:
+        task = await svc.repo.get_task(task_id)
+        if task is not None:
+            await notify_handed_off(svc, task, [res])
     messages = ask.fill_result(messages, call["id"], content)
     await svc.repo.update_run(run_id, {"messages": messages})
     return messages
@@ -314,10 +342,13 @@ async def execute_single(
 ) -> LoopResult:
     """Run (or continue) one task run. ``answered``: the checkpoint already holds the user's answer to
     ``ask_user`` (or to a limit question), so it continues without the restart note. Raises ``RunPaused``
-    when the run asks a question or reaches one of its limits (``tasks/limits.py``)."""
+    when the run asks a question or reaches one of its limits (``tasks/limits.py``), and ``RunHeld`` when the user
+    paused the task (#408): it stops before its next model or tool call, with every finished step in its transcript."""
     app = svc.app
     assert app.agent is not None
     task_id, run_id = task["id"], run["id"]
+    if svc.holding(run_id):  # paused before it started (it waited for a free slot): no recall, no model call
+        raise RunHeld()
     state = limits.load(run, app.config)
     used, limit = state["used"], state["max"]
     started = time.monotonic()
@@ -366,14 +397,21 @@ async def execute_single(
                 })
 
             ctx = app.agent.tool_context(None, "task")
+            ctx.memory_scope = memory_scopes.of_task(task)  # what it recalls and saves (#155)
             # CAN_PAUSE_KEY: an "ask" rule holds the call and the run pauses to ask, instead of failing (#139)
             ctx.extra.update({"task_id": task_id, "run_id": run_id, ask.STATE_KEY: asking, CAN_PAUSE_KEY: True})
             if task.get("browser_profile"):  # the browser tools use the task's profile (docs/API.md section 12)
                 ctx.extra["browser_profile"] = task["browser_profile"]
             if continuity.applies(task):
                 ctx.extra[continuity.PLUGIN_ID] = True
+            if run.get("dry_run"):  # a try run: calls that change something are noted, saved on the run as they come
+                ctx.extra[dry_run.KEY] = trying(svc, run)
+            if checklist.asks_first(task):  # the routine's checklist says ask before sending or running anything (#161)
+                ctx.extra[ASK_FIRST_KEY] = True
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
+                if svc.holding(run_id):  # paused before an approved call ran: it runs once the task is resumed
+                    raise RunHeld()
                 checkpoint = await _run_approved_call(
                     svc, task_id, run_id, ctx, checkpoint, model=task.get("model") or None
                 )
@@ -395,7 +433,7 @@ async def execute_single(
                 tool_names = [*tool_names, ask.ASK_TOOL]
             if continuity.applies(task) and app.registry.get(continuity.NOTEPAD_TOOL) is not None:
                 tool_names = [*tool_names, continuity.NOTEPAD_TOOL]
-            mapper = ProgressMapper(svc, task_id, run_id)
+            mapper = ProgressMapper(svc, task_id, run_id, (await svc.repo.get_run(run_id) or run).get("checks"))
             checked = (run.get("trigger_data") or {}).get("script_result")
             if checked is not None:  # a check script started this run: what it found is part of an answer (#322)
                 result.findings.append(("check_script", "The check", checked))
@@ -418,10 +456,13 @@ async def execute_single(
                         bool(asking.get("question")) or result.needs_ok is not None or watch.reason is not None
                     ),
                     budget=budget,
+                    interrupt=lambda: svc.holding(run_id),  # the task was paused: stop at the next safe point (#408)
                 ):
                     await alive(event)
                     await mapper.handle(event, messages)
-                    if isinstance(event, ToolResultEvent) and not event.is_error:
+                    noted = isinstance(event, ToolResultEvent) and isinstance(event.result, dict) and bool(
+                        event.result.get("try_run"))  # a try run's noted call used nothing (#142)
+                    if isinstance(event, ToolResultEvent) and not event.is_error and not noted:
                         seen, read_before = len(sources), read.items()
                         sources.add_tool_result(
                             event.name, app.agent.delivered_rows(event.result, result.tool_result_limit)
@@ -435,7 +476,7 @@ async def execute_single(
                         if changed:
                             await svc.repo.update_run(run_id, changed)
                 await mapper.flush_thought()
-                if result.paused or result.stopped_by_budget:
+                if result.paused or result.stopped_by_budget or result.interrupted:
                     break
                 if result.from_findings:  # no answer even after asking again: the loop answered from the results
                     await svc.progress(task_id, run_id, {
@@ -478,6 +519,11 @@ async def execute_single(
     _spent(state, budget, started)
     await svc.repo.update_run(run_id, {"limits": state, **({"messages": messages} if messages else {})})
 
+    if result.handed_off:  # "Hand it to me" (#140): what the run prepared reaches the user even if it stops later
+        await notify_handed_off(svc, task, result.handed_off)
+        result.handed_off = []  # a run that pauses and resumes shares this result: notify each one once
+    if result.interrupted:  # the task was paused: the transcript above is where it carries on from (#408)
+        raise RunHeld()
     if result.stopped_by_rule:  # an "ask" rule stopped a run that can't pause; say which and how to change it
         raise RunFailed(result.stopped_by_rule)
     # the loop breaker: the same call kept getting the same result. A repeated error is stuck; anything else fails.
@@ -516,6 +562,22 @@ async def execute_single(
     return result
 
 
+async def add_check(svc: TaskService, run_id: str, check: dict) -> None:
+    """Add one outcome check (#165) to what the run has saved."""
+    run = await svc.repo.get_run(run_id) or {}
+    await svc.repo.update_run(run_id, {"checks": [*(run.get("checks") or []), check]})
+
+
+def trying(svc: TaskService, run: dict) -> dry_run.DryRun:
+    """The try-run notes of ``run``, carried on from what it noted before a pause or restart and saved as they grow."""
+    run_id = run["id"]
+
+    async def save(actions: list[dict]) -> None:
+        await svc.repo.update_run(run_id, {"would_do": actions})
+
+    return dry_run.DryRun(run.get("would_do"), on_change=save)
+
+
 def fixed_call_of(task: dict) -> dict | None:
     """``original_context.fixed_call`` of a task the user approved as one exact tool call, else None."""
     call = (task.get("original_context") or {}).get("fixed_call")
@@ -541,26 +603,77 @@ async def execute_fixed_call(svc: TaskService, task: dict, run: dict, *, resume:
     ctx = app.agent.tool_context(None, "task") if app.agent is not None else None
     if ctx is not None:
         ctx.extra.update({"task_id": task_id, "run_id": run_id})
+        ctx.memory_scope = memory_scopes.of_task(task)
         if task.get("browser_profile"):
             ctx.extra["browser_profile"] = task["browser_profile"]
     if tool.plugin in app.approvals.read_only():  # a Read only connection (#141) refuses it like a "never" rule
         refusal = app.approvals.read_only_refusal(tool, await effective_risk(tool, arguments, ctx), app.registry)
         if refusal:
             raise RunFailed(refusal)
+    if svc.holding(run_id):  # paused before its one call started (#408); once it has started, it runs to the end
+        raise RunHeld()
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": name, "parameters": arguments})
+    risk = await effective_risk(tool, arguments, ctx) if run.get("dry_run") else None
+    if risk is not None and dry_run.simulates(tool, risk, outgoing=sends_out(tool, risk, arguments, ctx)):
+        # a try run (#142): note the call instead of making it, unless it would fail on its arguments anyway
+        if (bad := dry_run.invalid(tool, name, arguments)) is not None:
+            raise RunFailed(str(bad["error"]))
+        plugin = app.registry.plugin(tool.plugin)
+        result = await trying(svc, run).record(
+            tool, name, arguments, risk, purchase=await is_purchase(tool, arguments, ctx, risk),
+            asks=app.approvals.rule(tool) in {"ask", "if_asked"} and not await app.approvals.granted(tool, risk, arguments, ctx),
+            app=getattr(plugin, "display_name", None) or tool.plugin,
+            at=svc.now_iso(),
+        )
+        await svc.progress(task_id, run_id, {"type": "tool_result", "tool_name": name, "result": result, "is_error": False})
+        return LoopResult(text=dry_run.NOTED, tool_calls=1, tools_used=[tool.plugin])
+    risk = risk if risk is not None else await effective_risk(tool, arguments, ctx)
+    if hands_off(app.approvals.rule(tool), risk) and app.agent is not None and ctx is not None:
+        # "Hand it to me" (#140): the approved call is prepared for the user, never run
+        handed = await app.agent.hand_off(tool, arguments, ctx, risk)
+        await svc.progress(task_id, run_id, {"type": "tool_result", "tool_name": name, "result": handed, "is_error": False})
+        final = handed_off_text([handed])
+        await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
+        await notify_handed_off(svc, task, [handed])
+        return LoopResult(text=final, tool_calls=1, tools_used=[tool.plugin], handed_off=[handed])
     try:
         result = await tool.call(ctx, arguments)
     except Exception as exc:
         result = {"error": f"{type(exc).__name__}: {exc}"}
     is_error = isinstance(result, dict) and bool(result.get("error"))
-    await svc.progress(
-        task_id, run_id, {"type": "tool_result", "tool_name": name, "result": truncate(result), "is_error": is_error}
-    )
+    check = await app.agent.check_outcome(tool, arguments, result, is_error, ctx) if app.agent is not None else None
+    await svc.progress(task_id, run_id, {
+        "type": "tool_result", "tool_name": name, "result": truncate(result), "is_error": is_error,
+        **({"check": check} if check else {}),
+    })
+    if check:
+        await add_check(svc, run_id, check)
     if is_error:
         raise RunFailed(str(result["error"]))
     final = str(call.get("done_text") or "Done.")
     await svc.progress(task_id, run_id, {"type": "final_answer", "content": final})
     return LoopResult(text=final, tool_calls=1, tools_used=[tool.plugin])
+
+
+def handed_off_text(items: list[dict]) -> str:
+    """A run's answer when its only action was handed to the user (#140)."""
+    names = ", ".join(str(i.get("label") or i.get("title") or "it") for i in items)
+    return f"Ready for you: you set {names} to Hand it to me, so Sentient prepared it and didn't do it itself."
+
+
+async def notify_handed_off(svc: TaskService, task: dict, items: list[dict]) -> None:
+    """One "Ready for you" notification per call a task handed to the user (#140), with what it prepared, so it can be
+    finished from the notification even when the task's answer doesn't repeat it. Never raises."""
+    for item in items:
+        shown = item.get("preview") if isinstance(item.get("preview"), dict) else None
+        body = preview.as_text(shown) or "\n".join(
+            f"{d.get('label')}: {d.get('value')}" for d in item.get("details") or [] if isinstance(d, dict)
+        )
+        what = (shown or {}).get("title") or item.get("title") or "an action"
+        message = (f"{task.get('name') or 'A task'} prepared this for you to finish yourself, because "
+                   f"{item.get('label') or 'it'} is set to Hand it to me.")
+        await svc._notify(task, f"{message}\n\n{body}".strip(), f"Ready for you: {what}", "handed_off",
+                          {"hand_off": item})
 
 
 # ---------------------------------------------------------------------------- results
@@ -647,6 +760,8 @@ async def generate_result(
         "execution_log": execution_log[-80:],
         "aggregated_results": truncate(aggregated, 12000) if aggregated is not None else None,
     }
+    if checked := outcomes.summary(run.get("checks") or []):  # what code found really happened beats the log (#165)
+        context["checked_outcome"] = checked
     data: Any = None
     try:
         data = await complete_json_object(app.llm,

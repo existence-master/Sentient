@@ -7,7 +7,7 @@ or device (including future wearables) is a client of that gateway.
 
 import os
 
-__version__ = "3.0.0a0"
+__version__ = "3.0.0b1"
 
 # LiteLLM otherwise downloads its model price list from GitHub at runtime: use the copy it ships with, so Sentient
 # makes no network call the user didn't ask for (docs/PRIVACY.md). Set before anything imports litellm.

@@ -21,7 +21,13 @@ Respond with ONLY a JSON object:
  "tags": ["short", "labels"],
  "requires_tools": ["plugin ids the procedure needs, e.g. gmail, gcalendar"],
  "reason": "one sentence on why",
- "body": "the full markdown body"}
+ "body": "the full markdown body",
+ "validate": [optional checks, see below]}
+
+"validate" is optional. Add it only when a quick check can show the procedure works, else leave it out:
+- {"file": "path in the user's files folder", "expect": "text it must contain"} for a file the procedure saves;
+- {"run": "a few lines of Python", "expect": "text it must print"} for a calculation or format it relies on.
+A skill whose check fails is not saved.
 
 The body MUST use exactly this structure:
 # <Title>

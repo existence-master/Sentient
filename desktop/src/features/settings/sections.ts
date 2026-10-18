@@ -5,6 +5,7 @@ import {
   IconChartBar,
   IconCode,
   IconCpu,
+  IconFolders,
   IconListCheck,
   IconMicrophone,
   IconMoodSmile,
@@ -61,6 +62,14 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     schemaSections: ['memory']
   },
   {
+    id: 'folders',
+    label: 'Folders',
+    description: 'Folders of notes and Obsidian vaults Sentient searches when you ask about your notes.',
+    icon: IconFolders,
+    keywords: ['obsidian', 'vault', 'notes', 'documents', 'markdown', 'pdf', 'word', 'search', 'knowledge', 'index', 'ignore', 'files'],
+    schemaSections: ['folders']
+  },
+  {
     id: 'knowing',
     label: 'Knowing you',
     description: 'How Sentient builds its picture of you and tidies its memory overnight.',
@@ -96,7 +105,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     label: 'Approvals & safety',
     description: 'When Sentient asks before acting.',
     icon: IconShieldCheck,
-    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask', 'allow', 'never', 'rules', 'apps', 'always ask', 'allowed for now', 'revoke', 'grant'],
+    keywords: ['permissions', 'confirm', 'risk', 'tools', 'disabled', 'ask', 'allow', 'never', 'only if i asked', 'hand it to me', 'draft', 'rules', 'apps', 'always ask', 'allowed for now', 'revoke', 'grant'],
     schemaSections: ['tools']
   },
   {

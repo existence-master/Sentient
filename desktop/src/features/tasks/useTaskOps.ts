@@ -31,6 +31,7 @@ export type TaskOp =
   | 'approve'
   | 'decline'
   | 'runNow'
+  | 'dryRun'
   | 'rerun'
   | 'archive'
   | 'remove'
@@ -118,7 +119,8 @@ export function useTaskOps() {
 
       update: (id: string, patch: TaskPatch, success?: string) =>
         perform('update', id, () => api.tasks.update(id, patch), {
-          optimistic: (t) => ({ ...t, ...patch, updated_at: now() }) as Task,
+          // the checklist's answers (#161) are merged by the engine, so the task keeps its own until the reply
+          optimistic: (t) => ({ ...t, ...patch, setup: t.setup, updated_at: now() }) as Task,
           success,
           error: "Couldn't save the change"
         }),
@@ -141,6 +143,12 @@ export function useTaskOps() {
         }),
 
       runNow: (id: string) => perform('runNow', id, () => api.tasks.runNow(id), { success: 'Run started', error: "Couldn't start a run" }),
+
+      dryRun: (id: string) =>
+        perform('dryRun', id, () => api.tasks.dryRun(id), {
+          success: 'Try run started. Nothing will be sent, changed or run.',
+          error: "Couldn't start a try run"
+        }),
 
       rerun: (id: string) => perform('rerun', id, () => api.tasks.rerun(id), { error: "Couldn't re-run the task" }),
 

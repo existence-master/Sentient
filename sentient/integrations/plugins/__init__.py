@@ -12,6 +12,8 @@ PLUGIN_MODULES = [
     "email_imap",
     # tokens / keys
     "github", "slack", "notion", "discord", "trello", "whatsapp",
+    # the smart home (URL + long-lived token, live updates over its websocket)
+    "home_assistant",
     # optional keyed alternatives to the keyless builtins
     "alternatives",
     # trigger sources without tools

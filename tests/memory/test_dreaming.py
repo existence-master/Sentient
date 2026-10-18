@@ -97,6 +97,14 @@ EXAMPLES = [
 ]
 
 
+async def superseded(mem, fid: int, *, by: int) -> bool:
+    """A contradiction's loser stays as history (#152): superseded by the winner, and recall never finds it."""
+    old, new = await mem.get_fact(fid), await mem.get_fact(by)
+    hits = await mem.recall(old["content"], top_k=10, min_similarity=0.0, track=False)
+    return (old["state"] == "superseded" and old["superseded_by"] == by and new["state"] == "current"
+            and fid not in [h["id"] for h in hits])
+
+
 @pytest.mark.parametrize(("old_text", "new_text"), EXAMPLES)
 async def test_contradictions_found_without_shared_wording(app, old_text, new_text):
     mem, llm = app.memory, app.fake
@@ -108,7 +116,7 @@ async def test_contradictions_found_without_shared_wording(app, old_text, new_te
     llm.json_replies.append({"conflict": True, "current": "B", "change": "it changed"})
     dream = await app.dreaming.run()
     assert dream["stats"]["contradictions_resolved"] == 1
-    assert await mem.get_fact(old) is None and await mem.get_fact(new) is not None
+    assert await superseded(mem, old, by=new)  # kept as history, out of every prompt (#152)
     assert _json_calls(llm) == 1
     prompt = llm.calls[-1]["messages"][1]["content"]
     assert prompt.index(old_text) < prompt.index(new_text)  # A is the older memory
@@ -121,13 +129,13 @@ async def test_older_fact_wins_only_with_explicit_recent_wording(app):
     stale = await add_fact(mem, "Maya lives in Bengaluru")  # e.g. re-imported from an old document
     llm.json_replies.append({"conflict": True, "current": "A"})
     await app.dreaming.run()
-    assert await mem.get_fact(stale) is None and await mem.get_fact(older) is not None
+    assert await superseded(mem, stale, by=older)
 
     a = await add_fact(mem, "Riya works at Infosys", updated_at="2025-01-01T00:00:00+00:00")
     b = await add_fact(mem, "Riya works at Google now")
     llm.json_replies.append({"conflict": True, "current": "A"})  # no recent wording on A: newer still wins
     await app.dreaming.run()
-    assert await mem.get_fact(a) is None and await mem.get_fact(b) is not None
+    assert await superseded(mem, a, by=b)
 
 
 async def test_pure_duplicates_merge_without_model(app):
@@ -186,7 +194,7 @@ async def test_contradiction_latest_wins_after_model_confirms(app):
         dream = await app.dreaming.run()
         events = drain(q)
     assert dream["stats"]["contradictions_resolved"] == 1
-    assert await mem.get_fact(old) is None
+    assert await superseded(mem, old, by=new)
     assert (await mem.get_fact(new))["previous_content"] == "Maya lives in Pune"
     assert 'I used to remember "Maya lives in Pune", but now "Maya lives in Mumbai"' in dream["journal_md"]
     assert "moved from Pune to Mumbai" in dream["journal_md"]

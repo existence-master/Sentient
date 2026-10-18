@@ -207,6 +207,7 @@ class UserModelService(Service):
         self.clock = lambda: datetime.now(UTC)
         self._lock = asyncio.Lock()
         self._vectors: dict[int, list[float]] | None = None
+        self._vectors_model: str | None = None  # the embedding model ``_vectors`` were read for
         self._background: set[asyncio.Task] = set()
 
     @property
@@ -316,7 +317,7 @@ class UserModelService(Service):
             vecs = await self.app.llm.embed([statement])
             if not vecs:
                 return
-            await self.vec.ensure(len(vecs[0]), self._reindex)
+            await self.vec.ensure(len(vecs[0]), self._reindex, self.app.llm.model_for("embedding"))
             await self.vec.upsert(rid, vecs[0])
         except Exception as exc:
             log.debug("insight embedding skipped: %s", exc)
@@ -636,7 +637,7 @@ class UserModelService(Service):
             mark = marks.get("facts")
             after, params = after_watermark(mark, "updated_at", "id")
             rows = await store.fetchall(
-                f"SELECT id, content, updated_at FROM facts WHERE status = 'active' AND {after}"
+                f"SELECT id, content, updated_at FROM facts WHERE status = 'active' AND state = 'current' AND {after}"
                 " AND (expires_at IS NULL OR expires_at > ?) ORDER BY updated_at DESC, id DESC LIMIT ?",
                 (*params, now_iso(), cfg.recent_facts),
             )
@@ -885,13 +886,38 @@ class UserModelService(Service):
             return None
 
     async def _insight_vectors(self) -> dict[int, list[float]]:
-        if self._vectors is None:
-            vectors: dict[int, list[float]] = {}
-            if self.app.store.vec_available and (self.vec.ready or await self.vec.exists()):
-                with contextlib.suppress(Exception):
-                    vectors = await self.vec.all_vectors()
-            self._vectors = vectors
-        return self._vectors
+        current = self.app.llm.model_for("embedding")
+        if self._vectors is not None and self._vectors_model == current:
+            return self._vectors
+        vectors: dict[int, list[float]] = {}
+        if self.app.store.vec_available and (self.vec.ready or await self.vec.exists()):
+            stored = await self.app.store.get_meta(f"{VEC_TABLE}_model")
+            if stored and stored != current:
+                # made by another embedding model, so they don't compare with today's query: re-embed them
+                self._vectors = None
+                self._start(self._reembed())
+                return {}
+            with contextlib.suppress(Exception):
+                vectors = await self.vec.all_vectors()
+        self._vectors, self._vectors_model = vectors, current
+        return vectors
+
+    def _start(self, coro) -> None:
+        if any(t.get_name() == "user_model:reembed" for t in self._background):
+            coro.close()
+            return
+        task = asyncio.create_task(coro, name="user_model:reembed")
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _reembed(self) -> None:
+        """Rebuild the insight index with the current embedding model (``VecTable.ensure`` sees the new model)."""
+        try:
+            [vec] = await self.app.llm.embed(["user model"])
+            await self.vec.ensure(len(vec), self._reindex, self.app.llm.model_for("embedding"))
+        except Exception as exc:
+            log.debug("re-embedding insights skipped: %s", exc)
+        self._vectors = None
 
     async def _ranked(self, text: str, limit: int = 100) -> tuple[list[dict], list[dict]]:
         """(confirmed insights, active insights ordered by relevance to ``text`` then confidence)."""
@@ -920,8 +946,11 @@ class UserModelService(Service):
         """Short markdown block for the system prompt (no model call). Empty when disabled or unknown."""
         return (await self.context_with_sources(text))[0]
 
-    async def context_with_sources(self, text: str) -> tuple[str, list[dict]]:
-        """``context_for`` plus the insights that made it into the block (public shape), for memory sources."""
+    async def context_with_sources(
+        self, text: str, leave_out: frozenset[str] | set[str] = frozenset()
+    ) -> tuple[str, list[dict]]:
+        """``context_for`` plus the insights that made it into the block (public shape), for memory sources.
+        ``leave_out``: dimensions a work or project chat doesn't get (#155, relationships)."""
         cfg = self.cfg
         if not cfg.enabled or cfg.context_max_chars <= 0:
             return "", []
@@ -938,6 +967,8 @@ class UserModelService(Service):
         shown: list[dict] = []
         used = len(header)
         for ins in [*confirmed, *active]:
+            if ins.get("dimension") in leave_out:
+                continue
             line = f"- {ins['statement']}" + (" (likely)" if not protected(ins) and ins["confidence"] < 0.6 else "")
             if used + len(line) + 1 > budget:
                 continue
@@ -947,8 +978,9 @@ class UserModelService(Service):
         return (header + "\n".join(lines), shown) if lines else ("", [])
 
     # ------------------------------------------------------------------ tool
-    async def ask(self, question: str) -> dict:
-        """Answer "what would the user want" from insights and facts with one model call."""
+    async def ask(self, question: str, scopes: list[str] | None = None) -> dict:
+        """Answer "what would the user want" from insights and facts with one model call. ``scopes``: the facts it
+        reads (a chat's memory scope plus always, #155); None reads every scope."""
         if not self.cfg.enabled:
             return {"error": "The user model is turned off in settings."}
         question = " ".join(str(question or "").split())
@@ -959,7 +991,7 @@ class UserModelService(Service):
         facts: list[str] = []
         if self.app.memory is not None:
             with contextlib.suppress(Exception):
-                facts = [f["content"] for f in await self.app.memory.recall(question, top_k=6)]
+                facts = [f["content"] for f in await self.app.memory.recall(question, top_k=6, scopes=scopes)]
         summary = await self.app.store.get_meta("user_model.summary") or ""
         name = self.user_name or "the user"
         if not insights and not facts and not summary:

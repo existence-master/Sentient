@@ -13,9 +13,9 @@ import {
   session,
   shell
 } from 'electron'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
   AppCommand,
   CaptureNotice,
@@ -500,6 +500,52 @@ function registerIpc(): void {
     const target = resolve(base, name)
     if (!target.startsWith(base + sep) || !existsSync(target)) return false
     return (await shell.openPath(target)) === ''
+  })
+  ipcMain.handle(CH.openFolderFile, async (_e, target: { path?: unknown; url?: unknown }) => {
+    // a note from a folder the user added (#176): only files really inside one of those folders (links followed),
+    // only note and document types, so a reply can never make the window open or run anything else
+    const path = typeof target?.path === 'string' ? target.path : ''
+    if (!path) return false
+    let folders: Array<{ path: string; name: string; kind: string }> = []
+    try {
+      folders = (await api<{ folders: Array<{ path: string; name: string; kind: string }> }>('/api/folders')).folders
+    } catch {
+      return false
+    }
+    let file: string
+    try {
+      file = realpathSync(resolve(path))
+    } catch {
+      return false
+    }
+    if (!/\.(md|markdown|txt|text|pdf|docx)$/i.test(file) || !statSync(file).isFile()) return false
+    let folder: (typeof folders)[number] | undefined
+    let rel = ''
+    for (const f of folders) {
+      let root: string
+      try {
+        root = realpathSync(resolve(f.path))
+      } catch {
+        continue
+      }
+      const r = relative(root, file)
+      if (r && !r.startsWith('..') && !isAbsolute(r)) {
+        folder = f
+        rel = r
+        break
+      }
+    }
+    if (!folder) return false
+    // in a vault, Obsidian opens it when installed; the link is built here from the checked file, never taken as given
+    const wantsObsidian = typeof target?.url === 'string' && target.url.startsWith('obsidian://')
+    if (wantsObsidian && folder.kind === 'obsidian' && app.getApplicationNameForProtocol('obsidian://')) {
+      const note = rel.split(sep).join('/').replace(/\.md$/i, '')
+      await shell.openExternal(`obsidian://open?vault=${encodeURIComponent(folder.name)}&file=${encodeURIComponent(note)}`)
+      return true
+    }
+    if ((await shell.openPath(file)) === '') return true
+    shell.showItemInFolder(file) // no app opens this kind of file here: show it in its folder instead
+    return true
   })
   ipcMain.handle(CH.getDevicePrivacy, () => devicePrivacy())
   ipcMain.handle(CH.setDevicePrivacy, (_e, patch: Partial<DevicePrivacy>) => {

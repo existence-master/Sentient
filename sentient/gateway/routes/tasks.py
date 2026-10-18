@@ -21,6 +21,7 @@ class CreateTaskBody(BaseModel):
     assignee: str | None = "ai"
     model: str | None = None
     browser_profile: str | None = None
+    memory_scope: str | None = None  # #155: personal (default), work or a project's name
 
 
 class PreviewBody(BaseModel):
@@ -69,7 +70,8 @@ async def list_tasks(request: Request):
 @router.post("")
 async def create_task(request: Request, body: CreateTaskBody):
     return await _guard(_tasks(request).create_task(
-        body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile
+        body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile,
+        memory_scope=body.memory_scope,
     ))
 
 
@@ -127,6 +129,12 @@ async def rerun_task(request: Request, task_id: str):
 @router.post("/{task_id}/run-now")
 async def run_task_now(request: Request, task_id: str):
     return await _guard(_tasks(request).run_now(task_id))
+
+
+@router.post("/{task_id}/dry-run")
+async def try_task(request: Request, task_id: str):
+    """Try it first (#142): a run that only notes what it would send, change or run."""
+    return await _guard(_tasks(request).dry_run(task_id))
 
 
 @router.post("/{task_id}/archive")

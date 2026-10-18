@@ -1,7 +1,8 @@
 /** React Query hooks for §13 devices. Live updates arrive via `node.updated` / `node.deleted` (lib/events.ts). */
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api, isNotImplemented } from '@/lib/api'
-import type { DeviceInvokeResult, DeviceNode } from '@/lib/types'
+import type { DeviceInvokeResult, DeviceNode, Forgotten, OkResponse } from '@/lib/types'
+import { invalidateForgotten } from '@/hooks/memory'
 import { previewLan, previewMode, previewNodes, previewOr, previewPairing, previewPhotoBase64 } from './preview'
 
 export const deviceKeys = {
@@ -43,9 +44,14 @@ export function useDeviceActions() {
         ),
       onSuccess: (node) => upsertDevice(qc, node)
     }),
+    /** ``forget``: also forget what Sentient learned from it (#153). */
     remove: useMutation({
-      mutationFn: (id: string) => previewOr(() => api.nodes.remove(id), () => ({ ok: true })),
-      onSuccess: (_r, id) => removeDevice(qc, id)
+      mutationFn: ({ id, forget = false }: { id: string; forget?: boolean }) =>
+        previewOr<OkResponse & Forgotten>(() => api.nodes.remove(id, forget), () => ({ ok: true })),
+      onSuccess: (r, { id }) => {
+        removeDevice(qc, id)
+        if (r.forgotten) invalidateForgotten(qc)
+      }
     }),
     invoke: useMutation({
       mutationFn: ({ id, capability, params }: { id: string; capability: string; params?: Record<string, unknown> }) =>

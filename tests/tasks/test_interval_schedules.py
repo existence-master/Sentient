@@ -11,7 +11,8 @@ from sentient.tasks.scripts import ScriptInvalid, check_rules, normalize_script,
 from tests.conftest import FakeProvider
 from tests.tasks.conftest import PLAN_TIME, json_calls
 
-WATCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.com')\nresult(page.get('title'))\n"
+TOOLS = "from sentient_tools import tools, result\n"
+WATCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.com')\nresult(page.get('content'))\n"
 
 
 @pytest.mark.parametrize(("prompt", "minutes"), [
@@ -95,6 +96,20 @@ async def test_refine_failure_still_keeps_the_spoken_interval(make_app):
     ("from sentient_tools import tools, result\nresult({'alert': True})\n", "noteworthy", "returns an alert"),
     ("from bs4 import BeautifulSoup\nimport requests\nresult(1)\n", "changed", "imports `bs4`"),
     ("import requests.adapters\nresult(1)\n", "changed", "imports `requests`"),
+    # #366: a key the tool never returns
+    (f"{TOOLS}page = tools.web_fetch(url='https://example.com')\nresult(page['html'])\n", "changed",
+     "reads `html` from the result of `tools.web_fetch`, which has no `html`: it has only `url`, `title`, `content` "
+     "and `truncated`. The page's text is in `content`."),
+    (f"{TOOLS}result(tools.web_fetch(url='https://example.com').get('text', ''))\n", "noteworthy", "no `text`"),
+    (f"{TOOLS}hits = tools.web_search(query='x')\nfor h in hits['results']:\n    print(h['body'])\n", "every_run",
+     "reads `body` from each item of `results` from `tools.web_search`, which has no `body`"),
+    (f"{TOOLS}news = tools.news_search(query='x')\nresult([a['headline'] for a in news.get('articles') or []])\n",
+     "changed", "no `headline`: it has only `title`, `source`, `url`, `published_at` and `summary`"),
+    (f"{TOOLS}rows = tools.news_top_headlines()['articles']\ntop = rows[0]\nresult(top['link'])\n", "changed",
+     "no `link`"),
+    (f"{TOOLS}res = tools.web_search(query='x')\nresult(res['results']['title'])\n", "changed", "which is a list"),
+    (f"{TOOLS}page = tools.web_fetch(url='https://x')\na = page\nb = a\nc = b\nd = c\ne = d\nresult(e.get('html', ''))\n",
+     "changed", "no `html`"),  # any number of aliases
 ])
 def test_bad_model_scripts_are_rejected_with_a_reason(code, condition, reason):
     with pytest.raises(ScriptInvalid) as err:
@@ -111,6 +126,18 @@ def test_bad_model_scripts_are_rejected_with_a_reason(code, condition, reason):
     ("from sentient_tools import tools, result\nfor i in range(3):\n    pass\nmemory_used = 1\nresult(i)\n", "changed"),
     ("from sentient_tools import tools, result\nn = 0\nwhile n < 3:\n    n += 1\nresult(n)\n", "changed"),
     ("import json, re\nfrom datetime import datetime\nfrom sentient_tools import tools, result\nresult(1)\n", "changed"),
+    (f"{TOOLS}page = tools.web_fetch(url='https://example.com')\nresult(page.get('content', '')[:200])\n", "changed"),
+    (f"{TOOLS}import json\ndata = tools.web_fetch(url='https://x.org/a.json')\ndata = json.loads(data['content'])\n"
+     "result(data['events'])\n", "changed"),  # the name now holds something else
+    (f"{TOOLS}def read(url):\n    page = tools.web_fetch(url=url)\n    return page['content']\nresult(read('https://x'))\n",
+     "changed"),
+    (f"{TOOLS}hits = tools.web_search(query='x')\nresult([h['title'] for h in hits['results'][:3]])\n", "changed"),
+    (f"{TOOLS}page = tools.web_fetch(url='https://x')\nresult(None if page.get('error') else page['title'])\n",
+     "changed"),
+    (f"{TOOLS}w = tools.weather_current()\nresult(w['temp'])\n", "changed"),  # shapes only for the common tools
+    (f"{TOOLS}page = tools.web_fetch(url='https://x')\npage['price'] = '40'\nresult(page['price'])\n", "changed"),
+    (f"{TOOLS}hits = tools.web_search(query='x')\nfor h in hits['results']:\n    h.update(seen=True)\n"
+     "result([h['seen'] for h in hits['results']])\n", "changed"),  # keys the script adds itself
 ])
 def test_good_scripts_pass(code, condition):
     check_rules(code, condition)
@@ -131,6 +158,25 @@ async def test_planner_re_plans_once_with_the_reason(make_app):
     retry = json_calls(llm, "planner")[2]["messages"][1]["content"]
     assert "loops forever" in retry and "while True:" in retry  # the reason and the code it rejected
     assert "time_sleep" in json_calls(llm, "planner")[1]["messages"][0]["content"]  # the planner prompt says so
+
+
+async def test_planner_re_plans_a_script_reading_a_key_web_fetch_never_returns(make_app):
+    refine = {"name": "Events watch", "description": "Watch the events page for new events", "priority": 1,
+              "schedule": {"type": "once", "run_at": None}}
+    reads = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.com/events')\n"
+    good = {**PLAN_TIME, "script": {"code": reads + "result(page['content'])\n", "condition": "noteworthy",
+                                    "then": "notify"}}
+    html = {**good, "script": {**good["script"], "code": reads + "result(page.get('html', ''))\n"}}
+    llm = FakeProvider(json_replies=[refine, html, good])
+    app = await make_app(llm)
+    created = await app.tasks.create_task("Watch https://example.com/events for new events")
+    await app.tasks.drain()
+    task = await app.tasks.get(created["task_id"])
+    assert task["status"] == "approval_pending" and task["script"]["code"] == good["script"]["code"]
+    retry = json_calls(llm, "planner")[2]["messages"][1]["content"]
+    assert "has no `html`" in retry and "The page's text is in `content`." in retry
+    prompt = json_calls(llm, "planner")[1]["messages"][0]["content"]
+    assert '`tools.web_fetch(url=...)` -> {"url", "title", "content"' in prompt  # the planner knows the shape
 
 
 async def test_chat_tool_script_edits_follow_the_rules_but_ui_edits_do_not(make_app):

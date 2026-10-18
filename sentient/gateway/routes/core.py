@@ -7,6 +7,7 @@ approvals, files, tools catalog, usage.
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import re
 from datetime import UTC, datetime, timedelta
@@ -20,16 +21,20 @@ from pydantic import BaseModel
 from sentient import __version__, paths
 from sentient.config import config_json_schema
 from sentient.config.schema import SentientConfig
+from sentient.files import names as file_names
 from sentient.gateway.auth import require_token
 from sentient.gateway.deps import get_core
 from sentient.llm import availability
+from sentient.llm.events import Done, Error
 from sentient.llm.spending import BudgetError
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.personas import render_persona
 from sentient.tools.rules import SCREEN_FOLDER, SELECTION_FOLDER
 
 open_router = APIRouter(tags=["core"])
 router = APIRouter(tags=["core"])
 _auth = [Depends(require_token)]
+log = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -245,8 +250,10 @@ async def patch_config(request: Request, body: dict):
 # ----------------------------------------------------------------------------- sessions
 @router.get("/api/sessions", dependencies=_auth)
 async def sessions(request: Request, limit: int = 100):
-    rows = await get_core(request).store.list_sessions(limit)
+    s = get_core(request)
+    rows = await s.store.list_sessions(limit)
     for row in rows:  # stored as JSON text; the API gives a list (or null)
+        row["memory_scope"] = memory_scopes.of_session(s.config, row)  # the scope it uses now (#155)
         raw = row.get("visited_hosts")
         try:
             row["visited_hosts"] = json.loads(raw) if raw else None
@@ -264,9 +271,25 @@ def _chat_model(value: str | None) -> str | None:
         raise HTTPException(422, str(exc)) from exc
 
 
+def _chat_scope(value: str | None) -> str | None:
+    """A chat's memory scope (#155): None follows the default; 422 for "always"."""
+    try:
+        return memory_scopes.chat_scope(value)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post("/api/sessions", dependencies=_auth)
-async def create_session(request: Request, channel: str = "desktop", incognito: bool = False, model: str | None = None):
-    sid = await get_core(request).store.create_session(channel=channel, incognito=incognito, model=_chat_model(model))
+async def create_session(
+    request: Request,
+    channel: str = "desktop",
+    incognito: bool = False,
+    model: str | None = None,
+    memory_scope: str | None = None,
+):
+    sid = await get_core(request).store.create_session(
+        channel=channel, incognito=incognito, model=_chat_model(model), memory_scope=_chat_scope(memory_scope)
+    )
     return {"session_id": sid}
 
 
@@ -294,24 +317,55 @@ class SessionPatch(BaseModel):
     title: str | None = None
     # the chat's own model (#312): "provider/model" keeps it for this chat; null or "" follows the default again
     model: str | None = None
+    # the memories it uses (#155): "personal", "work" or a project's name; null or "" follows the default again
+    memory_scope: str | None = None
 
 
 @router.patch("/api/sessions/{session_id}", dependencies=_auth)
 async def update_session(request: Request, session_id: str, body: SessionPatch):
-    """Rename a chat, or pick its model. Only the fields sent change."""
+    """Rename a chat, or pick its model or memory scope. Only the fields sent change."""
     s = get_core(request)
-    if await s.store.get_session(session_id) is None:
+    session = await s.store.get_session(session_id)
+    if session is None:
         raise HTTPException(404, "no such chat")
+    # every field is checked before anything is written, so a 422 changes nothing
+    model = _chat_model(body.model) if "model" in body.model_fields_set else None
+    scope = _chat_scope(body.memory_scope) if "memory_scope" in body.model_fields_set else None
     changed: dict[str, Any] = {}
     if body.title is not None:
         changed["title"] = body.title.strip()[:120]
         await s.store.rename_session(session_id, changed["title"])
     if "model" in body.model_fields_set:
-        changed["model"] = _chat_model(body.model)
-        await s.store.set_session_model(session_id, changed["model"])
+        changed["model"] = model
+        await s.store.set_session_model(session_id, model)
+    if "memory_scope" in body.model_fields_set:
+        await s.store.set_session_scope(session_id, scope)
+        changed["memory_scope"] = memory_scopes.of_session(s.config, {**session, "memory_scope": scope})
     if changed:
         s.bus.publish("session.updated", {"session_id": session_id, **changed})
     return {"ok": True, **changed}
+
+
+class TrustBody(BaseModel):
+    # the newest message the window had shown: outside content stored after it keeps the chat marked
+    upto: str | None = None
+
+
+@router.post("/api/sessions/{session_id}/trust", dependencies=_auth)
+async def trust_session(request: Request, session_id: str, body: TrustBody | None = None):
+    """"I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark, up to the message
+    the user had seen. The user's own action in the window; the model has no way to call it."""
+    s = get_core(request)
+    if s.agent is None:
+        raise HTTPException(503, "the assistant isn't ready yet")
+    try:
+        res = await s.agent.trust_chat(session_id, via="desktop", upto=(body.upto if body else None) or None)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if res is None:
+        raise HTTPException(404, "no such chat")
+    return {"ok": True, "was": res.was, "trusted": res.trusted, "untrusted": res.still if not res.trusted else "",
+            "writer": res.writer}
 
 
 @router.delete("/api/sessions/{session_id}", dependencies=_auth)
@@ -386,12 +440,22 @@ async def chat(request: Request, body: ChatBody):
                         out.append(json.dumps(e, default=str) + "\n")
                 return out
 
-            async for event in s.agent.run_turn(
-                session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
-            ):
-                for line in proposals():
-                    yield line
-                yield event.model_dump_json() + "\n"
+            ended = False  # the last line sent was a done
+            try:
+                async for event in s.agent.run_turn(
+                    session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
+                ):
+                    for line in proposals():
+                        yield line
+                    yield event.model_dump_json() + "\n"
+                    ended = isinstance(event, Done)
+            except Exception as exc:
+                log.exception("chat turn failed")
+                if not ended:  # a turn that broke still ends with error, then done (docs/API.md section 1, #334)
+                    for line in proposals():  # rule cards made before it broke still come first
+                        yield line
+                    yield Error(message=str(exc), recoverable=False, session_id=session_id).model_dump_json() + "\n"
+                    yield Done(content="", error=str(exc), session_id=session_id).model_dump_json() + "\n"
             for line in proposals():
                 yield line
 
@@ -409,6 +473,19 @@ async def approve(request: Request, body: ApprovalBody):
     if not ok:
         raise HTTPException(404, "no such pending approval")
     return {"resolved": True}
+
+
+class UndoBody(BaseModel):
+    undo_id: str
+    action: str = "undo"  # "undo" | "send_now"
+
+
+@router.post("/api/undo", dependencies=_auth)
+async def undo_send(request: Request, body: UndoBody):
+    """Undo (or send now) an email, message or post waiting in its undo window (#142)."""
+    if not get_core(request).undo.respond(body.undo_id, body.action):
+        raise HTTPException(404, "nothing is waiting with that id")
+    return {"done": True, "action": body.action}
 
 
 @router.get("/api/approvals/grants", dependencies=_auth)
@@ -457,13 +534,10 @@ async def upload_file(
     # what the user shared from their screen (screens/) or selected in another app (selections/) marks the chat it is
     # sent in (ADR 0018)
     folder = uploads_dir({"screen": SCREEN_FOLDER, "selection": SELECTION_FOLDER}.get(source, "uploads"))
-    name = _safe_name(file.filename or "upload")
-    target = folder / name
-    stem, suffix = target.stem, target.suffix
-    i = 1
-    while target.exists():
-        target = folder / f"{stem} ({i}){suffix}"
-        i += 1
+    # a name is never handed out again while a chat has it attached, and captures always get a random part (#458)
+    target = await file_names.create(
+        folder, _safe_name(file.filename or "upload"), store=get_core(request).store, unique=source != "upload"
+    )
     size = 0
     with target.open("wb") as fh:
         while chunk := await file.read(1024 * 1024):
@@ -495,8 +569,9 @@ async def list_files(request: Request):
     return out
 
 
-@router.get("/api/files/content/{name:path}", dependencies=_auth)
+@router.api_route("/api/files/content/{name:path}", methods=["GET", "HEAD"], dependencies=_auth)
 async def file_content(request: Request, name: str):
+    # HEAD answers whether the file is still there: a chat shows "No longer available" for an attachment that is gone
     p = resolve_file(name)
     if not p.is_file():
         raise HTTPException(404, "not found")

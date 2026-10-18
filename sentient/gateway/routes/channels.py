@@ -33,8 +33,9 @@ async def connect(request: Request, channel_id: str, body: dict | None = Body(No
 
 
 @router.post("/{channel_id}/disconnect")
-async def disconnect(request: Request, channel_id: str):
-    return await _run(get_core(request).channels.disconnect(channel_id))
+async def disconnect(request: Request, channel_id: str, forget: bool = False):
+    """``?forget=true``: also forget what Sentient learned there (#153)."""
+    return await _run(get_core(request).channels.disconnect(channel_id, forget=forget))
 
 
 @router.post("/{channel_id}/pairing")

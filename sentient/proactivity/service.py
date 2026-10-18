@@ -572,12 +572,13 @@ class ProactiveEngine(Service):
 
     async def _read_tool_names(self) -> list[str]:
         """Read-only tools of connected apps. ``registry.tools()`` already hides disconnected integrations and
-        "never" tools; tools with an "ask" rule are left out because nobody is there to ask."""
+        "never" tools; tools with an "ask" or "only if I asked" rule are left out because nobody is there to ask
+        and nobody asked for this work (#140)."""
         if self.app.agent is None:
             return []
         return [
             t.name for t in self.app.registry.tools()
-            if t.risk == Risk.read and t.plugin not in CONTEXT_EXCLUDED_PLUGINS and self.app.approvals.rule(t) != "ask"
+            if t.risk == Risk.read and t.plugin not in CONTEXT_EXCLUDED_PLUGINS and self.app.approvals.rule(t) not in {"ask", "if_asked"}
         ]
 
     async def live_search(self, source: str, event_type: str, item: dict, queries: dict[str, str]) -> str | None:
@@ -928,6 +929,11 @@ class ProactiveEngine(Service):
         if decision.needed and followups.has_placeholder(decision.draft):
             # the draft would be sent exactly as written: drop it now, ask again next check
             log.info("follow-up for %s %s: the draft has a placeholder, trying again next check", c.source, c.key)
+            return None
+        if decision.needed and (copied := followups.copied_from_them(c, decision.draft)):
+            # an address or a link from the other person's text in the user's own words (#144): drop it, ask again
+            log.info("follow-up for %s %s: the draft copies %s from their message, trying again next check",
+                     c.source, c.key, copied)
             return None
         await self._mark_followup_checked(c, now)
         if not decision.needed:

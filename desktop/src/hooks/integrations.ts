@@ -2,7 +2,8 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { getBridge } from '@/lib/bridge'
-import type { ConnectionAccess, Integration, McpServerCreate, PrivacyFilters } from '@/lib/types'
+import type { ConnectionAccess, EntityChoice, Integration, IntegrationEntities, McpServerCreate, PrivacyFilters } from '@/lib/types'
+import { invalidateForgotten } from './memory'
 import { qk } from './queryKeys'
 
 export function upsertIntegration(qc: QueryClient, integration: Integration) {
@@ -33,6 +34,16 @@ export function usePrivacyFilters(id: string | undefined) {
   })
 }
 
+/** #175: the devices Sentient may use, for integrations with an entity picker (Home Assistant). */
+export function useIntegrationEntities(id: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: qk.integrations.entities(id ?? ''),
+    queryFn: () => api.integrations.getEntities(id as string),
+    enabled: !!id && enabled,
+    retry: false
+  })
+}
+
 export function useIntegrationActions() {
   const qc = useQueryClient()
   return {
@@ -49,11 +60,14 @@ export function useIntegrationActions() {
         else upsertIntegration(qc, res)
       }
     }),
+    /** ``forget``: also forget what Sentient learned from it (#153). */
     disconnect: useMutation({
-      mutationFn: (id: string) => api.integrations.disconnect(id),
+      mutationFn: ({ id, forget = false }: { id: string; forget?: boolean }) => api.integrations.disconnect(id, forget),
       onSuccess: (res) => {
-        upsertIntegration(qc, res)
+        const { forgotten: _forgotten, ...integration } = res
+        upsertIntegration(qc, integration)
         void qc.invalidateQueries({ queryKey: qk.tasks.all })
+        if (res.forgotten) invalidateForgotten(qc)
       }
     }),
     test: useMutation({ mutationFn: (id: string) => api.integrations.test(id) }),
@@ -61,6 +75,21 @@ export function useIntegrationActions() {
     setAccess: useMutation({
       mutationFn: ({ id, access }: { id: string; access: ConnectionAccess }) => api.integrations.setAccess(id, access),
       onSuccess: (res) => upsertIntegration(qc, res)
+    }),
+    setEntities: useMutation({
+      mutationFn: ({ id, choice }: { id: string; choice: EntityChoice }) => api.integrations.setEntities(id, choice),
+      // show the choice at once; the engine applies it at once too
+      onMutate: ({ id, choice }) =>
+        qc.setQueryData<IntegrationEntities>(qk.integrations.entities(id), (old) =>
+          old
+            ? {
+                ...old,
+                ...choice,
+                entities: old.entities.map((e) => ({ ...e, allowed: choice.mode === 'all' || choice.picked.includes(e.entity_id) }))
+              }
+            : old
+        ),
+      onSettled: (_r, _e, { id }) => void qc.invalidateQueries({ queryKey: qk.integrations.entities(id) })
     }),
     setPrivacyFilters: useMutation({
       mutationFn: ({ id, filters }: { id: string; filters: PrivacyFilters }) => api.integrations.setPrivacyFilters(id, filters),
@@ -83,7 +112,13 @@ export function useMcpActions() {
   const invalidate = () => void qc.invalidateQueries({ queryKey: qk.integrations.mcp })
   return {
     add: useMutation({ mutationFn: (body: McpServerCreate) => api.integrations.mcp.add(body), onSuccess: invalidate }),
-    remove: useMutation({ mutationFn: (name: string) => api.integrations.mcp.remove(name), onSuccess: invalidate }),
+    remove: useMutation({
+      mutationFn: ({ name, forget = false }: { name: string; forget?: boolean }) => api.integrations.mcp.remove(name, forget),
+      onSuccess: (res) => {
+        invalidate()
+        if (res.forgotten) invalidateForgotten(qc)
+      }
+    }),
     test: useMutation({ mutationFn: (name: string) => api.integrations.mcp.test(name) }),
     /** Starts a browser sign-in and opens the provider's page; the server list shows when it finishes. */
     signIn: useMutation({
@@ -105,6 +140,11 @@ export function useMcpActions() {
     setValues: useMutation({
       mutationFn: ({ name, values, enable }: { name: string; values: Record<string, string>; enable?: boolean }) =>
         api.integrations.mcp.setValues(name, values, enable),
+      onSuccess: invalidate
+    }),
+    review: useMutation({
+      mutationFn: ({ name, decisions }: { name: string; decisions: Record<string, 'approve' | 'decline'> }) =>
+        api.integrations.mcp.review(name, decisions),
       onSuccess: invalidate
     })
   }
