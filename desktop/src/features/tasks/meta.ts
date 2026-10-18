@@ -22,6 +22,7 @@ import {
   IconUser,
   IconMessageCircle,
   IconBulb,
+  IconMailForward,
   IconRadar,
   type Icon
 } from '@tabler/icons-react'
@@ -110,18 +111,20 @@ export function taskKind(task: Pick<Task, 'task_type' | 'schedule'>): TaskKind {
 }
 
 // ---------------------------------------------------------------------------- sources
-export type TaskSource = 'you' | 'chat' | 'proactive'
+export type TaskSource = 'you' | 'chat' | 'proactive' | 'email'
 
 export const SOURCE_META: Record<TaskSource, { label: string; icon: Icon }> = {
   you: { label: 'You', icon: IconUser },
   chat: { label: 'Chat', icon: IconMessageCircle },
-  proactive: { label: 'Proactive', icon: IconBulb }
+  proactive: { label: 'Proactive', icon: IconBulb },
+  email: { label: 'Email', icon: IconMailForward }
 }
 
 export function taskSource(task: Pick<Task, 'original_context'>): TaskSource {
   const s = task.original_context?.source
   if (s === 'chat') return 'chat'
   if (s === 'proactive' || s === 'trigger') return 'proactive'
+  if (s === 'email') return 'email'
   return 'you'
 }
 

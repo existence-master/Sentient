@@ -88,6 +88,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'tasks.away_pause_days': { label: 'Pause routines when you are away for', unit: 'days' },
   'tasks.away_pause_after_results': { label: 'Or when unseen results reach', unit: 'results' },
   'tasks.away_ask_hours': { label: 'Ask before pausing, then wait', unit: 'hours' },
+  'tasks.email': { hidden: true }, // its own section: Tasks by email (#159)
   // proactivity
   'proactivity.enabled': { label: 'Proactive suggestions' },
   'proactivity.poll_interval_minutes': { label: 'Check connected apps every', unit: 'min' },

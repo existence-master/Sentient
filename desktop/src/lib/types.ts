@@ -295,7 +295,51 @@ export interface TasksConfig {
   max_tool_rounds: number
   require_plan_approval: boolean
   swarm_max_agents: number
+  /** Tasks by email (#159). */
+  email?: EmailTasksConfig
   [key: string]: unknown
+}
+
+/** `tasks.email` (#159): forward or copy an email to the Sentient address to give it a task. */
+export interface EmailTasksConfig {
+  enabled: boolean
+  address: string
+  label: string
+  /** Other real addresses that may send tasks; your own addresses always can. */
+  allowed_senders: string[]
+}
+
+/** `GET /api/tasks/email` (#159). */
+export interface EmailTasksStatus {
+  enabled: boolean
+  /** On, with an address or label picked. */
+  active: boolean
+  address: string
+  label: string
+  allowed_senders: string[]
+  /** Who may send tasks right now. */
+  allowed: string[]
+  own_addresses: string[]
+  /** The connected email accounts. */
+  accounts: string[]
+  suggested_address: string
+  /** Connected mail apps new email arrives through: `gmail`, `email_imap`. */
+  watching: string[]
+  recent: EmailTaskLogEntry[]
+}
+
+export interface EmailTaskLogEntry {
+  at: ISODate
+  app: string
+  /** The real address the From line names ("" when it names none clearly). */
+  sender: string
+  /** The From line as written, display name included. */
+  from: string
+  subject: string
+  outcome: 'task' | 'ignored'
+  reason: string | null
+  code: 'not_allowed' | 'unclear_sender' | 'failed_check' | 'automated' | 'too_many' | null
+  task_id: string | null
 }
 
 export interface McpServerConfig {
@@ -1732,7 +1776,7 @@ export interface Task {
   notepad?: string | null
   /** Routines: the setup checklist (§4 "Setup checklist", #161). `null` for other tasks; older engines leave it out. */
   setup?: TaskSetup | null
-  original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
+  original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | 'email' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
   next_execution_at: ISODate | null

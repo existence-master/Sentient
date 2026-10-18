@@ -549,6 +549,47 @@ class MemoryConfig(BaseModel):
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
+class EmailTasksConfig(BaseModel):
+    """Tasks by email (#159): an email forwarded or copied to the user's Sentient address becomes a task."""
+
+    enabled: bool = Field(
+        False,
+        description="Forward or copy an email to your Sentient address and Sentient makes a task from it. Off until "
+        "you turn it on.",
+    )
+    address: str = Field(
+        "",
+        description="Your Sentient address, for example you+sentient@gmail.com. Email sent or copied to it becomes a "
+        "task. Most email services deliver an address with +something to your normal inbox.",
+    )
+    label: str = Field(
+        "",
+        description="Optional. A Gmail label or email folder: email that lands there becomes a task too. Over IMAP, "
+        "also add the folder to the folders the account watches.",
+    )
+    allowed_senders: list[str] = Field(
+        default_factory=list,
+        description="Other people who may give Sentient tasks by email, by their real address. Your own addresses "
+        "(the email accounts you connected) can always send tasks. The name shown next to an address never counts.",
+    )
+
+    @field_validator("address", "label")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("allowed_senders")
+    @classmethod
+    def _senders(cls, value: list[str]) -> list[str]:
+        seen: dict[str, None] = {}
+        for item in value or []:
+            for part in str(item).replace(";", ",").split(","):
+                address = part.strip().lower()
+                if address:
+                    seen.setdefault(address, None)
+        return list(seen)
+
+
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
@@ -607,6 +648,10 @@ class TasksConfig(BaseModel):
     away_ask_hours: int = Field(
         24, ge=0, le=168, description="Before pausing, ask once and wait this many hours for any sign of you. "
         "0 pauses without asking.",
+    )
+    email: EmailTasksConfig = Field(
+        default_factory=EmailTasksConfig,
+        description="Tasks by email: forward or copy an email to your Sentient address to give it a task (#159).",
     )
 
 

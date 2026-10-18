@@ -90,7 +90,7 @@ async def test_gmail_history_bootstrap_incremental_privacy_and_dedupe(app, keych
     item = batch["items"][0]
     assert item["id"] == "m2" and item["sender_email"] == "jane@y.com" and "_key" not in item
     assert set(item) == {"id", "thread_id", "from", "sender_email", "to", "subject", "snippet", "body", "date",
-                         "labels", "url"}
+                         "labels", "url", "cc", "message_id", "headers"}  # cc, message_id, headers: #159
     st = await mgr.feeds.state("gmail")
     assert st["cursor"] == "105" and st["status"] == "ok" and st["failures"] == 0 and st["emitted"] == 1
     # the privacy-filtered message is recorded as seen so it can never leak later
@@ -290,3 +290,47 @@ def test_feed_routes(config, isolated_home, monkeypatch, keychain):
                                                                              "emitted": 0}
         assert client.post("/api/integrations/feeds/weather/sync").status_code == 404
         assert client.get("/api/integrations/feeds", headers={"Authorization": "Bearer nope"}).status_code == 401
+
+
+# ----------------------------------------------------------------------------- tasks by email (#159)
+async def test_gmail_feed_lets_mail_to_the_sentient_address_through(app, keychain):
+    """Mail the user sends to their own Sentient address is SENT and INBOX both; the feed lets only that through,
+    with the headers the sender check reads, and marks mail in the watched label."""
+    mgr = app.integrations
+    await connect_google(app, keychain, "gmail")
+    app.config.tasks.email.enabled = True
+    app.config.tasks.email.address = "me+sentient@example.com"
+    app.config.tasks.email.label = "Sentient"
+    from sentient.integrations.plugins import gmail as gmail_mod
+
+    gmail_mod._inbox_label_cache.clear()
+    to_sentient = gmail_message("s1", "Me <me@example.com>", "Fwd: Offsite", "Find a time", labels=("SENT", "INBOX"))
+    to_sentient["payload"]["headers"] += [
+        {"name": "To", "value": "me+sentient@example.com"}, {"name": "Delivered-To", "value": "me+sentient@example.com"},
+        {"name": "Authentication-Results", "value": "mx.google.com; dmarc=pass"},
+        {"name": "Authentication-Results", "value": "other.example; spf=pass"},
+        {"name": "Message-ID", "value": "<s1@example.com>"}]
+    to_sentient["payload"]["headers"] = [h for h in to_sentient["payload"]["headers"]
+                                         if not (h["name"] == "To" and h["value"] == "me@example.com")]
+    sent_elsewhere = gmail_message("s2", "Me <me@example.com>", "Hi", "Hello", labels=("SENT", "INBOX"))
+    labelled = gmail_message("l1", "Arjun <arjun@example.com>", "Notes", "See notes", labels=("INBOX", "Label_7"))
+    with respx.mock() as router:
+        router.get(host=GMAIL, path=HISTORY).mock(return_value=httpx.Response(200, json={
+            "historyId": "110", "history": [{"id": "101", **added(("s1", ["SENT", "INBOX"]), ("s2", ["SENT", "INBOX"]),
+                                                                  ("l1", ["INBOX", "Label_7"]))}]}))
+        router.get(host=GMAIL, path="/gmail/v1/users/me/labels").mock(return_value=httpx.Response(200, json={
+            "labels": [{"id": "Label_7", "name": "Sentient"}, {"id": "INBOX", "name": "INBOX"}]}))
+        for msg in (to_sentient, sent_elsewhere, labelled):
+            router.get(host=GMAIL, path=f"{MSG_PATH}/{msg['id']}").mock(return_value=httpx.Response(200, json=msg))
+        await mgr.feeds.save("gmail", cursor="100")
+        async with app.bus.subscribe() as q:
+            res = await mgr.feeds.sync("gmail")
+            events = drain(q)
+    assert res["emitted"] == 2
+    items = {i["id"]: i for b in source_items(events) for i in b["items"]}
+    assert set(items) == {"s1", "l1"}  # the user's own mail to someone else stays out
+    s1 = items["s1"]
+    assert s1["message_id"] == "<s1@example.com>" and s1["sender_email"] == "me@example.com"
+    assert s1["headers"]["delivered-to"] == "me+sentient@example.com"
+    assert s1["headers"]["authentication-results"] == "mx.google.com; dmarc=pass | other.example; spf=pass"
+    assert items["l1"]["label_names"] == ["Sentient"]

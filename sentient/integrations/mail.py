@@ -10,6 +10,7 @@ import contextlib
 import re
 from collections.abc import Mapping
 from email import policy
+from email.headerregistry import HeaderRegistry
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import getaddresses
@@ -18,6 +19,7 @@ from sentient.integrations.plugins.web import html_to_text
 
 _RE_SUBJECT = re.compile(r"^\s*re\s*:", re.IGNORECASE)
 _FWD_SUBJECT = re.compile(r"^\s*(fwd?|fw)\s*:", re.IGNORECASE)
+_REGISTRY = HeaderRegistry()
 
 
 def parse_raw(raw: bytes) -> EmailMessage:
@@ -52,6 +54,40 @@ def body_text(msg: EmailMessage) -> str:
 
 def _addresses(value: str) -> list[tuple[str, str]]:
     return [(n.strip(), a.strip()) for n, a in getaddresses([value or ""]) if a and "@" in a]
+
+
+_PLAIN_ADDRESS = re.compile(r"^[A-Za-z0-9._%+\-=]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+$")
+
+
+def real_address(value: str | None) -> str:
+    """The one address a From line really names, lower-case, or "" when it doesn't name exactly one clearly (#159).
+
+    The display name never counts: ``"Maya Rao <maya@example.com>" <attacker@evil.example>`` is attacker@evil.example.
+    Two parsers (the standard library's strict ``getaddresses`` and the RFC 5322 header parser) must agree on a single
+    plain address with nothing malformed around it, so a line written to confuse one of them names nobody."""
+    text = str(value or "")
+    if not text.strip() or "\n" in text or "\r" in text:
+        return ""
+    try:
+        parsed = [a for _, a in getaddresses([text])]
+        header = _REGISTRY("from", text)
+        found = [a.addr_spec for a in header.addresses]
+    except Exception:
+        return ""
+    if header.defects or len(parsed) != 1 or len(found) != 1:
+        return ""
+    address = found[0].strip()
+    if address.lower() != parsed[0].strip().lower() or not _PLAIN_ADDRESS.match(address):
+        return ""
+    return address.lower()
+
+
+def address_set(*values: str | None) -> set[str]:
+    """Every address named in header lines (To, Cc, Delivered-To ...), lower-case."""
+    out: set[str] = set()
+    for value in values:
+        out |= {a.lower() for _, a in _addresses(str(value or ""))}
+    return out
 
 
 def reply_targets(headers: Mapping[str, str], *, me: set[str], reply_all: bool, own: bool = False) -> dict:

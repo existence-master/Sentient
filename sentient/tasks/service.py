@@ -46,6 +46,7 @@ from typing import Any
 
 from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
+from sentient.agent.prompt import mark_outside
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.memory import scopes as memory_scopes
@@ -56,6 +57,7 @@ from sentient.tasks import (
     catchup,
     checklist,
     continuity,
+    email_inbox,
     executor,
     limits,
     scripts,
@@ -225,6 +227,7 @@ class TaskService(Service):
         self._last_tick: datetime | None = None  # wall clock of the last scheduler tick (a big jump means sleep)
         self._catch_up_reason: str | None = "start"  # what the next catch-up notice says it caught up after
         self.away = AwayWatch(self)  # pause routines while the user is away (#163)
+        self.inbox = email_inbox.EmailInbox(self)  # tasks by email (#159)
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
@@ -419,6 +422,37 @@ class TaskService(Service):
             self._spawn(self._orchestrate_swarm(task_id), f"swarm:{task_id}")
         else:
             self._spawn(self._refine_and_plan(task_id, auto_approve=auto_approve), f"plan:{task_id}")
+        assert data is not None
+        return data
+
+    async def create_from_email(self, name: str, description: str, context: dict) -> dict:
+        """A task made from an email sent to the Sentient address (``tasks/email_inbox.py``, #159).
+
+        No refining step (that would read the email as the user's words): the name and description are written in
+        code, and the planner reads the email marked as outside content. The plan always waits for approval."""
+        now = self.now_iso()
+        task_id = await self.repo.insert_task({
+            "name": _title(name),
+            "description": description,
+            "status": "planning",
+            "priority": 1,
+            "assignee": "ai",
+            "original_prompt": description,
+            "source": email_inbox.SOURCE,
+            "enabled": True,
+            "model": None,
+            "memory_scope": memory_scopes.chat_scope(None),
+            "original_context": dict(context),
+            "plan": [],
+            "chat_history": [],
+            "clarifying_questions": [],
+            "task_type": "single",
+            "schedule": None,
+            "created_at": now,
+            "updated_at": now,
+        })
+        data = await self.publish(task_id)
+        self._spawn(self._plan_job(task_id), f"plan:{task_id}")
         assert data is not None
         return data
 
@@ -1183,6 +1217,11 @@ class TaskService(Service):
         """Consumer of the ``source.items`` domain event (docs/API.md section 16), for every origin."""
         if not isinstance(data, dict):
             return []
+        if not self.app.stopped:  # an email to the Sentient address becomes a task (#159)
+            try:
+                await self.inbox.handle(data)
+            except Exception:
+                log.exception("tasks by email failed")
         source = str(data.get("source") or "")
         event = str(data.get("event") or "")
         run_ids: list[str] = []
@@ -1434,7 +1473,8 @@ class TaskService(Service):
         """Start planning a task left ``planning`` with no planner working on it."""
         if task.get("task_type") == "swarm":
             self._spawn(self._orchestrate_swarm(task["id"]), f"swarm:{task['id']}")
-        elif task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions"):
+        elif (task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions")
+              or email_inbox.is_email_task(task)):  # a task by email is never refined (#159)
             self._spawn(self._plan_job(task["id"]), f"plan:{task['id']}")
         else:
             self._spawn(self._refine_and_plan(task["id"]), f"plan:{task['id']}")
@@ -1639,8 +1679,11 @@ class TaskService(Service):
                 "Schedule (handled automatically by the scheduler; plan a single occurrence):\n"
                 + json.dumps(schedule, ensure_ascii=False)
             )
+        email = context.pop("email", None) if email_inbox.is_email_task(task) else None
         if set(context) - {"source"}:
             parts.append("Context:\n" + json.dumps(context, indent=2, ensure_ascii=False, default=str)[:12000])
+        if isinstance(email, dict):  # the email a task by email was made from: outside content (#159)
+            parts.append(email_inbox.planner_part(email, mark_outside))
         if answered:
             parts.append("Answers to your clarifying questions:\n" + "\n".join(
                 f"- Q: {q.get('text')}\n  A: {q.get('answer')}" for q in answered
@@ -1666,6 +1709,8 @@ class TaskService(Service):
         if current is None or current["status"] != "planning":
             return  # deleted or changed while the model was thinking
         name = str(data.get("name") or "").strip()[:200] if not is_change else ""
+        if email_inbox.is_email_task(task):  # a task by email keeps the name code gave it, also in notifications
+            name = ""
         display_name = name or task.get("name") or "Untitled task"
 
         if new_questions and (not answered or not plan):
@@ -1720,7 +1765,8 @@ class TaskService(Service):
                 fields["description"] = str(data["description"]).strip()
         if not await self.repo.update_task_if_status(task_id, {"planning"}, {**fields, "updated_at": self.now_iso()}):
             return  # declined, archived or edited while the planner was running
-        if auto_approve or not cfg.tasks.require_plan_approval:
+        # a plan written from someone's email always waits for the user's approval (#159)
+        if (auto_approve or not cfg.tasks.require_plan_approval) and not email_inbox.is_email_task(task):
             await self.approve(task_id)
             return
         await self.publish(task_id)

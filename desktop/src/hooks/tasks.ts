@@ -30,6 +30,11 @@ export function useAway() {
   return useQuery({ queryKey: qk.tasks.away, queryFn: api.tasks.away, retry: noRetryWhenMissing })
 }
 
+/** Tasks by email (#159): the address, who may send tasks and the latest emails. Checked every half minute. */
+export function useEmailTasks() {
+  return useQuery({ queryKey: qk.tasks.email, queryFn: () => api.tasks.email(), retry: noRetryWhenMissing, refetchInterval: 30_000 })
+}
+
 export function useAwayActions() {
   const qc = useQueryClient()
   const refresh = () => {
