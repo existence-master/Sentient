@@ -501,6 +501,25 @@ accept or loosen a rule.
   ends, so calls already running when the budget is reached (a swarm's workers, a chat and a task at once) still
   finish, and spending can go past the budget by what they cost.
 
+### OpenAI-compatible API (#211)
+Lets other apps on this computer (editors, scripts, shortcuts) chat with Sentient, with its memory and tools, using
+any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `true` (`PATCH /api/config`).
+- `POST /api/openai-api/key` (window token) → `{key, base_url}`: a new key (`sk-sentient-...`) in the keychain entry
+  `openai_api_key`, replacing the old one. This answer is the only place it is shown. 503 when the keychain can't
+  save it.
+- `/v1/...` takes `Authorization: Bearer <key>`, never the window's token. Errors use OpenAI's shape
+  `{error: {message, type, param, code}}`: 404 `api_off` while the setting is off, 401 `invalid_api_key` for a missing
+  or wrong key, 400 `no_user_message`, 500 `turn_failed` when the turn ended in an error.
+- `GET /v1/models` → `{object: "list", data: [{id: "sentient", object: "model", created, owned_by}]}`.
+- `POST /v1/chat/completions` `{model, messages: [{role, content}], stream?, user?}` runs one chat turn in the named
+  chat for `user` (`"API"` when absent, made on first use, `channel: "api"`, title = the name; the mapping is the
+  `openai_api.sessions` meta entry). Only the last `user` message is sent (its text parts when `content` is a list):
+  Sentient keeps the chat's history itself, so earlier messages, `system` messages and fields such as `temperature`
+  are ignored. Without `stream` → a `chat.completion` with the reply and `usage`; with `stream: true` →
+  `text/event-stream` of `chat.completion.chunk`s (a first `delta: {role: "assistant"}`, `delta.content` per
+  `text_delta`, a last `delta: {}` with `finish_reason: "stop"`), a `data: {error}` line if the turn failed, then
+  `data: [DONE]`. API turns have no undo window (`channel: "api"` is not attended, section 10).
+
 ---
 
 ## 3. Models & secrets (fully changeable model configuration)

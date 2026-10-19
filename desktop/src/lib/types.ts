@@ -219,6 +219,11 @@ export interface GatewayConfig {
   port: number
 }
 
+/** The OpenAI-compatible chat API (#211, docs/API.md section 2). */
+export interface OpenAIApiConfig {
+  enabled: boolean
+}
+
 export interface ChatConfig {
   history_window: number
   compress_after_messages: number
@@ -454,6 +459,7 @@ export interface SentientConfig {
   assistant: AssistantConfig
   models: ModelsConfig
   gateway: GatewayConfig
+  openai_api: OpenAIApiConfig
   chat: ChatConfig
   memory: MemoryConfig
   tools: ToolsConfig
