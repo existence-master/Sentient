@@ -36,7 +36,12 @@ USER = "Maya Rao"
         ("Maya redesigned the user interface.", "Maya redesigned the user interface."),
         ("The user experience got better after Maya's fix.", "The user experience got better after Maya's fix."),
         ("Maya wrote the user stories for checkout.", "Maya wrote the user stories for checkout."),
+        ("The user agent is Chrome.", "The user agent is Chrome."),
+        ("Maya forgot the user name for the router.", "Maya forgot the user name for the router."),
+        ("The user ID for the portal is 4512.", "The user ID for the portal is 4512."),
+        ("Maya locked the user account.", "Maya locked the user account."),
         ("The user researched flights to Goa.", "Maya Rao researched flights to Goa."),
+        ("The user named her dog Biscuit.", "Maya Rao named her dog Biscuit."),
         ("Priya met the user at work.", "Priya met Maya Rao at work."),
     ],
 )

@@ -69,9 +69,10 @@ _UNKNOWN_RE = re.compile(
 )
 # the USERNAME placeholder is matched in capitals only, so "my GitHub username" stays a username
 _USER_REF = r"(?<![\w-])((?i:the user)|USERNAME)"
-# "the user research team", "the user interface": a kind of thing, not the user
+# "the user research team", "the user agent", "the user name": a kind of thing, not the user
 _USER_COMPOUND_NOUN = (
-    r"(?i:interfaces?|experiences?|research(?:ers?)?|manuals?|guides?|journeys?|stor(?:y|ies)|base|testing|personas?)"
+    r"(?i:interfaces?|experiences?|research(?:ers?)?|manuals?|guides?|journeys?|stor(?:y|ies)|base|testing|personas?|"
+    r"agents?|names?|ids?|accounts?|profiles?)"
 )
 _USER_REF_RE = re.compile(rf"{_USER_REF}(?![\w-])(?!\s+{_USER_COMPOUND_NOUN}\b)")
 _USER_POSSESSIVE_RE = re.compile(rf"{_USER_REF}['\u2019]s\b")
