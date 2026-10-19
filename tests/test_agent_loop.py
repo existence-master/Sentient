@@ -194,13 +194,13 @@ def test_browser_click_correction_uses_the_latest_call():
     prior_success = [{"name": "browser_click", "ok": True}]
     assert outcomes.unmade_browser_click_note(
         "I clicked the upgrade button.", [], prior_success
-    ) == "I didn't click it, so nothing changed on the page."
+    ) == ""
     assert outcomes.unmade_browser_click_note("I clicked it.", [], prior_success) == ""
     prior_subscribe = [{"name": "browser_click", "ok": True, "target": 'button "Subscribe"'}]
     assert outcomes.unmade_browser_click_note("I clicked the Subscribe button.", [], prior_subscribe) == ""
     assert outcomes.unmade_browser_click_note(
         "I clicked the Delete account button.", [], prior_subscribe
-    ) == "I didn't click it, so nothing changed on the page."
+    ) == ""
     assert outcomes.unmade_browser_click_note(
         "The Subscribe button was clicked, but the action failed.", [], [{"name": "browser_click", "declined": True}]
     ) == "I didn't click it: you declined, so nothing changed on the page."
@@ -224,9 +224,35 @@ def test_browser_click_correction_uses_the_latest_call():
     ) == "I didn't click it: you declined, so nothing changed on the page."
     assert outcomes.unmade_browser_click_note(
         "I clicked the account settings button.", [{"name": "browser_click", "ok": True, "target": 'button "Delete account"'}]
-    ) == "I didn't click it, so nothing changed on the page."
+    ) == ""
     assert outcomes.unmade_browser_click_note(
         "If it were clicked, you would be charged $19.", [{"name": "browser_click", "declined": True}]
+    ) == ""
+    successful_subscribe_then_declined_delete = [
+        {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+        {"name": "browser_click", "declined": True, "target": 'button "Delete account"'},
+    ]
+    for reply in (
+        'I clicked the "Subscribe" button (e1) for the newsletter and attempted to click the "Delete account" button (e2).',
+        "The subscription button was clicked successfully.",
+        "Yes, I clicked the Subscribe button for the free weekly newsletter.",
+        'Today I clicked just one thing: the "Subscribe" button on the Garden Notes page.',
+    ):
+        assert outcomes.unmade_browser_click_note(reply, successful_subscribe_then_declined_delete) == ""
+    assert outcomes.unmade_browser_click_note(
+        "Nothing was clicked.", successful_subscribe_then_declined_delete
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "Yes, I clicked the Subscribe button for the free weekly newsletter.",
+        [{"name": "browser_click", "declined": True, "target": 'button "Delete account"'}],
+        [{"name": "browser_click", "ok": True, "target": 'button "Subscribe"'}],
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.",
+        [
+            {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+            {"name": "browser_click", "declined": True},
+        ],
     ) == ""
 
 

@@ -52,7 +52,7 @@ _CLAIMS: dict[str, re.Pattern] = {
 _CLAIM_ANY = re.compile(r"\b(done|completed|finished|success(?:fully)?|sent|saved|created|updated)\b", re.I)
 _BROWSER_CLICK_CLAIM = re.compile(r"\b(?:clicked|was clicked)\b", re.I)
 _NEGATED_BROWSER_CLICK = re.compile(
-    r"\b(?:not|didn't|hasn't|wasn't|haven't|never)\b[^.!?]{0,50}\bclicked\b", re.I
+    r"\b(?:not|didn't|hasn't|wasn't|haven't|never|nothing)\b[^.!?]{0,50}\bclicked\b", re.I
 )
 _OTHER_PERSON_BROWSER_CLICK = re.compile(
     r"\b(?:you|he|she|they|someone|anyone|(?:my|your|his|her|their)\s+\w+)\s+"
@@ -335,19 +335,38 @@ def _matches_click_target(claim: str, click: dict) -> bool:
         return True
 
     claim_words = _target_words(claim)
-    return bool(claim_words) and claim_words <= _target_words(str(click.get("target") or ""))
+    target_words = _target_words(str(click.get("target") or ""))
+
+    def same_word(left: str, right: str) -> bool:
+        """Accept the small morphological variations common in a natural-language reply."""
+        return left == right or (
+            len(left) >= 6 and len(right) >= 6 and left[:6] == right[:6]
+        )
+
+    # The recorded element name is the dependable evidence.  It need only appear
+    # in the claim: a reply naturally adds context such as "for the newsletter"
+    # or an element ref after naming the clicked control.
+    return bool(target_words) and all(
+        any(same_word(target_word, claim_word) for claim_word in claim_words)
+        for target_word in target_words
+    )
 
 
 def _click_note(clicks: list[dict], target: str) -> str:
     """The correction for a click claim after selecting evidence for its named target."""
     matches = [click for click in clicks if not target or _matches_click_target(target, click)]
-    if target and not matches:
+    has_success = any(click.get("ok") for click in clicks)
+    if target and not matches and not has_success:
         # A declined call may retain only its transient ref; it is still evidence that the named action was not made.
         matches = [
             click for click in clicks
             if not click.get("ok") and not _target_words(str(click.get("target") or ""))
         ]
     if target and not matches:
+        if has_success:
+            # A successful click of another named control makes an unmatched
+            # claim ambiguous.  Do not turn an honest report into a correction.
+            return ""
         return "I didn't click it, so nothing changed on the page."
     if not matches:
         return "I didn't click it, so nothing changed on the page."
@@ -372,7 +391,9 @@ def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] 
     current_clicks = [call for call in calls if call.get("name") == "browser_click"]
     previous_clicks = [call for call in history or [] if call.get("name") == "browser_click"]
     claims = re.split(r"(?<=[.!?])\s+", text or "")
-    clicks = current_clicks or previous_clicks
+    # A reply can summarize a successful click from an earlier turn alongside a
+    # declined click from this one, so consider the complete chronological record.
+    clicks = previous_clicks + current_clicks
     for claim in claims:
         if _HYPOTHETICAL_BROWSER_CLICK.search(claim):
             continue
