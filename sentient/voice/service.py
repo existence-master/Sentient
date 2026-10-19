@@ -17,12 +17,13 @@ import tempfile
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from sentient.services import Service, cancel_tasks
 from sentient.voice.audio import MAX_AUDIO_BYTES, audio_suffix
 from sentient.voice.base import STTProvider, TTSProvider, VoiceError
 from sentient.voice.dictation import Cleanup, clean_dictation
-from sentient.voice.session import SendBytes, SendJSON, VoiceSession
+from sentient.voice.session import Abort, SendBytes, SendJSON, VoiceSession
 from sentient.voice.stt import FasterWhisperSTT, build_stt, stt_language
 from sentient.voice.text import clean_for_speech, is_speakable
 from sentient.voice.tts import build_tts
@@ -287,7 +288,44 @@ class VoiceService(Service):
             out["tts"] = {"provider": self.config.tts_provider, "voice": self.config.tts_voice,
                           "ready": False, "voices": [], "error": str(exc)}
         out["wake"] = self.wake_status()
+        out["privacy"] = self.privacy()
         return out
+
+    def privacy(self) -> dict[str, Any]:
+        """**VoicePrivacy**: where the sound from each microphone goes, read from the settings (#170).
+
+        ``{audio_local, items: [{id, label, local, where}], replies: {local, where}}``. ``audio_local`` is true when
+        no recording leaves this computer. Spoken replies are listed apart: what goes out for them is text."""
+        cfg = self.app.config
+        v = cfg.voice
+        local_only = cfg.models.local_only
+        here = "Turned into text on this computer. The recording never leaves it."
+        chats_local, chats_where = True, here
+        if v.stt_provider != "faster_whisper" and not local_only:
+            service = {"openai": "OpenAI", "deepgram": "Deepgram", "elevenlabs": "ElevenLabs"}.get(v.stt_provider, v.stt_provider)
+            chats_local, chats_where = False, f"Sent to {service} to be turned into text."
+            if v.stt_provider == "openai":
+                openai = cfg.models.providers.get("openai")
+                host = (urlparse(openai.api_base).hostname or "") if openai and openai.api_base else ""
+                if host in {"localhost", "127.0.0.1", "::1"}:
+                    chats_local, chats_where = True, f"Turned into text by the speech service at {host} on this computer."
+                elif host:
+                    chats_where = f"Sent to {host} to be turned into text."
+        items = [
+            {"id": "dictation", "label": "Push to talk and dictation", "local": True, "where": here},
+            {"id": "wake", "label": "Listening for the wake word", "local": True,
+             "where": "Checked on this computer. What you say after it is handled like a voice chat."},
+            {"id": "voice", "label": "Voice chats, also from your phone and glasses", "local": chats_local,
+             "where": chats_where},
+            {"id": "voice_notes", "label": "Voice messages you send from a messaging app", "local": chats_local,
+             "where": chats_where},
+        ]  # fmt: skip
+        if v.tts_provider in {"openai", "elevenlabs"} and not local_only:
+            name = "OpenAI" if v.tts_provider == "openai" else "ElevenLabs"
+            replies = {"local": False, "where": f"The text of each reply is sent to {name} to be read aloud."}
+        else:
+            replies = {"local": True, "where": "Spoken on this computer."}
+        return {"audio_local": all(i["local"] for i in items), "items": items, "replies": replies}
 
     async def prepare(self, target: str = "all") -> AsyncIterator[dict[str, Any]]:
         """Download and load local models, yielding progress dicts ``{stage, component, progress, ...}``.
@@ -404,9 +442,15 @@ class VoiceService(Service):
         )
 
     def open_session(
-        self, send_json: SendJSON, send_bytes: SendBytes, *, node: dict[str, Any] | None = None
+        self,
+        send_json: SendJSON,
+        send_bytes: SendBytes,
+        *,
+        node: dict[str, Any] | None = None,
+        abort: Abort | None = None,
     ) -> VoiceSession:
-        session = VoiceSession(self, send_json, send_bytes, node=node)
+        """``abort`` closes the client's socket; the microphone indicator's Turn off uses it (#170)."""
+        session = VoiceSession(self, send_json, send_bytes, node=node, abort=abort)
         self.sessions.add(session)
         return session
 
@@ -418,3 +462,26 @@ class VoiceService(Service):
 
     def publish_state(self, session_id: str | None, state: str) -> None:
         self.app.bus.publish("voice.state", {"state": state, "session_id": session_id})
+
+    # ------------------------------------------------------------------ the microphone indicator (#170)
+    def mic_purpose(self, session: VoiceSession) -> str:
+        if session.state == "standby":
+            phrase = " ".join(self.config.wake_word.split()).title() or "the wake word"
+            return f"Listening for '{phrase}'"
+        return "Voice chat"
+
+    def mic_on(self, session: VoiceSession) -> None:
+        """A voice client's microphone is live (audio arrives), or what it is for changed."""
+        node = session.node or {}
+        if node.get("node_id"):
+            device_id, device = str(node["node_id"]), str(node.get("name") or "Device")
+            kind = str(node.get("kind") or "custom")
+        else:  # the desktop app's own voice mode and wake word listener
+            device_id, device, kind = "desktop", "This computer", "desktop"
+        self.app.sensors.start(
+            session.mic_use_id, "mic", device_id=device_id, device=device, device_kind=kind,
+            purpose=self.mic_purpose(session), stop=session.stop_mic,
+        )  # fmt: skip
+
+    def mic_off(self, session: VoiceSession) -> None:
+        self.app.sensors.end(session.mic_use_id)

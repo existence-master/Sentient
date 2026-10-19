@@ -149,6 +149,13 @@ export function DeviceCard({ node }: { node: DeviceNode }) {
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate text-md font-medium text-fg">{node.name}</span>
               {isDesktop && <Badge size="xs">This computer</Badge>}
+              {node.online && node.camera_off && (
+                <Tooltip content="The camera is switched off on the device. Only the device itself can turn it back on.">
+                  <span>
+                    <Badge size="xs">Camera off</Badge>
+                  </span>
+                </Tooltip>
+              )}
             </div>
           )}
           <div className="mt-0.5 flex items-center gap-1.5 text-xs text-fg-subtle">

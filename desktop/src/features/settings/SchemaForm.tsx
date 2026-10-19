@@ -53,6 +53,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'memory.graph_link_similarity': { label: 'Graph link threshold', percent: true },
   'memory.summarize_after_minutes': { label: 'Summarize conversations after', unit: 'min' },
   'memory.summary_chunk_messages': { label: 'Messages per summary', unit: 'messages' },
+  'memory.keep_superseded_days': { label: 'Keep replaced memories for', unit: 'days', description: '0 keeps them forever. Current memories are not affected.' },
   // folders: matching pieces of notes that go along with each message (#354)
   'folders.prompt_notes': { label: 'Note pieces with each message', unit: 'pieces' },
   'folders.prompt_min_similarity': { label: 'How closely a note must match', percent: true },
@@ -88,6 +89,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'tasks.away_pause_days': { label: 'Pause routines when you are away for', unit: 'days' },
   'tasks.away_pause_after_results': { label: 'Or when unseen results reach', unit: 'results' },
   'tasks.away_ask_hours': { label: 'Ask before pausing, then wait', unit: 'hours' },
+  'tasks.email': { hidden: true }, // its own section: Tasks by email (#159)
   // proactivity
   'proactivity.enabled': { label: 'Proactive suggestions' },
   'proactivity.poll_interval_minutes': { label: 'Check connected apps every', unit: 'min' },

@@ -117,6 +117,9 @@ def node(
     ),
     insecure: bool = typer.Option(False, "--insecure", help="Accept any certificate (development only)"),
     speech: bool = typer.Option(True, "--speech/--no-speech", help="Speak 'speak' requests aloud with pyttsx3"),
+    camera_off: bool = typer.Option(
+        False, "--camera-off", help="Start in camera-off mode: the camera is off on the device (type c to switch)"
+    ),
 ):
     """Run a reference device node that simulates a phone or smart glasses (owner: nodes agent).
 
@@ -126,7 +129,7 @@ def node(
 
     node_main(
         url=url, code=code, name=name, kind=kind, camera=camera, fingerprint=fingerprint, insecure=insecure,
-        speech=speech,
+        speech=speech, camera_off=camera_off,
     )
 
 

@@ -15,6 +15,7 @@ import type {
   ForgetCounts,
   Forgotten,
   AwayStatus,
+  EmailTasksStatus,
   BackupEntry,
   BackupInspect,
   BackupOverview,
@@ -56,6 +57,8 @@ import type {
   ApprovalDecision,
   ApprovalGrant,
   Bootstrap,
+  SensorState,
+  SensorStopResult,
   StopResult,
   StopState,
   ChatRequest,
@@ -440,6 +443,12 @@ export const api = {
   /** The window is in use: resets the timer that pauses routines while you are away (#163). */
   activity: () => http.post<{ ok: boolean; last_active_at: string | null }>('/api/activity'),
 
+  // §24 live microphones and cameras (#170)
+  sensors: {
+    get: () => http.get<SensorState>('/api/sensors'),
+    stop: (id?: string) => http.post<SensorStopResult>('/api/sensors/stop', id ? { id } : {})
+  },
+
   // §17 stop everything
   stop: {
     get: () => http.get<StopState>('/api/stop'),
@@ -605,6 +614,8 @@ export const api = {
     away: () => http.get<AwayStatus>('/api/tasks/away'),
     awayResume: () => http.post<{ resumed: number; status: AwayStatus }>('/api/tasks/away/resume'),
     awayKeep: () => http.post<AwayStatus>('/api/tasks/away/keep'),
+    /** Tasks by email (#159). */
+    email: (limit = 20) => http.get<EmailTasksStatus>(`/api/tasks/email?limit=${limit}`),
     get: (id: string) => http.get<Task>(`/api/tasks/${enc(id)}`),
     create: (body: TaskCreateRequest) => http.post<Task>('/api/tasks', body),
     preview: (prompt: string) => http.post<TaskPreview>('/api/tasks/preview', { prompt }),
@@ -764,6 +775,8 @@ export const api = {
       http.post<Skill>(`/api/skills/${enc(name)}/approve`, acceptRisk ? { accept_risk: true } : undefined),
     /** Add a skill from a web address; it waits in pending with its safety check (#146). */
     importUrl: (url: string) => http.post<SkillDetail>('/api/skills/import', { url }),
+    /** `/learn` (#167): draft a skill from a web page, a file or a folder; it waits in pending. */
+    learn: (source: string) => http.post<SkillDetail>('/api/skills/learn', { source }),
     reject: (name: string) => http.post<OkResponse>(`/api/skills/${enc(name)}/reject`),
     archive: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/archive`),
     restore: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/restore`),

@@ -15,3 +15,4 @@ void storage_erase(const char *key);
 #define KEY_FINGERPRINT "fp"    // its SHA-256, 64 hex chars
 #define KEY_HOST "host"         // last engine address, so a reboot can skip discovery
 #define KEY_PORT "port"
+#define KEY_CAMERA_OFF "camera_off" // "1" while camera-off mode is on (set only on the glasses, docs/NODES.md 11.7)

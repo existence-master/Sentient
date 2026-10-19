@@ -48,6 +48,7 @@ typedef struct {
     char id[24];
     char capability[40];
     char params[512]; // JSON text; device invokes carry only a handful of small fields
+    uint32_t photo_stops; // caps_photo_stops() when it arrived: a later stop_sensor(camera) drops a queued photo
 } invoke_job_t;
 
 // ------------------------------------------------------------------ sending
@@ -128,12 +129,14 @@ static void send_hello(void) {
     } else if (s_pair_code[0] != '\0') {
         cJSON_AddStringToObject(msg, "pair_code", s_pair_code);
     }
+    cJSON *state = cJSON_AddObjectToObject(msg, "state");
     int percent = battery_percent();
     if (percent >= 0) {
-        cJSON *state = cJSON_AddObjectToObject(msg, "state");
         cJSON_AddNumberToObject(state, "battery", percent);
         cJSON_AddBoolToObject(state, "charging", false);
     }
+    // camera-off mode is set on the glasses only; Sentient shows it and never asks for a photo (docs/API.md 24)
+    if (camera_available()) cJSON_AddBoolToObject(state, "camera_off", camera_off_mode());
     char *text = cJSON_PrintUnformatted(msg);
     if (text != NULL) {
         node_client_send_json(text);
@@ -219,6 +222,12 @@ static void handle_text(const char *text) {
             handle_welcome(msg);
         } else if (strcmp(type->valuestring, "error") == 0) {
             handle_error(msg);
+        } else if (strcmp(type->valuestring, "stop_sensor") == 0) {
+            // Turned off in Sentient: a photo in progress is dropped (caps.c) and the camera powers off when the
+            // capture returns. The microphone stops with the voice socket the engine closed.
+            const cJSON *sensor = cJSON_GetObjectItem(msg, "sensor");
+            if (cJSON_IsString(sensor) && strcmp(sensor->valuestring, "camera") == 0) caps_cancel_photo();
+            ESP_LOGI(TAG, "Sentient turned the %s off", cJSON_IsString(sensor) ? sensor->valuestring : "sensor");
         } else if (strcmp(type->valuestring, "invoke") == 0) {
             const cJSON *id = cJSON_GetObjectItem(msg, "id");
             const cJSON *cap = cJSON_GetObjectItem(msg, "capability");
@@ -230,6 +239,7 @@ static void handle_text(const char *text) {
                 } else {
                     // Run it on the worker task: a photo takes ~300 ms and must not block this socket.
                     invoke_job_t job = {0};
+                    job.photo_stops = caps_photo_stops();
                     strlcpy(job.id, id->valuestring, sizeof(job.id));
                     strlcpy(job.capability, cap->valuestring, sizeof(job.capability));
                     char *params_text = params ? cJSON_PrintUnformatted(params) : NULL;
@@ -305,7 +315,7 @@ static void worker_task(void *arg) {
     invoke_job_t job;
     while (true) {
         if (xQueueReceive(s_jobs, &job, portMAX_DELAY) == pdTRUE) {
-            caps_handle_invoke(job.id, job.capability, job.params);
+            caps_handle_invoke(job.id, job.capability, job.params, job.photo_stops);
         }
     }
 }
