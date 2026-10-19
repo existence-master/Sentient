@@ -510,7 +510,12 @@ _NOTEWORTHY_REQUEST = re.compile(
     r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b",
     re.IGNORECASE,
 )
-_REQUEST_VERB = re.compile(r"\b(?:tell me|notify me|let me know|alert me|report)\b", re.IGNORECASE)
+_QUESTION_REQUEST = re.compile(
+    r"^\s*(?:please\s+)?(?:tell me|notify me|let me know|alert me|report)\b"
+    r"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"(?:tell me|notify me|let me know|alert me|report)\b",
+    re.IGNORECASE,
+)
 _EVERY_CHANGE_REQUEST = re.compile(
     r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
     r"|\b(?:when|whenever|if)\b[^\n]{0,160}?\b(?:changes?|updates?)\b"
@@ -526,7 +531,7 @@ _NEGATED_REQUEST_PREFIX = re.compile(
 
 def _change_preference(message: str) -> str | None:
     """``changed`` or ``noteworthy`` when one user message says which updates to report."""
-    if message.rstrip().endswith("?") and not _REQUEST_VERB.search(message):
+    if message.rstrip().endswith("?") and not _QUESTION_REQUEST.search(message):
         return None
     preferences = [(match.start(), "noteworthy") for match in _NOTEWORTHY_REQUEST.finditer(message)]
     preferences += [
