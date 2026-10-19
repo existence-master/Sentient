@@ -163,3 +163,22 @@ def test_new_connection_replaces_old(nodes_client):
             assert second.receive_json()["type"] == "welcome"
             assert _error(first)["code"] == "replaced"
             assert len(client.core.nodes._conns) == 1
+
+
+def test_new_code_can_replace_the_previous_one(nodes_client):
+    # #477: the desktop makes a new code when the Wi-Fi listener starts or stops; the old one must stop working.
+    client = nodes_client()
+    old = client.post("/api/nodes/pairing", headers=client.api_headers).json()["code"]
+    kept = client.post("/api/nodes/pairing", headers=client.api_headers).json()["code"]
+    new = client.post("/api/nodes/pairing", headers=client.api_headers, json={"replaces": old}).json()["code"]
+    assert new not in (old, kept)
+    assert old not in client.core.nodes._codes and {kept, new} <= set(client.core.nodes._codes)
+    with client.websocket_connect("/ws/node") as ws:
+        ws.send_json(hello(pair_code=old))
+        assert _error(ws)["code"] == "bad_code"
+    with client.websocket_connect("/ws/node") as ws:
+        ws.send_json(hello(pair_code=new))
+        assert ws.receive_json()["type"] == "welcome"
+    # An unknown or missing code to replace is fine.
+    assert client.post("/api/nodes/pairing", headers=client.api_headers, json={"replaces": "000000"}).status_code == 200
+    assert client.post("/api/nodes/pairing", headers=client.api_headers, json={}).status_code == 200

@@ -851,7 +851,8 @@ export const api = {
     remove: (id: string, forget = false) => http.delete<OkResponse & Forgotten>(`/api/nodes/${enc(id)}`, forget ? { query: { forget: true } } : undefined),
     invoke: (id: string, capability: string, params: Record<string, unknown> = {}, timeout_ms?: number) =>
       http.post<DeviceInvokeResult>(`/api/nodes/${enc(id)}/invoke`, { capability, params, timeout_ms }),
-    pairing: () => http.post<DevicePairing>('/api/nodes/pairing'),
+    /** `replaces`: the code on screen, which stops working when the new one is made (#477). */
+    pairing: (replaces?: string) => http.post<DevicePairing>('/api/nodes/pairing', replaces ? { replaces } : undefined),
     lan: () => http.get<DeviceLanInfo>('/api/nodes/lan')
   },
 

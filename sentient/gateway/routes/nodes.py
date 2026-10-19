@@ -104,9 +104,13 @@ async def list_nodes(request: Request):
     return await get_core(request).nodes.list_nodes()
 
 
+class PairingBody(BaseModel):
+    replaces: str | None = Field(None, max_length=16)
+
+
 @router.post("/api/nodes/pairing", dependencies=AUTH)
-async def create_pairing(request: Request):
-    return get_core(request).nodes.create_pairing(str(request.base_url))
+async def create_pairing(request: Request, body: PairingBody | None = None):
+    return get_core(request).nodes.create_pairing(str(request.base_url), replaces=body.replaces if body else None)
 
 
 @router.get("/api/nodes/lan", dependencies=AUTH)

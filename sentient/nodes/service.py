@@ -372,9 +372,13 @@ class NodeService(Service):
         for code in [c for c, (exp, _) in self._codes.items() if exp <= now]:
             del self._codes[code]
 
-    def create_pairing(self, base_url: str | None = None) -> dict:
+    def create_pairing(self, base_url: str | None = None, *, replaces: str | None = None) -> dict:
+        """Make a pairing code. ``replaces``: an earlier code this one supersedes (the desktop made a new code because
+        the Wi-Fi listener started or stopped, or the user asked for one); it stops working at once (#477)."""
         now = self.clock()
         self._prune_codes(now)
+        if replaces:
+            self._codes.pop(str(replaces), None)
         while len(self._codes) >= PAIR_MAX_ACTIVE_CODES:
             del self._codes[min(self._codes, key=lambda c: self._codes[c][0])]
         code = f"{secrets.randbelow(1_000_000):06d}"
