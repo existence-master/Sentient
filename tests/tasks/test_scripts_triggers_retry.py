@@ -420,6 +420,9 @@ def test_planner_default_uses_the_last_preference_in_one_message():
 
 @pytest.mark.parametrize(("message", "preference"), [
     ("Has anything changed on that page?", None),
+    ("Any updates?", None),
+    ("Are there any changes on the page today?", None),
+    ("Were there any updates since yesterday?", None),
     ("What changed on the page?", None),
     ("Change to every hour", None),
     ("I changed my mind about the watch", None),
@@ -436,6 +439,7 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     ("Ignore minor changes, I only care about new events", "noteworthy"),
     ("Only important changes, not every change", "noteworthy"),
     ("Not every change, only important ones", "noteworthy"),
+    ("Don't tell me about every change", "noteworthy"),
 ])
 def test_change_preference_requires_an_explicit_watch_request(message, preference):
     assert scripts._change_preference(message) == preference
