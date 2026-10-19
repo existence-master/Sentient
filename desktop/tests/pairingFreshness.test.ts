@@ -64,6 +64,10 @@ test('engines without web_url fall back to the fingerprint', () => {
   assert.equal(pairingFreshness(old, on).stale, false)
   assert.equal(pairingFreshness({ ...old, fingerprint: null }, off).stale, false)
   assert.equal(pairingFreshness({ ...old, fingerprint: null }, on).stale, true)
+  // With device addresses on both sides, a moved listener is noticed too.
+  const withUrls = { ...old, urls: ['wss://192.168.1.24:7443/ws/node'] }
+  assert.equal(pairingFreshness(withUrls, on).stale, false)
+  assert.equal(pairingFreshness(withUrls, { ...on, urls: ['wss://10.0.0.5:7443/ws/node'], web_urls: ['https://10.0.0.5:7443/node/'] }).stale, true)
 })
 
 test('the dialog polls quickly only while the listener starts', () => {

@@ -79,20 +79,23 @@ function AddDeviceBody({ close }: { close: () => void }) {
   // The code's links are fixed when it is made. When the Wi-Fi listener starts, stops or moves, make a new code
   // so the QR and link point where a phone can reach this computer (#477). Retry once per address, never in a loop.
   const fresh = pairingFreshness(info, lan.data)
-  const triedFor = useRef<string | null>(null)
+  const triedFor = useRef<{ target: string; code: string } | null>(null)
   useEffect(() => {
     if (!fresh.stale) {
       triedFor.current = null
       return
     }
-    if (pairing.isPending || savingLan || triedFor.current === fresh.target) return
-    triedFor.current = fresh.target
+    if (!info || pairing.isPending || savingLan || triedFor.current?.target === fresh.target) return
+    triedFor.current = { target: fresh.target, code: info.code }
     newCode()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fresh.stale, fresh.target, pairing.isPending, savingLan])
-  // Only show a code whose links work now; otherwise "Getting ready…". If the new code still doesn't match (the
-  // network keeps changing), show it rather than wait forever.
-  const gaveUp = fresh.stale && triedFor.current === fresh.target && !pairing.isPending
+  // Only show a code whose links work now; otherwise "Getting ready…". If a new code came back and still doesn't
+  // match (the network keeps changing), show it rather than wait forever. If making it failed, never show the stale
+  // code: offer to try again instead.
+  const tried = fresh.stale && !pairing.isPending && triedFor.current?.target === fresh.target ? triedFor.current : null
+  const gaveUp = !!tried && tried.code !== info?.code
+  const refreshFailed = !!tried && tried.code === info?.code
   const ready = !!info && !fresh.starting && (!fresh.stale || gaveUp)
   const shown = ready ? info : null
 
@@ -149,8 +152,19 @@ function AddDeviceBody({ close }: { close: () => void }) {
               <img src={qr.src} alt="Pairing QR code" className={cn('size-full', expired && 'opacity-15 blur-[2px]')} />
             ) : info ? (
               <div role="status" className="flex size-full flex-col items-center justify-center gap-2 text-xs text-[#6b6b73]">
-                <Spinner size={18} />
-                Getting ready…
+                {refreshFailed ? (
+                  <>
+                    Couldn&apos;t make a new code.
+                    <Button size="sm" variant="primary" leftIcon={<IconRefresh size={14} />} onClick={newCode}>
+                      Try again
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Spinner size={18} />
+                    Getting ready…
+                  </>
+                )}
               </div>
             ) : (
               <Skeleton className="size-full" />
@@ -178,7 +192,7 @@ function AddDeviceBody({ close }: { close: () => void }) {
             ))}
           </div>
           <div className={cn('mt-2 text-xs tabular-nums', expired ? 'text-danger' : shown && remaining < 60_000 ? 'text-warning' : 'text-fg-subtle')}>
-            {!info ? 'Making a code…' : !shown ? 'Getting ready…' : expired ? 'This code expired' : `Expires in ${mm}:${ss}`}
+            {!info ? 'Making a code…' : !shown ? (refreshFailed ? 'No code right now' : 'Getting ready…') : expired ? 'This code expired' : `Expires in ${mm}:${ss}`}
           </div>
           {shown && !expired && (
             <button type="button" onClick={newCode} className="mt-0.5 text-2xs text-fg-subtle hover:text-fg">

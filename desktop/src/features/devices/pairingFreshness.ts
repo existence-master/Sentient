@@ -21,10 +21,15 @@ export function pairingFreshness(info: DevicePairing | null | undefined, lan: De
   const lanBase = lan?.running ? lan.web_urls?.[0] : undefined
   const target = lanBase ?? 'local'
   if (!info || !lan || starting) return { starting, stale: false, target }
-  // Engines that send `web_url` say exactly where the code points; otherwise the fingerprint (only set while the
-  // listener runs) tells a Wi-Fi code from a local one.
+  // Engines that send `web_url` say exactly where the code points; otherwise compare the device addresses, and only
+  // when there are none, the fingerprint (only set while the listener runs) tells a Wi-Fi code from a local one.
   const madeOnLan = info.web_url ? /^https:/i.test(info.web_url) : !!info.fingerprint
-  const stale = lanBase ? (info.web_url ? withoutCode(info.web_url) !== lanBase : !madeOnLan) : madeOnLan
+  const pointsAtLan = info.web_url
+    ? withoutCode(info.web_url) === lanBase
+    : info.urls.length && lan.urls.length
+      ? info.urls[0] === lan.urls[0]
+      : madeOnLan
+  const stale = lanBase ? !pointsAtLan : madeOnLan
   return { starting, stale, target }
 }
 
