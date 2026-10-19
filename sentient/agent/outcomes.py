@@ -397,14 +397,25 @@ def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] 
     for claim in claims:
         if _HYPOTHETICAL_BROWSER_CLICK.search(claim):
             continue
-        explicit = _ASSISTANT_BROWSER_CLICK.search(claim)
+        explicit = list(_ASSISTANT_BROWSER_CLICK.finditer(claim))
+        # Each self-attributed claim needs its own evidence.  In particular, a
+        # successful "I clicked Subscribe" must not hide a later false
+        # "I clicked Delete account" in the same sentence.
+        explicit_parts = [
+            claim[match.start(): explicit[i + 1].start() if i + 1 < len(explicit) else None]
+            for i, match in enumerate(explicit)
+        ]
+        for part in explicit_parts:
+            if note := _click_note(clicks, _claimed_click_target(part)):
+                return note
         passive = (
-            clicks
+            not explicit
+            and clicks
             and _BROWSER_CLICK_CLAIM.search(claim)
             and not _NEGATED_BROWSER_CLICK.search(claim)
             and not _OTHER_PERSON_BROWSER_CLICK.search(claim)
         )
-        if (explicit or passive) and (note := _click_note(clicks, _claimed_click_target(claim))):
+        if passive and (note := _click_note(clicks, _claimed_click_target(claim))):
             return note
     return ""
 

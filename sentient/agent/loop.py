@@ -318,7 +318,15 @@ def browser_click_history(rows: list[dict]) -> list[dict]:
         try:
             res = json.loads(str(row.get("content") or ""))
         except (TypeError, ValueError):
-            res = {}
+            # A short result may end after the stable leading fields.  Preserve
+            # those fields rather than treating a recorded success as a failed
+            # click solely because its trailing URL was cut for model context.
+            content = str(row.get("content") or "")
+            res = {"ok": True} if re.search(r'"ok"\s*:\s*true\b', content) else {}
+            clicked = re.search(r'"clicked"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+            if clicked is not None:
+                with contextlib.suppress(ValueError):
+                    res["clicked"] = json.loads(f'"{clicked.group(1)}"')
         declined = isinstance(res, dict) and bool(res.get("declined"))
         err = _error_text(res)
         call.update(

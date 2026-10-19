@@ -1,5 +1,6 @@
 
 from sentient.agent import outcomes
+from sentient.agent.loop import browser_click_history
 from sentient.app import SentientApp
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
 from sentient.llm.provider import StreamChunk, ToolCall
@@ -254,6 +255,21 @@ def test_browser_click_correction_uses_the_latest_call():
             {"name": "browser_click", "declined": True},
         ],
     ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button and I clicked the Delete account button.",
+        successful_subscribe_then_declined_delete,
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+
+
+def test_browser_click_history_retains_a_truncated_successful_result():
+    """A context-truncated result must not turn a recorded click into a false failure."""
+    history = browser_click_history([
+        {"role": "assistant", "tool_calls": [tool_call("browser_click", ref="e1")]},
+        {"role": "tool", "tool_call_id": "call_browser_click", "content":
+         '{"ok": true, "clicked": "[e1] button \\"Subscribe\\"", "url": "https://example.test/'},
+    ])
+    assert history == [{"name": "browser_click", "target": '[e1] button "Subscribe"', "declined": False,
+                        "ok": True, "uncertain": False}]
 
 
 async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, isolated_home):
