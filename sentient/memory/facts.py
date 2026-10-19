@@ -67,8 +67,14 @@ _UNKNOWN_RE = re.compile(
     r"not provided|unclear)\b",
     re.IGNORECASE,
 )
-_USER_REF_RE = re.compile(r"(?<![\w-])(the user|USERNAME)(?![\w-])", re.IGNORECASE)
-_USER_POSSESSIVE_RE = re.compile(r"(?<![\w-])(the user|USERNAME)['\u2019]s\b", re.IGNORECASE)
+# the USERNAME placeholder is matched in capitals only, so "my GitHub username" stays a username
+_USER_REF = r"(?<![\w-])((?i:the user)|USERNAME)"
+# "the user research team", "the user interface": a kind of thing, not the user
+_USER_COMPOUND_NOUN = (
+    r"(?i:interfaces?|experiences?|research(?:ers?)?|manuals?|guides?|journeys?|stor(?:y|ies)|base|testing|personas?)"
+)
+_USER_REF_RE = re.compile(rf"{_USER_REF}(?![\w-])(?!\s+{_USER_COMPOUND_NOUN}\b)")
+_USER_POSSESSIVE_RE = re.compile(rf"{_USER_REF}['\u2019]s\b")
 # bare "user's" only where it can't be another user's ("a user's account"): first, or after a comma
 _BARE_USER_POSSESSIVE_RE = re.compile(r"(^\s*|[,;:(]\s*)user['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")

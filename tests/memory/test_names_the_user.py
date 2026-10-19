@@ -29,6 +29,15 @@ USER = "Maya Rao"
         ("Maya fixed the end user's laptop.", "Maya fixed the end user's laptop."),
         ("Maya reset another user's password.", "Maya reset another user's password."),
         ("Maya opened a user's account.", "Maya opened a user's account."),
+        ("My GitHub username is maya-rao.", "My GitHub username is maya-rao."),
+        ("Username: maya-rao.", "Username: maya-rao."),
+        ("USERNAME moved to Pune.", "Maya Rao moved to Pune."),
+        ("Maya works on the user research team.", "Maya works on the user research team."),
+        ("Maya redesigned the user interface.", "Maya redesigned the user interface."),
+        ("The user experience got better after Maya's fix.", "The user experience got better after Maya's fix."),
+        ("Maya wrote the user stories for checkout.", "Maya wrote the user stories for checkout."),
+        ("The user researched flights to Goa.", "Maya Rao researched flights to Goa."),
+        ("Priya met the user at work.", "Priya met Maya Rao at work."),
     ],
 )
 def test_the_user_becomes_the_users_name(text, named):
