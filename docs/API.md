@@ -2748,8 +2748,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (and to the sender when it did not change). Devices that do not show it can ignore it.
 - Voice from a device: `WS /ws/voice?node_token=<token>` with `start` `{channel: "glasses"|"phone", sample_rate, audio_format?: "wav"|"pcm16"}`.
   On the LAN listener the node token is verified before the voice socket runs.
-- Pairing: `POST /api/nodes/pairing` → `{code, expires_at, lan_enabled, urls: [string], web_url, fingerprint, qr: "sentient://pair?url=...&code=...&fp=...", qr_svg}`
-  (code valid 10 minutes, single use). `urls` are the LAN `wss://` node URLs when the listener runs, else the gateway's `ws://` URL;
+- Pairing: `POST /api/nodes/pairing` `{replaces?: string}` → `{code, expires_at, lan_enabled, urls: [string], web_url, fingerprint, qr: "sentient://pair?url=...&code=...&fp=...", qr_svg}`
+  (code valid 10 minutes, single use; the body is optional, and `replaces` cancels that earlier code at once, #477: the
+  desktop makes a new code when the Wi-Fi listener starts, stops or moves, and sends the code on screen). `urls` are the LAN `wss://` node URLs when the listener runs, else the gateway's `ws://` URL;
   `web_url` opens the web device app with the code (`https://<lan-ip>:<port>/node/#code=...`, or the gateway's `/node/`);
   `qr_svg` is an inline SVG QR code of `web_url`; `fingerprint` is null when the LAN listener is not running.
 - server → node `stop_sensor` `{sensor: "mic"|"camera"}`: the user turned that microphone or camera off in Sentient

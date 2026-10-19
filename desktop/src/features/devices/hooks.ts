@@ -1,7 +1,7 @@
 /** React Query hooks for §13 devices. Live updates arrive via `node.updated` / `node.deleted` (lib/events.ts). */
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api, isNotImplemented } from '@/lib/api'
-import type { DeviceInvokeResult, DeviceNode, Forgotten, OkResponse } from '@/lib/types'
+import type { DeviceInvokeResult, DeviceLanInfo, DeviceNode, Forgotten, OkResponse } from '@/lib/types'
 import { invalidateForgotten } from '@/hooks/memory'
 import { previewLan, previewMode, previewNodes, previewOr, previewPairing, previewPhotoBase64 } from './preview'
 
@@ -29,8 +29,13 @@ export function useDevices() {
   return useQuery({ queryKey: deviceKeys.all, queryFn: () => previewOr(api.nodes.list, previewNodes) })
 }
 
-export function useLanInfo(enabled = true) {
-  return useQuery({ queryKey: deviceKeys.lan, queryFn: () => previewOr(api.nodes.lan, previewLan), enabled })
+export function useLanInfo(enabled = true, refetchInterval?: (lan: DeviceLanInfo | undefined) => number | false) {
+  return useQuery({
+    queryKey: deviceKeys.lan,
+    queryFn: () => previewOr(api.nodes.lan, previewLan),
+    enabled,
+    refetchInterval: (q) => (refetchInterval ? refetchInterval(q.state.data) : false)
+  })
 }
 
 export function useDeviceActions() {
@@ -65,7 +70,7 @@ export function useDeviceActions() {
                 : { ok: true }
         )
     }),
-    pairing: useMutation({ mutationFn: () => previewOr(api.nodes.pairing, previewPairing) })
+    pairing: useMutation({ mutationFn: (replaces?: string) => previewOr(() => api.nodes.pairing(replaces), previewPairing) })
   }
 }
 
