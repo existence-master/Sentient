@@ -308,3 +308,22 @@ async def test_parallel_subagents_each_report_only_their_own_files(config, isola
         assert stored["files_created"] == ["notes/beta.md"]
     finally:
         await s.stop()
+
+
+async def test_saved_result_without_a_path_is_not_a_file(config, isolated_home):
+    """skill_save says ``saved`` with no ``path``: only file_write and execute_code count as files (#94)."""
+
+    @tool("save_skill_like", risk=Risk.read)
+    async def save_skill_like(ctx: ToolContext) -> dict:
+        """Save something that is not a file."""
+        return {"saved": "/somewhere/skills/thing/SKILL.md", "name": "thing"}
+
+    llm = FakeProvider(replies=[[tool_call("save_skill_like")], "saved the skill"])
+    s = await start(config, isolated_home, llm, "nopath")
+    try:
+        s.registry.register(make_plugin("skillish", save_skill_like))
+        res = await s.subagents.delegate("save it", tools=["save_skill_like"])
+        assert res["status"] == "completed", res
+        assert res["files_created"] == []
+    finally:
+        await s.stop()

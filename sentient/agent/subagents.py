@@ -468,7 +468,7 @@ class SubagentManager(Service):
                                 f"Using {event.name}",
                             )
                         elif isinstance(event, ToolResultEvent):
-                            if not event.is_error:
+                            if not event.is_error and event.name in {"file_write", "execute_code"}:
                                 files.extend(_files_from(event.result))
                             note(
                                 {"type": "tool_result", "tool_name": event.name, "result": _short(event.result),
