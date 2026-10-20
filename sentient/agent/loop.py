@@ -315,6 +315,9 @@ def browser_click_history(rows: list[dict]) -> list[dict]:
         call = calls.pop(str(row.get("tool_call_id") or ""), None)
         if call is None:
             continue
+        approval = row.get("approval")
+        if isinstance(approval, dict) and approval.get("target"):
+            call["target"] = str(approval["target"])
         try:
             res = json.loads(str(row.get("content") or ""))
         except (TypeError, ValueError):
@@ -1526,12 +1529,15 @@ class Agent:
             ctx.visited.add(p.host)
         err = _error_text(res)
         if tc.name == "browser_click":
+            approval = p.approval or {}
             result.browser_clicks.append({
                 "name": tc.name,
                 "declined": declined,
                 "ok": ran and not is_error and not err and outcomes.result_problem(res) is None,
                 "uncertain": ran and is_error,
-                "target": str(res.get("clicked") or tc.arguments.get("ref", "")) if isinstance(res, dict) else tc.arguments.get("ref", ""),
+                "target": str(
+                    res.get("clicked") or approval.get("target") or tc.arguments.get("ref", "")
+                ) if isinstance(res, dict) else tc.arguments.get("ref", ""),
             })
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):

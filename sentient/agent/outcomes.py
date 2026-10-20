@@ -59,7 +59,7 @@ _OTHER_PERSON_BROWSER_CLICK = re.compile(
     r"(?:have\s+|had\s+|just\s+)?clicked\b", re.I
 )
 _ASSISTANT_BROWSER_CLICK = re.compile(
-    r"\b(?:i(?:'ve)?|we|sentient)\s+(?:(?:have|had|just|only)\s+)?clicked\b", re.I
+    r"\b(?:i(?:'ve)?|we|sentient)\s+(?:(?:have|had|just|only|also|then|already|recently|finally|even|really|\w+ly)\s+){0,2}clicked\b", re.I
 )
 _HYPOTHETICAL_BROWSER_CLICK = re.compile(
     r"\b(?:if|would|could|might|may)\b[^.!?]{0,50}\b(?:clicked|was clicked|were clicked)\b", re.I
@@ -356,6 +356,10 @@ def _click_note(clicks: list[dict], target: str) -> str:
     """The correction for a click claim after selecting evidence for its named target."""
     matches = [click for click in clicks if not target or _matches_click_target(target, click)]
     has_success = any(click.get("ok") for click in clicks)
+    if not target and has_success:
+        # A targetless claim could refer to any completed action. A later
+        # declined click is not enough evidence to contradict it.
+        return ""
     if target and not matches and not has_success:
         # A declined call may retain only its transient ref; it is still evidence that the named action was not made.
         matches = [
@@ -406,6 +410,11 @@ def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] 
             for i, match in enumerate(explicit)
         ]
         for part in explicit_parts:
+            # The reply already tells the user that this attempted action was
+            # declined, so a second correction would add no information and
+            # can contradict an earlier successful click in the same reply.
+            if re.search(r"\b(?:declined|denied)\b", part, re.I):
+                continue
             if note := _click_note(clicks, _claimed_click_target(part)):
                 return note
         passive = (
