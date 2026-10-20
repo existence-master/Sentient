@@ -440,9 +440,13 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     ("Only important updates", "noteworthy"),
     ("Only tell me about important stuff. Schedule changes are fine", "noteworthy"),
     ("Ignore minor changes, I only care about new events", "noteworthy"),
+    ("Ignore all minor changes", "noteworthy"),
+    ("Skip all the minor changes", "noteworthy"),
     ("Only important changes, not every change", "noteworthy"),
     ("Not every change, only important ones", "noteworthy"),
     ("Don't tell me about every change", "noteworthy"),
+    ("Thanks for all the updates", None),
+    ("Can you tell me what changes were made?", None),
 ])
 def test_change_preference_requires_an_explicit_watch_request(message, preference):
     assert scripts._change_preference(message) == preference
