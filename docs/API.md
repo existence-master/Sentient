@@ -519,6 +519,19 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   `text/event-stream` of `chat.completion.chunk`s (a first `delta: {role: "assistant"}`, `delta.content` per
   `text_delta`, a last `delta: {}` with `finish_reason: "stop"`), a `data: {error}` line if the turn failed, then
   `data: [DONE]`. API turns have no undo window (`channel: "api"` is not attended, section 10).
+- **Approvals still ask in the app.** A call that needs the user's OK (section 2, rules and modes as in any chat)
+  posts a `kind: "approval"` notification whose `payload` is the turn's `approval_request` (section 1) plus
+  `session_id` and `source: "api"`: the window shows it with Allow and Deny (answered with `POST /api/approvals`), and
+  paired chats get it like a task's approval (section 14). The request keeps waiting meanwhile. Once answered,
+  `payload.status` is `allow` or `deny`; `expired` when nobody answered within `tools.approvals.timeout_s` or the turn
+  was stopped (`notification.updated`). A call that was declined or not answered in time is never claimed: the reply
+  (or a last `delta.content`) ends with `Not done: "<tool>" needed your OK in Sentient and didn't get it.`
+- **Stop everything** (`POST /api/stop-all`) ends a running API turn, waiting approvals included: 409 `stopped`
+  (`Stopped.`), or a `data: {error: {message: "Stopped."}}` line before `[DONE]` when streaming. A client that hangs
+  up doesn't end the turn: it runs to the end and is saved, as in the window.
+- Errors carry `x-should-retry: false`, so OpenAI's SDKs don't retry a failed turn and run its tools again.
+- The chat list marks these chats "From another app (API)", and Activity says
+  `From another app (API), in the chat "<name>"` for what they did.
 
 ---
 
@@ -2905,6 +2918,10 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   that delivered it to that chat (`channel_questions`); `tq:` buttons never answer an approval. A reply with a word or
   an option number answers it like any task question. Unpaired chats are refused as always. A request past its time
   can't be approved (the toast and the message say it expired).
+- Approval requests of chat turns started without a window (the OpenAI-compatible API, section 2, #211) arrive as
+  `kind: "approval"` notifications and are held and sent the same way, as the channel's own approval message: one
+  button per offered answer (`ap:<code>:<approval_id>`, the same buttons as a chat's approval), answering through
+  `app.approvals`. When the request is answered anywhere, expires or is stopped, the message's buttons settle.
 - Delivery (chats with `deliver: true`, from `notification.new`; a task's `deliver_to` can keep its notifications on
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,

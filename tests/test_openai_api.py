@@ -4,6 +4,8 @@ Off by default, behind its own key, one named chat per ``user``, streaming and n
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +14,7 @@ from sentient import secrets
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
 from sentient.llm.provider import ProviderFailed
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, tool_call
 
 TOKEN = "test-token"
 
@@ -149,3 +151,97 @@ def test_a_failed_turn_is_shown_and_not_retried_by_the_openai_sdk(config, isolat
         assert [m["content"] for m in rows if m["role"] == "user"] == ["hi"]  # one request, one turn
         assert "couldn't reach Ollama" in err.value.message
         assert err.value.response.headers["x-should-retry"] == "false"
+
+
+# ---------------------------------------------------------------- approvals ask in the app (#211, option A)
+WRITE = [tool_call("file_write", name="a.txt", content="one")]
+WIN = {"Authorization": f"Bearer {TOKEN}"}
+
+
+def _asking(client, reply: str = "Saved it.", **body):
+    """Start a request whose turn writes a file, which the user is asked about first. Returns its future."""
+    core = client.app.state.sentient
+    core.config.tools.approvals.rules = {"files": "ask"}
+    core.approvals.timeout_s = min(core.approvals.timeout_s, 20)  # a broken test fails in seconds, not 10 minutes
+    client.llm.replies[:] = [WRITE, reply]
+    return ThreadPoolExecutor(1).submit(_ask, client, **body)
+
+
+def _approval(client) -> dict:
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        found = [n for n in client.get("/api/notifications", headers=WIN).json()["notifications"]
+                 if n["kind"] == "approval"]
+        if found:
+            return found[0]
+        time.sleep(0.05)
+    raise AssertionError("no approval notification")
+
+
+def _answer(client, note: dict, decision: str) -> None:
+    r = client.post("/api/approvals", json={"approval_id": note["payload"]["approval_id"], "decision": decision},
+                    headers=WIN)
+    assert r.json() == {"resolved": True}
+
+
+def _status(client, note: dict) -> str | None:
+    [now] = [n for n in client.get("/api/notifications", headers=WIN).json()["notifications"] if n["id"] == note["id"]]
+    return now["payload"].get("status")
+
+
+def test_an_api_turn_asks_in_the_app_and_goes_on_when_allowed(client, isolated_home):
+    pending = _asking(client, user="Notes app")
+    note = _approval(client)  # the window's Allow and Deny card; the request is still waiting
+    assert not pending.done()
+    assert note["title"] == "Approval needed" and "Another app asked Sentient" in note["message"]
+    p = note["payload"]
+    assert (p["name"], p["source"], p["risk"]) == ("file_write", "api", "write") and p["arguments"]["name"] == "a.txt"
+    assert p["session_id"] == {s["title"]: s["id"] for s in _sessions(client)}["Notes app"]
+    _answer(client, note, "allow")
+    r = pending.result(timeout=30)
+    assert r.status_code == 200 and r.json()["choices"][0]["message"]["content"] == "Saved it."
+    assert (isolated_home / "files" / "a.txt").read_text() == "one"
+    assert _status(client, note) == "allow"
+    items = client.get("/api/timeline", headers=WIN).json()["items"]
+    assert any('From another app (API), in the chat "Notes app"' in (i.get("why") or "") for i in items)
+
+
+def test_a_declined_call_is_never_claimed_done(client, isolated_home):
+    pending = _asking(client, reply="I couldn't save it.")
+    note = _approval(client)
+    _answer(client, note, "deny")
+    content = pending.result(timeout=30).json()["choices"][0]["message"]["content"]
+    assert content.startswith("I couldn't save it.")
+    assert content.endswith(" needed your OK in Sentient and didn't get it.") and "\n\nNot done: " in content
+    assert not (isolated_home / "files" / "a.txt").exists()
+    assert _status(client, note) == "deny"
+
+
+def test_nobody_answering_is_a_no(client, isolated_home):
+    client.app.state.sentient.approvals.timeout_s = 0.5
+    pending = _asking(client, reply="I couldn't save it.")
+    note = _approval(client)
+    content = pending.result(timeout=30).json()["choices"][0]["message"]["content"]
+    assert "\n\nNot done: " in content
+    assert not (isolated_home / "files" / "a.txt").exists()
+    assert _status(client, note) == "expired"
+
+
+def test_stop_everything_ends_a_waiting_turn(client, isolated_home):
+    pending = _asking(client)
+    note = _approval(client)
+    assert client.post("/api/stop-all", headers=WIN).status_code == 200
+    r = pending.result(timeout=30)
+    assert r.status_code == 409 and r.json()["error"] == {
+        "message": "Stopped.", "type": "invalid_request_error", "param": None, "code": "stopped"}
+    assert not (isolated_home / "files" / "a.txt").exists()
+    assert _status(client, note) == "expired"
+
+
+def test_a_streamed_turn_waits_for_the_answer_too(client, isolated_home):
+    pending = _asking(client, stream=True)
+    _answer(client, _approval(client), "allow")
+    r = pending.result(timeout=30)
+    chunks = [json.loads(x[len("data: "):]) for x in r.text.split("\n\n") if x.startswith("data: {")]
+    assert "".join(c["choices"][0]["delta"].get("content", "") for c in chunks) == "Saved it."
+    assert (isolated_home / "files" / "a.txt").exists()
