@@ -1079,9 +1079,10 @@ class Channel:
         listing = await model_presets.listing(self.app)
         usable = [p for p in listing["presets"] if p["available"]]
         arg = arg.strip()
-        confirmed = arg.lower().endswith(" yes")  # "/model Local only yes" answers the question below (#446)
-        if confirmed:
-            arg = arg[:-4].rstrip()
+        # "/model Local only yes" or "... no" answers the question below (#446, #457)
+        answer = next((w for w in ("yes", "no") if arg.lower().endswith(" " + w)), None)
+        if answer:
+            arg = arg[:-len(answer)].rstrip()
         if arg.lower() == "undo":
             await self.reply(chat_id, await self._preset_outcome(None))
             return
@@ -1092,11 +1093,12 @@ class Channel:
             if pick is None:
                 await self.reply(chat_id, f"I don't have a model setup called {arg!r}. Send /model to see them.")
                 return
-            # the window asks before Local only goes on with its preset (#335); a chat has no dialog, so it asks here
-            wants_switch = pick["name"] == model_presets.LOCAL_PRESET and not self.app.config.models.local_only
-            if wants_switch and pick["available"] and not confirmed:
-                await self.reply(chat_id, "Turn on Local only too, so nothing leaves this computer? "
-                                          f"Reply /model {pick['name']} yes")
+            if answer == "no":
+                await self.reply(chat_id, "Okay, I left your models as they are.")
+                return
+            wants_switch = self._asks_local_only(pick)
+            if wants_switch and answer != "yes":
+                await self.reply(chat_id, self._local_only_question(pick["name"]))
                 return
             await self.reply(chat_id, await self._preset_outcome(pick["name"], local_only=wants_switch))
             return
@@ -1119,6 +1121,16 @@ class Channel:
             await self.send_markdown(chat_id, "\n\n".join(lines), buttons)
         except Exception as exc:
             log.warning("%s: /model failed: %s", self.id, self.redact(str(exc)))
+
+    def _asks_local_only(self, preset: dict) -> bool:
+        """The window asks before Local only goes on with its preset (#335); a chat has no dialog, so it asks with a
+        reply instead, for ``/model Local only`` and its button alike (#446, #457)."""
+        return (preset["name"] == model_presets.LOCAL_PRESET and preset["available"]
+                and not self.app.config.models.local_only)
+
+    @staticmethod
+    def _local_only_question(name: str) -> str:
+        return f"Turn on Local only too, so nothing leaves this computer? Reply /model {name} yes or /model {name} no"
 
     async def _chat_model_command(self, chat: dict, value: str) -> None:
         """``/model chat <provider/model>`` keeps a model for this conversation only (#312); ``/model chat default``
@@ -1269,10 +1281,15 @@ class Channel:
         return "\n".join(lines)
 
     async def _preset_button(self, chat_id: str, message_id: str, ref: str) -> str:
-        name = next((p["name"] for p in model_presets.presets(self.app.config, model_presets.hardware(self.app)) if self.preset_ref(p["name"]) == ref), None)
-        if name is None:
+        preset = next((p for p in model_presets.presets(self.app.config, model_presets.hardware(self.app)) if self.preset_ref(p["name"]) == ref), None)
+        if preset is None:
             await self.settle_buttons(chat_id, message_id, "That setup no longer exists")
             return "That setup no longer exists."
+        name = preset["name"]
+        if self._asks_local_only(preset):
+            await self.settle_buttons(chat_id, message_id, "Turn on Local only too?")
+            await self.reply(chat_id, self._local_only_question(name))
+            return "Turn on Local only too?"
         text = await self._preset_outcome(name)
         head, _, rest = text.partition("\n")
         await self.settle_buttons(chat_id, message_id, head.rstrip("."))
