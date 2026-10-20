@@ -147,6 +147,26 @@ async def test_chat_tool_calls_and_approvals_say_what_and_why(config, isolated_h
         await s.stop()
 
 
+async def test_a_calls_details_survive_a_shared_timestamp(config, isolated_home):
+    # Windows' clock (Python 3.12) ticks every 15.6 ms: a tool result and the next call often share created_at
+    s = await _app(config, isolated_home)
+    try:
+        sid = await s.store.create_session(channel="web", title="Weekend plans")
+        search = {"id": "c1", "type": "function",
+                  "function": {"name": "mail_search", "arguments": json.dumps({"query": "Saturday plans"})}}
+        send = {"id": "c2", "type": "function",
+                "function": {"name": "mail_send", "arguments": json.dumps({"to": "Arjun", "body": "See you"})}}
+        await s.store.add_message(sid, "assistant", "", tool_calls=[search])
+        await s.store.add_message(sid, "tool", json.dumps({"results": []}), tool_call_id="c1", name="mail_search")
+        await s.store.add_message(sid, "assistant", "", tool_calls=[send])
+        at = "2026-10-20T10:00:00+00:00"
+        await s.store.execute("UPDATE messages SET created_at = ? WHERE session_id = ?", (at, sid))
+        assert await s.timeline._call_arguments(sid, "c1", at) == {"query": "Saturday plans"}
+        assert await s.timeline._call_arguments(sid, "c2", at) == {"to": "Arjun", "body": "See you"}
+    finally:
+        await s.stop()
+
+
 async def test_incognito_chats_never_show(config, isolated_home):
     s = await _app(config, isolated_home, FakeProvider(replies=[[tool_call("mail_search", query="secret")], "ok"]))
     try:
