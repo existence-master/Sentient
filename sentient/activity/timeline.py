@@ -340,7 +340,7 @@ class Timeline:
         row = await self.store.fetchone(
             "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant' AND created_at <= ?"
             " AND tool_calls IS NOT NULL AND instr(tool_calls, ?) > 0 ORDER BY created_at DESC LIMIT 1",
-            (session_id, at, f'"{call_id}"'),
+            (session_id, at, json.dumps(call_id)),  # quoted and escaped as stored; the loop below checks the id
         )
         calls = _loads(row["tool_calls"]) if row else None
         for call in calls if isinstance(calls, list) else []:
