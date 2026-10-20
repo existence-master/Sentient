@@ -221,13 +221,25 @@ async def _doctor(models: bool = False) -> None:
         try:
             lan = s.nodes.lan_status()
             if lan["enabled"]:
-                row(
-                    "lan listener",
-                    not lan["bind_all"],
-                    f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all); any host on the network can reach it, pairing required"
-                    if lan["bind_all"]
-                    else f"port {lan['port']}, this computer only (loopback)",
-                )
+                if not lan["running"] or lan["error"]:
+                    row(
+                        "lan listener",
+                        False,
+                        f"port {lan['port']}, not running"
+                        + (f": {lan['error']}" if lan["error"] else ""),
+                    )
+                elif lan["bind_all"]:
+                    row(
+                        "lan listener",
+                        None,
+                        f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all); any host on the network can reach it, pairing required",
+                    )
+                else:
+                    row(
+                        "lan listener",
+                        True,
+                        f"port {lan['port']}, this computer only (loopback)",
+                    )
         except Exception as exc:
             row("lan listener", False, str(exc))
         try:

@@ -271,7 +271,7 @@ class NodeService(Service):
                     self.lan = LanListener(self)
                     self.lan_host = host
                     await self.lan.start(cfg.lan_port, mdns=cfg.mdns_enabled, host=self.lan_host)
-                    if host == "0.0.0.0":
+                    if host == "0.0.0.0" and self.lan.running:
                         log.warning(
                             "nodes: LAN listener bound to ALL interfaces (nodes.lan_bind_all); "
                             "any host on the network can reach it and pairing is required"
