@@ -1269,6 +1269,10 @@ class Agent:
             elif ctx.extra.get(CAN_PAUSE_KEY):  # a task run: hold the call, pause and ask (#139)
                 plan.preset = ({"error": approval_hold_message(label, said)}, True, 0)
                 plan.wants_ok = plan.ask_rule = True
+            elif await self._pending_guess_ask(tool, tc, ctx, rule, chat_rule, plan):
+                # a pending rule guess from the chat (#130), not a rule the user set: a guess only ever adds a
+                # question, and this run has nobody to ask, so the call goes ahead instead of failing (#491)
+                pass
             else:  # subagents, swarm workers and other unattended loops cannot stop to ask: the run stops here
                 plan.preset = ({"error": unattended_ask_message(label, said)}, True, 0)
                 plan.rule_stop = True
@@ -1419,6 +1423,22 @@ class Agent:
         if chat_rules is None or not session_id:
             return None
         return await chat_rules.chat_rule(tool, session_id)
+
+    async def _pending_guess_ask(
+        self, tool: Tool, tc: ToolCall, ctx: ToolContext, rule: str | None, chat_rule: str | None, plan: _CallPlan,
+    ) -> bool:
+        """True when the "ask" stopping this unattended call is only a pending rule guess from the chat (#130):
+        an undecided proposal or a still-running check, not a rule the user set, a call that opens the home
+        (ADR 0028) or a routine set to ask first (#161). A guess only ever adds a question; a run nobody can ask
+        in lets the call go ahead instead of failing it (#491)."""
+        if rule != ASK or chat_rule != ASK:
+            return False
+        if self.approvals.rule(tool) in (ASK, IF_ASKED, HAND_OFF):
+            return False  # a rule the user set still stops a run nobody can ask in
+        if plan.level in (OPENS_HOME, TASK_ASKS):
+            return False
+        # a call that opens the home always asks first, whatever the rules say (ADR 0028)
+        return not await opens_home(tool, tc.arguments, ctx, plan.risk)
 
     def _start_rule_check(self, session_id: str, message_id: str | None, text: str) -> asyncio.Task | None:
         """Start checking ``text`` for a standing "never" or "ask me first" (#130), or None when the cheap

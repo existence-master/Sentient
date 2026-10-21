@@ -213,6 +213,40 @@ async def test_ask_in_unattended_runs_is_refused(config, isolated_home):
         await s.stop()
 
 
+async def test_pending_rule_guess_does_not_stop_a_helper_file_write(config, isolated_home):
+    """#491: on a fresh home, an undecided rule proposal for file_write in the chat must not make a helper's
+    file_write fail with "can't stop to ask". A pending guess only ever adds a question; the helper has nobody
+    to ask, so the call goes ahead. (A rule the user actually set still stops it: see
+    test_ask_in_unattended_runs_is_refused.)"""
+    llm = FakeProvider(
+        replies=[[tool_call("file_write", name="note.md", content="hi")], "done"],
+        json_replies=[{"keys": ["file_write"], "rule": "ask"}],
+    )
+    s = await _start(config, isolated_home, llm, "guess_helper")
+    try:
+        sid = await s.store.create_session(channel="cli")
+        # the chat said something that proposed an Ask rule for file_write; the user hasn't decided yet
+        await s.chat_rules.check(sid, None, "always ask me before writing files")
+        assert [p["keys"] for p in await s.chat_rules.list(sid)] == [["file_write"]]
+        # the helper runs the way SubagentManager._run does: no approvals UI, the subagent policy, can't pause
+        ctx = s.agent.tool_context(sid, "subagent", origin="user")
+        ctx.extra["subagent_id"] = "sub1"
+        messages = [{"role": "system", "content": "run"}, {"role": "user", "content": "Goal: write a short file"}]
+        result = LoopResult()
+        events = [
+            e async for e in s.agent.run_loop(
+                messages, ctx, result=result, role="fast", tool_names=["file_write"],
+                use_approvals=False, policy=s.subagents.policy(sid), source="subagent",
+            )
+        ]
+        res = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert not res.is_error, res.result
+        assert res.result["saved"] == "note.md"
+        assert not result.stopped_by_rule and result.error is None
+    finally:
+        await s.stop()
+
+
 # ---------------------------------------------------------------------------- never
 async def test_never_hides_the_tool_and_refuses_a_call(config, isolated_home):
     log: list[str] = []
