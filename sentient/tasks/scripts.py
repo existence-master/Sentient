@@ -529,11 +529,15 @@ _EVERY_CHANGE_REQUEST = re.compile(
     r"|\b(?:tell me|report)\b"
     r"(?!\s+(?:what|which)\s+(?:changes?|updates?)\b|\s+(?:about|of)\s+the\s+(?:\w+\s+)?(?:changes?|updates?)\b)"
     + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
-    # but "notify me about the changes (as they happen)" asks for the future ones
-    r"|\b(?:notify me|let me know|alert me)\b(?!\s+(?:what|which)\s+(?:changes?|updates?)\b)"
-    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
     r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?\b"
     r"(?:anything|everything)\s+(?:at\s+all|new)\b",
+    re.IGNORECASE,
+)
+# "notify me about the changes (as they happen)" asks for future changes without saying
+# which, so it is delivery wording: an "only important changes" in the same message decides.
+_CHANGE_NOTIFICATION_REQUEST = re.compile(
+    r"\b(?:notify me|let me know|alert me)\b(?!\s+(?:what|which)\s+(?:changes?|updates?)\b)"
+    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b",
     re.IGNORECASE,
 )
 _NEGATED_REQUEST_PREFIX = re.compile(
@@ -550,8 +554,11 @@ def _change_preference(message: str) -> str | None:
     noteworthy_matches = list(_NOTEWORTHY_REQUEST.finditer(message))
     noteworthy_spans = [match.span() for match in noteworthy_matches]
     preferences = [(match.start(), "noteworthy") for match in noteworthy_matches]
+    changed_matches = list(_EVERY_CHANGE_REQUEST.finditer(message))
+    if not noteworthy_matches:
+        changed_matches += _CHANGE_NOTIFICATION_REQUEST.finditer(message)
     preferences += [
-        (match.start(), "changed") for match in _EVERY_CHANGE_REQUEST.finditer(message)
+        (match.start(), "changed") for match in changed_matches
         if not any(start <= match.start() < end for start, end in noteworthy_spans)
         and not _NEGATED_REQUEST_PREFIX.search(message[:match.start()])
     ]

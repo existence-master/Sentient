@@ -457,6 +457,8 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     ("Notify me about the changes as they happen", "changed"),
     ("Alert me of the updates on this page", "changed"),
     ("Let me know what changes were made", None),
+    ("Only important changes; notify me about the changes on this page", "noteworthy"),
+    ("Only important changes; tell me about every change after all", "changed"),
 ])
 def test_change_preference_requires_an_explicit_watch_request(message, preference):
     assert scripts._change_preference(message) == preference
@@ -467,6 +469,7 @@ def test_change_preference_requires_an_explicit_watch_request(message, preferenc
     ("Please don't bother me with every little change", "noteworthy"),
     ("Could you tell me about the changes today?", "noteworthy"),
     ("Notify me about the changes as they happen", "changed"),
+    ("Only important changes; notify me about the changes on this page", "noteworthy"),
 ])
 def test_planner_default_reads_the_new_phrasings(message, condition):
     changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
