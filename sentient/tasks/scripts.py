@@ -499,15 +499,20 @@ def normalize_script(
     return out
 
 
+# Text up to the end of a clause: a comma or semicolon, or a full stop, question or exclamation mark followed by
+# a space (a URL's dots don't end it).
+_WITHIN_CLAUSE = r"(?:[^\n,;.!?]|[.!?](?=\S))"
+
 # The newest request about updates wins. A question about a page is not a request to change its watch setting;
 # neither is a bare use of "change" as a verb. Requests for every update must say that positively.
 _NOTEWORTHY_REQUEST = re.compile(
     r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?"
     r"(?:changes?|updates?|stuff|ones?)\b"
-    r"|\b(?:ignore|skip|don't|do not)\s+(?:(?:all|the)\s+){0,2}(?:minor|small|little)\s+"
-    r"(?:changes?|updates?)\b"
+    r"|\b(?:ignore|skip|(?:don't|do not)(?:\s+bother(?:\s+me)?\s+with)?)\s+(?:(?:all|the|every)\s+){0,2}"
+    r"(?:minor|small|little|tiny|trivial)\s+(?:changes?|updates?)\b"
     r"|\b(?:not|never)\s+(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
-    r"|\b(?:don't|do not)\s+(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?"
+    # within one clause: "Don't notify me at night, but tell me about every change" asks for every change
+    r"|\b(?:don't|do not)\s+(?:tell me|notify me|let me know|alert me|report)\b" + _WITHIN_CLAUSE + r"{0,160}?"
     r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b",
     re.IGNORECASE,
 )
@@ -521,7 +526,9 @@ _EVERY_CHANGE_REQUEST = re.compile(
     r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
     r"|\b(?:when|whenever|if)\b[^\n]{0,160}?\b(?:changes?|updates?)\b"
     r"|\b(?:tell me|notify me|let me know|alert me|report)\b"
-    r"(?!\s+(?:what|which)\s+(?:changes?|updates?)\b)[^\n]{0,160}?\b(?:changes?|updates?)\b"
+    # "tell me about the changes (today)" asks about particular changes, not for every future one
+    r"(?!\s+(?:what|which)\s+(?:changes?|updates?)\b|\s+(?:about|of)\s+the\s+(?:\w+\s+)?(?:changes?|updates?)\b)"
+    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
     r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?\b"
     r"(?:anything|everything)\s+(?:at\s+all|new)\b",
     re.IGNORECASE,

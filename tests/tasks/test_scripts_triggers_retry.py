@@ -447,9 +447,26 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     ("Don't tell me about every change", "noteworthy"),
     ("Thanks for all the updates", None),
     ("Can you tell me what changes were made?", None),
+    # #489
+    ("Don't notify me at night, but tell me about every change", "changed"),
+    ("Ignore all the tiny changes", "noteworthy"),
+    ("Ignore all trivial changes", "noteworthy"),
+    ("Don't bother with all the minor changes", "noteworthy"),
+    ("Please don't bother me with every little change", "noteworthy"),
+    ("Could you tell me about the changes today?", None),
 ])
 def test_change_preference_requires_an_explicit_watch_request(message, preference):
     assert scripts._change_preference(message) == preference
+
+
+@pytest.mark.parametrize(("message", "condition"), [
+    ("Don't notify me at night, but tell me about every change", "changed"),
+    ("Please don't bother me with every little change", "noteworthy"),
+    ("Could you tell me about the changes today?", "noteworthy"),
+])
+def test_planner_default_reads_the_new_phrasings(message, condition):
+    changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
+    assert scripts.planner_default(changed, message)["condition"] == condition
 
 
 async def test_planner_watch_default_gives_later_chat_priority_over_answers(make_app):
