@@ -120,6 +120,21 @@ async def test_reply_corrects_a_browser_click_it_never_made(config, isolated_hom
         await s.stop()
 
 
+async def test_reply_copying_an_earlier_correction_gets_no_second_one(config, isolated_home):
+    """A reply that already carries the correction, copied from the chat, is not corrected again (#488)."""
+    copied = "I clicked the subscription button.\n\nCorrection: I didn't click it, so nothing changed on the page."
+    llm = FakeProvider(replies=[copied])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "copied-correction.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+        events = await _collect(s.agent, sid, "click the subscription button")
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text == copied
+        assert text.count("Correction:") == 1
+    finally:
+        await s.stop()
+
+
 async def test_reply_corrects_a_browser_click_the_user_declined(config, isolated_home):
     """A denied browser-click approval must remain visible in the final reply."""
     config.tools.approvals.mode = "ask"
@@ -167,6 +182,23 @@ async def test_step_limit_corrects_a_declined_browser_click_claim(config, isolat
         assert isinstance(events[-1], Done) and events[-1].content == text
     finally:
         await s.stop()
+
+
+def test_browser_click_correction_keeps_a_click_that_succeeded_before_a_declined_retry():
+    """A true claim stays alone when any click of the claimed control succeeded, also if a later try was declined
+    (#488)."""
+    subscribe_then_declined_subscribe = [
+        {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+        {"name": "browser_click", "declined": True, "target": 'button "Subscribe"'},
+    ]
+    assert outcomes.unmade_browser_click_note("I clicked the Subscribe button.", subscribe_then_declined_subscribe) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", [], subscribe_then_declined_subscribe
+    ) == ""
+    # with no successful click of that control, the latest outcome still words the correction
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", [{"name": "browser_click", "declined": True, "target": 'button "Subscribe"'}]
+    ) == "I didn't click it: you declined, so nothing changed on the page."
 
 
 def test_browser_click_correction_uses_the_latest_call():
