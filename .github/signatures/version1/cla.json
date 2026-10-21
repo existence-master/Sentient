@@ -175,6 +175,14 @@
       "created_at": "2026-10-20T03:52:38Z",
       "repoId": 935822565,
       "pullRequestNo": 481
+    },
+    {
+      "name": "juliasadler",
+      "id": 196174386,
+      "comment_id": 6307480240,
+      "created_at": "2026-10-21T03:42:21Z",
+      "repoId": 935822565,
+      "pullRequestNo": 487
     }
   ]
 }
