@@ -508,7 +508,9 @@ _WITHIN_CLAUSE = r"(?:[^\n,;.!?]|[.!?](?=\S))"
 _NOTEWORTHY_REQUEST = re.compile(
     r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?"
     r"(?:changes?|updates?|stuff|ones?)\b"
-    r"|\b(?:ignore|skip|(?:don't|do not)(?:\s+bother(?:\s+me)?\s+with)?)\s+(?:(?:all|the|every)\s+){0,2}"
+    # "don't ignore minor changes" asks for them, so a negated ignore/skip is not this preference
+    r"|\b(?:(?<!\bdon't\s)(?<!\bdo\snot\s)(?<!\bnever\s)(?:ignore|skip)"
+    r"|(?:don't|do not)(?:\s+bother(?:\s+me)?\s+with)?)\s+(?:(?:all|the|every)\s+){0,2}"
     r"(?:minor|small|little|tiny|trivial)\s+(?:changes?|updates?)\b"
     r"|\b(?:not|never)\s+(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
     # within one clause: "Don't notify me at night, but tell me about every change" asks for every change

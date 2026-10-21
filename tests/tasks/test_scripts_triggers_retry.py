@@ -459,6 +459,8 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     ("Let me know what changes were made", None),
     ("Only important changes; notify me about the changes on this page", "noteworthy"),
     ("Only important changes; tell me about every change after all", "changed"),
+    ("Don't ignore minor changes; notify me about changes on this page", "changed"),
+    ("Never skip the small updates, let me know about updates here", "changed"),
 ])
 def test_change_preference_requires_an_explicit_watch_request(message, preference):
     assert scripts._change_preference(message) == preference
