@@ -50,6 +50,20 @@ _CLAIMS: dict[str, re.Pattern] = {
     "home": re.compile(r"\b(turned|switched|set|done|ran)\b", re.I),
 }
 _CLAIM_ANY = re.compile(r"\b(done|completed|finished|success(?:fully)?|sent|saved|created|updated)\b", re.I)
+_BROWSER_CLICK_CLAIM = re.compile(r"\b(?:clicked|was clicked)\b", re.I)
+_NEGATED_BROWSER_CLICK = re.compile(
+    r"\b(?:not|didn't|hasn't|wasn't|haven't|never|nothing)\b[^.!?]{0,50}\bclicked\b", re.I
+)
+_OTHER_PERSON_BROWSER_CLICK = re.compile(
+    r"\b(?:you|he|she|they|someone|anyone|(?:my|your|his|her|their)\s+\w+)\s+"
+    r"(?:have\s+|had\s+|just\s+)?clicked\b", re.I
+)
+_ASSISTANT_BROWSER_CLICK = re.compile(
+    r"\b(?:i(?:'ve)?|we|sentient)\s+(?:(?:have|had|just|only|also|then|already|recently|finally|even|really|\w+ly)\s+){0,2}clicked\b", re.I
+)
+_HYPOTHETICAL_BROWSER_CLICK = re.compile(
+    r"\b(?:if|would|could|might|may)\b[^.!?]{0,50}\b(?:clicked|was clicked|were clicked)\b", re.I
+)
 
 # an MCP tool's kind from its name (servers declare nothing like it)
 _NAME_KINDS: list[tuple[str, re.Pattern, re.Pattern]] = [
@@ -291,6 +305,128 @@ def model_note(check: dict | None) -> str:
 def claimed(text: str, kind: str | None) -> bool:
     """True when a final answer says the action happened ("I've sent the email")."""
     return bool((_CLAIMS.get(kind or "") or _CLAIM_ANY).search(text or ""))
+
+
+def _claimed_click_target(text: str) -> str:
+    """The named target in an assistant or passive click claim, or empty for ``clicked it``."""
+    match = _ASSISTANT_BROWSER_CLICK.search(text)
+    if match is not None:
+        tail = re.split(r"\b(?:on|and|but)\b|[,;.!?]", text[match.end():], maxsplit=1, flags=re.I)[0]
+    else:
+        passive = re.search(r"(?P<target>.+?)\s+was clicked\b", text, re.I)
+        if passive is None:
+            return ""
+        tail = passive.group("target")
+    target = re.sub(r"^\s*(?:only|just|the|a|an)\s+", "", tail, flags=re.I).strip()
+    return "" if target.lower() in {"", "it", "that", "this", "button", "link"} else target
+
+
+def _target_words(value: str) -> set[str]:
+    """Meaningful target words, without generic element labels."""
+    return {
+        word for word in re.findall(r"[a-z0-9]+", value.lower())
+        if word not in {"a", "an", "the", "button", "link", "only", "just"} and not re.fullmatch(r"e\d+", word)
+    }
+
+
+def _matches_click_target(claim: str, click: dict) -> bool:
+    """Whether a named claim plausibly refers to this click's recorded browser element."""
+    if not claim:
+        return True
+
+    claim_words = _target_words(claim)
+    target_words = _target_words(str(click.get("target") or ""))
+
+    def same_word(left: str, right: str) -> bool:
+        """Accept the small morphological variations common in a natural-language reply."""
+        return left == right or (
+            len(left) >= 6 and len(right) >= 6 and left[:6] == right[:6]
+        )
+
+    # The recorded element name is the dependable evidence.  It need only appear
+    # in the claim: a reply naturally adds context such as "for the newsletter"
+    # or an element ref after naming the clicked control.
+    return bool(target_words) and all(
+        any(same_word(target_word, claim_word) for claim_word in claim_words)
+        for target_word in target_words
+    )
+
+
+def _click_note(clicks: list[dict], target: str) -> str:
+    """The correction for a click claim after selecting evidence for its named target."""
+    matches = [click for click in clicks if not target or _matches_click_target(target, click)]
+    has_success = any(click.get("ok") for click in clicks)
+    if not target and has_success:
+        # A targetless claim could refer to any completed action. A later
+        # declined click is not enough evidence to contradict it.
+        return ""
+    if target and not matches and not has_success:
+        # A declined call may retain only its transient ref; it is still evidence that the named action was not made.
+        matches = [
+            click for click in clicks
+            if not click.get("ok") and not _target_words(str(click.get("target") or ""))
+        ]
+    if target and not matches:
+        if has_success:
+            # A successful click of another named control makes an unmatched
+            # claim ambiguous.  Do not turn an honest report into a correction.
+            return ""
+        return "I didn't click it, so nothing changed on the page."
+    if not matches:
+        return "I didn't click it, so nothing changed on the page."
+    click = matches[-1]
+    if click.get("ok"):
+        return ""
+    if click.get("declined"):
+        return "I didn't click it: you declined, so nothing changed on the page."
+    if click.get("uncertain"):
+        return "I couldn't confirm whether it was clicked."
+    return "I couldn't click it, so nothing changed on the page."
+
+
+def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] | None = None) -> str:
+    """A short correction when a reply says it clicked although this turn did not.
+
+    Small local models occasionally state that a browser click happened without making
+    the call at all, or after the user declined its approval.  This is deliberately
+    narrow: it only corrects the completed form of ``click`` and only looks at calls
+    recorded by the loop, never at text supplied by a page or the user.
+    """
+    current_clicks = [call for call in calls if call.get("name") == "browser_click"]
+    previous_clicks = [call for call in history or [] if call.get("name") == "browser_click"]
+    claims = re.split(r"(?<=[.!?])\s+", text or "")
+    # A reply can summarize a successful click from an earlier turn alongside a
+    # declined click from this one, so consider the complete chronological record.
+    clicks = previous_clicks + current_clicks
+    for claim in claims:
+        if _HYPOTHETICAL_BROWSER_CLICK.search(claim):
+            continue
+        explicit = list(_ASSISTANT_BROWSER_CLICK.finditer(claim))
+        # Each self-attributed claim needs its own evidence.  In particular, a
+        # successful "I clicked Subscribe" must not hide a later false
+        # "I clicked Delete account" in the same sentence.
+        explicit_parts = [
+            claim[match.start(): explicit[i + 1].start() if i + 1 < len(explicit) else None]
+            for i, match in enumerate(explicit)
+        ]
+        for part in explicit_parts:
+            # The reply already tells the user that this attempted action was
+            # declined, so a second correction would add no information and
+            # can contradict an earlier successful click in the same reply.
+            if re.search(r"\b(?:declined|denied)\b", part, re.I):
+                continue
+            if note := _click_note(clicks, _claimed_click_target(part)):
+                return note
+        passive = (
+            not explicit
+            and clicks
+            and _BROWSER_CLICK_CLAIM.search(claim)
+            and not _NEGATED_BROWSER_CLICK.search(claim)
+            and not _OTHER_PERSON_BROWSER_CLICK.search(claim)
+        )
+        if passive and (note := _click_note(clicks, _claimed_click_target(claim))):
+            return note
+    return ""
 
 
 def _settled(failed: dict, later: list[dict]) -> bool:

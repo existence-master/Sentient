@@ -297,6 +297,52 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
     return fixed
 
 
+def browser_click_history(rows: list[dict]) -> list[dict]:
+    """Completed browser-click outcomes in stored chat history, oldest first (#402)."""
+    calls: dict[str, dict] = {}
+    out: list[dict] = []
+    for row in rows:
+        if row.get("role") == "assistant":
+            for call in _normalize_tool_calls(row.get("tool_calls")):
+                if call["function"]["name"] == "browser_click":
+                    calls[call["id"]] = {
+                        "name": "browser_click",
+                        "target": _arguments(call["function"].get("arguments")).get("ref", ""),
+                    }
+            continue
+        if row.get("role") != "tool":
+            continue
+        call = calls.pop(str(row.get("tool_call_id") or ""), None)
+        if call is None:
+            continue
+        approval = row.get("approval")
+        if isinstance(approval, dict) and approval.get("target"):
+            call["target"] = str(approval["target"])
+        try:
+            res = json.loads(str(row.get("content") or ""))
+        except (TypeError, ValueError):
+            # A short result may end after the stable leading fields.  Preserve
+            # those fields rather than treating a recorded success as a failed
+            # click solely because its trailing URL was cut for model context.
+            content = str(row.get("content") or "")
+            res = {"ok": True} if re.search(r'"ok"\s*:\s*true\b', content) else {}
+            clicked = re.search(r'"clicked"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+            if clicked is not None:
+                with contextlib.suppress(ValueError):
+                    res["clicked"] = json.loads(f'"{clicked.group(1)}"')
+        declined = isinstance(res, dict) and bool(res.get("declined"))
+        err = _error_text(res)
+        call.update(
+            declined=declined,
+            ok=isinstance(res, dict) and res.get("ok") is True and not err and outcomes.result_problem(res) is None,
+            uncertain=not declined and bool(err),
+        )
+        if isinstance(res, dict) and res.get("clicked"):
+            call["target"] = str(res["clicked"])
+        out.append(call)
+    return out
+
+
 def is_tool_format_error(exc: Exception) -> bool:
     """True when the provider rejected the request because the model cannot do tool calling
     (e.g. an old Ollama model template emitting malformed tool calls)."""
@@ -392,6 +438,10 @@ class LoopResult:
     handed_off: list[dict] = field(default_factory=list)
     # the outcome checks of the calls that ran (#165, ``sentient.agent.outcomes``), in order; written by code only
     checks: list[dict] = field(default_factory=list)
+    # browser clicks attempted in this run, recorded by code so a final reply cannot invent one (#402)
+    browser_clicks: list[dict] = field(default_factory=list)
+    # completed browser clicks from earlier chat turns, consulted only for an explicit reference to one (#402)
+    browser_click_history: list[dict] = field(default_factory=list)
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -922,6 +972,12 @@ class Agent:
                     result.from_findings = True
                     log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
                     yield TextDelta(text=text_acc, **ev)
+                if note := outcomes.unmade_browser_click_note(
+                    text_acc, result.browser_clicks, result.browser_click_history
+                ):
+                    correction = f"\n\nCorrection: {note}"
+                    text_acc += correction
+                    yield TextDelta(text=correction, **ev)
                 result.text = text_acc
                 result.messages = messages
                 return
@@ -1054,6 +1110,12 @@ class Agent:
 
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
+        if note := outcomes.unmade_browser_click_note(
+            result.text, result.browser_clicks, result.browser_click_history
+        ):
+            correction = f"\n\nCorrection: {note}"
+            result.text += correction
+            yield TextDelta(text=correction, **ev)
         result.messages = messages
 
     async def _model_stream(
@@ -1466,6 +1528,17 @@ class Agent:
         if ran and p.host:
             ctx.visited.add(p.host)
         err = _error_text(res)
+        if tc.name == "browser_click":
+            approval = p.approval or {}
+            result.browser_clicks.append({
+                "name": tc.name,
+                "declined": declined,
+                "ok": ran and not is_error and not err and outcomes.result_problem(res) is None,
+                "uncertain": ran and is_error,
+                "target": str(
+                    res.get("clicked") or approval.get("target") or tc.arguments.get("ref", "")
+                ) if isinstance(res, dict) else tc.arguments.get("ref", ""),
+            })
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):
                 ctx.untrusted = untrusted_source(p.tool, self.registry)
@@ -1726,6 +1799,7 @@ class Agent:
             system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
+            result.browser_click_history.extend(browser_click_history(history))
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the
