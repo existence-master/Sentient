@@ -183,6 +183,14 @@
       "created_at": "2026-10-21T03:42:21Z",
       "repoId": 935822565,
       "pullRequestNo": 487
+    },
+    {
+      "name": "bercedev",
+      "id": 75228263,
+      "comment_id": 6314516016,
+      "created_at": "2026-10-21T11:12:22Z",
+      "repoId": 935822565,
+      "pullRequestNo": 493
     }
   ]
 }
