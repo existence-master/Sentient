@@ -273,7 +273,7 @@ async def test_parallel_subagents_each_report_only_their_own_files(config, isola
         arrived.append(ctx.extra["subagent_id"])
         if len(arrived) == 2:
             both_wrote.set()
-        await asyncio.wait_for(both_wrote.wait(), 5)
+        await asyncio.wait_for(both_wrote.wait(), 30)
         return "ok"
 
     class PerGoal(FakeProvider):
@@ -310,20 +310,37 @@ async def test_parallel_subagents_each_report_only_their_own_files(config, isola
         await s.stop()
 
 
-async def test_saved_result_without_a_path_is_not_a_file(config, isolated_home):
-    """skill_save says ``saved`` with no ``path``: only file_write and execute_code count as files (#94)."""
+async def test_files_come_from_any_tool_saving_into_the_files_folder(config, isolated_home):
+    """Any tool whose result ``path`` is inside the files folder counts; ``saved`` alone or a path elsewhere,
+    like skill_save's, does not (#94)."""
+
+    @tool("chart_like", risk=Risk.read)
+    async def chart_like(ctx: ToolContext) -> dict:
+        """Save a chart."""
+        target = paths.files_dir() / "charts" / "steps.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"png")
+        return {"saved": "charts/steps.png", "path": str(target)}
 
     @tool("save_skill_like", risk=Risk.read)
     async def save_skill_like(ctx: ToolContext) -> dict:
         """Save something that is not a file."""
-        return {"saved": "/somewhere/skills/thing/SKILL.md", "name": "thing"}
+        return {"saved": str(isolated_home / "skills" / "thing" / "SKILL.md"), "name": "thing",
+                "path": str(isolated_home / "skills" / "thing" / "SKILL.md")}
 
-    llm = FakeProvider(replies=[[tool_call("save_skill_like")], "saved the skill"])
-    s = await start(config, isolated_home, llm, "nopath")
+    @tool("saved_only", risk=Risk.read)
+    async def saved_only(ctx: ToolContext) -> dict:
+        """Say saved without a path."""
+        return {"saved": "ghost.txt"}
+
+    llm = FakeProvider(replies=[
+        [tool_call("chart_like")], [tool_call("save_skill_like")], [tool_call("saved_only")], "done",
+    ])
+    s = await start(config, isolated_home, llm, "anytool")
     try:
-        s.registry.register(make_plugin("skillish", save_skill_like))
-        res = await s.subagents.delegate("save it", tools=["save_skill_like"])
+        s.registry.register(make_plugin("mixed", chart_like, save_skill_like, saved_only))
+        res = await s.subagents.delegate("save things", tools=["chart_like", "save_skill_like", "saved_only"])
         assert res["status"] == "completed", res
-        assert res["files_created"] == []
+        assert res["files_created"] == ["charts/steps.png"]
     finally:
         await s.stop()

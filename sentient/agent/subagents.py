@@ -93,16 +93,16 @@ def _row(r: Any, *, events: bool = True) -> dict:
 
 
 def _files_from(result: Any) -> list[str]:
-    """The files one of the subagent's own tool calls saved, relative to the files folder: ``file_write`` says
-    ``saved`` (and its ``path``), a script run lists ``files_created``. Read from its results rather than by
+    """The files one of the subagent's own tool calls saved, relative to the files folder: any result whose ``path``
+    is inside the files folder, plus a script run's ``files_created``. Read from its results rather than by
     comparing the folder before and after, so helpers running at once never report each other's files (#94)."""
     if not isinstance(result, dict):
         return []
     names: list[str] = []
-    if isinstance(result.get("saved"), str):
-        names.append(result["saved"])
-        with contextlib.suppress(OSError, TypeError, ValueError):
-            names[-1] = Path(result["path"]).resolve().relative_to(paths.files_dir().resolve()).as_posix()
+    path = result.get("path")
+    if isinstance(path, str) and Path(path).is_absolute():
+        with contextlib.suppress(OSError, ValueError):
+            names.append(Path(path).resolve().relative_to(paths.files_dir().resolve()).as_posix())
     names += [n for n in result.get("files_created") or [] if isinstance(n, str)]
     return names
 
@@ -468,7 +468,7 @@ class SubagentManager(Service):
                                 f"Using {event.name}",
                             )
                         elif isinstance(event, ToolResultEvent):
-                            if not event.is_error and event.name in {"file_write", "execute_code"}:
+                            if not event.is_error:
                                 files.extend(_files_from(event.result))
                             note(
                                 {"type": "tool_result", "tool_name": event.name, "result": _short(event.result),

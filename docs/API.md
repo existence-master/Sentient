@@ -2515,7 +2515,7 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Tools (plugin `subagents`):
   - `delegate_task(goal, context="", tools: list[str] | None = None, background: bool = False)` (risk `write`, internal).
     Foreground: waits and returns `{subagent_id, status, summary, files_created}`; `files_created` lists the files its
-    own `file_write` and `execute_code` calls saved, relative to the files folder (#94). Background: returns
+    own tool calls saved in the files folder, relative to that folder (#94). Background: returns
     `{subagent_id, status: "running"}` at once; when it finishes, a summary is added to the chat as an assistant message,
     `subagent.updated` fires and a notification is created.
   - `delegate_tasks(tasks: list[{goal, context?}])` runs up to `subagents.max_concurrent` in parallel and returns every summary.
