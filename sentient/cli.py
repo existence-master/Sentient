@@ -133,6 +133,24 @@ def node(
     )
 
 
+@app.command()
+def mcp(
+    transport: str = typer.Option("stdio", help="stdio, or http (streamable HTTP on this computer only)"),
+    port: int = typer.Option(8765, help="Port for --transport http. Always bound to 127.0.0.1."),
+    engine_url: str | None = typer.Option(None, help="Engine address (default: the gateway address from the config)"),
+):
+    """Let other AI apps on this computer use Sentient over MCP (off until turned on in Settings).
+
+    Started by the MCP client itself, for example with: claude mcp add sentient -- sentient mcp
+    """
+    if transport not in {"stdio", "http"}:
+        console.print("[red]--transport must be stdio or http[/red]")
+        raise typer.Exit(2)
+    from sentient.mcp_server.server import main
+
+    raise typer.Exit(main(transport, port=port, engine_url=engine_url))
+
+
 @app.command("claude-code-tools", hidden=True)
 def claude_code_tools(tools_file: str):
     """Sentient's tool list for Claude Code (started by Claude Code itself; see sentient/llm/claude_code_tools.py)."""

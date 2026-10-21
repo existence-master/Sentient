@@ -1599,6 +1599,31 @@ an email whose subject is a booking or order (with no sign-in cue) keeps all its
 phone numbers and ordinary links are left alone. The proactive pipeline and follow-ups
 run the same masking again before their prompts. The original stays in the user's mail app (`url` for Gmail).
 
+### Sentient as an MCP server: `sentient mcp` (#443, ADR 0034)
+
+The other direction: other AI apps on this computer (Claude Code, Cursor, any MCP client) can use Sentient
+itself. The command `sentient mcp` (package `sentient/mcp_server/`) runs an MCP server over stdio, or over
+streamable HTTP on 127.0.0.1 only with `--transport http --port <n>` (default 8765, path `/mcp`). It is a thin
+client of this same REST API: it reads the gateway address from the config, takes the token the way `serve`
+does (`SENTIENT_GATEWAY_TOKEN` or the token file), refuses a non-loopback engine address, and holds no state.
+
+- **Off by default.** The process refuses to start while `integrations.mcp_server_enabled` is off, with a
+  sentence telling the user where the switch is, and every tool call reads the switch from `GET /api/config`
+  again, so turning it off stops a running server at its next call. The Integrations screen carries the
+  switch and the snippet: `claude mcp add sentient -- sentient mcp`.
+- **Tools (a fixed whitelist).** `memory_search` (`GET /api/memories?q=`), `memory_get` (`GET /api/memories/{id}`),
+  `memory_add` (`POST /api/memories` with `source: "mcp"`), `task_create` (`POST /api/tasks`), `task_list`
+  (`GET /api/tasks`), `task_status` (`GET /api/tasks/{id}`), `notify_me` (`POST /api/notifications`, above) and
+  `ask_sentient` (one turn of `POST /api/chat` with `channel: "mcp"`). There is no tool that sends, deletes or
+  runs anything.
+- **Writes land where the user sees them.** `memory_add` sends `hold_for_review: true`, so the memory waits in
+  Review (section 7), unless the user set `integrations.mcp_server_memories_skip_review`. `task_create` is the
+  normal create: the plan waits for the user's approval in Sentient. `ask_sentient` is a normal chat turn, so
+  its tools run under approvals, lasting rules (section 2) and the outside-content gate (section 10); the MCP
+  client is outside content and can never answer an approval.
+- `mcp` is also in the frozen engine's command list (`packaging/engine_entry.py`), which `tests/test_packaging.py`
+  keeps equal to the CLI's commands.
+
 ---
 
 ## 6. Notifications & proactivity
@@ -1663,6 +1688,7 @@ dropped and tried again at the next check (`followups.copied_from_them`). A last
 Never rule on that tool or its app (`tools.approvals.rules`) still applies: the run fails with the rule's message and
 nothing is sent.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
+- `POST /api/notifications` `{message, title?, source?}` → `Notification`: a plain `info` note in Sentient, for the MCP server's `notify_me` tool below. Always kind `info` with `payload.source` when given; a caller's `kind` is ignored, so an outside caller cannot dress a note up as an approval, a task result or an error. 400 without a `message`.
 - `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`
 - `DELETE /api/notifications/{id}`, `DELETE /api/notifications`
 - `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; for a follow-up it creates the already approved send task described above; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.
@@ -1780,7 +1806,7 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
   `source` also finds memories that source said again), expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?, scope?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending", scope?}` (`scope` defaults to `personal`; runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
+- `POST /api/memories` `{content, source?, scope?, hold_for_review?, review_from?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending", scope?}` (`scope` defaults to `personal`; runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. `hold_for_review: true` saves the fact as pending instead, with a review note from `review_from` (below, "Memories waiting for review"): the MCP server sends it for memories an outside app adds, unless the user turned the wait off. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
 near-duplicate shortcut needs the same person too; names in Devanagari (Hindi) count, and match across scripts
 ("माया" is "Maya", "प्रिया" is not "Riya") (#339). Someone the person knows is not the person: "Maya Rao's sister Priya", "my friend Arjun", "her colleague" and "माया राव की बहन" are about that relative or friend, so a fact about them is never offered as an update of Maya's own facts, and the updates decided in code (a correction, a new home) need both facts to clearly name the same person ("She moved to Delhi" names nobody and is left to the model) (#463). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact. A correction always UPDATEs, decided in code without the model and never skipped as a
 near-duplicate (#364): a new fact about the same person and action that says the same thing about it with a changed

@@ -244,7 +244,14 @@ async def create_memory(request: Request, body: dict):
     if not content:
         raise HTTPException(400, "content is required")
     scope = memory_scopes.normalize(body.get("scope"), memory_scopes.PERSONAL)  # #155
-    return await mem.remember(content, source=str(body.get("source") or "manual"), notify=True, scope=scope)
+    # An outside app saving through `sentient mcp` is outside content (ADR 0018, ADR 0034): its memories wait
+    # in Review like an import's do (ADR 0021), unless the user turned the wait off in Settings.
+    review = None
+    if body.get("hold_for_review"):
+        review = memory_review.note(str(body.get("review_from") or "an MCP app"), snippet=content)
+    return await mem.remember(
+        content, source=str(body.get("source") or "manual"), notify=True, scope=scope, review=review,
+    )
 
 
 @router.put("/{memory_id}")

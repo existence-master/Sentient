@@ -8,6 +8,7 @@ import { ConnectDialog } from '@/features/integrations/ConnectDialog'
 import { IntegrationCard } from '@/features/integrations/IntegrationCard'
 import { IntegrationDrawer } from '@/features/integrations/IntegrationDrawer'
 import { McpServersSection } from '@/features/integrations/McpServers'
+import { SentientMcpSection } from '@/features/integrations/SentientMcp'
 import { CATEGORIES, sortIntegrations, type CategoryFilter } from '@/features/integrations/meta'
 import { useIntegrations } from '@/hooks/integrations'
 import { useMcpServers } from '@/hooks/integrations'
@@ -243,6 +244,11 @@ export function IntegrationsPage() {
             {showMcp && (
               <div className="border-t border-border pt-8">
                 <McpServersSection id="mcp-servers" />
+              </div>
+            )}
+            {showMcp && (
+              <div className="border-t border-border pt-8">
+                <SentientMcpSection id="sentient-mcp" />
               </div>
             )}
           </div>

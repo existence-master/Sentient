@@ -18,6 +18,23 @@ async def list_notifications(request: Request, limit: int = 100, unread_only: bo
     return {"notifications": await svc.list(limit, unread_only), "unread": await svc.unread_count()}
 
 
+@router.post("")
+async def create_notification(request: Request, body: dict):
+    """A plain info notification, for the MCP server's notify_me tool (ADR 0034).
+
+    Only ever an ``info`` note in Sentient itself: nothing is sent anywhere, and a caller cannot
+    dress a note up as an approval, a task result or an error by picking the kind.
+    """
+    message = str(body.get("message") or "").strip()
+    if not message:
+        raise HTTPException(400, "message is required")
+    title = str(body.get("title") or "").strip() or None
+    source = str(body.get("source") or "").strip()
+    return await get_core(request).notify(
+        "info", message, title=title, payload={"source": source} if source else None,
+    )
+
+
 @router.post("/{notification_id}/read")
 async def mark_read(request: Request, notification_id: str):
     svc = get_core(request).notifications

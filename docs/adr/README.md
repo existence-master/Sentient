@@ -38,6 +38,7 @@ proposing a change to one of them.
 | [0031](0031-recipients-first-and-a-tool-less-reader.md) | Fix where a message goes before reading what it says, and read outside documents with a tool-less reader | Accepted | 2026-10-17 |
 | [0032](0032-claude-code-for-everything-as-an-opt-in.md) | Let people opt in to using their own Claude Code for everything | Accepted | 2026-10-17 |
 | [0033](0033-tasks-by-email.md) | Take tasks by email only from allowed real addresses, and treat the email as outside content | Accepted | 2026-10-18 |
+| [0034](0034-serve-sentient-to-other-agents-over-mcp.md) | Serve Sentient itself to other agents over MCP, off by default and read-mostly | Accepted | 2026-10-21 |
 
 ## Adding a record
 
