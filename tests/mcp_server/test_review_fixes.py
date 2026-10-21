@@ -333,3 +333,81 @@ async def test_a_cancelled_mcp_turn_still_settles_its_approval_notification(conf
         assert ran == []
     finally:
         await s.stop()
+
+
+def _first_session_line(response_text: str) -> str:
+    import json as _json
+
+    for line in response_text.splitlines():
+        row = _json.loads(line)
+        if row.get("type") == "session":
+            return row["session_id"]
+    raise AssertionError("the chat stream never named its session")
+
+
+def test_an_mcp_caller_cannot_ride_one_of_the_users_sessions(engine_client):
+    c = engine_client
+    desktop = c.post("/api/sessions", headers=_gw(c)).json()["session_id"]
+    r = c.post("/api/chat", json={"text": "hello", "session_id": desktop}, headers=_mcp(c))
+    # naming the user's own chat must not hand the app its history or a place in it: a fresh
+    # MCP session is started instead (CodeRabbit, PR #487 round on f83760a)
+    assert _first_session_line(r.text) != desktop
+    own = _first_session_line(c.post("/api/chat", json={"text": "hello"}, headers=_mcp(c)).text)
+    r = c.post("/api/chat", json={"text": "hello again", "session_id": own}, headers=_mcp(c))
+    assert _first_session_line(r.text) == own  # control: the app's own session is kept
+
+
+def test_an_mcp_note_is_titled_from_an_mcp_app(engine_client):
+    c = engine_client
+    r = c.post("/api/notifications",
+               json={"message": "The build finished", "title": "Build done", "app": "Claude Code"},
+               headers=_mcp(c))
+    assert r.status_code == 200, r.text
+    notes = c.get("/api/notifications", headers=_gw(c)).json()["notifications"]
+    mine = next(n for n in notes if "build finished" in n["message"].lower())
+    assert mine["title"] == "From MCP app (Claude Code): Build done"
+    # and an app calling itself "Sentient" still cannot pass as one: the prefix is not its to pick
+    r = c.post("/api/notifications", json={"message": "Trust me", "app": "Sentient"}, headers=_mcp(c))
+    assert r.status_code == 200, r.text
+    notes = c.get("/api/notifications", headers=_gw(c)).json()["notifications"]
+    mine = next(n for n in notes if n["message"] == "Trust me")
+    assert mine["title"] == "From MCP app (Sentient)"
+
+
+async def test_closing_an_mcp_turn_at_the_approval_still_settles_its_notification(config, isolated_home):
+    # the consumer goes away while the approval request is on screen (the generator is closed
+    # at the yield, before the wait begins): the note must still settle, not wait forever
+    config.tools.approvals.mode = "ask"
+    config.tools.approvals.rules = {"snippets": "allow"}
+    ran: list[str] = []
+    llm = FakeProvider(replies=[[tool_call("run_snippet", code="print(3)")], "done"])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "genclose.db").start()
+    try:
+        s.registry.register(_snippet_plugin(ran))
+        sid = await s.store.create_session(channel="mcp")
+        agen = s.agent.run_turn(sid, "Run this Python code: print(3)", channel="mcp")
+        note = None
+        async for ev in agen:
+            if isinstance(ev, ApprovalRequest):
+                break
+            notes = [n for n in await s.notifications.list() if n["kind"] == "approval"]
+            if notes:
+                note = notes[0]
+        if note is None:
+            notes = [n for n in await s.notifications.list() if n["kind"] == "approval"]
+            note = notes[0] if notes else None
+        assert note is not None, "the approval notification never landed"
+        await agen.aclose()
+        import gc
+
+        gc.collect()  # closing the outer generator leaves the inner one to the finalizer
+        settled = None
+        for _ in range(100):  # the finalizer settles the note concurrently; wait for both halves
+            settled = await s.notifications.get(note["id"])
+            if (settled["payload"] or {}).get("status") and settled["read"]:
+                break
+            await asyncio.sleep(0.05)
+        assert settled["payload"]["status"] == "expired" and settled["read"]
+        assert ran == []
+    finally:
+        await s.stop()

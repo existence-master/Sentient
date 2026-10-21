@@ -32,10 +32,11 @@ async def create_notification(request: Request, body: dict):
     source = str(body.get("source") or "").strip()
     payload = {"source": source} if source else None
     if getattr(request.state, "caller", "gateway") == "mcp":
-        # a note from an outside app names the app in its title, so it can never pass itself off
-        # as a note from Sentient (issue #443)
+        # a note from an outside app is titled as one, under a fixed attribution the app cannot
+        # replace: naming itself "Sentient" in `app` still lands as "From MCP app (Sentient)"
+        # (issue #443)
         app_name = str(body.get("app") or "").strip() or "An MCP app"
-        title = f"{app_name}: {title}" if title else app_name
+        title = f"From MCP app ({app_name}): {title}" if title else f"From MCP app ({app_name})"
         payload = {**(payload or {}), "app": app_name}
     return await get_core(request).notify("info", message, title=title, payload=payload)
 

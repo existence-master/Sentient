@@ -79,6 +79,8 @@ def _client_name(ctx: Any) -> str | None:
         params = ctx.request_context.session.client_params
         info = getattr(params, "client_info", None) or getattr(params, "clientInfo", None)
         name = getattr(info, "name", None) if info else None
+        if name is None:  # an explicit null in the handshake is no name, not the app "None"
+            return None
         return str(name).strip() or None
     except Exception:
         return None
@@ -253,7 +255,17 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
 def check_ready(client: EngineClient) -> str | None:
     """None when the server may start, else a plain sentence for the person starting it."""
     try:
-        client.health()
+        health = client.health()  # no token sent: this answer decides whether the token may travel
+    except EngineError as exc:
+        return str(exc)
+    if not health.get("ok") or health.get("name") != "sentient":
+        # the discovery file holds only a port, and ports get recycled: whatever answered there
+        # is not Sentient's engine, and it must never be sent the MCP token
+        return (
+            f"Something else is answering at {client.base_url}, and it is not Sentient's engine, "
+            "so this server will not send it the MCP token. Start Sentient first, then try again."
+        )
+    try:
         status = client.status()
     except EngineError as exc:
         return str(exc)

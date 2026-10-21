@@ -59,6 +59,13 @@ class EngineClient:
             # whose no_proxy list carries bracketed IPv6 hosts)
             trust_env=False,
         )
+        # a second client with no credentials, for the readiness probe: the token is only ever
+        # sent after that probe has shown the engine is Sentient (see health())
+        self._bare = httpx.Client(
+            base_url=self.base_url,
+            timeout=httpx.Timeout(timeout, read=timeout),
+            trust_env=False,
+        )
 
     # ------------------------------------------------------------------ plumbing
     def _call(self, method: str, path: str, *, timeout: float | None = None, **kwargs: Any) -> Any:
@@ -98,9 +105,11 @@ class EngineClient:
             return {"text": resp.text}
 
     def health(self) -> dict:
-        """``GET /api/health`` (no token needed): is an engine up at this address?"""
+        """``GET /api/health``: is an engine up at this address? Asked WITHOUT the token: the
+        discovery file holds only a port, and whatever answers on a recycled port must prove it
+        is Sentient's engine (``check_ready`` reads this answer) before the token travels."""
         try:
-            resp = self._http.get("/api/health")
+            resp = self._bare.get("/api/health")
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPError as exc:

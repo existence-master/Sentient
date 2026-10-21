@@ -1318,17 +1318,19 @@ class Agent:
                 )
             except Exception:
                 log.exception("could not post the approval notification")
-        yield ApprovalRequest(
-            approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
-            risk=p.risk.name, reason=approval_reason(wording, p.risk),
-            risk_label=wording["risk_label"], target=wording["target"],
-            untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
-            grant_minutes=self.approvals.config.grant_minutes,
-            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase, to=p.destinations), **ev,
-        )
         asked_at = now_iso()
-        decision: str = "expired"  # if the wait is cancelled (the asker went away), the note settles as expired
+        decision: str = "expired"  # if the wait never completes (the asker went away), the note settles as expired
         try:
+            # the yield is inside the try: if whoever is consuming this generator closes it while
+            # the request is on screen, the finally below still settles the notification
+            yield ApprovalRequest(
+                approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
+                risk=p.risk.name, reason=approval_reason(wording, p.risk),
+                risk_label=wording["risk_label"], target=wording["target"],
+                untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
+                grant_minutes=self.approvals.config.grant_minutes,
+                preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase, to=p.destinations), **ev,
+            )
             decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
         finally:
             if note is not None:

@@ -102,7 +102,8 @@ def serve(
     if p:
         # `sentient mcp` finds the engine through this file (issue #443): the desktop starts the
         # engine on a fresh port each launch, so the configured port is not where it listens.
-        # Port only, no secret; a stale file just points at a port nothing answers on any more.
+        # Port only, no secret; the file is removed again when the engine stops (below), and the
+        # MCP server proves the engine is Sentient before it sends the token anywhere.
         import contextlib
         import json
 
@@ -116,6 +117,15 @@ def serve(
         "sentient.gateway.app:create_app", factory=True, host=h, port=p, reload=reload,
         log_level="warning", ws_ping_interval=20, ws_ping_timeout=60,
     )
+    if p:
+        # the engine stopped: take the discovery file away again, so it cannot outlive the
+        # engine and point a future MCP server at a port something else has since taken over
+        import contextlib
+
+        from sentient import paths
+
+        with contextlib.suppress(Exception):
+            paths.discovery_file().unlink(missing_ok=True)
 
 
 @app.command()

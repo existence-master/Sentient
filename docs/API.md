@@ -1642,7 +1642,7 @@ transport is deliberately not offered; it may return later, protected by the sam
   waits for approval, even when `tasks.require_plan_approval` is off, and every run is marked with the app's
   name so anything that sends asks first. `POST /api/chat` from an MCP caller is forced onto
   `channel: "mcp"` whatever the body says: the turn is marked outside content from the start, its text
-  never counts as the user's words (memories it states wait in Review; sends, code runs and deletes always
+  never counts as the user's words (memories it states wait in Review by default; sends, code runs and deletes always
   ask), and an approval it raises also lands as a `kind: "approval"` notification (section 6) the user can
   answer in the window or on their phone. The MCP client is outside content and can never answer an approval.
 - `mcp` is also in the frozen engine's command list (`packaging/engine_entry.py`), which `tests/test_packaging.py`
@@ -1724,7 +1724,7 @@ dropped and tried again at the next check (`followups.copied_from_them`). A last
 Never rule on that tool or its app (`tools.approvals.rules`) still applies: the run fails with the rule's message and
 nothing is sent.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
-- `POST /api/notifications` `{message, title?, source?, app?}` → `Notification`: a plain `info` note in Sentient, for the MCP server's `notify_me` tool below. Always kind `info` with `payload.source` when given; a caller's `kind` is ignored, so an outside caller cannot dress a note up as an approval, a task result or an error. For an MCP caller the title is prefixed with the app's name (`"Claude Code: ..."`, from `app`, or "An MCP app"), and the name is kept as `payload.app`, so a note can never pass itself off as one from Sentient. 400 without a `message`.
+- `POST /api/notifications` `{message, title?, source?, app?}` → `Notification`: a plain `info` note in Sentient, for the MCP server's `notify_me` tool below. Always kind `info` with `payload.source` when given; a caller's `kind` is ignored, so an outside caller cannot dress a note up as an approval, a task result or an error. For an MCP caller the title gets a fixed attribution the caller cannot replace (`"From MCP app (Claude Code): ..."`, the name from `app`, or "An MCP app" when it gives none), and the name is kept as `payload.app`, so a note can never pass itself off as one from Sentient. 400 without a `message`.
 - `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`
 - `DELETE /api/notifications/{id}`, `DELETE /api/notifications`
 - `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; for a follow-up it creates the already approved send task described above; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.

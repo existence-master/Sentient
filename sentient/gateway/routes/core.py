@@ -444,6 +444,12 @@ async def chat(request: Request, body: ChatBody):
         # an MCP app's words are outside content, never the user's (issue #443): the turn runs on
         # the mcp channel whatever the body claims, and the loop marks it from the start
         body.channel = "mcp"
+        if body.session_id:
+            # the session must be one of the app's own: naming one of the user's chats would hand
+            # the app that chat's history and let its words into it, so anything else starts fresh
+            session = await s.store.get_session(body.session_id)
+            if session is None or session.get("channel") != "mcp":
+                body.session_id = None
     if body.session_id and not body.attachments and not is_mcp and s.agent.steer(body.session_id, body.text):
         # a reply is already running for this chat: the text steers it (docs/API.md section 10)
         ack = {"type": "steer_ack", "session_id": body.session_id, "queued": True}

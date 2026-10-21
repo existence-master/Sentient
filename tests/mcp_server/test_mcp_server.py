@@ -231,6 +231,43 @@ def test_client_name_comes_from_the_handshake():
     assert _client_name(ctx) == "Claude Code"
     assert _client_name(SimpleNamespace()) is None
 
+    def ctx_named(name):
+        return SimpleNamespace(request_context=SimpleNamespace(session=SimpleNamespace(
+            client_params=SimpleNamespace(client_info=SimpleNamespace(name=name)))))
+
+    assert _client_name(ctx_named(None)) is None  # an explicit null is not the app "None"
+    assert _client_name(ctx_named("   ")) is None
+    assert _client_name(ctx_named("  Cursor ")) == "Cursor"
+
+
+def test_check_ready_refuses_whatever_is_not_sentient():
+    # the discovery file holds only a port, and ports get recycled: the readiness probe runs
+    # without the token, and only an answer that identifies as Sentient may receive it
+    from sentient.mcp_server.server import check_ready
+
+    class Impostor:
+        base_url = "http://127.0.0.1:7777"
+
+        def health(self):
+            return {"ok": True, "version": "9.9"}  # answers, but never says it is Sentient
+
+        def status(self):
+            raise AssertionError("the token must not travel before the engine is identified")
+
+    problem = check_ready(Impostor())
+    assert problem is not None and "not Sentient" in problem
+
+    class Engine:
+        base_url = "http://127.0.0.1:7777"
+
+        def health(self):
+            return {"ok": True, "name": "sentient"}
+
+        def status(self):
+            return {"enabled": True}
+
+    assert check_ready(Engine()) is None
+
 
 async def test_an_engine_error_at_the_gate_is_reported_not_masked_as_turned_off():
     engine = FakeEngine()

@@ -15,6 +15,23 @@ def _client() -> EngineClient:
     return EngineClient(BASE, "test-token")
 
 
+def test_the_readiness_probe_never_carries_the_token():
+    # the probe answers "is anything there?" before the engine is identified, so it goes out
+    # bare; the token is only for calls after that (status and everything the tools use)
+    with respx.mock() as router:
+        health = router.get(f"{BASE}/api/health").mock(
+            return_value=httpx.Response(200, json={"ok": True, "name": "sentient", "version": "1.0"})
+        )
+        status = router.get(f"{BASE}/api/mcp/status").mock(
+            return_value=httpx.Response(200, json={"enabled": True})
+        )
+        client = _client()
+        assert client.health()["name"] == "sentient"
+        assert "Authorization" not in health.calls.last.request.headers
+        assert client.status()["enabled"] is True
+        assert status.calls.last.request.headers["Authorization"] == "Bearer test-token"
+
+
 def test_a_non_local_engine_address_is_refused():
     with pytest.raises(EngineError, match="only works on this computer"):
         EngineClient("http://192.168.1.20:7777", "test-token")
