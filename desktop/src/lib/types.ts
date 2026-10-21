@@ -464,6 +464,15 @@ export interface SentientConfig {
   proactivity: ProactivityConfig
   voice: VoiceConfig
   ui: UIConfig
+  nodes?: NodesConfig
+}
+
+export interface NodesConfig {
+  enabled: boolean
+  lan_enabled: boolean
+  lan_port: number
+  /** Bind the LAN listener to 0.0.0.0 instead of loopback. */
+  lan_bind_all?: boolean
 }
 
 export type ConfigSection = keyof SentientConfig
@@ -1509,6 +1518,8 @@ export interface DeviceLanInfo {
   web_urls?: string[]
   fingerprint: string | null
   mdns?: boolean
+  /** True when the listener accepts connections from the whole network (`nodes.lan_bind_all`), false for this computer only. */
+  bind_all?: boolean
   error?: string | null
 }
 
