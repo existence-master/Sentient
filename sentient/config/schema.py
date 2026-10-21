@@ -693,7 +693,8 @@ class IntegrationsConfig(BaseModel):
         description="Let other AI apps on this computer (Claude Code, Cursor and other MCP clients) use Sentient "
         "itself through the `sentient mcp` command: search and add memories, create and check tasks, send "
         "notifications and ask Sentient a question. Off until turned on. There is no tool that sends, deletes "
-        "or runs anything, and the command only works on this computer with the engine's token.",
+        "or runs anything, and the command only works on this computer, with a key of its own that opens "
+        "only what those tools need.",
     )
     mcp_server_memories_skip_review: bool = Field(
         False,

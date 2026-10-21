@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils'
  * Deep links (also used by screenshots): `?connect=<id>`,
  *   `?open=<id>[&focus=privacy|tools|triggers|upgrades|disconnect|forget]` (`forget`: the disconnect question with
  *   "Also forget" ticked, #153),
- * `?section=mcp|webhooks`, `?q=<search>`, `?category=<id>`.
+ * `?section=mcp|webhooks|sentient-mcp`, `?q=<search>`, `?category=<id>`.
  */
 export function IntegrationsPage() {
   const [params, setParams] = useSearchParams()
@@ -82,7 +82,8 @@ export function IntegrationsPage() {
 
   useEffect(() => {
     const section = params.get('section')
-    const target = section === 'mcp' ? '#mcp-servers' : section === 'webhooks' ? '#webhooks' : null
+    const target =
+      section === 'mcp' ? '#mcp-servers' : section === 'webhooks' ? '#webhooks' : section === 'sentient-mcp' ? '#sentient-mcp' : null
     if (!target || isLoading || mcp.isLoading) return
     const t = window.setTimeout(() => scroller.current?.querySelector(target)?.scrollIntoView({ block: 'start' }), 120)
     return () => window.clearTimeout(t)

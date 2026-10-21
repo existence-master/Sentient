@@ -99,6 +99,19 @@ def serve(
     if not os.environ.get(ENV_TOKEN):
         # started by hand: show how to open the UI in a browser
         console.print(f"Sentient backend on http://{h}:{p}/  (dev UI: http://{h}:{p}/?api=http://{h}:{p}&token={token})")
+    if p:
+        # `sentient mcp` finds the engine through this file (issue #443): the desktop starts the
+        # engine on a fresh port each launch, so the configured port is not where it listens.
+        # Port only, no secret; a stale file just points at a port nothing answers on any more.
+        import contextlib
+        import json
+
+        from sentient import paths
+
+        with contextlib.suppress(Exception):
+            found = paths.discovery_file()
+            found.parent.mkdir(parents=True, exist_ok=True)
+            found.write_text(json.dumps({"port": p}), encoding="utf-8")
     uvicorn.run(
         "sentient.gateway.app:create_app", factory=True, host=h, port=p, reload=reload,
         log_level="warning", ws_ping_interval=20, ws_ping_timeout=60,
@@ -135,32 +148,17 @@ def node(
 
 @app.command()
 def mcp(
-    transport: str = typer.Option("stdio", help="stdio, or http (streamable HTTP on this computer only)"),
-    port: int = typer.Option(8765, help="Port for --transport http. Always bound to 127.0.0.1."),
-    engine_url: str | None = typer.Option(None, help="Engine address (default: the gateway address from the config)"),
-    connect: str | None = typer.Option(
-        None,
-        help="Launcher mode: connect to the HTTP server at this address on this computer and serve "
-        "it over stdio, adding Sentient's sign-in itself (no key in the client's settings). The "
-        "address carries the port, so --port and --engine-url do not apply in this mode",
+    engine_url: str | None = typer.Option(
+        None, help="Engine address (default: the address the running engine left in its discovery file)"
     ),
 ):
     """Let other AI apps on this computer use Sentient over MCP (off until turned on in Settings).
 
     Started by the MCP client itself, for example with: claude mcp add sentient -- sentient mcp
     """
-    if transport not in {"stdio", "http"}:
-        console.print("[red]--transport must be stdio or http[/red]")
-        raise typer.Exit(2)
-    if connect is not None and transport != "stdio":
-        console.print("[red]--connect is the launcher: it serves over stdio and cannot be combined with --transport http[/red]")
-        raise typer.Exit(2)
-    if connect is not None and engine_url is not None:
-        console.print("[red]--connect takes the server's full address; --engine-url does not apply in launcher mode[/red]")
-        raise typer.Exit(2)
     from sentient.mcp_server.server import main
 
-    raise typer.Exit(main(transport, port=port, engine_url=engine_url, connect=connect))
+    raise typer.Exit(main(engine_url=engine_url))
 
 
 @app.command("claude-code-tools", hidden=True)

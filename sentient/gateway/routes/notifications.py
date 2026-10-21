@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from sentient.gateway.deps import AUTH, get_core
+from sentient.gateway.deps import MCP_OK, get_core
 
-router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=AUTH)
+router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=MCP_OK)
 
 
 @router.get("")
@@ -30,9 +30,14 @@ async def create_notification(request: Request, body: dict):
         raise HTTPException(400, "message is required")
     title = str(body.get("title") or "").strip() or None
     source = str(body.get("source") or "").strip()
-    return await get_core(request).notify(
-        "info", message, title=title, payload={"source": source} if source else None,
-    )
+    payload = {"source": source} if source else None
+    if getattr(request.state, "caller", "gateway") == "mcp":
+        # a note from an outside app names the app in its title, so it can never pass itself off
+        # as a note from Sentient (issue #443)
+        app_name = str(body.get("app") or "").strip() or "An MCP app"
+        title = f"{app_name}: {title}" if title else app_name
+        payload = {**(payload or {}), "app": app_name}
+    return await get_core(request).notify("info", message, title=title, payload=payload)
 
 
 @router.post("/{notification_id}/read")

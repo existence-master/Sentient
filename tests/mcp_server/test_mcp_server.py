@@ -8,20 +8,13 @@ like Claude Code actually sees.
 from __future__ import annotations
 
 import json
-import socket
-import sys
-import threading
-import time
 
-import httpx
-import pytest
-import respx
 from mcp import Client
 from typer.testing import CliRunner
 
 from sentient import cli
 from sentient.mcp_server.client import EngineError
-from sentient.mcp_server.server import BridgeError, build_server, main, validate_connect_url
+from sentient.mcp_server.server import build_server, main
 
 EXPECTED_TOOLS = {
     "memory_search", "memory_add", "memory_get",
@@ -35,8 +28,9 @@ class FakeEngine:
 
     def __init__(self, *, enabled: bool = True, skip_review: bool = False):
         self.section = {
-            "mcp_server_enabled": enabled,
-            "mcp_server_memories_skip_review": skip_review,
+            "enabled": enabled,
+            "memories_skip_review": skip_review,
+            "token_issued": True,
         }
         self.memories = [
             {"id": 1, "content": "Maya Rao's daughter Mira starts school in June",
@@ -55,7 +49,7 @@ class FakeEngine:
         self.fail_search = False
         self.fail_config = False
 
-    def integrations_config(self):
+    def status(self):
         if self.fail_config:
             raise EngineError("The engine refused this server's token (401).")
         return dict(self.section)
@@ -72,17 +66,18 @@ class FakeEngine:
                 return {**m, "memory_type": "long-term", "state": "current"}
         raise EngineError("The engine said no (404): memory 999 not found.")
 
-    def add_memory(self, content, *, hold_for_review, scope=None):
-        self.added.append({"content": content, "hold_for_review": hold_for_review, "scope": scope})
+    def add_memory(self, content, *, hold_for_review, scope=None, app=None):
+        self.added.append({"content": content, "hold_for_review": hold_for_review, "scope": scope, "app": app})
         out = {"action": "ADD", "id": 99, "content": content}
         if hold_for_review:
             out["status"] = "pending"
         return out
 
-    def create_task(self, prompt):
+    def create_task(self, prompt, *, app=None):
         task = {"id": "t2", "name": prompt[:40], "status": "planning", "description": prompt,
                 "plan": [], "updated_at": "2026-10-21T10:00:00Z"}
         self.tasks.append(task)
+        self.task_apps = [*getattr(self, "task_apps", []), app]
         return task
 
     def list_tasks(self):
@@ -94,11 +89,11 @@ class FakeEngine:
                 return t
         raise EngineError("The engine said no (404).")
 
-    def notify(self, message, title=None):
-        self.notes.append({"message": message, "title": title})
+    def notify(self, message, title=None, *, app=None):
+        self.notes.append({"message": message, "title": title, "app": app})
         return {"id": "n1"}
 
-    def chat_turn(self, text):
+    def chat_turn(self, text, *, app=None):
         return {"content": f"Sentient replies to: {text}", "session_id": "s1"}
 
 
@@ -151,7 +146,8 @@ async def test_memory_search_and_get():
 async def test_memory_add_waits_for_review_by_default():
     engine = FakeEngine()
     out = await _call(build_server(engine), "memory_add", {"content": "Maya's office is in Lisbon"})
-    assert engine.added == [{"content": "Maya's office is in Lisbon", "hold_for_review": True, "scope": None}]
+    assert engine.added[0]["content"] == "Maya's office is in Lisbon"
+    assert engine.added[0]["hold_for_review"] is True and engine.added[0]["scope"] is None
     assert out["status"] == "pending" and "review" in out["note"].lower()
 
 
@@ -177,7 +173,7 @@ async def test_notify_me_and_ask_sentient():
     engine = FakeEngine()
     out = await _call(build_server(engine), "notify_me", {"message": "Claude Code finished the report"})
     assert out == {"notified": True, "id": "n1"}
-    assert engine.notes == [{"message": "Claude Code finished the report", "title": None}]
+    assert engine.notes[0]["message"] == "Claude Code finished the report" and engine.notes[0]["title"] is None
     reply = await _call(build_server(engine), "ask_sentient", {"message": "what is on today?"})
     assert reply["reply"] == "Sentient replies to: what is on today?"
 
@@ -193,13 +189,47 @@ def test_the_mcp_command_exists_and_refuses_without_an_engine(isolated_home):
     runner = CliRunner()
     help_out = runner.invoke(cli.app, ["mcp", "--help"])
     assert help_out.exit_code == 0, help_out.output
-    # the health check is mocked to fail the way a stopped engine fails, so the test never
-    # depends on whether a real Sentient happens to be running on this computer
-    with respx.mock() as router:
-        router.get(url__regex=r".*/api/health").mock(side_effect=httpx.ConnectError("down"))
-        refused = runner.invoke(cli.app, ["mcp"])
+    # no discovery file in the isolated home: no engine is running, whatever this computer has
+    refused = runner.invoke(cli.app, ["mcp"])
     assert refused.exit_code == 2, refused.output
     assert "Start Sentient first" in refused.output
+    # and starting (or refusing) never creates the gateway token file: that token is the engine's
+    # own, and this process must not mint one as a side effect (review item 3)
+    assert not (isolated_home / "gateway.token").exists()
+
+
+def test_main_refuses_until_the_user_turns_the_feature_on(isolated_home, monkeypatch):
+    from sentient import paths, secrets
+
+    found = paths.discovery_file()
+    found.parent.mkdir(parents=True, exist_ok=True)
+    found.write_text('{"port": 9}', encoding="utf-8")
+    monkeypatch.setattr(secrets, "get_secret", lambda name, env_var=None: None)
+    assert main() == 2  # no MCP token issued yet: turning the feature on creates it
+
+
+def test_main_never_writes_the_gateway_token(isolated_home, monkeypatch):
+    from sentient import paths, secrets
+
+    found = paths.discovery_file()
+    found.parent.mkdir(parents=True, exist_ok=True)
+    found.write_text('{"port": 9}', encoding="utf-8")  # port 9: nothing answers there
+    monkeypatch.setattr(secrets, "get_secret", lambda name, env_var=None: "issued-token")
+    assert main() == 2  # the engine is not answering, so the server refuses to start
+    assert not (isolated_home / "gateway.token").exists()
+
+
+def test_client_name_comes_from_the_handshake():
+    # the SDK's InitializeRequestParams exposes the client info as client_info (the
+    # camelCase spelling is only the wire alias); a wrong attribute silently yields None
+    from types import SimpleNamespace
+
+    from sentient.mcp_server.server import _client_name
+
+    ctx = SimpleNamespace(request_context=SimpleNamespace(session=SimpleNamespace(
+        client_params=SimpleNamespace(client_info=SimpleNamespace(name="Claude Code")))))
+    assert _client_name(ctx) == "Claude Code"
+    assert _client_name(SimpleNamespace()) is None
 
 
 async def test_an_engine_error_at_the_gate_is_reported_not_masked_as_turned_off():
@@ -208,138 +238,3 @@ async def test_an_engine_error_at_the_gate_is_reported_not_masked_as_turned_off(
     out = await _call(build_server(engine), "memory_search", {"query": "Maya"})
     assert out == {"error": "The engine refused this server's token (401)."}
 
-
-def test_the_http_transport_refuses_calls_without_the_engine_token():
-    from starlette.testclient import TestClient
-
-    engine = FakeEngine()
-    server = build_server(engine, http_token="test-token", http_port=8765)
-    init = {
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2025-03-26", "capabilities": {},
-                   "clientInfo": {"name": "test", "version": "0"}},
-    }
-    headers = {"Accept": "application/json, text/event-stream"}
-    with TestClient(server.streamable_http_app(), base_url="http://127.0.0.1:8765") as http:
-        refused = http.post("/mcp", json=init, headers=headers)
-        assert refused.status_code == 401, refused.text
-        wrong = http.post("/mcp", json=init, headers={**headers, "Authorization": "Bearer nope"})
-        assert wrong.status_code == 401, wrong.text
-        allowed = http.post("/mcp", json=init, headers={**headers, "Authorization": "Bearer test-token"})
-        assert allowed.status_code == 200, allowed.text
-        assert "sentient" in allowed.text
-
-
-# --- The launcher: `sentient mcp --connect <address>` --------------------------------------
-#
-# The HTTP endpoint requires the engine token, and no client settings file may hold it. The
-# launcher is the process that signs in: it reads the token the way the server does and adds
-# it on the connection it opens, then serves the tools over stdio.
-
-
-_SIGNIN = "test" + "-token"  # the HTTP server's token in the launcher tests below
-
-
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
-def test_the_launcher_only_connects_to_this_computer():
-    for good in ("http://127.0.0.1:8765/mcp", "http://localhost:8765/mcp", "http://[::1]:8765/mcp"):
-        assert validate_connect_url(good) == good
-    for bad in ("https://example.com/mcp", "http://192.168.1.10:8765/mcp", "not a url"):
-        with pytest.raises(BridgeError):
-            validate_connect_url(bad)
-
-
-def test_the_launcher_fails_cleanly_when_no_server_is_listening(monkeypatch):
-    monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "test-token")
-    assert main(connect=f"http://127.0.0.1:{_free_port()}/mcp") == 2
-
-
-def test_connect_and_http_transport_are_refused_together(isolated_home):
-    result = CliRunner().invoke(
-        cli.app, ["mcp", "--transport", "http", "--connect", "http://127.0.0.1:8765/mcp"]
-    )
-    assert result.exit_code == 2
-    result = CliRunner().invoke(
-        cli.app,
-        ["mcp", "--connect", "http://127.0.0.1:8765/mcp", "--engine-url", "http://127.0.0.1:7777"],
-    )
-    assert result.exit_code == 2
-
-
-def _serve_http_app(app):
-    """Run an ASGI app on a free loopback port in a thread; returns (address, stop)."""
-    import uvicorn
-
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"))
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    for _ in range(200):
-        if server.started:
-            break
-        time.sleep(0.05)
-    port = server.servers[0].sockets[0].getsockname()[1]
-
-    def stop() -> None:
-        server.should_exit = True
-        thread.join(timeout=5)
-
-    return f"http://127.0.0.1:{port}/mcp", stop
-
-
-def _launcher_params(url: str, token: str, home) -> object:
-    from mcp.client.stdio import StdioServerParameters
-
-    return StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "sentient", "mcp", "--connect", url],
-        env={"SENTIENT_GATEWAY_TOKEN": token, "SENTIENT_HOME": str(home)},
-    )
-
-
-async def test_the_launcher_signs_in_itself_and_forwards_the_tools(tmp_path):
-    from mcp import ClientSession
-    from mcp.client.stdio import stdio_client
-
-    app = build_server(FakeEngine(), http_token=_SIGNIN, http_port=8765).streamable_http_app()
-    url, stop = _serve_http_app(app)
-    try:
-        params = _launcher_params(url, "test-token", tmp_path)
-        async with (
-            stdio_client(params) as (read, write),
-            ClientSession(read, write) as session,
-        ):
-            await session.initialize()
-            tools = await session.list_tools()
-            assert {t.name for t in tools.tools} == EXPECTED_TOOLS
-            found = _result_json(await session.call_tool("memory_search", {"query": "Maya"}))
-            assert [m["id"] for m in found["memories"]] == [1, 2]
-    finally:
-        stop()
-
-
-async def test_the_launcher_is_refused_with_the_wrong_token(tmp_path):
-    from mcp import ClientSession
-    from mcp.client.stdio import stdio_client
-
-    app = build_server(FakeEngine(), http_token=_SIGNIN, http_port=8765).streamable_http_app()
-    url, stop = _serve_http_app(app)
-    signed_in = False
-    try:
-        params = _launcher_params(url, "the-wrong-token", tmp_path)
-        try:
-            async with (
-                stdio_client(params) as (read, write),
-                ClientSession(read, write) as session,
-            ):
-                await session.initialize()
-                signed_in = True
-        except BaseException:  # the launcher exits; the stdio streams just close
-            pass
-    finally:
-        stop()
-    assert not signed_in, "the launcher got in with the wrong token"

@@ -649,6 +649,8 @@ export const api = {
 
   // §5 integrations ------------------------------------------------------------
   integrations: {
+    /** Replace the MCP-only key (#443): apps holding the old one stop working until they restart. */
+    replaceMcpKey: () => http.post<{ rotated: boolean }>('/api/mcp/token/rotate'),
     list: () => http.get<Integration[]>('/api/integrations'),
     get: (id: string) => http.get<Integration>(`/api/integrations/${enc(id)}`),
     connect: (id: string, fields: Record<string, string> = {}, access?: ConnectionAccess) =>

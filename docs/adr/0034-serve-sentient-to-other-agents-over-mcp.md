@@ -5,7 +5,8 @@
 - **Builds on:** [ADR 0016](0016-lasting-approval-rules.md) (lasting approval rules),
   [ADR 0018](0018-untrusted-content-gates-sending.md) (outside content gates sending),
   [ADR 0021](0021-hold-untrusted-memories-for-review.md) (untrusted memories wait for review),
-  [ADR 0027](0027-vet-skills-and-mcp-tools-from-outside.md) (vet MCP tools from outside)
+  [ADR 0027](0027-vet-skills-and-mcp-tools-from-outside.md) (vet MCP tools from outside),
+  [ADR 0033](0033-tasks-by-email.md) (tasks by email: outside content that always waits)
 
 ## Context
 
@@ -18,53 +19,79 @@ hand that client Sentient's whole tool set, including sending, deleting and runn
 with the user's lasting Allow rules and approvals mode chosen for their own requests, not for a
 stranger's client.
 
+Review of the first version of this feature settled three things it had got wrong or left open.
+It signed in with the gateway token, the all-powerful per-launch token: any app holding it could
+drive the whole engine, and a hand-started `sentient mcp` created a token file as a side effect.
+Its chat turn let the client's text pass as the user's own words, so a client could get code
+executed and memories saved directly simply by asking. And an approval a turn raised travelled
+only on the chat event stream, which an MCP client discards, so the user never saw the question
+it was waiting on.
+
 ## Decision
 
 - **A separate, thin process.** `sentient mcp` (package `sentient/mcp_server/`) is an MCP server
   that holds no state and never touches the database. Every tool call goes to the running engine's
-  REST API with the engine token, so there is one implementation of every safety rule, in the
-  engine, and this process cannot bypass it. It only talks to a loopback address and refuses any
-  other at startup.
+  REST API, so there is one implementation of every safety rule, in the engine, and this process
+  cannot bypass it. It only talks to a loopback address and refuses any other at startup. It
+  finds the engine through a discovery file the engine writes at startup (`engine-discovery.json`,
+  the port only): the desktop starts the engine on a fresh port every launch, so the configured
+  port is not where it listens.
+- **Its own token, with permissions only for these tools.** When the user turns the feature on,
+  the engine issues an MCP-only token and keeps it in the keychain (`sentient.secrets`, name
+  `mcp-server-token`). `sentient mcp` reads it from there itself; no client settings file ever
+  holds a secret. The gateway combines both tokens on the routes these tools use: the gateway
+  token passes everywhere, the MCP token only on the (method, route) pairs the eight tools call,
+  and never on config, approvals, sessions, deletes or the memory review inbox. Handlers see such
+  a caller as `caller == "mcp"`, distinct from the user's own surfaces. The user can replace the
+  token from the Integrations card (`POST /api/mcp/token/rotate`); apps holding the old one stop
+  working at once. `sentient mcp` never reads or writes the gateway token. On the same machine
+  the real boundary is this narrow permission set, since a process running as the user could
+  read whatever this process can read.
 - **A whitelist of eight tools, nothing else.** `memory_search`, `memory_get`, `memory_add`,
   `task_create`, `task_list`, `task_status`, `notify_me` and `ask_sentient`. There is no tool
   that sends a message, deletes anything or runs a command, so a client cannot do those things
   through Sentient at all, whatever it asks. The list is fixed in code and a test fails if a
   send, delete or exec-shaped tool ever appears in it.
 - **Off until the user turns it on, and checked live.** The server refuses to start while
-  `integrations.mcp_server_enabled` is off, and every tool call reads the switch from the running
-  engine again, so turning it off in Settings stops a server that is already running. The
-  Integrations screen shows the switch and the config snippet to paste into a client
-  (`claude mcp add sentient -- sentient mcp`).
-- **Writes land where the user can see them.** A memory an MCP app adds waits in Review like an
-  import's does (ADR 0021), held with a note saying it came from an MCP app, unless the user
-  turns on `integrations.mcp_server_memories_skip_review`. A task is created the normal way, so
-  its plan waits for the user's approval in Sentient before anything runs. A notification is a
-  plain info note inside Sentient; the endpoint that creates it ignores any kind a caller asks
-  for, so a client cannot dress a note up as an approval or a result.
-- **Asking Sentient is a normal chat turn.** `ask_sentient` runs one turn through `POST /api/chat`
-  on its own channel. The turn's tools run under Sentient's own approvals, rules (ADR 0016) and
-  outside-content checks (ADR 0018): anything risky asks the user in the Sentient window, and
-  nothing the MCP client says can answer that question, because answers only come from the user
-  in the app or a paired chat, never from a model or a tool result.
-- **stdio first, HTTP only on this computer, reached through the launcher.** stdio is the
-  default transport. Streamable HTTP (`--transport http`) binds 127.0.0.1 only and runs as a
-  standalone server; it requires the engine token as a bearer token, because loopback alone
-  would let any process (or web page) on the computer call the tools. The token is never handed
-  to a client to paste into its settings file (repository rule: secrets go through
-  `sentient.secrets` or stay invisible, never into config files). Clients instead point at the
-  launcher, `sentient mcp --connect <address>`: a local process that reads the token the same
-  way the server does, adds it when it connects, and serves the tools over stdio. The settings
-  an app keeps therefore hold only the launcher command and the loopback address.
+  `integrations.mcp_server_enabled` is off, and every tool call reads `GET /api/mcp/status` from
+  the running engine again, so turning it off in Settings stops a server that is already running.
+  The Integrations screen shows the switch, the config snippet to paste into a client and the
+  Replace key button.
+- **Writes land where the user can see them, in the app's name.** A memory an MCP app adds waits
+  in Review like an import's does (ADR 0021), held with the app's name, unless the user turns on
+  `integrations.mcp_server_memories_skip_review`. A task is created the way a task by email is
+  (ADR 0033): in the app's name, never refined, its plan always waiting for the user's approval
+  even when plans normally approve themselves, and every run marked as started by that app. A
+  notification is a plain info note inside Sentient; the endpoint ignores any kind a caller asks
+  for, and for an MCP caller the engine puts the app's name in the note's title, so a note can
+  never pass itself off as a message from Sentient itself.
+- **Asking Sentient is outside content from the start.** `ask_sentient` runs one turn through
+  `POST /api/chat`, and an MCP caller is forced onto the `mcp` channel whatever it claims. The
+  turn follows ADR 0033's email pattern: the session is marked untrusted before anything runs,
+  the client's text never becomes the user's words (so it cannot clear a memory into storage or
+  ground a fact as the user saying it, and turn-end extraction is told the words are not theirs),
+  sends and code runs ask through the outside-content gate, and deletes ask too, by an explicit
+  rule since they sit below send level. Nothing the client says can answer a question: answers
+  only come from the user.
+- **Its approvals reach the user.** An approval raised in such a turn is also posted as a
+  `kind: "approval"` notification carrying the same `approval_id`; the notification center and
+  the paired messaging chats render Allow and Deny for it, and any answer settles the one broker
+  the waiting turn is blocked on. When the answer lands, the loop fills in the decision and marks
+  the note read, so it never waits forever.
+- **stdio only.** No HTTP transport ships with this feature. stdio needs no listener and no
+  address to keep current, and it is what the clients this feature targets already use. HTTP may
+  return later as its own change, protected by the MCP-only token rather than the gateway token.
 
 ## Consequences
 
 Other agents can finally read and add to the same memory and task list the user sees, without a
-second copy of anything. The price is two small engine additions (a hold-for-review flag on
-`POST /api/memories` and a create route for notifications) and one more surface to keep honest:
-every future tool proposed for this server has to argue why it belongs on the whitelist, and the
-default answer for anything that sends, deletes or runs is no. Because the MCP process reads the
-switch from the engine on every call, a running server adds one small local request per tool
-call, which is fine at this scale.
+second copy of anything. The price is a few small engine additions (a hold-for-review flag on
+`POST /api/memories`, a create route for notifications, the `mcp` token and status endpoints, the
+loop marking and the approval notification) and one more surface to keep honest: every future
+tool proposed for this server has to argue why it belongs on the whitelist, and the default
+answer for anything that sends, deletes or runs is no. Because the MCP process reads the status
+from the engine on every call, a running server adds one small local request per tool call,
+which is fine at this scale.
 
 ## Alternatives considered
 
@@ -72,7 +99,11 @@ Letting the MCP process open the database directly: faster, but it would copy th
 task logic and quietly bypass approvals, review and the plan gate, which is the whole point of
 going through the engine. Exposing Sentient's full internal tool registry: the registry is built
 for a model the user is talking to, with the user's own approvals behind it; most of it (sending,
-deleting, the terminal, the browser) must never be offered to an outside client. Serving over
-HTTP only, with its own password: a second credential to manage and a network-shaped surface,
-when stdio needs neither and the engine token already exists. Saving MCP memories directly:
-rejected for the reason in ADR 0021, memory is how an injection becomes permanent.
+deleting, the terminal, the browser) must never be offered to an outside client. Signing in with
+the gateway token: it exists to keep other pages and processes out, not to be handed to apps, and
+it opens everything; a dedicated token with an allowlist states exactly what this feature may
+touch. Saving MCP memories directly: rejected for the reason in ADR 0021, memory is how an
+injection becomes permanent. An HTTP transport guarded by the gateway token, reached through a
+launcher that injects it: workable, and an earlier version of this change shipped it, but it
+spreads the all-powerful token into a second process for no user-visible gain over stdio;
+removed before the feature landed, to return only behind the MCP-only token.
