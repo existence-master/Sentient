@@ -7,6 +7,8 @@ Safety, in code rather than in prompts:
 - The server only starts when the user has turned it on in Settings (``integrations.mcp_server_enabled``),
   and every tool call checks the switch again against the running engine, so turning it off in
   Settings stops a server that is already running.
+- The HTTP transport additionally requires the engine token as a bearer token: being another
+  process on the same computer is not enough to call the tools.
 - Everything goes through the engine's REST API with the engine token, so a task is created the
   normal way (its plan waits for the user's approval in Sentient), memories an MCP app adds wait
   in Review (ADR 0021) unless the user allowed saving them straight away, and a chat turn's tools
@@ -17,11 +19,15 @@ Safety, in code rather than in prompts:
 from __future__ import annotations
 
 import json
+import secrets
 import sys
 from typing import Any
 
+from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
+from pydantic import AnyHttpUrl
 
 from sentient.mcp_server.client import EngineClient, EngineError, default_engine_url
 
@@ -77,16 +83,56 @@ class Gate:
         return section if section.get("mcp_server_enabled") else None
 
 
-def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
-    gate = gate or Gate(client)
-    server = MCPServer("sentient")
+class EngineTokenVerifier:
+    """Bearer-token check for the HTTP transport: the token is the engine token.
 
-    def live_config() -> dict | None:
-        """None when a call must not run: turned off, or the engine went away."""
+    Loopback is not enough on its own: any process (or web page) on this computer could otherwise
+    call the tools. stdio needs no verifier; the client starts the process itself, as with other
+    local MCP servers.
+    """
+
+    def __init__(self, token: str):
+        self._token = token
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if token and secrets.compare_digest(token, self._token):
+            return AccessToken(token=token, client_id="sentient-mcp-http", scopes=[])
+        return None
+
+
+def build_server(
+    client: EngineClient,
+    gate: Gate | None = None,
+    *,
+    http_token: str | None = None,
+    http_port: int = 8765,
+) -> MCPServer:
+    gate = gate or Gate(client)
+    if http_token:
+        base = f"http://127.0.0.1:{http_port}"
+        server = MCPServer(
+            "sentient",
+            token_verifier=EngineTokenVerifier(http_token),
+            auth=AuthSettings(
+                issuer_url=AnyHttpUrl(base),
+                resource_server_url=AnyHttpUrl(f"{base}/mcp"),
+                validate_token_resource=False,
+            ),
+        )
+    else:
+        server = MCPServer("sentient")
+
+    def live_config() -> tuple[dict | None, str]:
+        """(section, "") when a call may run, else (None, the plain reason it may not).
+
+        Only the turned-off switch reports OFF_MESSAGE; an engine problem (a rotated token, the
+        engine stopped) reaches the caller with its own message, so the fix stays visible.
+        """
         try:
-            return gate.check()
-        except EngineError:
-            return None
+            section = gate.check()
+        except EngineError as exc:
+            return None, str(exc)
+        return (section, "") if section is not None else (None, OFF_MESSAGE)
 
     @server.tool(
         description=(
@@ -96,8 +142,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
         annotations=_READ,
     )
     def memory_search(query: str, limit: int = 10) -> str:
-        if live_config() is None:
-            return _error(OFF_MESSAGE)
+        section, why = live_config()
+        if section is None:
+            return _error(why)
         try:
             rows = client.search_memories(query, limit)
         except EngineError as exc:
@@ -112,9 +159,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
         annotations=_WRITE,
     )
     def memory_add(content: str, scope: str | None = None) -> str:
-        section = live_config()
+        section, why = live_config()
         if section is None:
-            return _error(OFF_MESSAGE)
+            return _error(why)
         hold = not bool(section.get("mcp_server_memories_skip_review"))
         try:
             result = client.add_memory(content, hold_for_review=hold, scope=scope)
@@ -130,8 +177,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
 
     @server.tool(description="Read one memory from Sentient by its id.", annotations=_READ)
     def memory_get(memory_id: int) -> str:
-        if live_config() is None:
-            return _error(OFF_MESSAGE)
+        section, why = live_config()
+        if section is None:
+            return _error(why)
         try:
             row = client.get_memory(memory_id)
         except EngineError as exc:
@@ -146,8 +194,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
         annotations=_WRITE,
     )
     def task_create(prompt: str) -> str:
-        if live_config() is None:
-            return _error(OFF_MESSAGE)
+        section, why = live_config()
+        if section is None:
+            return _error(why)
         try:
             task = client.create_task(prompt)
         except EngineError as exc:
@@ -158,8 +207,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
 
     @server.tool(description="List the user's tasks in Sentient with their status.", annotations=_READ)
     def task_list() -> str:
-        if live_config() is None:
-            return _error(OFF_MESSAGE)
+        section, why = live_config()
+        if section is None:
+            return _error(why)
         try:
             rows = client.list_tasks()
         except EngineError as exc:
@@ -168,8 +218,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
 
     @server.tool(description="Read one task from Sentient by its id, with its status.", annotations=_READ)
     def task_status(task_id: str) -> str:
-        if live_config() is None:
-            return _error(OFF_MESSAGE)
+        section, why = live_config()
+        if section is None:
+            return _error(why)
         try:
             task = client.get_task(task_id)
         except EngineError as exc:
@@ -181,8 +232,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
         annotations=_WRITE,
     )
     def notify_me(message: str, title: str | None = None) -> str:
-        if live_config() is None:
-            return _error(OFF_MESSAGE)
+        section, why = live_config()
+        if section is None:
+            return _error(why)
         try:
             note = client.notify(message, title)
         except EngineError as exc:
@@ -198,8 +250,9 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
         annotations=_WRITE,
     )
     def ask_sentient(message: str) -> str:
-        if live_config() is None:
-            return _error(OFF_MESSAGE)
+        section, why = live_config()
+        if section is None:
+            return _error(why)
         try:
             turn = client.chat_turn(message)
         except EngineError as exc:
@@ -233,8 +286,9 @@ def main(
     from sentient.gateway.auth import load_or_create_token
 
     url = engine_url or default_engine_url()
+    token = load_or_create_token()
     try:
-        client = EngineClient(url, load_or_create_token())
+        client = EngineClient(url, token)
     except EngineError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -242,11 +296,16 @@ def main(
     if problem is not None:
         print(problem, file=sys.stderr)
         return 2
-    server = build_server(client)
     if transport == "http":
-        # streamable HTTP, loopback only: the SDK's default host is 127.0.0.1 and we keep it that way.
-        print(f"Sentient MCP server on http://127.0.0.1:{port}/mcp (this computer only)", file=sys.stderr)
+        # streamable HTTP, loopback only, and the client must send the engine token as a bearer
+        # token: being on this computer is not enough on its own.
+        server = build_server(client, http_token=token, http_port=port)
+        print(
+            f"Sentient MCP server on http://127.0.0.1:{port}/mcp "
+            "(this computer only; clients must send the engine token)",
+            file=sys.stderr,
+        )
         server.run("streamable-http", host="127.0.0.1", port=port)
     else:
-        server.run("stdio")
+        build_server(client).run("stdio")
     return 0

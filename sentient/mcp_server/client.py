@@ -27,6 +27,8 @@ def default_engine_url() -> str:
 
     cfg = load_config()
     host = cfg.gateway.host if cfg.gateway.host in LOOPBACK_HOSTS else "127.0.0.1"
+    if ":" in host:  # an IPv6 host needs brackets before the port, or the URL does not parse
+        host = f"[{host}]"
     return f"http://{host}:{cfg.gateway.port}"
 
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import httpx
+import respx
 from mcp import Client
 from typer.testing import CliRunner
 
@@ -46,8 +48,11 @@ class FakeEngine:
         ]
         self.notes: list[dict] = []
         self.fail_search = False
+        self.fail_config = False
 
     def integrations_config(self):
+        if self.fail_config:
+            raise EngineError("The engine refused this server's token (401).")
         return dict(self.section)
 
     def search_memories(self, query, limit=10):
@@ -183,7 +188,38 @@ def test_the_mcp_command_exists_and_refuses_without_an_engine(isolated_home):
     runner = CliRunner()
     help_out = runner.invoke(cli.app, ["mcp", "--help"])
     assert help_out.exit_code == 0, help_out.output
-    # no engine is listening on the default port in the test home, so starting must fail plainly
-    refused = runner.invoke(cli.app, ["mcp"])
+    # the health check is mocked to fail the way a stopped engine fails, so the test never
+    # depends on whether a real Sentient happens to be running on this computer
+    with respx.mock() as router:
+        router.get(url__regex=r".*/api/health").mock(side_effect=httpx.ConnectError("down"))
+        refused = runner.invoke(cli.app, ["mcp"])
     assert refused.exit_code == 2, refused.output
     assert "Start Sentient first" in refused.output
+
+
+async def test_an_engine_error_at_the_gate_is_reported_not_masked_as_turned_off():
+    engine = FakeEngine()
+    engine.fail_config = True
+    out = await _call(build_server(engine), "memory_search", {"query": "Maya"})
+    assert out == {"error": "The engine refused this server's token (401)."}
+
+
+def test_the_http_transport_refuses_calls_without_the_engine_token():
+    from starlette.testclient import TestClient
+
+    engine = FakeEngine()
+    server = build_server(engine, http_token="test-token", http_port=8765)
+    init = {
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                   "clientInfo": {"name": "test", "version": "0"}},
+    }
+    headers = {"Accept": "application/json, text/event-stream"}
+    with TestClient(server.streamable_http_app(), base_url="http://127.0.0.1:8765") as http:
+        refused = http.post("/mcp", json=init, headers=headers)
+        assert refused.status_code == 401, refused.text
+        wrong = http.post("/mcp", json=init, headers={**headers, "Authorization": "Bearer nope"})
+        assert wrong.status_code == 401, wrong.text
+        allowed = http.post("/mcp", json=init, headers={**headers, "Authorization": "Bearer test-token"})
+        assert allowed.status_code == 200, allowed.text
+        assert "sentient" in allowed.text

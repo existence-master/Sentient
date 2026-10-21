@@ -6,7 +6,7 @@ import httpx
 import pytest
 import respx
 
-from sentient.mcp_server.client import EngineClient, EngineError
+from sentient.mcp_server.client import EngineClient, EngineError, default_engine_url
 
 BASE = "http://127.0.0.1:7777"
 
@@ -20,6 +20,21 @@ def test_a_non_local_engine_address_is_refused():
         EngineClient("http://192.168.1.20:7777", "test-token")
     with pytest.raises(EngineError, match="only works on this computer"):
         EngineClient("https://example.com:7777", "test-token")
+
+
+def test_the_default_url_brackets_an_ipv6_gateway_host(monkeypatch):
+    from types import SimpleNamespace
+
+    import sentient.config
+
+    fake = SimpleNamespace(gateway=SimpleNamespace(host="::1", port=7777))
+    monkeypatch.setattr(sentient.config, "load_config", lambda: fake)
+    assert default_engine_url() == "http://[::1]:7777"
+    # and the bracketed address passes the client's own loopback check
+    EngineClient(default_engine_url(), "test-token")
+
+    fake.gateway.host = "localhost"
+    assert default_engine_url() == "http://localhost:7777"
 
 
 def test_calls_carry_the_token_and_hit_the_right_routes():

@@ -1603,7 +1603,9 @@ run the same masking again before their prompts. The original stays in the user'
 
 The other direction: other AI apps on this computer (Claude Code, Cursor, any MCP client) can use Sentient
 itself. The command `sentient mcp` (package `sentient/mcp_server/`) runs an MCP server over stdio, or over
-streamable HTTP on 127.0.0.1 only with `--transport http --port <n>` (default 8765, path `/mcp`). It is a thin
+streamable HTTP on 127.0.0.1 only with `--transport http --port <n>` (default 8765, path `/mcp`); HTTP clients
+must send the engine token as `Authorization: Bearer <token>`, because loopback alone would let any process on
+the computer call the tools. It is a thin
 client of this same REST API: it reads the gateway address from the config, takes the token the way `serve`
 does (`SENTIENT_GATEWAY_TOKEN` or the token file), refuses a non-loopback engine address, and holds no state.
 
