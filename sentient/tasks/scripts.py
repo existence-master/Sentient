@@ -525,9 +525,12 @@ _QUESTION_REQUEST = re.compile(
 _EVERY_CHANGE_REQUEST = re.compile(
     r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
     r"|\b(?:when|whenever|if)\b[^\n]{0,160}?\b(?:changes?|updates?)\b"
-    r"|\b(?:tell me|notify me|let me know|alert me|report)\b"
     # "tell me about the changes (today)" asks about particular changes, not for every future one
+    r"|\b(?:tell me|report)\b"
     r"(?!\s+(?:what|which)\s+(?:changes?|updates?)\b|\s+(?:about|of)\s+the\s+(?:\w+\s+)?(?:changes?|updates?)\b)"
+    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
+    # but "notify me about the changes (as they happen)" asks for the future ones
+    r"|\b(?:notify me|let me know|alert me)\b(?!\s+(?:what|which)\s+(?:changes?|updates?)\b)"
     + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
     r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?\b"
     r"(?:anything|everything)\s+(?:at\s+all|new)\b",
