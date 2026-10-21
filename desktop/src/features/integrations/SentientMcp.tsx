@@ -12,10 +12,8 @@ const HTTP_START_COMMAND = 'sentient mcp --transport http'
 const HTTP_SNIPPET = `{
   "mcpServers": {
     "sentient": {
-      "url": "http://127.0.0.1:8765/mcp",
-      "headers": {
-        "Authorization": "Bearer <engine token>"
-      }
+      "command": "sentient",
+      "args": ["mcp", "--connect", "http://127.0.0.1:8765/mcp"]
     }
   }
 }`
@@ -132,9 +130,9 @@ export function SentientMcpSection({ id }: { id?: string }) {
             <div className="space-y-2">
               <CodeBlock label="Other apps, with HTTP" code={HTTP_SNIPPET} copyLabel="Copy HTTP settings" />
               <p className="text-xs leading-relaxed text-fg-subtle">
-                For the HTTP address above, start Sentient in HTTP mode first with <code className="font-mono text-fg-muted">{HTTP_START_COMMAND}</code>. Keep it on this
-                computer only, and replace <code className="font-mono text-fg-muted">&lt;engine token&gt;</code> with the engine token: the HTTP address asks for it
-                on every call.
+                For the HTTP address above, start Sentient in HTTP mode first with <code className="font-mono text-fg-muted">{HTTP_START_COMMAND}</code>. The settings
+                above start Sentient&apos;s launcher instead of connecting directly: the launcher adds Sentient&apos;s sign-in itself, so no key ever goes into
+                the file. Keep it on this computer only.
               </p>
             </div>
           </div>

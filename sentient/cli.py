@@ -138,6 +138,12 @@ def mcp(
     transport: str = typer.Option("stdio", help="stdio, or http (streamable HTTP on this computer only)"),
     port: int = typer.Option(8765, help="Port for --transport http. Always bound to 127.0.0.1."),
     engine_url: str | None = typer.Option(None, help="Engine address (default: the gateway address from the config)"),
+    connect: str | None = typer.Option(
+        None,
+        help="Launcher mode: connect to the HTTP server at this address on this computer and serve "
+        "it over stdio, adding Sentient's sign-in itself (no key in the client's settings). The "
+        "address carries the port, so --port and --engine-url do not apply in this mode",
+    ),
 ):
     """Let other AI apps on this computer use Sentient over MCP (off until turned on in Settings).
 
@@ -146,9 +152,15 @@ def mcp(
     if transport not in {"stdio", "http"}:
         console.print("[red]--transport must be stdio or http[/red]")
         raise typer.Exit(2)
+    if connect is not None and transport != "stdio":
+        console.print("[red]--connect is the launcher: it serves over stdio and cannot be combined with --transport http[/red]")
+        raise typer.Exit(2)
+    if connect is not None and engine_url is not None:
+        console.print("[red]--connect takes the server's full address; --engine-url does not apply in launcher mode[/red]")
+        raise typer.Exit(2)
     from sentient.mcp_server.server import main
 
-    raise typer.Exit(main(transport, port=port, engine_url=engine_url))
+    raise typer.Exit(main(transport, port=port, engine_url=engine_url, connect=connect))
 
 
 @app.command("claude-code-tools", hidden=True)

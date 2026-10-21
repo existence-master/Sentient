@@ -46,10 +46,15 @@ stranger's client.
   outside-content checks (ADR 0018): anything risky asks the user in the Sentient window, and
   nothing the MCP client says can answer that question, because answers only come from the user
   in the app or a paired chat, never from a model or a tool result.
-- **stdio first, HTTP only on this computer, with the engine token.** stdio is the default
-  transport. Streamable HTTP (`--transport http`) binds 127.0.0.1 only, for clients that cannot
-  start a local command, and requires the engine token as a bearer token: loopback alone would
-  let any process (or web page) on the computer call the tools.
+- **stdio first, HTTP only on this computer, reached through the launcher.** stdio is the
+  default transport. Streamable HTTP (`--transport http`) binds 127.0.0.1 only and runs as a
+  standalone server; it requires the engine token as a bearer token, because loopback alone
+  would let any process (or web page) on the computer call the tools. The token is never handed
+  to a client to paste into its settings file (repository rule: secrets go through
+  `sentient.secrets` or stay invisible, never into config files). Clients instead point at the
+  launcher, `sentient mcp --connect <address>`: a local process that reads the token the same
+  way the server does, adds it when it connects, and serves the tools over stdio. The settings
+  an app keeps therefore hold only the launcher command and the loopback address.
 
 ## Consequences
 

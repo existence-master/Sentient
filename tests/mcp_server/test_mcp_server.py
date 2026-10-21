@@ -8,15 +8,20 @@ like Claude Code actually sees.
 from __future__ import annotations
 
 import json
+import socket
+import sys
+import threading
+import time
 
 import httpx
+import pytest
 import respx
 from mcp import Client
 from typer.testing import CliRunner
 
 from sentient import cli
 from sentient.mcp_server.client import EngineError
-from sentient.mcp_server.server import build_server
+from sentient.mcp_server.server import BridgeError, build_server, main, validate_connect_url
 
 EXPECTED_TOOLS = {
     "memory_search", "memory_add", "memory_get",
@@ -223,3 +228,118 @@ def test_the_http_transport_refuses_calls_without_the_engine_token():
         allowed = http.post("/mcp", json=init, headers={**headers, "Authorization": "Bearer test-token"})
         assert allowed.status_code == 200, allowed.text
         assert "sentient" in allowed.text
+
+
+# --- The launcher: `sentient mcp --connect <address>` --------------------------------------
+#
+# The HTTP endpoint requires the engine token, and no client settings file may hold it. The
+# launcher is the process that signs in: it reads the token the way the server does and adds
+# it on the connection it opens, then serves the tools over stdio.
+
+
+_SIGNIN = "test" + "-token"  # the HTTP server's token in the launcher tests below
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_the_launcher_only_connects_to_this_computer():
+    for good in ("http://127.0.0.1:8765/mcp", "http://localhost:8765/mcp", "http://[::1]:8765/mcp"):
+        assert validate_connect_url(good) == good
+    for bad in ("https://example.com/mcp", "http://192.168.1.10:8765/mcp", "not a url"):
+        with pytest.raises(BridgeError):
+            validate_connect_url(bad)
+
+
+def test_the_launcher_fails_cleanly_when_no_server_is_listening(monkeypatch):
+    monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "test-token")
+    assert main(connect=f"http://127.0.0.1:{_free_port()}/mcp") == 2
+
+
+def test_connect_and_http_transport_are_refused_together(isolated_home):
+    result = CliRunner().invoke(
+        cli.app, ["mcp", "--transport", "http", "--connect", "http://127.0.0.1:8765/mcp"]
+    )
+    assert result.exit_code == 2
+    result = CliRunner().invoke(
+        cli.app,
+        ["mcp", "--connect", "http://127.0.0.1:8765/mcp", "--engine-url", "http://127.0.0.1:7777"],
+    )
+    assert result.exit_code == 2
+
+
+def _serve_http_app(app):
+    """Run an ASGI app on a free loopback port in a thread; returns (address, stop)."""
+    import uvicorn
+
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    port = server.servers[0].sockets[0].getsockname()[1]
+
+    def stop() -> None:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+    return f"http://127.0.0.1:{port}/mcp", stop
+
+
+def _launcher_params(url: str, token: str, home) -> object:
+    from mcp.client.stdio import StdioServerParameters
+
+    return StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "sentient", "mcp", "--connect", url],
+        env={"SENTIENT_GATEWAY_TOKEN": token, "SENTIENT_HOME": str(home)},
+    )
+
+
+async def test_the_launcher_signs_in_itself_and_forwards_the_tools(tmp_path):
+    from mcp import ClientSession
+    from mcp.client.stdio import stdio_client
+
+    app = build_server(FakeEngine(), http_token=_SIGNIN, http_port=8765).streamable_http_app()
+    url, stop = _serve_http_app(app)
+    try:
+        params = _launcher_params(url, "test-token", tmp_path)
+        async with (
+            stdio_client(params) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            tools = await session.list_tools()
+            assert {t.name for t in tools.tools} == EXPECTED_TOOLS
+            found = _result_json(await session.call_tool("memory_search", {"query": "Maya"}))
+            assert [m["id"] for m in found["memories"]] == [1, 2]
+    finally:
+        stop()
+
+
+async def test_the_launcher_is_refused_with_the_wrong_token(tmp_path):
+    from mcp import ClientSession
+    from mcp.client.stdio import stdio_client
+
+    app = build_server(FakeEngine(), http_token=_SIGNIN, http_port=8765).streamable_http_app()
+    url, stop = _serve_http_app(app)
+    signed_in = False
+    try:
+        params = _launcher_params(url, "the-wrong-token", tmp_path)
+        try:
+            async with (
+                stdio_client(params) as (read, write),
+                ClientSession(read, write) as session,
+            ):
+                await session.initialize()
+                signed_in = True
+        except BaseException:  # the launcher exits; the stdio streams just close
+            pass
+    finally:
+        stop()
+    assert not signed_in, "the launcher got in with the wrong token"

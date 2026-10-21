@@ -8,7 +8,11 @@ Safety, in code rather than in prompts:
   and every tool call checks the switch again against the running engine, so turning it off in
   Settings stops a server that is already running.
 - The HTTP transport additionally requires the engine token as a bearer token: being another
-  process on the same computer is not enough to call the tools.
+  process on the same computer is not enough to call the tools. No client is ever given that
+  token to paste into a configuration file: ``sentient mcp --connect <address>`` is the
+  launcher. It reads the token the same way this server does, adds it when it connects, and
+  serves the tools over stdio, so the configuration an app keeps holds only this command and
+  the loopback address.
 - Everything goes through the engine's REST API with the engine token, so a task is created the
   normal way (its plan waits for the user's approval in Sentient), memories an MCP app adds wait
   in Review (ADR 0021) unless the user allowed saving them straight away, and a chat turn's tools
@@ -276,14 +280,103 @@ def check_ready(client: EngineClient) -> str | None:
     return None
 
 
+class BridgeError(Exception):
+    """The launcher could not reach the HTTP MCP server, or it refused the sign-in."""
+
+
+def validate_connect_url(url: str) -> str:
+    """The launcher only ever connects to an MCP server on this computer."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or host not in {"127.0.0.1", "localhost", "::1"}:
+        raise BridgeError(
+            f"{url} is not an address on this computer. The launcher only connects to a Sentient "
+            "MCP server running on this computer, such as http://127.0.0.1:8765/mcp."
+        )
+    return url
+
+
+async def _run_bridge(connect_url: str, token: str) -> None:
+    """Serve the tools over stdio, forwarding to the HTTP server at ``connect_url``.
+
+    This is the launcher: the MCP client starts this process, and the token is added here, by
+    Sentient's own process, on the connection it opens. The token never appears in the
+    client's configuration file, which names only this command and the loopback address.
+    """
+    import httpx2
+    from mcp import ClientSession, types
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.server.lowlevel import Server
+    from mcp.server.stdio import stdio_server
+
+    http = httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=httpx2.Timeout(10.0, read=1800.0),
+    )
+    try:
+        async with (
+            streamable_http_client(connect_url, http_client=http) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            bridge = Server("sentient-mcp-launcher")
+
+            async def _list_tools(ctx, params):
+                result = await session.list_tools()
+                return types.ListToolsResult(tools=result.tools)
+
+            async def _call_tool(ctx, params):
+                return await session.call_tool(params.name, params.arguments or {})
+
+            bridge.add_request_handler("tools/list", types.PaginatedRequestParams, _list_tools)
+            bridge.add_request_handler("tools/call", types.CallToolRequestParams, _call_tool)
+            async with stdio_server() as (stdin, stdout):
+                await bridge.run(stdin, stdout, bridge.create_initialization_options())
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:  # connection failures can arrive grouped (anyio task groups)
+        raise BridgeError(
+            f"Could not connect to the Sentient MCP server at {connect_url}, or it refused "
+            "Sentient's sign-in. Start the server first with `sentient mcp --transport http`, "
+            "from this same Sentient install, then try again."
+        ) from exc
+    finally:
+        await http.aclose()
+
+
+def _launch(connect_url: str) -> int:
+    """Launcher mode: forward a client's stdio to the HTTP server, signing in ourselves."""
+    import anyio
+
+    from sentient.gateway.auth import load_or_create_token
+
+    try:
+        url = validate_connect_url(connect_url)
+    except BridgeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        anyio.run(_run_bridge, url, load_or_create_token())
+    except BridgeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    return 0
+
+
 def main(
     transport: str = "stdio",
     *,
     port: int = 8765,
     engine_url: str | None = None,
+    connect: str | None = None,
 ) -> int:
     """Entry point for ``sentient mcp``. Returns the process exit code."""
     from sentient.gateway.auth import load_or_create_token
+
+    if connect is not None:
+        return _launch(connect)
 
     url = engine_url or default_engine_url()
     token = load_or_create_token()
@@ -302,7 +395,8 @@ def main(
         server = build_server(client, http_token=token, http_port=port)
         print(
             f"Sentient MCP server on http://127.0.0.1:{port}/mcp "
-            "(this computer only; clients must send the engine token)",
+            f"(this computer only; clients connect through the launcher: "
+            f"sentient mcp --connect http://127.0.0.1:{port}/mcp)",
             file=sys.stderr,
         )
         server.run("streamable-http", host="127.0.0.1", port=port)
