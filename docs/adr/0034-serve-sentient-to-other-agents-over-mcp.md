@@ -35,7 +35,11 @@ it was waiting on.
   cannot bypass it. It only talks to a loopback address and refuses any other at startup. It
   finds the engine through a discovery file the engine writes at startup (`engine-discovery.json`,
   the port only): the desktop starts the engine on a fresh port every launch, so the configured
-  port is not where it listens.
+  port is not where it listens. Because the file holds only a port, the server proves the
+  engine's identity before it sends the token anywhere: the health probe goes out without
+  credentials, and the engine must then answer a nonce challenge (`GET /api/mcp/proof`, the
+  nonce's HMAC under the MCP token), which a process that merely copied the health marker
+  cannot forge.
 - **Its own token, with permissions only for these tools.** When the user turns the feature on,
   the engine issues an MCP-only token and keeps it in the keychain (`sentient.secrets`, name
   `mcp-server-token`). `sentient mcp` reads it from there itself; no client settings file ever

@@ -265,6 +265,15 @@ def check_ready(client: EngineClient) -> str | None:
             f"Something else is answering at {client.base_url}, and it is not Sentient's engine, "
             "so this server will not send it the MCP token. Start Sentient first, then try again."
         )
+    if not client.prove_identity():
+        # the health marker is public and can be copied by anything listening on the port; only
+        # a process holding the MCP token can answer the challenge, and the token is sent to
+        # no one who has not answered it
+        return (
+            f"Whatever is answering at {client.base_url} says it is Sentient but cannot prove it "
+            "holds the MCP token, so this server will not send the token there. Start Sentient "
+            "first, then try again."
+        )
     try:
         status = client.status()
     except EngineError as exc:

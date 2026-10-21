@@ -1620,7 +1620,10 @@ transport is deliberately not offered; it may return later, protected by the sam
   switch off stops direct API callers too, not just the server process. The gateway token still passes
   everywhere; `sentient mcp` never reads or writes it.
 - **Endpoints of its own.** `GET /api/mcp/status` (either token) → `{enabled, memories_skip_review,
-  token_issued}`: what an MCP app may do right now, without reading the config. `POST /api/mcp/token/rotate`
+  token_issued}`: what an MCP app may do right now, without reading the config. `GET /api/mcp/proof?nonce=...`
+  (no credentials) → `{proof}`: the nonce's HMAC-SHA256 under the MCP token, how `sentient mcp` verifies
+  that a discovered port is really the engine before it sends the token there; 404 when no token has
+  been issued. `POST /api/mcp/token/rotate`
   (gateway token only) → `{rotated: true}`: replaces the MCP-only token in the keychain; apps holding the
   old one stop working at once and pick the new one up when they restart. It is also issued from
   `SentientApp.save_config` whenever `integrations.mcp_server_enabled` is saved on and none exists.

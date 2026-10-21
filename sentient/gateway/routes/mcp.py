@@ -3,6 +3,9 @@ its narrow token, and the token replacement only the user's own surfaces may ask
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+
 from fastapi import HTTPException, Request
 from fastapi.routing import APIRouter
 
@@ -10,6 +13,22 @@ from sentient.gateway import mcp_token
 from sentient.gateway.deps import AUTH, MCP_OK, get_core
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
+
+
+@router.get("/proof")  # no credentials on purpose: this runs before the caller sends any
+async def proof(nonce: str = ""):
+    """How the MCP server knows it found the real engine before it sends the token (issue #443).
+
+    The caller picks a fresh nonce; the answer is that nonce's HMAC under the MCP token, which
+    only a process holding the token (this engine, through the keychain) can produce. A health
+    answer can be copied by anything that took over the discovery file's port, so the marker
+    alone is never trusted. The token itself never travels, and without an issued token there
+    is nothing to prove with, so the route simply does not exist then."""
+    current = mcp_token.current_token()
+    if current is None or not 16 <= len(nonce) <= 128:
+        raise HTTPException(404, "not found")
+    digest = hmac.new(current.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {"proof": digest}
 
 
 @router.get("/status", dependencies=MCP_OK)

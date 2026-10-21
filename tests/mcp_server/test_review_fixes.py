@@ -411,3 +411,29 @@ async def test_closing_an_mcp_turn_at_the_approval_still_settles_its_notificatio
         assert ran == []
     finally:
         await s.stop()
+
+
+def test_the_engine_proves_itself_by_challenge_before_any_token_travels(engine_client):
+    # GET /api/mcp/proof answers a caller's fresh nonce with its HMAC under the MCP token,
+    # with no credentials presented: only the real engine can produce it, and the token
+    # itself is never in the answer (CodeRabbit, PR #487 round on 7828606)
+    import hashlib
+    import hmac as hmac_mod
+
+    c = engine_client
+    nonce = "ab" * 16
+    r = c.get("/api/mcp/proof", params={"nonce": nonce})  # no Authorization header at all
+    assert r.status_code == 200, r.text
+    expected = hmac_mod.new(MCP_TOKEN.encode(), nonce.encode(), hashlib.sha256).hexdigest()
+    assert r.json()["proof"] == expected
+    assert MCP_TOKEN not in r.text
+    assert c.get("/api/mcp/proof", params={"nonce": "short"}).status_code == 404
+
+
+def test_there_is_no_proof_without_an_issued_token(config, isolated_home, keychain):
+    # the keychain fixture is left empty here: no token was ever issued, so the proof
+    # route does not exist (there would be nothing to prove with)
+    app = create_app(SentientApp(config, llm=FakeProvider(json_replies=[dict(PLAN)]),
+                                 db_path=isolated_home / "noproof.db", enable_background=False))
+    with TestClient(app) as c:
+        assert c.get("/api/mcp/proof", params={"nonce": "ab" * 16}).status_code == 404

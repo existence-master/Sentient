@@ -10,7 +10,10 @@ never reads or writes the gateway token.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 from typing import Any
 from urllib.parse import urlparse
 
@@ -50,6 +53,8 @@ class EngineClient:
                 "The MCP server only works on this computer."
             )
         self.base_url = base_url.rstrip("/")
+        self._token = token  # kept for the identity proof below; it is only ever sent to an
+        # engine that has already proven it holds the same one
         self._http = httpx.Client(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {token}"},
@@ -107,7 +112,7 @@ class EngineClient:
     def health(self) -> dict:
         """``GET /api/health``: is an engine up at this address? Asked WITHOUT the token: the
         discovery file holds only a port, and whatever answers on a recycled port must prove it
-        is Sentient's engine (``check_ready`` reads this answer) before the token travels."""
+        is Sentient's engine (see ``prove_identity``) before the token travels."""
         try:
             resp = self._bare.get("/api/health")
             resp.raise_for_status()
@@ -116,6 +121,27 @@ class EngineClient:
             raise EngineError(
                 f"No Sentient engine is running at {self.base_url}. Start Sentient first, then try again."
             ) from exc
+
+    def prove_identity(self) -> bool:
+        """True only when whatever answers at this address holds the same MCP token.
+
+        The health answer (``"name": "sentient"``) is a public marker anything listening on the
+        port can copy, so before the token is sent anywhere the engine must answer a challenge
+        it cannot forge: a fresh nonce goes out bare, and the reply must be that nonce's HMAC
+        under the token (``GET /api/mcp/proof``). The token itself never travels."""
+        nonce = secrets.token_hex(16)
+        try:
+            resp = self._bare.get("/api/mcp/proof", params={"nonce": nonce})
+            resp.raise_for_status()
+            proof = resp.json().get("proof")
+        except Exception:
+            return False  # unreachable, no proof route, a non-JSON answer: not proven
+        if not isinstance(proof, str):
+            return False
+        expected = hmac.new(
+            self._token.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(proof, expected)
 
     def status(self) -> dict:
         """``GET /api/mcp/status``: whether the feature is on and what its memories do, readable

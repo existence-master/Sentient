@@ -32,6 +32,33 @@ def test_the_readiness_probe_never_carries_the_token():
         assert status.calls.last.request.headers["Authorization"] == "Bearer test-token"
 
 
+def test_identity_is_proven_by_challenge_not_by_the_health_marker():
+    # a listener on the discovered port can copy the health answer word for word; only the
+    # holder of the token can answer a fresh nonce with its HMAC under that token
+    import hashlib
+    import hmac as hmac_mod
+
+    def answer_challenge(request: httpx.Request) -> httpx.Response:
+        nonce = request.url.params["nonce"]
+        digest = hmac_mod.new(b"test-token", nonce.encode(), hashlib.sha256).hexdigest()
+        return httpx.Response(200, json={"proof": digest})
+
+    with respx.mock() as router:
+        proof = router.get(f"{BASE}/api/mcp/proof").mock(side_effect=answer_challenge)
+        assert _client().prove_identity() is True
+        assert "Authorization" not in proof.calls.last.request.headers  # the challenge goes out bare
+
+    with respx.mock() as router:
+        router.get(f"{BASE}/api/mcp/proof").mock(
+            return_value=httpx.Response(200, json={"proof": "0" * 64})
+        )
+        assert _client().prove_identity() is False  # a made-up proof is not the token holder
+
+    with respx.mock() as router:
+        router.get(f"{BASE}/api/mcp/proof").mock(return_value=httpx.Response(404))
+        assert _client().prove_identity() is False  # no token issued: nothing to prove with
+
+
 def test_a_non_local_engine_address_is_refused():
     with pytest.raises(EngineError, match="only works on this computer"):
         EngineClient("http://192.168.1.20:7777", "test-token")

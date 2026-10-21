@@ -242,26 +242,49 @@ def test_client_name_comes_from_the_handshake():
 
 def test_check_ready_refuses_whatever_is_not_sentient():
     # the discovery file holds only a port, and ports get recycled: the readiness probe runs
-    # without the token, and only an answer that identifies as Sentient may receive it
+    # without the token, and only an engine that proves it holds the token may receive it
     from sentient.mcp_server.server import check_ready
 
-    class Impostor:
+    class Stranger:
         base_url = "http://127.0.0.1:7777"
 
         def health(self):
             return {"ok": True, "version": "9.9"}  # answers, but never says it is Sentient
 
+        def prove_identity(self):
+            raise AssertionError("no proof is asked of something that is not even Sentient")
+
         def status(self):
             raise AssertionError("the token must not travel before the engine is identified")
 
-    problem = check_ready(Impostor())
+    problem = check_ready(Stranger())
     assert problem is not None and "not Sentient" in problem
+
+    class Impostor:
+        # the regression that matters: the health marker is public, so a listener can return
+        # the exact expected answer; without the token it still cannot answer the challenge
+        base_url = "http://127.0.0.1:7777"
+
+        def health(self):
+            return {"ok": True, "name": "sentient", "version": "9.9"}
+
+        def prove_identity(self):
+            return False
+
+        def status(self):
+            raise AssertionError("the token must not travel to an unproven engine")
+
+    problem = check_ready(Impostor())
+    assert problem is not None and "cannot prove" in problem
 
     class Engine:
         base_url = "http://127.0.0.1:7777"
 
         def health(self):
             return {"ok": True, "name": "sentient"}
+
+        def prove_identity(self):
+            return True
 
         def status(self):
             return {"enabled": True}
