@@ -135,6 +135,20 @@ async def test_reply_copying_an_earlier_correction_gets_no_second_one(config, is
         await s.stop()
 
 
+async def test_reply_quoting_the_note_without_the_correction_line_is_still_corrected(config, isolated_home):
+    """Only a copied correction line counts as one: the same words elsewhere in the reply do not (#488)."""
+    reply = "I didn't click it, so nothing changed on the page. Now it is done: I clicked the subscription button."
+    llm = FakeProvider(replies=[reply])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "quoted-note.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+        events = await _collect(s.agent, sid, "click the subscription button")
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text == reply + "\n\nCorrection: I didn't click it, so nothing changed on the page."
+    finally:
+        await s.stop()
+
+
 async def test_reply_corrects_a_browser_click_the_user_declined(config, isolated_home):
     """A denied browser-click approval must remain visible in the final reply."""
     config.tools.approvals.mode = "ask"
