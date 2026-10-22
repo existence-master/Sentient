@@ -374,9 +374,10 @@ def _click_note(clicks: list[dict], target: str) -> str:
         return "I didn't click it, so nothing changed on the page."
     if not matches:
         return "I didn't click it, so nothing changed on the page."
-    click = matches[-1]
-    if click.get("ok"):
+    if any(click.get("ok") for click in matches):
+        # the claimed click did happen; a later declined or failed try of the same control doesn't undo it
         return ""
+    click = matches[-1]
     if click.get("declined"):
         return "I didn't click it: you declined, so nothing changed on the page."
     if click.get("uncertain"):

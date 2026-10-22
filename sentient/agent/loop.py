@@ -972,9 +972,11 @@ class Agent:
                     result.from_findings = True
                     log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
                     yield TextDelta(text=text_acc, **ev)
-                if note := outcomes.unmade_browser_click_note(
+                note = outcomes.unmade_browser_click_note(
                     text_acc, result.browser_clicks, result.browser_click_history
-                ):
+                )
+                # the model may copy an earlier correction from the chat into its reply: one is enough
+                if note and f"Correction: {note}" not in text_acc:
                     correction = f"\n\nCorrection: {note}"
                     text_acc += correction
                     yield TextDelta(text=correction, **ev)
@@ -1110,9 +1112,8 @@ class Agent:
 
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
-        if note := outcomes.unmade_browser_click_note(
-            result.text, result.browser_clicks, result.browser_click_history
-        ):
+        note = outcomes.unmade_browser_click_note(result.text, result.browser_clicks, result.browser_click_history)
+        if note and f"Correction: {note}" not in result.text:
             correction = f"\n\nCorrection: {note}"
             result.text += correction
             yield TextDelta(text=correction, **ev)
