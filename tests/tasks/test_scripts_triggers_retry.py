@@ -470,6 +470,9 @@ def test_planner_default_uses_the_last_preference_in_one_message():
     ("Tell me about the changes so far", None),
     ("Tell me about the changes since Monday", None),
     ("Tell me about the changes on the page?", None),
+    ("Tell me about the changes that were made", None),
+    ("Tell me about the changes that have been made to the page", None),
+    ("Tell me about the changes as they happen. Can you do that?", "changed"),
     ("Only important changes; tell me about the changes as they happen", "noteworthy"),
 ])
 def test_change_preference_requires_an_explicit_watch_request(message, preference):
@@ -484,6 +487,8 @@ def test_change_preference_requires_an_explicit_watch_request(message, preferenc
     ("Only important changes; notify me about the changes on this page", "noteworthy"),
     ("Tell me about the changes as they happen", "changed"),
     ("Don't ignore minor changes", "changed"),
+    ("Tell me about the changes that were made", "noteworthy"),
+    ("Tell me about the changes as they happen. Can you do that?", "changed"),
 ])
 def test_planner_default_reads_the_new_phrasings(message, condition):
     changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
