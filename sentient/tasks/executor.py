@@ -311,17 +311,21 @@ def _trigger_source(app: Any, task: dict, run: dict) -> str:
 
 async def _run_approved_call(
     svc: TaskService, task_id: str, run_id: str, ctx: Any, checkpoint: list[dict], model: str | None = None
-) -> list[dict]:
+) -> tuple[list[dict], dict | None]:
     """Run the held call the user said yes to (ADR 0018), once: the mark is saved away before the call starts, so a
     restart in the middle never repeats it, and the saved placeholder then says the outcome is unknown
-    (``ask.INTERRUPTED_NOTE``). The call's result replaces that placeholder."""
+    (``ask.INTERRUPTED_NOTE``). The call's result replaces that placeholder.
+
+    Returns ``(messages, action)``: ``action`` is the code-recorded evidence for the call (#492), or None when the
+    tool has no clear outcome. A resumed segment gets it as history, so a summary ("I sent the email") is never
+    "corrected" for an action the run really took."""
     taken = ask.take_approved(checkpoint)
     if taken is None:
-        return checkpoint
+        return checkpoint, None
     messages, call = taken
     await svc.repo.update_run(run_id, {"messages": messages})
     if call is None:
-        return messages
+        return messages, None
     await svc.progress(task_id, run_id, {"type": "tool_call", "tool_name": call["name"], "parameters": call["arguments"]})
     res, is_error, content = await svc.app.agent.run_tool(ToolCall(**call), ctx, role="executor", model=model)
     handed = rule_levels.is_handed_off(res)  # set to "Hand it to me" while the run waited (#140): handed over
@@ -337,9 +341,12 @@ async def _run_approved_call(
         task = await svc.repo.get_task(task_id)
         if task is not None:
             await notify_handed_off(svc, task, [res])
+    action = outcomes.action_call(
+        tool, call["arguments"], res, ran=True, declined=False, is_error=is_error, err=None, check=check
+    )
     messages = ask.fill_result(messages, call["id"], content)
     await svc.repo.update_run(run_id, {"messages": messages})
-    return messages
+    return messages, action
 
 
 def _spent(state: dict, budget: Budget, started: float) -> dict:
@@ -429,9 +436,13 @@ async def execute_single(
             if isinstance(checkpoint, list) and checkpoint:
                 if svc.holding(run_id):  # paused before an approved call ran: it runs once the task is resumed
                     raise RunHeld()
-                checkpoint = await _run_approved_call(
+                checkpoint, approved_action = await _run_approved_call(
                     svc, task_id, run_id, ctx, checkpoint, model=task.get("model") or None
                 )
+                if approved_action is not None:
+                    # The approved call ran before this resumed segment: its record is this segment's history,
+                    # so a summary of it is never "corrected" (#492 review).
+                    result.action_call_history.append(approved_action)
                 messages = app.agent.mark_outside_messages(history_to_openai(checkpoint))
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})

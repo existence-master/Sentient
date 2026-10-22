@@ -1,6 +1,6 @@
 
 from sentient.agent import outcomes
-from sentient.agent.loop import browser_click_history
+from sentient.agent.loop import action_call_history, browser_click_history
 from sentient.app import SentientApp
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
 from sentient.llm.provider import StreamChunk, ToolCall
@@ -355,6 +355,282 @@ async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, 
         assert text.endswith("Correction: I didn't click it: you declined, so nothing changed on the page.")
     finally:
         await s.stop()
+
+
+async def test_reply_corrects_an_email_it_never_sent(config, isolated_home):
+    """A send claim with no send call is reported as not done (#492)."""
+    llm = FakeProvider(replies=["I sent the email to Alice. "])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "never-sent.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+        events = await _collect(s.agent, sid, "send an email to Alice")
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text == "I sent the email to Alice. \n\nCorrection: I didn't send the email, so nothing changed."
+        assert (await s.store.recent_messages(sid, 1))[-1]["content"] == text
+    finally:
+        await s.stop()
+
+
+async def test_reply_corrects_a_send_the_user_declined(config, isolated_home):
+    """A denied send approval must remain visible in the final reply (#492)."""
+    from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+
+    @tool("fake_send_email", risk=Risk.send, outcome="email")
+    async def fake_send_email(ctx: ToolContext, to: str) -> dict:
+        """Send an email (test double)."""
+        return {"sent": [to]}
+
+    class FakeMailer(ToolPlugin):
+        id = "fake_mailer"
+        display_name = "Fake mailer"
+        tools = [fake_send_email]
+
+    config.tools.approvals.mode = "ask"
+    llm = FakeProvider(replies=[[tool_call("fake_send_email", to="a@x.com")],
+                                "The email was sent, but the action was declined."])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "declined-send.db").start()
+    try:
+        s.registry.register(FakeMailer())
+        sid = await s.store.create_session(channel="cli")
+
+        async def deny(ev):
+            """Decline the send approval shown by this test."""
+            if isinstance(ev, ApprovalRequest):
+                s.approvals.resolve(ev.approval_id, "deny")
+
+        events = await _collect(s.agent, sid, "send an email", deny)
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text.endswith("Correction: I didn't send the email: you declined, so nothing changed.")
+        result = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert result.result["declined"] is True
+    finally:
+        await s.stop()
+
+
+def _action_call(kind, declined=False, ok=True, uncertain=False, targets=None):
+    return {"kind": kind, "declined": declined, "ok": ok, "uncertain": uncertain,
+            "targets": targets or []}
+
+
+def test_action_correction_never_corrects_a_true_reply():
+    """A claim backed by a successful call is left alone, for every kind (#492)."""
+    assert outcomes.unmade_action_note(
+        "I sent the email.", [_action_call("email", targets=["a@x.com"])]
+    ) == ""
+    assert outcomes.unmade_action_note(
+        "I posted the message.", [_action_call("message", targets=["general"])]
+    ) == ""
+    assert outcomes.unmade_action_note(
+        "I saved the file.", [_action_call("file", targets=["notes.md"])]
+    ) == ""
+    assert outcomes.unmade_action_note(
+        "I booked the room.", [_action_call("event", targets=["book club"])]
+    ) == ""
+    assert outcomes.unmade_action_note(
+        "I turned on the lights.", [_action_call("home", targets=["light.living_room"])]
+    ) == ""
+    # a successful earlier turn protects a summary too
+    assert outcomes.unmade_action_note(
+        "I sent the email.", [], [_action_call("email", targets=["a@x.com"])]
+    ) == ""
+
+
+def test_action_correction_reports_declined_failed_and_never_made():
+    """A declined, failed or never-made send/save is reported as not done (#492)."""
+    assert outcomes.unmade_action_note(
+        "I sent the email.", [_action_call("email", declined=True, ok=False, targets=["a@x.com"])]
+    ) == "I didn't send the email: you declined, so nothing changed."
+    assert outcomes.unmade_action_note(
+        "I sent it.", [_action_call("email", declined=True, ok=False, targets=["a@x.com"])]
+    ) == "I didn't send the email: you declined, so nothing changed."
+    assert outcomes.unmade_action_note(
+        "I saved the file.", [_action_call("file", ok=False, targets=["notes.md"])]
+    ) == "I couldn't write the file, so nothing changed."
+    assert outcomes.unmade_action_note(
+        "I turned on the lights.", [_action_call("home", ok=False, uncertain=True)]
+    ) == "I couldn't confirm whether I ran the home action."
+    assert outcomes.unmade_action_note("I sent the email to Alice.", []) == \
+        "I didn't send the email, so nothing changed."
+    # a never-made claim that doesn't name the action is left alone: the verb alone may describe an
+    # untracked action (#492 review)
+    assert outcomes.unmade_action_note("I booked it.", []) == ""
+    # ...but one that names it is still corrected
+    assert outcomes.unmade_action_note("I booked the meeting.", []) == \
+        "I didn't create the event, so nothing changed."
+    assert outcomes.unmade_action_note("I saved plan.md.", []) == \
+        "I didn't write the file, so nothing changed."
+    # or when this turn actually tried that action, even for a verb-only claim
+    assert outcomes.unmade_action_note(
+        "I emailed Bob.", [_action_call("email", declined=True, ok=False, targets=["a@x.com"])]
+    ) == "I didn't send the email, so nothing changed."
+
+
+def test_action_correction_leaves_unsure_text_alone():
+    """Other people's actions, negations, hypotheticals and ordinary chat verbs are never corrected (#492)."""
+    assert outcomes.unmade_action_note("You sent the email.", []) == ""
+    assert outcomes.unmade_action_note("My assistant sent the file.", []) == ""
+    assert outcomes.unmade_action_note("I didn't send the email.", []) == ""
+    assert outcomes.unmade_action_note("The email was never sent.", []) == ""
+    assert outcomes.unmade_action_note("If I sent the email, you'd get a copy.", []) == ""
+    assert outcomes.unmade_action_note("I ran into an issue while sending.", []) == ""
+    assert outcomes.unmade_action_note("I wrote a summary of the report.", []) == ""
+    assert outcomes.unmade_action_note("I added some context above.", []) == ""
+    # a shared verb without a naming noun stays ambiguous across kinds
+    assert outcomes.unmade_action_note("I sent it.", []) == ""
+    assert outcomes.unmade_action_note(
+        "I sent it.", [_action_call("email", targets=["a@x.com"])], [_action_call("message")]
+    ) == ""
+
+
+def test_action_correction_leaves_untracked_action_verbs_alone():
+    """True replies about actions this check doesn't track are never corrected (#492 review).
+
+    qwen3:8b over-corrections from the review: "saved" after memory_remember, "scheduled"/"set"/"ran" for
+    tasks and reminders became file/event/home corrections. A bare verb without a naming noun stays alone.
+    """
+    assert outcomes.unmade_action_note("I saved that your balcony faces west.", []) == ""
+    assert outcomes.unmade_action_note("I've scheduled a task to check the prices.", []) == ""
+    assert outcomes.unmade_action_note("I set up a daily task for backups.", []) == ""
+    assert outcomes.unmade_action_note("I set a reminder for tomorrow morning.", []) == ""
+    assert outcomes.unmade_action_note("I ran a quick check and nothing was sent.", []) == ""
+
+
+def test_action_correction_matches_the_full_target():
+    """The full address or file name is kept when matching a named claim (#492 review).
+
+    The target used to be cut at ".", so "arjun@example.com" and "plan.md" never matched their recorded call.
+    """
+    assert outcomes.unmade_action_note(
+        "I sent the email to arjun@example.com.",
+        [_action_call("email", declined=True, ok=False, targets=["arjun@example.com"])],
+    ) == "I didn't send the email: you declined, so nothing changed."
+    assert outcomes.unmade_action_note(
+        "I saved plan.md.",
+        [_action_call("file", declined=True, ok=False, targets=["plan.md"])],
+    ) == "I didn't write the file: you declined, so nothing changed."
+    # and a true full-target claim is left alone
+    assert outcomes.unmade_action_note(
+        "I sent the email to arjun@example.com.",
+        [_action_call("email", targets=["arjun@example.com"])],
+    ) == ""
+
+
+def test_action_correction_says_couldnt_confirm_for_uncertain_calls():
+    """An uncertain call is never reported as "didn't happen": it says it couldn't confirm (#492 review)."""
+    assert outcomes.unmade_action_note(
+        "I sent the email to Bob.",
+        [_action_call("email", ok=False, uncertain=True, targets=["arjun@example.com"])],
+    ) == "I couldn't confirm whether I sent the email."
+
+
+def test_action_correction_accepts_curly_apostrophe_negations():
+    """A negation with the curly apostrophe (U+2019) counts: it is not corrected (#492 review)."""
+    declined = [_action_call("email", declined=True, ok=False, targets=["a@x.com"])]
+    assert outcomes.unmade_action_note("The email wasn\u2019t sent.", declined) == ""
+    assert outcomes.unmade_action_note("The email wasn't sent.", declined) == ""
+    assert outcomes.unmade_action_note("I didn\u2019t send the email.", declined) == ""
+
+
+def test_action_correction_treats_incomplete_history_as_unsure():
+    """Calls outside the loaded history window count as "unsure", not "never made" (#492 review)."""
+    assert outcomes.unmade_action_note(
+        "I sent the email to Alice.", [], history_complete=False
+    ) == "I couldn't confirm whether I sent the email."
+    assert outcomes.unmade_action_note(
+        "I sent the email to Alice.", [],
+    ) == "I didn't send the email, so nothing changed."
+
+
+async def test_resumed_approved_send_is_not_corrected(config, isolated_home):
+    """A resumed task's approved send is the resumed segment's history: no correction (#492 review).
+
+    FakeProvider repro of the review's case: the approved call runs in ``_run_approved_call`` (no history),
+    then the resumed segment summarizes it as "I sent the email to Arjun." — which must stand.
+    """
+    import json
+
+    from sentient.tasks import ask
+    from sentient.tasks.executor import _run_approved_call
+    from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+
+    @tool("fake_resume_send", risk=Risk.send, outcome="email")
+    async def fake_resume_send(ctx: ToolContext, to: str) -> dict:
+        """Send an email (test double)."""
+        return {"sent": [to]}
+
+    class FakeResumeMailer(ToolPlugin):
+        id = "fake_resume_mailer"
+        display_name = "Fake resume mailer"
+        tools = [fake_resume_send]
+
+    class StubRepo:
+        async def update_run(self, run_id, fields):
+            return None
+
+        async def get_run(self, run_id):
+            return {}
+
+    class StubSvc:
+        def __init__(self, app):
+            self.app = app
+            self.repo = StubRepo()
+
+        async def progress(self, task_id, run_id, event):
+            return None
+
+    s = await SentientApp(config, llm=FakeProvider(replies=[]),
+                          db_path=isolated_home / "resumed-send.db").start()
+    try:
+        s.registry.register(FakeResumeMailer())
+        call_id = "call_approved_send"
+        checkpoint = [
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": call_id, "type": "function",
+                "function": {"name": "fake_resume_send",
+                             "arguments": json.dumps({"to": "arjun@example.com"})},
+            }]},
+            {"role": "tool", "tool_call_id": call_id,
+             "content": json.dumps({"error": ask.INTERRUPTED_NOTE}), ask.APPROVED_KEY: True},
+        ]
+        svc = StubSvc(s)
+        ctx = s.agent.tool_context(None, "task")
+        messages, action = await _run_approved_call(svc, "task-1", "run-1", ctx, checkpoint)
+        assert action == {"kind": "email", "declined": False, "ok": True, "uncertain": False,
+                          "targets": ["arjun@example.com"]}
+        # the resumed segment sees the approved call as history: the summary stands, uncorrected
+        assert outcomes.unmade_action_note("I sent the email to Arjun.", [], [action]) == ""
+        assert ask.take_approved(messages) is None  # the approval mark was consumed: it runs once
+    finally:
+        await s.stop()
+
+
+def test_action_call_history_reads_a_prior_turn():
+    """Stored tool calls map back to their action kind, so a later summary is not corrected (#492)."""
+    from types import SimpleNamespace
+
+    class FakeRegistry:
+        def get(self, name):
+            tools = {
+                "gmail_send": SimpleNamespace(outcome="email", name="gmail_send"),
+                "file_write": SimpleNamespace(outcome="file", name="file_write"),
+            }
+            return tools.get(name)
+
+    history = action_call_history(
+        [
+            {"role": "assistant", "tool_calls": [tool_call("gmail_send", to="a@x.com")]},
+            {"role": "tool", "tool_call_id": "call_gmail_send",
+             "content": '{"ok": true, "sent": ["a@x.com"]}'},
+            {"role": "assistant", "tool_calls": [tool_call("file_write", name="n.md")]},
+            {"role": "tool", "tool_call_id": "call_file_write", "content": '{"declined": true}'},
+        ],
+        FakeRegistry(),
+    )
+    assert history == [
+        {"kind": "email", "targets": ["a@x.com"], "declined": False, "ok": True, "uncertain": False},
+        {"kind": "file", "targets": ["n.md"], "declined": True, "ok": False, "uncertain": False},
+    ]
+    assert outcomes.unmade_action_note("I sent the email.", [], history) == ""
 
 
 async def test_internal_tools_do_not_prompt_in_ask_mode(config, isolated_home):
