@@ -100,6 +100,16 @@ def _files_from(result: Any) -> list[str]:
         return []
     names: list[str] = []
     path = result.get("path")
+      
+    # 新增：如果 result 里没有 path，但有一个相对路径的 "file"（比如浏览器截图），
+    # 我们就把它当作相对路径的文件名直接处理（因为我们知道它就在 files 文件夹里）
+    if not path and isinstance(result.get("file"), str):
+        file_path = result["file"]
+        # 确保它是相对路径，并且指向文件
+        with contextlib.suppress(OSError, ValueError):
+            names.append(Path(file_path).as_posix())
+        return names
+    
     if isinstance(path, str) and Path(path).is_absolute():
         with contextlib.suppress(OSError, ValueError):
             names.append(Path(path).resolve().relative_to(paths.files_dir().resolve()).as_posix())
