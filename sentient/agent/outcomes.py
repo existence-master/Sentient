@@ -52,7 +52,7 @@ _CLAIMS: dict[str, re.Pattern] = {
 _CLAIM_ANY = re.compile(r"\b(done|completed|finished|success(?:fully)?|sent|saved|created|updated)\b", re.I)
 _BROWSER_CLICK_CLAIM = re.compile(r"\b(?:clicked|was clicked)\b", re.I)
 _NEGATED_BROWSER_CLICK = re.compile(
-    r"\b(?:not|didn't|hasn't|wasn't|haven't|never|nothing)\b[^.!?]{0,50}\bclicked\b", re.I
+    r"\b(?:not|didn['’]t|hasn['’]t|wasn['’]t|haven['’]t|never|nothing)\b[^.!?]{0,50}\bclicked\b", re.I
 )
 _OTHER_PERSON_BROWSER_CLICK = re.compile(
     r"\b(?:you|he|she|they|someone|anyone|(?:my|your|his|her|their)\s+\w+)\s+"
