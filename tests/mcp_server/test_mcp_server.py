@@ -27,6 +27,7 @@ class FakeEngine:
     """Just the EngineClient surface the tools use, with the answers scripted."""
 
     def __init__(self, *, enabled: bool = True, skip_review: bool = False):
+        self.base_url = "http://127.0.0.1:7777"
         self.section = {
             "enabled": enabled,
             "memories_skip_review": skip_review,
@@ -48,8 +49,18 @@ class FakeEngine:
         self.notes: list[dict] = []
         self.fail_search = False
         self.fail_config = False
+        self.prove_ok = True
+        self.status_calls = 0
+        self.memory_held = False
+
+    def refresh_address(self):
+        pass  # the fake never moves ports
+
+    def prove_identity(self):
+        return self.prove_ok
 
     def status(self):
+        self.status_calls += 1
         if self.fail_config:
             raise EngineError("The engine refused this server's token (401).")
         return dict(self.section)
@@ -94,7 +105,10 @@ class FakeEngine:
         return {"id": "n1"}
 
     def chat_turn(self, text, *, app=None):
-        return {"content": f"Sentient replies to: {text}", "session_id": "s1"}
+        out = {"content": f"Sentient replies to: {text}", "session_id": "s1"}
+        if self.memory_held:
+            out["memory_held"] = True
+        return out
 
 
 def _result_json(result) -> dict:
@@ -298,3 +312,22 @@ async def test_an_engine_error_at_the_gate_is_reported_not_masked_as_turned_off(
     out = await _call(build_server(engine), "memory_search", {"query": "Maya"})
     assert out == {"error": "The engine refused this server's token (401)."}
 
+
+
+async def test_the_gate_sends_the_token_nowhere_until_the_engine_proves_itself():
+    # the proof at startup is not enough: the engine restarts on a fresh port, and whatever
+    # took over the old one must not be sent the token on the next call (review 5609721491)
+    engine = FakeEngine()
+    engine.prove_ok = False
+    out = await _call(build_server(engine), "memory_search", {"query": "Maya"})
+    assert "could not prove it holds the MCP token" in out["error"]
+    assert engine.status_calls == 0  # the status call is the first token carrier: it never happened
+
+
+async def test_ask_sentient_says_when_a_memory_from_the_turn_waits_in_review():
+    # the reply itself may say "noted" while the fact is only waiting in Review; the tool's
+    # answer carries the correction as a note (review 5609721491, the nit)
+    engine = FakeEngine()
+    engine.memory_held = True
+    out = await _call(build_server(engine), "ask_sentient", {"message": "Remember this about me: I drink tea"})
+    assert "Review list" in out["note"] and "only saved if they approve" in out["note"]

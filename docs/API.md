@@ -1621,9 +1621,12 @@ transport is deliberately not offered; it may return later, protected by the sam
   everywhere; `sentient mcp` never reads or writes it.
 - **Endpoints of its own.** `GET /api/mcp/status` (either token) → `{enabled, memories_skip_review,
   token_issued}`: what an MCP app may do right now, without reading the config. `GET /api/mcp/proof?nonce=...`
-  (no credentials) → `{proof}`: the nonce's HMAC-SHA256 under the MCP token, how `sentient mcp` verifies
-  that a discovered port is really the engine before it sends the token there; 404 when no token has
-  been issued. `POST /api/mcp/token/rotate`
+  (no credentials) → `{proof}`: the HMAC-SHA256 of `nonce:port` under the MCP token, the port being the
+  one the request arrived on, how `sentient mcp` verifies that a discovered port is really the engine
+  before it sends the token there. Keying the proof to the port stops a relay (a squatter on the
+  engine's old port forwarding the challenge gets a proof keyed to the real engine's port, which
+  fails the check), and the server re-proves before every call, following the discovery file when
+  the engine has moved ports; 404 when no token has been issued. `POST /api/mcp/token/rotate`
   (gateway token only) → `{rotated: true}`: replaces the MCP-only token in the keychain; apps holding the
   old one stop working at once and pick the new one up when they restart. It is also issued from
   `SentientApp.save_config` whenever `integrations.mcp_server_enabled` is saved on and none exists.
@@ -1646,8 +1649,10 @@ transport is deliberately not offered; it may return later, protected by the sam
   name so anything that sends asks first. `POST /api/chat` from an MCP caller is forced onto
   `channel: "mcp"` whatever the body says: the turn is marked outside content from the start, its text
   never counts as the user's words (memories it states wait in Review by default; sends, code runs and deletes always
-  ask), and an approval it raises also lands as a `kind: "approval"` notification (section 6) the user can
-  answer in the window or on their phone. The MCP client is outside content and can never answer an approval.
+  ask; its text never proposes standing rules), an approval it raises also lands as a `kind: "approval"`
+  notification (section 6) the user can answer in the window or on their phone, and the body's `model`,
+  `attachments` and `incognito` are ignored, so the app cannot pull files into the turn, pick a model or
+  flip the user's incognito switch. The MCP client is outside content and can never answer an approval.
 - `mcp` is also in the frozen engine's command list (`packaging/engine_entry.py`), which `tests/test_packaging.py`
   keeps equal to the CLI's commands.
 

@@ -45,20 +45,28 @@ def discovered_engine_url() -> str:
 class EngineClient:
     """Synchronous REST calls to the engine. One instance per MCP server process."""
 
-    def __init__(self, base_url: str, token: str, *, timeout: float = 30.0):
+    def __init__(self, base_url: str, token: str, *, timeout: float = 30.0, follow_discovery: bool = False):
         parsed = urlparse(base_url)
         if parsed.hostname not in LOOPBACK_HOSTS:
             raise EngineError(
                 f"Refusing to talk to a non-local engine address ({base_url!r}). "
                 "The MCP server only works on this computer."
             )
-        self.base_url = base_url.rstrip("/")
         self._token = token  # kept for the identity proof below; it is only ever sent to an
         # engine that has already proven it holds the same one
+        self._timeout = timeout
+        # a server that found the engine through the discovery file follows it when the engine
+        # moves to a new port (see refresh_address); one started with an explicit address keeps it
+        self._follow = follow_discovery
+        self._connect(base_url)
+
+    def _connect(self, base_url: str) -> None:
+        """Point both HTTP clients at an engine address."""
+        self.base_url = base_url.rstrip("/")
         self._http = httpx.Client(
             base_url=self.base_url,
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=httpx.Timeout(timeout, read=timeout),
+            headers={"Authorization": f"Bearer {self._token}"},
+            timeout=httpx.Timeout(self._timeout, read=self._timeout),
             # never through a proxy from the environment: the engine is on this computer, and its
             # token must not travel through anything (a proxy setting also breaks loopback URLs
             # whose no_proxy list carries bracketed IPv6 hosts)
@@ -68,9 +76,26 @@ class EngineClient:
         # sent after that probe has shown the engine is Sentient (see health())
         self._bare = httpx.Client(
             base_url=self.base_url,
-            timeout=httpx.Timeout(timeout, read=timeout),
+            timeout=httpx.Timeout(self._timeout, read=self._timeout),
             trust_env=False,
         )
+
+    def refresh_address(self) -> None:
+        """Follow the engine to its new port, when this server found it through the discovery file.
+
+        The desktop starts the engine on a fresh port every launch, and force-closing the app
+        can leave the old discovery file behind, so a long-running server would otherwise keep
+        calling a recycled address where anything could now be listening. A missing file keeps
+        the last known address: the identity proof before every call decides whether what
+        answers there may be sent the token."""
+        if not self._follow:
+            return
+        try:
+            found = discovered_engine_url()
+        except EngineError:
+            return
+        if found != self.base_url:
+            self._connect(found)
 
     # ------------------------------------------------------------------ plumbing
     def _call(self, method: str, path: str, *, timeout: float | None = None, **kwargs: Any) -> Any:
@@ -127,8 +152,11 @@ class EngineClient:
 
         The health answer (``"name": "sentient"``) is a public marker anything listening on the
         port can copy, so before the token is sent anywhere the engine must answer a challenge
-        it cannot forge: a fresh nonce goes out bare, and the reply must be that nonce's HMAC
-        under the token (``GET /api/mcp/proof``). The token itself never travels."""
+        it cannot forge: a fresh nonce goes out bare, and the reply must be the HMAC of that
+        nonce and this address's port under the token (``GET /api/mcp/proof``). The port binds
+        the proof to this address: a process squatting here can relay the challenge to the real
+        engine on another port, but the proof it gets back is keyed to that port and fails here.
+        The token itself never travels."""
         nonce = secrets.token_hex(16)
         try:
             resp = self._bare.get("/api/mcp/proof", params={"nonce": nonce})
@@ -138,8 +166,10 @@ class EngineClient:
             return False  # unreachable, no proof route, a non-JSON answer: not proven
         if not isinstance(proof, str):
             return False
+        parsed = urlparse(self.base_url)
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
         expected = hmac.new(
-            self._token.encode("utf-8"), nonce.encode("utf-8"), hashlib.sha256
+            self._token.encode("utf-8"), f"{nonce}:{port}".encode(), hashlib.sha256
         ).hexdigest()
         return hmac.compare_digest(proof, expected)
 
@@ -208,10 +238,13 @@ class EngineClient:
         the engine: its tools run under Sentient's approvals and rules, and a call that has to ask
         appears in the Sentient window and as an approval notification the user can answer there
         or on their phone. Returns ``{content, session_id}`` (plus ``approval_asked`` when a
-        question went to the user, and ``error`` when the turn failed or is still waiting)."""
+        question went to the user, ``memory_held`` when a memory the turn saved is waiting in
+        the user's Review list instead of being saved, and ``error`` when the turn failed or is
+        still waiting)."""
         session_id: str | None = None
         content = ""
         approval_asked = False
+        memory_held = False
         try:
             body: dict[str, Any] = {"text": text, "channel": "mcp"}
             if app:
@@ -234,17 +267,24 @@ class EngineClient:
                         session_id = event["session_id"]
                     if event.get("type") == "approval_request":
                         approval_asked = True
+                    elif event.get("type") == "tool_result" and event.get("name") == "memory_remember":
+                        result = event.get("result")
+                        if isinstance(result, dict) and result.get("status") == "pending":
+                            # the fact waits in Review; the reply may still claim it was noted
+                            memory_held = True
                     elif event.get("type") == "done":
                         content = str(event.get("content") or "")
                         if event.get("error"):
                             return {"content": content, "error": str(event["error"]),
-                                    "session_id": session_id, "approval_asked": approval_asked}
+                                    "session_id": session_id, "approval_asked": approval_asked,
+                                    "memory_held": memory_held}
                     elif event.get("type") == "error":
                         return {
                             "content": content,
                             "error": str(event.get("message") or "the chat turn failed"),
                             "session_id": session_id,
                             "approval_asked": approval_asked,
+                            "memory_held": memory_held,
                         }
         except httpx.TimeoutException:
             return {
@@ -255,7 +295,9 @@ class EngineClient:
                 ),
                 "session_id": session_id,
                 "approval_asked": approval_asked,
+                "memory_held": memory_held,
             }
         except httpx.HTTPError as exc:
             raise EngineError(f"The chat turn broke off: {exc}") from exc
-        return {"content": content, "session_id": session_id, "approval_asked": approval_asked}
+        return {"content": content, "session_id": session_id, "approval_asked": approval_asked,
+                "memory_held": memory_held}

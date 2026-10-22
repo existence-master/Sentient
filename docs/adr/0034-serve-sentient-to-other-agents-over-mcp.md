@@ -38,8 +38,13 @@ it was waiting on.
   port is not where it listens. Because the file holds only a port, the server proves the
   engine's identity before it sends the token anywhere: the health probe goes out without
   credentials, and the engine must then answer a nonce challenge (`GET /api/mcp/proof`, the
-  nonce's HMAC under the MCP token), which a process that merely copied the health marker
-  cannot forge.
+  HMAC of `nonce:port` under the MCP token), which a process that merely copied the health
+  marker cannot forge. Keying the proof to the port the request arrived on stops a relay: a
+  squatter on the engine's old port can forward the challenge to the real engine, but the
+  proof it gets back is keyed to the real engine's port and fails the check. The proof is not
+  a startup-only step: the server re-reads the discovery file and proves again before every
+  call, so a running server follows the engine to its new port after a restart instead of
+  sending the token to whatever took over the old one.
 - **Its own token, with permissions only for these tools.** When the user turns the feature on,
   the engine issues an MCP-only token and keeps it in the keychain (`sentient.secrets`, name
   `mcp-server-token`). `sentient mcp` reads it from there itself; no client settings file ever

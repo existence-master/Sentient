@@ -444,6 +444,12 @@ async def chat(request: Request, body: ChatBody):
         # an MCP app's words are outside content, never the user's (issue #443): the turn runs on
         # the mcp channel whatever the body claims, and the loop marks it from the start
         body.channel = "mcp"
+        # the app does not shape the turn either: attachments would pull files from the files
+        # folder into it, a named model could pick a cloud model where the user keeps chats
+        # local, and incognito is the user's own switch to flip, so all three are ignored
+        body.model = None
+        body.attachments = []
+        body.incognito = False
         if body.session_id:
             # the session must be one of the app's own: naming one of the user's chats would hand
             # the app that chat's history and let its words into it, so anything else starts fresh

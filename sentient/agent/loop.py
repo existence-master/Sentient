@@ -1306,9 +1306,13 @@ class Agent:
             # the answer reaches this same approval_id through the broker, whichever surface sends it
             label = wording.get("risk_label") or "Changes something"
             target = wording.get("target")
+            # the note names the app that is asking (the turn's mark on this channel), so the
+            # user sees whose request they are answering: "Claude Code wants to: Runs code"
+            who = ctx.untrusted or "an MCP app"
+            message = f"{who} wants to: {label}: {target}" if target else f"{who} wants to: {label}"
             try:
                 note = await self.app.notify(
-                    "approval", f"{label}: {target}" if target else label, title="Approval needed",
+                    "approval", message, title="Approval needed",
                     payload={
                         "approval_id": approval_id, "name": p.tc.name, "risk": p.risk.name,
                         "arguments": p.tc.arguments, "session_id": ctx.session_id, "channel": "mcp",
@@ -1762,7 +1766,9 @@ class Agent:
                 # a chat message on any of the user's surfaces means the user is around (#163); an MCP
                 # app's activity says nothing about the user, so it never resets the away timer (#443)
                 await self.app.user_seen(channel)
-            rule_check = self._start_rule_check(session_id, user_message_id, user_text)
+            # an MCP turn's text is the app's, not the user's: it never proposes standing rules
+            # from it (#443), the way quick commands are skipped here
+            rule_check = None if channel == "mcp" else self._start_rule_check(session_id, user_message_id, user_text)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
@@ -1845,7 +1851,7 @@ class Agent:
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
                 if role_ == "user" and content:  # a steer message can be a standing instruction too (#130)
-                    check = self._start_rule_check(session_id, mid, content)
+                    check = None if channel == "mcp" else self._start_rule_check(session_id, mid, content)
                     if check is not None:
                         await asyncio.wait({check}, timeout=RULE_CHECK_WAIT_S)
 

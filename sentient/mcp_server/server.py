@@ -93,7 +93,19 @@ class Gate:
         self.client = client
 
     def check(self) -> dict | None:
-        """The engine's MCP status when the server may run, else None (turned off)."""
+        """The engine's MCP status when the server may run, else None (turned off).
+
+        Before the status call carries the token anywhere, the client follows the discovery
+        file if the engine moved ports, and the engine proves its identity again: the proof
+        at startup alone is not enough, because the engine restarts on a fresh port and
+        whatever takes over the old one would otherwise be sent the token on the next call."""
+        self.client.refresh_address()
+        if not self.client.prove_identity():
+            raise EngineError(
+                f"The engine answering at {self.client.base_url} could not prove it holds the MCP "
+                "token, so the token was not sent to it. Sentient may have restarted, or its MCP "
+                "token may have been replaced in the app; restart this MCP server to reconnect."
+            )
         status = self.client.status()
         return status if status.get("enabled") else None
 
@@ -245,8 +257,17 @@ def build_server(client: EngineClient, gate: Gate | None = None) -> MCPServer:
         if turn.get("error"):
             return _json({"reply": turn.get("content") or "", "note": turn["error"]})
         out = {"reply": turn.get("content") or ""}
+        notes = []
         if turn.get("approval_asked"):
-            out["note"] = "Sentient asked the user to approve a step in this turn before it ran."
+            notes.append("Sentient asked the user to approve a step in this turn before it ran.")
+        if turn.get("memory_held"):
+            # the reply may still say "noted": the fact is not saved until the user approves it
+            notes.append(
+                "A memory from this exchange is waiting in the user's Review list in Sentient; "
+                "it is only saved if they approve it there."
+            )
+        if notes:
+            out["note"] = " ".join(notes)
         return _json(out)
 
     return server
@@ -287,6 +308,7 @@ def main(*, engine_url: str | None = None) -> int:
     """Entry point for ``sentient mcp`` (stdio). Returns the process exit code."""
     from sentient.gateway import mcp_token
 
+    follow_discovery = engine_url is None  # found through the file: follow it when the engine moves
     if engine_url is None:
         try:
             engine_url = discovered_engine_url()
@@ -303,7 +325,7 @@ def main(*, engine_url: str | None = None) -> int:
         )
         return 2
     try:
-        client = EngineClient(engine_url, in_use)
+        client = EngineClient(engine_url, in_use, follow_discovery=follow_discovery)
     except EngineError as exc:
         print(str(exc), file=sys.stderr)
         return 2

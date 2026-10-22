@@ -6,6 +6,13 @@
    answer from the app (the chat stream alone is invisible to MCP clients).
 3. The MCP-only token reaches only the endpoints the eight tools need, never config or approvals.
 5. A task an MCP app creates always waits for plan approval, even when plans auto-approve.
+
+The second review (5609721491) adds:
+6. The identity proof is keyed to the port it was asked on (a relayed proof fails), the gate
+   proves again before every call, and the server follows the discovery file to a new port.
+7. An MCP caller cannot shape its turn: the body's model, attachments and incognito are
+   ignored, its text never starts a rule check, and the approval and plan-ready notifications
+   name the app that is asking.
 """
 
 from __future__ import annotations
@@ -124,6 +131,8 @@ async def test_an_mcp_turns_approval_also_lands_as_a_notification(config, isolat
                 assert approval_notes, "the approval must also land as a notification (review item 2)"
                 note = approval_notes[0]
                 assert note["payload"]["approval_id"] == ev.approval_id
+                # the note names who is asking (this turn named no app, so the generic label)
+                assert note["message"].startswith("an MCP app wants to: "), note["message"]
                 seen["note_id"] = note["id"]
                 s.approvals.resolve(ev.approval_id, "allow")
 
@@ -213,6 +222,14 @@ def test_a_task_created_with_the_mcp_token_waits_for_plan_approval(engine_client
     assert task["original_context"]["source"] == "mcp"
     assert task["original_context"]["app"] == "Claude Code"
     assert task["status"] == "approval_pending"  # an outside app's task always waits (review item 5)
+    ready = []
+    for _ in range(50):  # the plan-ready note lands with the plan; wait for it
+        notes = c.get("/api/notifications", headers=_gw(c)).json()["notifications"]
+        ready = [n for n in notes if n.get("title") == "Plan ready for approval"]
+        if ready:
+            break
+        time.sleep(0.1)
+    assert ready and "Claude Code" in ready[0]["message"]  # the note names the app that asked
 
 
 def test_with_the_feature_off_the_mcp_token_opens_nothing_but_status(engine_client_off):
@@ -414,9 +431,10 @@ async def test_closing_an_mcp_turn_at_the_approval_still_settles_its_notificatio
 
 
 def test_the_engine_proves_itself_by_challenge_before_any_token_travels(engine_client):
-    # GET /api/mcp/proof answers a caller's fresh nonce with its HMAC under the MCP token,
-    # with no credentials presented: only the real engine can produce it, and the token
-    # itself is never in the answer (CodeRabbit, PR #487 round on 7828606)
+    # GET /api/mcp/proof answers a caller's fresh nonce with the HMAC of "nonce:port" under
+    # the MCP token, the port being the one the request arrived on (80 for the test client),
+    # with no credentials presented: only the real engine can produce it, a proof minted for
+    # another port (a relay) does not match, and the token itself is never in the answer
     import hashlib
     import hmac as hmac_mod
 
@@ -424,7 +442,7 @@ def test_the_engine_proves_itself_by_challenge_before_any_token_travels(engine_c
     nonce = "ab" * 16
     r = c.get("/api/mcp/proof", params={"nonce": nonce})  # no Authorization header at all
     assert r.status_code == 200, r.text
-    expected = hmac_mod.new(MCP_TOKEN.encode(), nonce.encode(), hashlib.sha256).hexdigest()
+    expected = hmac_mod.new(MCP_TOKEN.encode(), f"{nonce}:80".encode(), hashlib.sha256).hexdigest()
     assert r.json()["proof"] == expected
     assert MCP_TOKEN not in r.text
     assert c.get("/api/mcp/proof", params={"nonce": "short"}).status_code == 404
@@ -437,3 +455,53 @@ def test_there_is_no_proof_without_an_issued_token(config, isolated_home, keycha
                                  db_path=isolated_home / "noproof.db", enable_background=False))
     with TestClient(app) as c:
         assert c.get("/api/mcp/proof", params={"nonce": "ab" * 16}).status_code == 404
+
+
+def test_an_mcp_caller_cannot_shape_the_turn(engine_client, monkeypatch):
+    # the body's model, attachments and incognito are ignored for an MCP caller (review
+    # 5609721491): attachments would pull files into the turn, a named model could pick a
+    # cloud model where the user keeps chats local, incognito is the user's own switch
+    import json as _json
+
+    from sentient.llm.events import Done
+
+    c = engine_client
+    seen: dict = {}
+
+    async def recorder(session_id, text, **kwargs):
+        seen.update(kwargs)
+        yield Done(content="ok")
+
+    monkeypatch.setattr(c.app.state.sentient.agent, "run_turn", recorder)
+    r = c.post("/api/chat", json={
+        "text": "hello", "app": "Claude Code", "model": "some-cloud-model",
+        "attachments": ["secret.txt"], "incognito": True,
+    }, headers=_mcp(c))
+    assert r.status_code == 200, r.text
+    assert seen["model"] is None and seen["attachments"] == []
+    sid = _json.loads(r.text.splitlines()[0])["session_id"]
+    rows = c.get("/api/sessions", headers=_gw(c)).json()
+    mine = [row for row in rows if row["id"] == sid]
+    assert mine and mine[0]["incognito"] is False  # the new chat is not incognito either
+
+
+async def test_an_mcp_turn_never_starts_a_rule_check(config, isolated_home, monkeypatch):
+    # "never suggest satay" from an app created a pending standing rule in the maintainer's
+    # test: an MCP turn's text is not the user's words, so no rule check starts from it
+    llm = FakeProvider(replies=["ok", "ok again"])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "rules.db").start()
+    try:
+        calls: list[str] = []
+
+        def spy(session_id, message_id, text):
+            calls.append(text)
+
+        monkeypatch.setattr(s.agent, "_start_rule_check", spy)
+        mcp = await s.store.create_session(channel="mcp")
+        await _collect(s.agent, mcp, "never suggest satay", "mcp")
+        assert calls == []
+        cli = await s.store.create_session(channel="cli")
+        await _collect(s.agent, cli, "never suggest satay", "cli")
+        assert calls == ["never suggest satay"]  # control: the user's own words still check
+    finally:
+        await s.stop()

@@ -34,13 +34,14 @@ def test_the_readiness_probe_never_carries_the_token():
 
 def test_identity_is_proven_by_challenge_not_by_the_health_marker():
     # a listener on the discovered port can copy the health answer word for word; only the
-    # holder of the token can answer a fresh nonce with its HMAC under that token
+    # holder of the token can answer a fresh nonce with its HMAC under that token, keyed to
+    # the port the challenge was asked on (7777, this client's own port)
     import hashlib
     import hmac as hmac_mod
 
     def answer_challenge(request: httpx.Request) -> httpx.Response:
         nonce = request.url.params["nonce"]
-        digest = hmac_mod.new(b"test-token", nonce.encode(), hashlib.sha256).hexdigest()
+        digest = hmac_mod.new(b"test-token", f"{nonce}:7777".encode(), hashlib.sha256).hexdigest()
         return httpx.Response(200, json={"proof": digest})
 
     with respx.mock() as router:
@@ -57,6 +58,71 @@ def test_identity_is_proven_by_challenge_not_by_the_health_marker():
     with respx.mock() as router:
         router.get(f"{BASE}/api/mcp/proof").mock(return_value=httpx.Response(404))
         assert _client().prove_identity() is False  # no token issued: nothing to prove with
+
+
+def test_a_relayed_proof_does_not_count():
+    # a squatter on the engine's old port can relay the challenge to the real engine on its
+    # new port, but the proof it gets back is keyed to THAT port (9999), not to the port it
+    # is squatting on (7777), so the check fails and the token is never sent (review 5609721491)
+    import hashlib
+    import hmac as hmac_mod
+
+    def relayed_answer(request: httpx.Request) -> httpx.Response:
+        nonce = request.url.params["nonce"]
+        digest = hmac_mod.new(b"test-token", f"{nonce}:9999".encode(), hashlib.sha256).hexdigest()
+        return httpx.Response(200, json={"proof": digest})
+
+    with respx.mock() as router:
+        router.get(f"{BASE}/api/mcp/proof").mock(side_effect=relayed_answer)
+        assert _client().prove_identity() is False
+
+
+def test_refresh_address_follows_the_engine_when_it_moves(isolated_home):
+    import json as _json
+
+    from sentient import paths
+
+    found = paths.discovery_file()
+    found.parent.mkdir(parents=True, exist_ok=True)
+    found.write_text(_json.dumps({"port": 8123}), encoding="utf-8")
+    client = EngineClient(BASE, "test-token", follow_discovery=True)
+    client.refresh_address()
+    assert client.base_url == "http://127.0.0.1:8123"  # followed the engine to its new port
+    found.unlink()
+    client.refresh_address()
+    assert client.base_url == "http://127.0.0.1:8123"  # no file right now: keep the last address
+
+
+def test_refresh_address_keeps_an_explicit_address(isolated_home):
+    import json as _json
+
+    from sentient import paths
+
+    found = paths.discovery_file()
+    found.parent.mkdir(parents=True, exist_ok=True)
+    found.write_text(_json.dumps({"port": 8123}), encoding="utf-8")
+    client = _client()  # started with an explicit address: it keeps it
+    client.refresh_address()
+    assert client.base_url == BASE
+
+
+def test_chat_turn_reports_a_memory_that_waits_in_review():
+    import json as _json
+
+    lines = "\n".join([
+        _json.dumps({"type": "session", "session_id": "s1"}),
+        _json.dumps({"type": "tool_result", "name": "memory_remember",
+                     "result": {"status": "pending", "id": 5}}),
+        _json.dumps({"type": "done", "content": "Got it, noted"}),
+    ])
+    with respx.mock() as router:
+        router.post(f"{BASE}/api/chat").mock(
+            return_value=httpx.Response(200, content=lines,
+                                        headers={"Content-Type": "application/x-ndjson"})
+        )
+        turn = _client().chat_turn("Remember this about me: I drink tea")
+    assert turn["content"] == "Got it, noted"  # the reply may claim it was noted...
+    assert turn["memory_held"] is True  # ...but the fact is waiting in Review, and the server says so
 
 
 def test_a_non_local_engine_address_is_refused():
@@ -152,7 +218,8 @@ def test_chat_turn_reads_the_ndjson_stream_until_done():
             return_value=httpx.Response(200, text=ndjson, headers={"content-type": "application/x-ndjson"})
         )
         out = _client().chat_turn("when is tea?")
-        assert out == {"content": "Tea is at five.", "session_id": "s1", "approval_asked": False}
+        assert out == {"content": "Tea is at five.", "session_id": "s1", "approval_asked": False,
+                       "memory_held": False}
         import json as _json
 
         assert _json.loads(route.calls[0].request.content) == {"text": "when is tea?", "channel": "mcp"}

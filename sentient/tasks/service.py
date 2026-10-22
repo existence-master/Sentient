@@ -1809,7 +1809,12 @@ class TaskService(Service):
             return
         await self.publish(task_id)
         short = display_name[:50] + ("..." if len(display_name) > 50 else "")
-        await self._notify(task, f"I've created a new plan for you: '{short}'", "Plan ready for approval", "approval_needed")
+        message = f"I've created a new plan for you: '{short}'"
+        if mcp_tasks.is_mcp_task(task):
+            # the note names the app that asked for the task, like the approval notes do (#443)
+            app_label = (task.get("original_context") or {}).get("app") or "an MCP app"
+            message = f"I've created a new plan for {app_label}: '{short}'"
+        await self._notify(task, message, "Plan ready for approval", "approval_needed")
 
     async def _planned_script(
         self, task: dict, data: dict, system: str, parts: list[str]
