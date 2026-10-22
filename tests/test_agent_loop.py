@@ -238,6 +238,26 @@ def test_browser_click_correction_uses_the_latest_call():
     assert outcomes.unmade_browser_click_note(
         "You clicked A, and I clicked B.", []
     ) == "I didn't click it, so nothing changed on the page."
+
+
+def test_browser_click_negations_accept_the_curly_apostrophe():
+    """Small models often type wasn\u2019t; a true negated reply must not be corrected (#498)."""
+    declined = [{"name": "browser_click", "declined": True, "target": 'button "Subscribe"'}]
+    for negated in (
+        "No, the Subscribe button wasn\u2019t clicked.",
+        "I didn\u2019t click the Subscribe button.",
+        "I haven\u2019t clicked the Subscribe button.",
+        "The Subscribe button hasn\u2019t been clicked yet.",
+        "It wasn\u2019t clicked, the approval was declined.",
+    ):
+        assert outcomes.unmade_browser_click_note(negated, declined) == "", negated
+        assert outcomes.unmade_browser_click_note(negated, []) == "", negated
+    # the straight-apostrophe spellings keep working, and a curly positive
+    # claim is still corrected
+    assert outcomes.unmade_browser_click_note("No, the Subscribe button wasn't clicked.", declined) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I\u2019ve clicked the Subscribe button.", declined
+    ) == "I didn't click it: you declined, so nothing changed on the page."
     prior_success = [{"name": "browser_click", "ok": True}]
     assert outcomes.unmade_browser_click_note(
         "I clicked the upgrade button.", [], prior_success

@@ -395,7 +395,11 @@ def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] 
     """
     current_clicks = [call for call in calls if call.get("name") == "browser_click"]
     previous_clicks = [call for call in history or [] if call.get("name") == "browser_click"]
-    claims = re.split(r"(?<=[.!?])\s+", text or "")
+    # Small models often type the curly apostrophe (wasn\u2019t), while the
+    # claim patterns spell contractions with the ASCII one; normalize first
+    # (#498), so a negated claim is never read as a positive one.
+    text = re.sub("[\u2018\u2019]", "'", text or "")
+    claims = re.split(r"(?<=[.!?])\s+", text)
     # A reply can summarize a successful click from an earlier turn alongside a
     # declined click from this one, so consider the complete chronological record.
     clicks = previous_clicks + current_clicks
