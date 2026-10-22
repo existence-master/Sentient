@@ -271,6 +271,23 @@ def test_browser_click_correction_uses_the_latest_call():
     ) == "I didn't click it: you declined, so nothing changed on the page."
 
 
+def test_curly_apostrophe_negations_are_not_click_claims():
+    """A curly apostrophe in wasn't, didn't, hasn't, or haven't is still a negation (#498)."""
+    failed = [{"name": "browser_click", "ok": False, "target": 'button "Subscribe"'}]
+    for reply in (
+        "No, the Subscribe button wasn't clicked.",
+        "I didn't get it clicked.",
+        "The Subscribe button hasn't been clicked.",
+        "I haven't clicked the Subscribe button.",
+    ):
+        curly = reply.replace("'", "\u2019")
+        assert outcomes.unmade_browser_click_note(reply, failed) == "", reply
+        assert outcomes.unmade_browser_click_note(curly, failed) == "", curly
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", failed
+    ) == "I couldn't click it, so nothing changed on the page."
+
+
 def test_browser_click_history_retains_a_truncated_successful_result():
     """A context-truncated result must not turn a recorded click into a false failure."""
     history = browser_click_history([
