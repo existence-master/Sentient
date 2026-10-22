@@ -304,7 +304,7 @@ class DreamingService(Service):
         cfg = self.cfg
         stats = {
             "facts_reviewed": 0, "merged": 0, "contradictions_resolved": 0, "promoted": 0, "expired": 0,
-            "insights_updated": 0, "languages_merged": 0,
+            "insights_updated": 0, "languages_merged": 0, "erase_retries": 0,
         }
         notes: dict[str, Any] = {"merged": [], "languages": [], "contradictions": [], "promoted": [], "insights": None}
         errors: list[str] = []
@@ -334,6 +334,10 @@ class DreamingService(Service):
                     stats["expired"] = await mem.purge_expired()
                 except Exception as exc:
                     errors.append(f"purge: {exc}")
+                try:
+                    stats["erase_retries"] = await mem.drain_pending_erases()
+                except Exception as exc:
+                    errors.append(f"erase retries: {exc}")
             if cfg.refresh_user_model and self.app.config.user_model.enabled:
                 try:
                     res = await self.app.user_model.refresh(trigger="dream")

@@ -89,3 +89,13 @@ CREATE TABLE IF NOT EXISTS memory_forgets (
     at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memory_forgets_at ON memory_forgets(at);
+
+-- Cleanup an erase could not finish (#462): the memory row is gone but one derived step failed once (a locked
+-- file, a transient database error). One row per unfinished erase, replayed by memory upkeep until it succeeds.
+-- ``payload`` is JSON {ids, texts, refs} exactly as erase() computed them.
+CREATE TABLE IF NOT EXISTS pending_erase (
+    id      INTEGER PRIMARY KEY,
+    fact_id INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    at      TEXT NOT NULL
+);

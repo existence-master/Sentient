@@ -1052,9 +1052,34 @@ class FactMemory:
         refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
         try:
             await self._cascade([int(r["id"]) for r in rows], texts, [r for r in refs if r])
-        except Exception:  # the memory itself is gone; a leftover is logged, never a failed delete
-            log.exception("cleaning up after memory %s failed", fid)
+        except Exception:  # the memory itself is gone; the leftover is queued for the next upkeep, never a failed delete (#462)
+            ids = [int(r["id"]) for r in rows]
+            live_refs = [r for r in refs if r]
+            with contextlib.suppress(Exception):
+                await self.store.execute(
+                    "INSERT INTO pending_erase(fact_id, payload, at) VALUES(?,?,?)",
+                    (fid, json.dumps({"ids": ids, "texts": texts, "refs": live_refs}), now_iso()),
+                )
+            log.exception("cleaning up after memory %s failed; queued for the next upkeep", fid)
         return True
+
+    async def drain_pending_erases(self) -> int:
+        """Cleanup steps an erase could not finish (#462), replayed by memory upkeep until they succeed, so
+        derived data never outlives its memory because one step failed once (a locked file, a transient
+        database error). Returns how many waits were cleared."""
+        await self.ensure_schema()
+        drained = 0
+        for row in await self.store.fetchall("SELECT id, fact_id, payload FROM pending_erase ORDER BY id"):
+            try:
+                data = json.loads(row["payload"])
+                await self._cascade(data["ids"], data["texts"], data["refs"])
+            except Exception:
+                log.exception("cleaning up after memory %s failed again", row["fact_id"])
+                continue
+            await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (row["id"],))
+            drained += 1
+            log.info("finished cleaning up after memory %s on retry", row["fact_id"])
+        return drained
 
     async def _erased(self, texts: list[str], ids: list[int]) -> origins.Erased:
         """What ``texts`` said, against every memory still in use (#456): what derived data repeats them goes,
