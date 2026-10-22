@@ -619,7 +619,9 @@ accept or loosen a rule.
   graphics card, since qwen3:8b at 8,192 tokens keeps about 90% there on an 8 GB card; its fix names the recommended model and context length and its action shortens to the recommended length when that is
   shorter, else 8,192), `embedding` (embedding role only). A model that fails the tool checks gets the recommended model
   as its fix (`qwen3:8b` when the computer only fits a small one). Cloud and
-  LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
+  LM Studio models get no Ollama checks. A `chatgpt/` model turned down with 401 or 403, or whose sign-in ran out,
+  gets the fix "Sign in with ChatGPT again under Settings > Models > Use a plan you already have.", never a provider
+  key; an account that can't share its plan is asked to sign in with a Plus or Pro account (#241). `action` is an optional one-click fix the window may offer:
   `{kind: "use_model", role, model, label}` (`PUT /api/models/roles`), `{kind: "pull_model", name, label}`
   (`POST /api/models/ollama/pull`), `{kind: "set_reasoning", role, value, label}` (`models.reasoning`),
   `{kind: "set_context_length", value, role: string|null, label}` (`models.context_length`, or
@@ -650,7 +652,8 @@ accept or loosen a rule.
     can_undo, local_only}`. Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404
     unknown preset, 409 `available: false`. `local_only: true` (#335; the window asks first when Local only is applied
     with the switch off) also turns `models.local_only` on in the same save, 409 for a `cloud` preset; without it the
-    switch is left as it is. The result's `local_only` is the switch after the call. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
+    switch is left as it is. Only Cloud and Mixed can load a ChatGPT plan's model list; applying "Local only" or a
+    preset of the user's never asks ChatGPT for it (#241). The result's `local_only` is the switch after the call. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
     detail, fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the
     pull route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`),
     no ChatGPT sign-in for a `chatgpt/` model (`sign_in`, `action: null`), or Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.

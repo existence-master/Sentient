@@ -86,9 +86,46 @@ to ChatGPT for real. The window was driven in the built app; the signed-in scree
 | A chat on `claude-code/sonnet` | Pass. 12.8 s, the right answer |
 | A chat on `qwen3:8b` | Pass. 25.5 s, the right answer, 32% of context |
 
-**Pending a ChatGPT Plus or Pro account (#241):** signing in with a Plus and a Pro account, the plan's real model list
-(and whether it carries reasoning levels), a streamed tool call, a refresh after an hour, usage-limit behaviour, and
-switching to another ChatGPT account with the saved client id.
+Checked again on 2026-10-22 without a ChatGPT account, after the Connect Claude card (#448) and Claude Code roles (#449)
+landed: the first-run cloud step still shows the **ChatGPT plan** choice next to **Anthropic (Claude)**; a ChatGPT plan
+model turned down with 401 or 403 gets the check-up fix "Sign in with ChatGPT again under Settings > Models > Use a
+plan you already have." (an account that can't share its plan is asked for a Plus or Pro account); and applying
+"Local only" or a preset of your own no longer asks ChatGPT for its model list.
+
+**Owner checklist: Sign in with ChatGPT with real accounts (#241, pending)**
+
+Needs one ChatGPT **Plus** and one ChatGPT **Pro** account. Use the packaged app or `npm run dev` on a fresh data
+folder (Settings > Advanced > Data folder shows which). Never paste a token anywhere. Each step says what you should see.
+
+1. **Sign in (Plus).** Settings > Models > Use a plan you already have > **Continue with ChatGPT**. The browser opens
+   ChatGPT; sign in and allow Sentient. The app shows "You're signed in with ChatGPT", then "You're using your ChatGPT
+   plan" once (Got it closes it for good). The panel shows **Using your ChatGPT plan**, your email and "N models on
+   your plan".
+2. **The model list.** Settings > Models > Roles > main model: the plan's models are listed as `chatgpt/...`, the
+   everyday model first (the one ChatGPT itself offers by default). Note the names and their order on #241: if the
+   order looks wrong, the real list may not rank its models (`priority`), and the fast jobs then use the list's order.
+3. **Use it.** Press **Use ChatGPT for every job**. The chat box shows **Using ChatGPT plan** with **Manage usage**.
+4. **A streamed tool call.** In a new chat: "What's 2 to the power of 20? Use the code tool." The reply streams in
+   pieces, the tool call shows (approve it), and the answer is 1048576. Then Settings > Models > **Check my models**:
+   Reply, Tool call and Two tool steps pass for the main model, and JSON reply for the background model.
+5. **A refresh after an hour.** Leave the app running for at least 65 minutes (the sign-in lasts about an hour), then
+   send a chat. It answers with no sign-in prompt, and the panel still shows your email.
+6. **Usage limit.** On **Manage usage** (chatgpt.com/settings/usage) set the lowest limit for Sentient, then chat
+   until it is reached. The chat says "Usage limit reached. You've used what your ChatGPT plan allows Sentient for
+   now..." with the link, and no other paid model is used unless you added a fallback yourself. The check-up's reply
+   check fails with that message and no "sign in again" fix. Put the limit back afterwards.
+7. **Signed out elsewhere.** On chatgpt.com, remove Sentient's access (or sign out of all devices), then chat. The
+   chat says "ChatGPT signed you out. Sign in with ChatGPT again in Settings > Models.", and Check my models gives the
+   fix "Sign in with ChatGPT again under Settings > Models > Use a plan you already have."
+8. **Switch accounts (Pro).** **Sign out**, then **Continue with ChatGPT** and sign in with the Pro account. It goes
+   through on the first try (Sentient reuses the app id ChatGPT gave it the first time), the panel shows the Pro
+   email, and the model list is the Pro plan's (step 2 again). The welcome message does not come back.
+9. **Not eligible.** If you have a Free account, sign in with it. Either ChatGPT's own page turns it down (the app then
+   says "ChatGPT didn't connect" with ChatGPT's reason and Try again), or the first chat says "This ChatGPT account
+   can't share its plan with other apps. Plan usage needs ChatGPT Plus or Pro." and Check my models asks you to sign
+   in with a Plus or Pro account.
+
+Post the results on #241 (model names are fine; never emails or tokens).
 
 Real-model runs found and fixed these problems, each now covered by a test: a memory update dropped a
 city; a task run stopped after announcing its next step; the model passed a whole snapshot line as a browser
