@@ -101,11 +101,10 @@ def _files_from(result: Any) -> list[str]:
     names: list[str] = []
     path = result.get("path")
       
-    # 新增：如果 result 里没有 path，但有一个相对路径的 "file"（比如浏览器截图），
-    # 我们就把它当作相对路径的文件名直接处理（因为我们知道它就在 files 文件夹里）
+    
     if not path and isinstance(result.get("file"), str):
         file_path = Path(result["file"])
-        # 验证不是绝对路径，且不包含 .. 这种危险跳转
+        
         if not file_path.is_absolute() and ".." not in file_path.parts:
             names.append(file_path.as_posix())
             
