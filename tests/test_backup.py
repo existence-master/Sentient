@@ -345,6 +345,12 @@ async def test_a_rollback_that_fails_keeps_the_data_aside(config, isolated_home,
     assert len(kept) == 1 and (kept[0] / "files" / "mine.txt").read_text(encoding="utf-8") == "only copy"
 
 
+@pytest.fixture
+def default_home(monkeypatch):
+    """Treat the test's data folder as the default ``~/.sentient``, the only one whose backups go to Documents."""
+    monkeypatch.setattr(archive.secrets, "is_default_home", lambda home=None: True)
+
+
 def test_tests_never_use_the_real_folders(isolated_home, tmp_path):
     """The guard in conftest compares REAL_GUARDED before and after every test; here the overrides themselves."""
     assert paths.home() == isolated_home and paths.documents_dir() == tmp_path / "documents"
@@ -353,7 +359,7 @@ def test_tests_never_use_the_real_folders(isolated_home, tmp_path):
         assert not str(archive.default_folder()).startswith(str(real.parent))
 
 
-async def test_backups_go_to_documents_by_default(config, isolated_home, tmp_path):
+async def test_backups_go_to_documents_by_default(config, isolated_home, tmp_path, default_home):
     docs = tmp_path / "documents"
     docs.mkdir()
     app = await _app(config)
@@ -370,12 +376,39 @@ async def test_backups_go_to_documents_by_default(config, isolated_home, tmp_pat
         await app.stop()
 
 
-def test_a_documents_folder_that_cant_be_written_falls_back(isolated_home, tmp_path, monkeypatch):
+def test_a_documents_folder_that_cant_be_written_falls_back(isolated_home, tmp_path, monkeypatch, default_home):
     docs = tmp_path / "documents"
     docs.mkdir()
     assert archive.default_folder() == docs / "Sentient Backups"
     monkeypatch.setattr(archive.os, "access", lambda p, mode: False)
     assert archive.default_folder() == isolated_home / "backups"
+
+
+async def test_another_data_folder_keeps_its_backups_inside_itself(config, isolated_home, tmp_path):
+    """A test or demo home (any SENTIENT_HOME but ~/.sentient) must not default to the real Documents backups (#440)."""
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    assert not secrets.is_default_home()
+    assert archive.default_folder() == isolated_home / "backups"
+    app = await _app(config)
+    try:
+        made = await app.backups.backup_now()
+        assert Path(made["path"]).parent == isolated_home / "backups"
+        overview = await app.backups.overview()
+        assert overview["folder"] == overview["default_folder"] == str(isolated_home / "backups")
+        assert not (docs / "Sentient Backups").exists()
+    finally:
+        await app.stop()
+
+
+def test_only_the_default_data_folder_backs_up_to_documents(isolated_home, tmp_path, monkeypatch):
+    docs = tmp_path / "documents"
+    docs.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "me"))
+    monkeypatch.setenv("SENTIENT_HOME", str(tmp_path / "me" / ".sentient"))
+    assert archive.default_folder() == docs / "Sentient Backups"
+    monkeypatch.setenv("SENTIENT_HOME", str(tmp_path / "me" / "demo"))
+    assert archive.default_folder() == tmp_path / "me" / "demo" / "backups"
 
 
 def test_where_documents_is_on_each_system(tmp_path, monkeypatch):
@@ -463,7 +496,9 @@ def test_cloud_synced_folders_are_named(tmp_path, monkeypatch):
     assert archive.cloud_service(synced / "Documents" / "Sentient Backups") == "OneDrive"
 
 
-async def test_the_overview_says_when_backups_sync_to_the_cloud(config, isolated_home, tmp_path, monkeypatch):
+async def test_the_overview_says_when_backups_sync_to_the_cloud(
+    config, isolated_home, tmp_path, monkeypatch, default_home
+):
     docs = tmp_path / "OneDrive" / "Documents"
     docs.mkdir(parents=True)
     monkeypatch.setenv("SENTIENT_DOCUMENTS_DIR", str(docs))
