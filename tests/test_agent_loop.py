@@ -215,8 +215,8 @@ def test_browser_click_correction_keeps_a_click_that_succeeded_before_a_declined
     ) == "I didn't click it: you declined, so nothing changed on the page."
 
 
-def test_browser_click_correction_uses_the_latest_call():
-    """The latest known click outcome controls its correction wording."""
+def test_browser_click_correction_backs_any_successful_click():
+    """A click that succeeded anywhere in the turn backs the claim; otherwise the known outcome sets the wording."""
     assert outcomes.unmade_browser_click_note(
         "The button was clicked.", [{"name": "browser_click", "ok": True, "declined": False}]
     ) == ""
