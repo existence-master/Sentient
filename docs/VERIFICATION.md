@@ -87,7 +87,7 @@ to ChatGPT for real. The window was driven in the built app; the signed-in scree
 | A chat on `qwen3:8b` | Pass. 25.5 s, the right answer, 32% of context |
 
 Checked again on 2026-10-22 without a ChatGPT account, after the Connect Claude card (#448) and Claude Code roles (#449)
-landed: the first-run cloud step still shows the **ChatGPT plan** choice next to **Anthropic (Claude)**; a ChatGPT plan
+landed: the first-run cloud step still shows the **ChatGPT plan** choice next to **Anthropic** (whose card is now Connect Claude); a ChatGPT plan
 model turned down with 401 or 403 gets the check-up fix "Sign in with ChatGPT again under Settings > Models > Use a
 plan you already have." (an account that can't share its plan is asked for a Plus or Pro account); and applying
 "Local only" or a preset of your own no longer asks ChatGPT for its model list.
