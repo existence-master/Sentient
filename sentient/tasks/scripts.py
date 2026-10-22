@@ -532,14 +532,25 @@ _EVERY_CHANGE_REQUEST = re.compile(
     r"(?!\s+(?:what|which)\s+(?:changes?|updates?)\b|\s+(?:about|of)\s+the\s+(?:\w+\s+)?(?:changes?|updates?)\b)"
     + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
     r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?\b"
-    r"(?:anything|everything)\s+(?:at\s+all|new)\b",
+    r"(?:anything|everything)\s+(?:at\s+all|new)\b"
+    # "don't ignore minor changes" asks for those too
+    r"|\b(?:don't|do not|never)\s+(?:ignore|skip)\s+(?:(?:any|the)\s+)?"
+    r"(?:minor|small|little|tiny|trivial)\s+(?:changes?|updates?)\b",
     re.IGNORECASE,
+)
+# A time that makes "tell me about the changes" a one-off question about changes that already happened.
+_ONE_OFF_TIME = (
+    r"(?:today|tonight|yesterday|so\s+far|just\s+now|earlier|lately|recently"
+    r"|this\s+(?:morning|afternoon|evening|week|month)|last\s+\w+|since\s+\w+)"
 )
 # "notify me about the changes (as they happen)" asks for future changes without saying
 # which, so it is delivery wording: an "only important changes" in the same message decides.
+# So is "tell me about the changes", unless a one-off time or a question makes it about past changes.
 _CHANGE_NOTIFICATION_REQUEST = re.compile(
     r"\b(?:notify me|let me know|alert me)\b(?!\s+(?:what|which)\s+(?:changes?|updates?)\b)"
-    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b",
+    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|report)\s+(?:about|of)\s+the\s+(?:\w+\s+)?(?:changes?|updates?)\b"
+    r"(?!" + _WITHIN_CLAUSE + r"{0,80}?\b" + _ONE_OFF_TIME + r"\b)(?![^\n]*\?\s*$)",
     re.IGNORECASE,
 )
 _NEGATED_REQUEST_PREFIX = re.compile(
