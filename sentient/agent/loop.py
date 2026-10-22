@@ -115,6 +115,7 @@ from sentient.tools.rules import (
     EVENT_ROLE,
     HAND_OFF,
     IF_ASKED,
+    NEVER,
     OPENS_HOME,
     OTHER_ROLE,
     PURCHASE_LABEL,
@@ -137,6 +138,7 @@ from sentient.tools.rules import (
     never_message,
     opens_home,
     outside_source,
+    pending_card_message,
     result_outside_source,
     rule_label,
     saved_outside_source,
@@ -1269,12 +1271,17 @@ class Agent:
             elif ctx.extra.get(CAN_PAUSE_KEY):  # a task run: hold the call, pause and ask (#139)
                 plan.preset = ({"error": approval_hold_message(label, said)}, True, 0)
                 plan.wants_ok = plan.ask_rule = True
-            elif await self._pending_guess_ask(tool, tc, ctx, rule, chat_rule, plan):
-                # a pending rule guess from the chat (#130), not a rule the user set: a guess only ever adds a
-                # question, and this run has nobody to ask, so the call goes ahead instead of failing (#491)
+            elif (guess := await self._pending_guess(tool, tc, ctx, rule, chat_rule, plan)) == "go":
+                # a pending Ask card (#130) stops nothing a helper does inside Sentient's own things: a guess only
+                # ever adds a question, and this run has nobody to ask, so the call goes ahead (#491)
                 pass
             else:  # subagents, swarm workers and other unattended loops cannot stop to ask: the run stops here
-                plan.preset = ({"error": unattended_ask_message(label, said)}, True, 0)
+                if guess == "pending":
+                    # the stop is the chat's undecided rule card, not a rule the user set: name whose answer it
+                    # waits for, so the main assistant can do the call itself and ask once
+                    plan.preset = ({"error": pending_card_message(label)}, True, 0)
+                else:
+                    plan.preset = ({"error": unattended_ask_message(label, said)}, True, 0)
                 plan.rule_stop = True
         unasked = not plan.needs_approval if use_approvals else plan.preset is None
         if look is not None and not plan.warning and unasked:
@@ -1424,21 +1431,31 @@ class Agent:
             return None
         return await chat_rules.chat_rule(tool, session_id)
 
-    async def _pending_guess_ask(
+    async def _pending_guess(
         self, tool: Tool, tc: ToolCall, ctx: ToolContext, rule: str | None, chat_rule: str | None, plan: _CallPlan,
-    ) -> bool:
-        """True when the "ask" stopping this unattended call is only a pending rule guess from the chat (#130):
-        an undecided proposal or a still-running check, not a rule the user set, a call that opens the home
-        (ADR 0028) or a routine set to ask first (#161). A guess only ever adds a question; a run nobody can ask
-        in lets the call go ahead instead of failing it (#491)."""
+    ) -> str:
+        """How a pending rule guess from the chat (#130) is treated for this unattended call: "go" when only a
+        pending Ask suggestion stands between the call and running, and the call is an internal write — a helper
+        writing inside Sentient's own things (#491: a guess only ever adds a question, and this run has nobody to
+        ask); "pending" when the pending suggestion stops the call, with a message that names the rule card waiting
+        for the user's answer in the chat; "rule" when a rule the user set, a call that opens the home (ADR 0028)
+        or a routine set to ask first (#161) stops it."""
         if rule != ASK or chat_rule != ASK:
-            return False
+            return "rule"
         if self.approvals.rule(tool) in (ASK, IF_ASKED, HAND_OFF):
-            return False  # a rule the user set still stops a run nobody can ask in
+            return "rule"  # a rule the user set still stops a run nobody can ask in
         if plan.level in (OPENS_HOME, TASK_ASKS):
-            return False
+            return "rule"
         # a call that opens the home always asks first, whatever the rules say (ADR 0028)
-        return not await opens_home(tool, tc.arguments, ctx, plan.risk)
+        if await opens_home(tool, tc.arguments, ctx, plan.risk):
+            return "rule"
+        chat_rules = getattr(self.app, "chat_rules", None) if self.app is not None else None
+        pending = await chat_rules.pending_rule(tool, ctx.session_id) if chat_rules is not None else None
+        if pending == NEVER:
+            return "pending"  # a pending Never card stops helpers, exactly as main does
+        if pending == ASK and tool.internal and Risk(plan.risk) == Risk.write:
+            return "go"  # #491: a pending Ask card lets a helper write inside Sentient's own things
+        return "pending"
 
     def _start_rule_check(self, session_id: str, message_id: str | None, text: str) -> asyncio.Task | None:
         """Start checking ``text`` for a standing "never" or "ask me first" (#130), or None when the cheap

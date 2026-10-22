@@ -14,6 +14,7 @@ from sentient.gateway.app import create_app
 from sentient.llm.events import ApprovalRequest, ToolResultEvent
 from sentient.tasks.executor import select_tools
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+from sentient.tools.rules import pending_card_message
 from tests.conftest import FakeProvider, tool_call
 
 
@@ -214,10 +215,10 @@ async def test_ask_in_unattended_runs_is_refused(config, isolated_home):
 
 
 async def test_pending_rule_guess_does_not_stop_a_helper_file_write(config, isolated_home):
-    """#491: on a fresh home, an undecided rule proposal for file_write in the chat must not make a helper's
+    """#491: on a fresh home, an undecided Ask rule proposal for file_write in the chat must not make a helper's
     file_write fail with "can't stop to ask". A pending guess only ever adds a question; the helper has nobody
-    to ask, so the call goes ahead. (A rule the user actually set still stops it: see
-    test_ask_in_unattended_runs_is_refused.)"""
+    to ask, so an internal write goes ahead. (A rule the user actually set still stops it: see
+    test_ask_in_unattended_runs_is_refused. A pending Never card still stops it: see the next test.)"""
     llm = FakeProvider(
         replies=[[tool_call("file_write", name="note.md", content="hi")], "done"],
         json_replies=[{"keys": ["file_write"], "rule": "ask"}],
@@ -243,6 +244,41 @@ async def test_pending_rule_guess_does_not_stop_a_helper_file_write(config, isol
         assert not res.is_error, res.result
         assert res.result["saved"] == "note.md"
         assert not result.stopped_by_rule and result.error is None
+    finally:
+        await s.stop()
+
+
+async def test_pending_never_card_stops_a_helper_file_write(config, isolated_home):
+    """#491 review: an undecided Never rule proposal for file_write still stops a helper's file_write, exactly as
+    main does, and the message names the suggested-rule card waiting for the user's answer in the chat instead of
+    claiming something is set to Ask in Settings."""
+    llm = FakeProvider(
+        replies=[[tool_call("file_write", name="note.md", content="hi")], "done"],
+        json_replies=[{"keys": ["file_write"], "rule": "never"}],
+    )
+    s = await _start(config, isolated_home, llm, "never_guess_helper")
+    try:
+        sid = await s.store.create_session(channel="cli")
+        # the chat said something that proposed a Never rule for file_write; the user hasn't decided yet
+        await s.chat_rules.check(sid, None, "do not write any files yourself")
+        assert [p["keys"] for p in await s.chat_rules.list(sid)] == [["file_write"]]
+        # the helper runs the way SubagentManager._run does: no approvals UI, the subagent policy, can't pause
+        ctx = s.agent.tool_context(sid, "subagent", origin="user")
+        ctx.extra["subagent_id"] = "sub1"
+        messages = [{"role": "system", "content": "run"}, {"role": "user", "content": "Goal: write a short file"}]
+        result = LoopResult()
+        events = [
+            e async for e in s.agent.run_loop(
+                messages, ctx, result=result, role="fast", tool_names=["file_write"],
+                use_approvals=False, policy=s.subagents.policy(sid), source="subagent",
+            )
+        ]
+        res = next(e for e in events if isinstance(e, ToolResultEvent))
+        tool = s.registry.get("file_write")
+        stopped = pending_card_message(s.agent.approvals.label(tool, s.agent.registry))
+        assert "Change it in Settings" not in stopped  # not the old "set to Ask" wording
+        assert res.is_error and res.result["error"] == stopped
+        assert result.stopped_by_rule == result.error == stopped  # the run ends at the refused call
     finally:
         await s.stop()
 
