@@ -28,7 +28,6 @@ import contextlib
 import json
 import logging
 import re
-import unicodedata
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -44,6 +43,7 @@ from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.scripts import (
+    SOMEONE,
     devanagari_subjects,
     leads_with_devanagari,
     names_match,
@@ -68,7 +68,17 @@ _UNKNOWN_RE = re.compile(
     r"not provided|unclear)\b",
     re.IGNORECASE,
 )
-_USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
+# the USERNAME placeholder is matched in capitals only, so "my GitHub username" stays a username
+_USER_REF = r"(?<![\w-])((?i:the user)|USERNAME)"
+# "the user research team", "the user agent", "the user name": a kind of thing, not the user
+_USER_COMPOUND_NOUN = (
+    r"(?i:interfaces?|experiences?|research(?:ers?)?|manuals?|guides?|journeys?|stor(?:y|ies)|base|testing|personas?|"
+    r"agents?|names?|ids?|accounts?|profiles?)"
+)
+_USER_REF_RE = re.compile(rf"{_USER_REF}(?![\w-])(?!\s+{_USER_COMPOUND_NOUN}\b)")
+_USER_POSSESSIVE_RE = re.compile(rf"{_USER_REF}['\u2019]s\b")
+# bare "user's" only where it can't be another user's ("a user's account"): first, or after a comma
+_BARE_USER_POSSESSIVE_RE = re.compile(r"(^\s*|[,;:(]\s*)user['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
@@ -142,28 +152,12 @@ def new_details(new_fact: str, existing: str) -> set[str]:
 
 # ---------------------------------------------------------------------- subjects and attribute families
 _RSQUO = chr(0x2019)  # curly apostrophe some models write in possessives
-
-
-def _name_words(text: str) -> list[str]:
-    """Words of ``text`` for :func:`fact_subjects`: a letter followed by letters, marks, digits, apostrophes
-    or hyphens. Any Unicode letter starts a word, not just A-Z, so a Devanagari, Cyrillic or CJK name is one
-    too - and marks continue it, since ``\\w`` alone stops at the first one: Devanagari (and other Indic
-    scripts') vowel signs are combining marks, not letters, so plain ``\\w`` truncated "माया" to "म"."""
-    words: list[str] = []
-    current: list[str] = []
-    for ch in text:
-        category = unicodedata.category(ch)[0]
-        if category in "LMN" or ch in "'-":
-            if current or category != "M":  # a mark can't start a word
-                current.append(ch)
-        elif current:
-            words.append("".join(current))
-            current = []
-    if current:
-        words.append("".join(current))
-    return words
-
-
+# Any Unicode letter, not just A-Z: a Cyrillic or Greek name is a word here too. (Devanagari and other
+# scripts without a case distinction go through scripts.devanagari_subjects instead, via subject_aliases.)
+# A number ("2021") still matches - ``isupper()`` below is false for it either way, so it's never a name - so
+# that it keeps its own position in ``words``, instead of collapsing "In 2021 Kabir" to "In" directly before
+# "Kabir" and making the preposition check below (mis)fire on "Kabir".
+_NAME_WORD_RE = re.compile(r"[^\W_][\w'-]*")
 _MONTHS = {
     "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
     "november", "december",
@@ -175,6 +169,12 @@ _LEAD_SKIP = STOPWORDS | _MONTHS | _WEEKDAYS | {
     "still", "morning", "evening", "night", "week", "weekend", "month", "year", "day", "until", "yes", "okay",
     "actually", "update", "correction", "oh", "well",
 }
+# A capitalized word right after one of these is a place or a time, never a subject ("the trip to Goa", "moved
+# to Austin"): without this, scanning past a leading clause (below) could pick it up as a person.
+_PREPOSITIONS = frozenset({
+    "in", "to", "from", "at", "after", "before", "near", "on", "during", "via", "through", "toward", "towards",
+    "into", "onto", "within",
+})
 # Enough to clear a short leading clause ("Last year in March, after the wedding, Riya ..."); the subject is
 # still whichever word looks name-like first, so this is a bound on how far to look, not a guess of where it is.
 _SUBJECT_SCAN_WORDS = 12
@@ -183,7 +183,21 @@ _RELATION_WORDS = {
     "boyfriend", "son", "daughter", "friend", "manager", "boss", "colleague", "cousin", "uncle", "aunt", "grandmother",
     "grandfather", "grandma", "grandpa", "roommate", "cofounder", "co-founder", "fiance", "fiancee", "parents",
     "company", "startup", "team", "dog", "cat",
+    # #463: more people a fact can be about instead of its owner ("Maya's neighbour lives in Pune")
+    "sibling", "siblings", "parent", "child", "children", "kid", "kids", "baby", "niece", "nephew", "grandson",
+    "granddaughter", "grandparents", "stepmother", "stepfather", "sister-in-law", "brother-in-law",
+    "mother-in-law", "father-in-law", "in-laws", "coworker", "co-worker", "teammate", "classmate", "flatmate",
+    "housemate", "neighbour", "neighbor", "mentor", "teacher", "tutor", "coach", "trainer", "doctor", "therapist",
+    "dentist", "landlord", "landlady", "tenant", "client", "assistant", "nanny", "driver", "lawyer", "accountant",
+    "ex", "spouse", "fiancé", "fiancée", "puppy", "pet",
 }
+# words between an owner and a relation: "Maya's younger sister", "my best friend"
+_RELATION_MODIFIERS = frozenset({
+    "best", "close", "old", "older", "oldest", "elder", "eldest", "younger", "youngest", "little", "big", "baby",
+    "twin", "new", "late", "former", "childhood", "college", "school",
+})
+# "her sister", "his colleague": a relation of someone named in another sentence (#463)
+_OWNER_PRONOUNS = frozenset({"her", "his", "their"})
 ATTRIBUTE_FAMILIES: dict[str, re.Pattern[str]] = {
     "residence": re.compile(
         r"\b(lives?|living|lived|moved|moves|moving|relocat\w*|based in|resides?|residing|shifted to|settled in|"
@@ -234,41 +248,83 @@ TIME_WORDING_RE = re.compile(
 )
 
 
-def _cased(ch: str) -> bool:
-    """Whether ``ch`` belongs to a script with a case distinction (Latin, Cyrillic, Greek, ...).
-    Devanagari, CJK, Arabic and similar scripts have no upper/lower case, so ``isupper()`` can
-    never say "this looks like a proper noun" there - every letter counts as name-like instead."""
-    return ch.isupper() or ch.islower()
+def name_the_user(text: str, user_name: str) -> str:
+    """"Priya, the user's sister" is "Priya, Maya Rao's sister": a saved fact says the user's name (#475)."""
+    name = user_name.strip()
+    if not name:
+        return text
+    text = _BARE_USER_POSSESSIVE_RE.sub(lambda m: f"{m.group(1)}{name}'s", text)
+    text = _USER_POSSESSIVE_RE.sub(lambda _: f"{name}'s", text)
+    return _USER_REF_RE.sub(lambda _: name, text)
 
 
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
-    """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for
-    "Maya's sister Riya ...". "I", "my" and "the user" mean ``user_name``. Empty when unclear.
-
-    Name-like words are capitalized ones (the English/Latin signal) plus, in scripts without case,
-    any word at all - there is no capitalization to check, so this is necessarily cruder there and
-    only reliable when the subject leads the sentence."""
+    """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for "Maya's sister Riya ..."
+    and for "Maya Rao's younger sister Riya ..." (a person's first name stands for the whole name). "I", "my" and
+    "the user" mean ``user_name``: "my friend Arjun" is {"maya rao's friend", "arjun"}. "Her colleague Ravi" is
+    {"someone's colleague", "ravi"} (:data:`SOMEONE`). "Priya, Maya's sister, ..." is {"priya", "maya's sister"}.
+    Empty when unclear ("She moved to Delhi")."""
     user = user_name.strip().lower() or "user"
     text = (text or "").replace(_RSQUO, "'").strip()
-    text = re.sub(r"^(the user's|my)\b", f"{user}'s", text, flags=re.IGNORECASE)
-    text = re.sub(r"^(the user|i)\b", user, text, flags=re.IGNORECASE)
-    words = _name_words(text)
+    found = list(_NAME_WORD_RE.finditer(text))
+    words = [m.group() for m in found]
+    # Ordinary words before the last comma of a leading clause ("Last year in March, after the wedding, Riya
+    # ...") don't have to be recognised to be skipped - only words after it do, same as without a leading
+    # clause at all ("She moved to Delhi" still has no subject).
+    permissive_until = sum(len(_NAME_WORD_RE.findall(c)) for c in text.split(",")[:-1]) if "," in text else 0
+
+    def joined(j: int) -> bool:  # words j and j + 1 are only a space apart ("Maya Rao", not "Priya, Maya")
+        return j + 1 < len(found) and not text[found[j].end():found[j + 1].start()].strip()
+
+    def name_at(j: int) -> str:  # a name word at j, lowercase without "'s", or ""
+        if j >= len(words):
+            return ""
+        root = words[j].lower().removesuffix("'s")
+        return root if words[j][0].isupper() and root not in _LEAD_SKIP else ""
+
+    def relation(owner: str, j: int) -> set[str] | None:  # "<owner>'s sister" (and her name) for a relation at j
+        if j < len(words) and words[j].lower() in _RELATION_MODIFIERS and j + 1 < len(words) \
+                and words[j + 1].lower() in _RELATION_WORDS:
+            j += 1
+        if j >= len(words) or words[j].lower() not in _RELATION_WORDS:
+            return None
+        aliases = {f"{owner}'s {words[j].lower()}"}
+        if name := name_at(j + 1):
+            aliases.add(name)
+        return aliases
+
     for i, w in enumerate(words[:_SUBJECT_SCAN_WORDS]):
         low = w.lower()
         poss = low.endswith("'s")
         root = low[:-2] if poss else low
-        namelike = w[0].isupper() or not _cased(w[0])
-        is_name = (namelike and root not in _LEAD_SKIP) or root == user
+        if low in {"my", "i"} or (root == "user" and i and words[i - 1].lower() == "the"):
+            # the user: "I ...", "the user ...", and what they own or who they know: "my ...", "the user's ..."
+            return (relation(user, i + 1) or {user}) if low == "my" or poss else {user}
+        if low in _OWNER_PRONOUNS:
+            return relation(SOMEONE, i + 1) or set()
+        # a place or a time right after a preposition is never the subject ("the trip to Goa", "moved to Austin")
+        after_prep = i > 0 and words[i - 1].lower() in _PREPOSITIONS
+        is_name = (w[0].isupper() and root not in _LEAD_SKIP and not after_prep) or root == user
         if not is_name:
-            continue  # a stopword, a sentence starter, or an ordinary word earlier in the clause
-        nxt = words[i + 1].lower() if i + 1 < len(words) else ""
-        if poss and nxt in _RELATION_WORDS:
-            aliases = {f"{root}'s {nxt}"}
-            after = words[i + 2] if i + 2 < len(words) else ""
-            if after[:1].isupper() and after.lower() not in _LEAD_SKIP:
-                aliases.add(after.lower().removesuffix("'s"))
-            return aliases
-        return {root}
+            if w[0].isupper() or root in _LEAD_SKIP or i < permissive_until or w.isdigit():
+                continue  # a sentence starter, a bare year ("In 2021 ..."), or inside a leading clause
+            return set()
+        # a full name, up to the word that owns something: "Maya Rao's sister" is Maya's sister, not Maya
+        end = i
+        while not words[end].lower().endswith("'s") and end - i < 3 and joined(end) and name_at(end + 1):
+            end += 1
+        # the first name stands for the person, except a namesake of the user: "Maya Singh" is not "Maya Rao"
+        run = [x.lower().removesuffix("'s") for x in words[i:end + 1]]
+        mine = user.split()
+        if len(run) > 1 and len(mine) > 1 and run[0] == mine[0] and run != mine:
+            root = " ".join(run)
+        if words[end].lower().endswith("'s"):
+            return relation(root, end + 1) or {root}
+        aliases = {root}
+        if end + 1 < len(words) and not joined(end) and words[end + 1].lower().endswith("'s") \
+                and (owner := name_at(end + 1)):
+            aliases |= relation(owner, end + 2) or set()  # "Priya, Maya's sister, lives in Mumbai"
+        return aliases
     return set()
 
 
@@ -295,20 +351,37 @@ async def embedding_attribute_families(
     text: str,
     embed_one: Callable[[str], Awaitable[list[float]]],
     model_key: str,
-    threshold: float,
+    margin: float,
+    vector: list[float] | None = None,
 ) -> set[str]:
-    """Attribute families for ``text`` found by embedding similarity to a short description of each one,
-    rather than the English keyword families above. Meant as a fallback for text those regexes find
-    nothing in - typically non-English facts - not a replacement: the keyword path is nearly free and
-    exact, so callers should only reach for this once it comes back empty."""
-    if not (text or "").strip():
-        return set()
+    """The attribute family whose short description embeds closest to ``text``, rather than the English
+    keyword families above. Meant as a fallback for text those regexes find nothing in - typically non-English
+    facts - not a replacement: the keyword path is nearly free and exact, so callers should only reach for
+    this once it comes back empty.
+
+    A fixed similarity floor doesn't travel between embedding models: tested against a real local model,
+    a Hindi fact scored 0.44-0.49 against every family alike, well under a 0.78 floor calibrated by guesswork,
+    so nothing ever matched. Comparing the best score against the next-best instead needs no calibration to
+    the model's own noise floor - only that the right family scores further out than the rest, which held even
+    at 0.44-0.49 - and naturally returns nothing when the scores are this close because none of them stand out,
+    rather than because they're all "too low".
+
+    ``vector`` reuses a stored embedding instead of embedding ``text`` again (dreaming has one for every active
+    fact already), but only when its dimension matches the prototypes': a fact embedded under a since-changed
+    model can't be compared to them, the same guard ``contradiction_pairs`` already applies before any ``cosine``
+    call."""
     cache = _family_proto_cache.get(model_key)
     if cache is None:
         cache = {name: await embed_one(proto) for name, proto in _FAMILY_PROTOTYPES.items()}
         _family_proto_cache[model_key] = cache
-    vec = await embed_one(text)
-    return {name for name, proto_vec in cache.items() if cosine(vec, proto_vec) >= threshold}
+    dim = len(next(iter(cache.values()), []))
+    vec = vector if vector and len(vector) == dim else await embed_one(text)
+    if not vec:
+        return set()
+    ranked = sorted(((cosine(vec, proto_vec), name) for name, proto_vec in cache.items()), reverse=True)
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < margin:
+        return set()
+    return {ranked[0][1]} if ranked else set()
 
 
 PAST_RE = re.compile(
@@ -337,7 +410,9 @@ def profile_fact(text: str, user_name: str = "") -> FactProfile:
         if base[:1].isdigit() or (i > 0 and base[:1].isupper()):
             details.add(base)
     return FactProfile(
-        subjects=frozenset(fact_subjects(text, user_name)),
+        # subject_aliases, not fact_subjects: a Devanagari fact needs scripts.devanagari_subjects to get a
+        # subject at all (#95) - fact_subjects only reads capital letters, which Devanagari doesn't have.
+        subjects=frozenset(subject_aliases(text, user_name)),
         families=frozenset(attribute_families(text)),
         negation=bool(NEGATION_RE.search(text or "")),
         details=frozenset(details),
@@ -351,15 +426,28 @@ async def profile_fact_async(
     embed_one: Callable[[str], Awaitable[list[float]]] | None,
     user_name: str = "",
     model_key: str = "",
-    threshold: float = 0.78,
+    margin: float = 0.02,
+    vector: list[float] | None = None,
 ) -> FactProfile:
     """Like :func:`profile_fact`, but when the keyword attribute families come back empty - usually because
     ``text`` isn't English - falls back to :func:`embedding_attribute_families`. ``embed_one`` is omitted
-    (``None``) wherever an embedder isn't on hand (e.g. the dreaming service with no configured memory)."""
+    (``None``) wherever an embedder isn't on hand (e.g. the dreaming service with no configured memory).
+
+    ``vector`` is the fact's own embedding, already computed and stored, when the caller has it (dreaming
+    reviews every active fact and each one has one) - reused instead of embedding the same text again, which
+    against 500 facts with no keyword family was the difference between 241 s and 14.5 s. A fresh embed call
+    is the fallback for text that has no stored vector yet (a fact not yet saved).
+
+    An embedding call failing (a local model briefly unavailable, say) falls back to the keyword-only profile
+    rather than failing the whole contradiction step over one fact."""
     prof = profile_fact(text, user_name)
     if prof.families or embed_one is None:
         return prof
-    families = await embedding_attribute_families(text, embed_one, model_key, threshold)
+    try:
+        families = await embedding_attribute_families(text, embed_one, model_key, margin, vector)
+    except Exception:
+        log.warning("embedding attribute families failed for a fact, keeping the keyword-only profile", exc_info=True)
+        return prof
     return prof if not families else replace(prof, families=frozenset(families))
 
 
@@ -420,16 +508,41 @@ def same_subject(a: str, b: str, user_name: str = "") -> bool:
     "प्रिया" vs "Riya"). Names match across scripts ("माया" is "Maya"). Unclear subjects count as the same, and so
     does "the user" next to a name while the user's name isn't set."""
     sa, sb = subject_aliases(a, user_name), subject_aliases(b, user_name)
-    if not sa or not sb or sa & sb:
+    return not sa or not sb or _aliases_match(sa, sb, user_name)
+
+
+def _aliases_match(sa: set[str], sb: set[str], user_name: str) -> bool:
+    if sa & sb:
         return True
-    users = {"user", "the user", (user_name or "").strip().lower()} - {""}
-    unnamed = not (user_name or "").strip()
+    full = (user_name or "").strip().lower()
+    # the user by full or first name: "I" (Maya Rao) is "Maya" (#463)
+    users = {"user", "the user", full, full.split()[0] if full else ""} - {""}
+    unnamed = not full
     ka, kb = _subject_keys(sa, users), _subject_keys(sb, users)
     for oa, ra in ka:
         for ob, rb in kb:
-            if ra == rb and (names_match(oa, ob) or (unnamed and "user" in (oa, ob))):
+            if ra != rb:
+                continue
+            # "her sister" may be anyone's sister, but never a person herself (#463)
+            if names_match(oa, ob) or (ra and SOMEONE in (oa, ob)) or (unnamed and "user" in (oa, ob)):
                 return True
     return False
+
+
+def same_person(a: str, b: str, user_name: str = "") -> bool:
+    """Both facts say who they are about, and it is the same person or thing (:func:`same_subject`). What Sentient
+    decides in code, without the model (a correction, a new home), needs this: "She moved to Delhi" says nobody, and
+    "Maya Rao's sister Priya lives in Mumbai" is never about Maya (#463). "Her sister" names no owner either, so it
+    only counts by a name it shares ("her sister Priya" and "Priya")."""
+    unknown_owner = f"{SOMEONE}'s "
+    sa = {s for s in subject_aliases(a, user_name) if not s.startswith(unknown_owner)}
+    sb = {s for s in subject_aliases(b, user_name) if not s.startswith(unknown_owner)}
+    return bool(sa) and bool(sb) and _aliases_match(sa, sb, user_name)
+
+
+def relation_of_someone(text: str, user_name: str = "") -> bool:
+    """The fact is about "her sister", "his colleague" or "उसकी बहन" ("her sister Priya" too): whose it is is unclear."""
+    return any(a.startswith(f"{SOMEONE}'s ") for a in subject_aliases(text, user_name))
 
 
 def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
@@ -509,9 +622,14 @@ def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | No
         return None
     if bool(PAST_RE.search(core)) != bool(PAST_RE.search(existing)):
         return None
-    if not same_thing(core, existing, user_name):
-        return None
-    new_vals, old_vals = _values(core), _values(existing)
+    if not same_person(core, existing, user_name) or not same_thing(core, existing, user_name):
+        return None  # decided in code, so both facts must clearly be about one person (#463)
+    # the user's surname is who, not a value ("Maya moved to Mumbai" loses no "Rao"), and an old fact's own replaced
+    # value is history ("moved from Pune to Bengaluru" only states Bengaluru now) (#463)
+    names = set(_TOKEN_RE.findall((user_name or "").lower()))
+    old_core = _REPLACED_RE.sub(" ", existing)
+    new_vals = {k: v for k, v in _values(core).items() if k not in names}
+    old_vals = {k: v for k, v in _values(old_core).items() if k not in names}
     core_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(core)}
     old_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(existing)}
     gained = {k: v for k, v in new_vals.items() if k not in old_words}
@@ -520,14 +638,14 @@ def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | No
         return None
     subjects = subject_aliases(core, user_name) | subject_aliases(existing, user_name)
     drop = {w for s in subjects for w in _TOKEN_RE.findall(s)} | set(new_vals) | set(old_vals)
-    drop |= {"user", (user_name or "").strip().lower()}
-    frame_new, frame_old = _frame(core, drop), _frame(existing, drop)
+    drop |= {"user", (user_name or "").strip().lower()} | names
+    frame_new, frame_old = _frame(core, drop), _frame(old_core, drop)
     tight = attribute_families(core) & attribute_families(existing) & TIGHT_FAMILIES
     union = frame_new | frame_old
     alike = bool(frame_old) and (frame_old <= frame_new or len(frame_new & frame_old) / len(union) >= 0.6)
     if not (alike or tight):
         return None
-    if len(gained) == 1 and len(lost) == 1 and frame_new <= frame_old:
+    if len(gained) == 1 and len(lost) == 1 and frame_new <= frame_old and old_core == existing:
         [(old_key, _)] = lost.items()
         [new_value] = gained.values()
         swapped, n = re.subn(rf"\b{re.escape(old_key)}\b", new_value, existing, count=1, flags=re.IGNORECASE)
@@ -1018,7 +1136,7 @@ class FactMemory:
         similar memories never strips the other's lines or evidence."""
         await self.ensure_schema()
         row = await self.store.fetchone(
-            "SELECT id, content, previous_content, source_ref FROM facts WHERE id = ?", (fid,)
+            "SELECT id, content, previous_content, source_ref, state, superseded_by FROM facts WHERE id = ?", (fid,)
         )
         if row is None:
             return False
@@ -1033,6 +1151,11 @@ class FactMemory:
         )
         if not await self.forget(fid, notify=notify):
             return False
+        if row["state"] == "superseded" and row["superseded_by"] is not None:
+            await self.store.execute(
+                "UPDATE facts SET previous_content = NULL WHERE id = ? AND previous_content = ?",
+                (row["superseded_by"], row["content"]),
+            )
         rows = [row, *copies]
         texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
         refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
@@ -1318,7 +1441,9 @@ class FactMemory:
             raise KeyError(fid)
         if row["scope"] != target:
             await self.store.execute(
-                "UPDATE facts SET scope = ?, updated_at = ? WHERE id = ?", (target, now_iso(), fid)
+                "UPDATE facts SET scope = ?, updated_at = CASE WHEN state = 'superseded' THEN updated_at ELSE ? END"
+                " WHERE id = ?",
+                (target, now_iso(), fid),
             )
             self.publish("UPDATE", fid, row["content"], scope=target, previous_scope=row["scope"], reason="moved")
         fact = await self.get_fact(fid)
@@ -1351,8 +1476,8 @@ class FactMemory:
         itself falls back to embedding similarity when the keyword families miss, e.g. non-English text."""
         user = self.config.assistant.user_name
         model_key = self.llm.model_for("embedding")
-        threshold = self.config.memory.family_similarity
-        prof = await profile_fact_async(fact, self.embed_query, user, model_key, threshold)
+        margin = self.config.memory.family_margin
+        prof = await profile_fact_async(fact, self.embed_query, user, model_key, margin)
         if not prof.subjects or not prof.families:
             return []
         terms = [t for s in sorted(prof.subjects) for t in keyword_tokens(s)]
@@ -1371,7 +1496,7 @@ class FactMemory:
         )
         out = []
         for r in rows:
-            other = await profile_fact_async(r["content"], self.embed_query, user, model_key, threshold)
+            other = await profile_fact_async(r["content"], self.embed_query, user, model_key, margin)
             if prof.families & other.families and conflict_strength(prof, other) > 0:
                 out.append(_row_to_memory(r))
         out.sort(key=lambda m: m["updated_at"] or "", reverse=True)
@@ -1394,13 +1519,10 @@ class FactMemory:
         user = self.config.assistant.user_name
         if PAST_RE.search(fact) or "residence" not in attribute_families(fact):
             return None
-        subjects = fact_subjects(fact, user)
-        if not subjects:
-            return None
         peers = [
             n for n in candidates
             if "residence" in attribute_families(n["content"])
-            and subjects & fact_subjects(n["content"], user)
+            and same_person(fact, n["content"], user)  # never someone else's home (#463)
             and not PAST_RE.search(n["content"])
             and new_details(fact, n["content"])
         ]
@@ -1430,6 +1552,7 @@ class FactMemory:
         ``memory.updated`` event, so that chat can show "Remembered: ... Undo". Duplicates, updates and corrections
         only look at facts in ``scope`` and always: a save never changes a memory in another scope."""
         user = self.config.assistant.user_name
+        fact = name_the_user(fact, user)  # the memory tool and the Memory screen save words as given (#475)
         scope = memory_scopes.normalize(scope, memory_scopes.PERSONAL) or memory_scopes.PERSONAL
         refs: dict[str, dict] = {source: ref} if ref else {}
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
@@ -1608,7 +1731,7 @@ class FactMemory:
                         fid = int(raw["fact_id"]) if raw.get("fact_id") is not None else None
                     except (TypeError, ValueError):
                         fid = None
-                    content = str(raw.get("content") or fact).strip()
+                    content = name_the_user(str(raw.get("content") or fact), user).strip()  # #475
                     topics, memory_type, duration = _analysis_from(raw)
             except Exception as exc:
                 log.warning("CUD decision failed, defaulting to ADD: %s", exc)
@@ -1633,10 +1756,12 @@ class FactMemory:
             if matched and not (
                 same_thing(fact, matched, user) and same_thing(content, matched, user)
                 and not says_something_else(fact, matched, user)
+                and (not relation_of_someone(content, user) or same_person(content, matched, user))
             ):
                 # a different person or action ("files written" vs "files deleted"), in the new fact or in the
                 # model's rewrite that would be stored, or something unrelated about the same person ("a piano
-                # recital in July" vs "starts school in July"): both facts hold
+                # recital in July" vs "starts school in July"): both facts hold. The model may tell whose "her
+                # sister" it is, by naming her in what it stores ("Maya's sister lives in Delhi") (#463)
                 log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
                 action, content, topics = "ADD", fact, None
             elif dropped and not (
@@ -1721,10 +1846,7 @@ class FactMemory:
         text = " ".join(str(fact).split()).strip(" -*•")
         if len(text) < 6:
             return None
-        name = username.strip()
-        if name:
-            text = re.sub(r"\b(the user|USERNAME)'s\b", f"{name}'s", text, flags=re.IGNORECASE)
-            text = _USER_REF_RE.sub(name, text)
+        text = name_the_user(text, username)
         text = text[:1].upper() + text[1:]
         if _REQUEST_RE.search(text) or _NOISE_RE.search(text) or _UNKNOWN_RE.search(text) or _TAUTOLOGY_RE.match(text):
             return None
@@ -2016,13 +2138,35 @@ class FactMemory:
     # ------------------------------------------------------------------ housekeeping
     async def purge_expired(self) -> int:
         rows = await self.store.fetchall(
-            "SELECT id FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
+            "SELECT id, state FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
         )
         for r in rows:
-            await self.forget(int(r["id"]))
+            # Superseded rows have derived history too; discard it with the same cascade as retention cleanup.
+            if r["state"] == "superseded":
+                await self.erase(int(r["id"]))
+            else:
+                await self.forget(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, reason="expired", count=len(rows))
-        return len(rows)
+        return len(rows) + await self.purge_superseded()
+
+    async def purge_superseded(self) -> int:
+        """Erase memories that were superseded more than ``memory.keep_superseded_days`` ago, with everything derived
+        from them (:meth:`erase`). 0 keeps them forever. Current and disputed memories are never touched."""
+        days = self.config.memory.keep_superseded_days
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE state = 'superseded' AND updated_at < ?", (cutoff,)
+        )
+        erased = 0
+        for r in rows:
+            if await self.erase(int(r["id"])):
+                erased += 1
+        if erased:
+            self.publish("DELETE", None, None, reason="superseded_expired", count=erased)
+        return erased
 
     async def count(self) -> int:
         row = await self.store.fetchone(f"SELECT COUNT(*) AS n FROM facts WHERE {ACTIVE}")
@@ -2300,7 +2444,7 @@ class FactMemory:
         await self.ensure_schema()
         rows = await self.store.fetchall(
             f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND memory_type = 'short-term' AND recall_count >= ?"
-            " AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
+            " AND state != 'superseded' AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
             (min_recalls, now_iso(), limit),
         )
         out = []

@@ -1,9 +1,9 @@
-import { IconBrain, IconEdit, IconListCheck, IconWaveSine, IconWorldWww, type Icon } from '@tabler/icons-react'
+import { IconBrain, IconEdit, IconListCheck, IconSchool, IconWaveSine, IconWorldWww, type Icon } from '@tabler/icons-react'
 import { motion } from 'motion/react'
 import { cn } from '@/lib/utils'
 
 export interface SlashCommand {
-  name: 'new' | 'voice' | 'task' | 'remember' | 'browser'
+  name: 'new' | 'voice' | 'task' | 'remember' | 'learn' | 'browser'
   /** Hint for the text that follows the command. */
   arg?: string
   description: string
@@ -14,6 +14,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', description: 'Start a new chat', icon: IconEdit },
   { name: 'task', arg: 'what to do', description: 'Hand Sentient a task to work on in the background', icon: IconListCheck },
   { name: 'remember', arg: 'something about you', description: 'Save a fact to memory', icon: IconBrain },
+  { name: 'learn', arg: 'a link, file or folder', description: 'Turn docs or a written workflow into a skill to review', icon: IconSchool },
   { name: 'voice', description: 'Talk with Sentient out loud', icon: IconWaveSine },
   { name: 'browser', description: "Watch Sentient's browser", icon: IconWorldWww }
 ]

@@ -4,6 +4,8 @@
     ~/.sentient/skills/pending/<name>/SKILL.md    waiting for review (new skill, or a proposed
                                                   update of the active skill with the same name)
     ~/.sentient/skills/archived/<name>/SKILL.md   retired by the curator or the user
+    ~/.sentient/skills/<name>/references/*.md     optional reference files (a skill learned from long docs, #167):
+                                                  ``skill_view`` reads one only when the skill is used
     ---
     name: weekly-review
     description: How to compile the user's weekly review from calendar and notes.
@@ -47,6 +49,8 @@ from sentient.store.db import now_iso
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 RESERVED = {"pending", "archived"}
+REFERENCE_SUFFIXES = {".md", ".markdown", ".txt", ".rst", ".csv", ".json", ".yaml", ".yml"}
+MAX_REFERENCE_FILES = 50
 _UNSET: Any = object()
 
 
@@ -84,6 +88,30 @@ class Skill:
     def dir(self) -> Path:
         return self.path.parent
 
+    @property
+    def references(self) -> list[str]:
+        """The skill's reference files (``references/setup.md``, #167): the text files in its ``references`` folder,
+        which ``skill_view`` reads one at a time when the skill is used. Dotfiles and links are left out."""
+        out: list[str] = []
+        base = self.dir / "references"
+        if not base.is_dir() or base.is_symlink():
+            return out
+        root = self.dir.resolve()
+        for f in sorted(base.rglob("*")):
+            rel = f.relative_to(self.dir)
+            if any(part.startswith(".") for part in rel.parts) or f.suffix.lower() not in REFERENCE_SUFFIXES:
+                continue
+            if f.is_file() and not f.is_symlink() and f.resolve().is_relative_to(root):
+                out.append(rel.as_posix())
+        return out[:MAX_REFERENCE_FILES]
+
+    def reference_path(self, rel: str) -> Path | None:
+        """The reference file ``rel`` names, or None when it isn't one of the skill's reference files."""
+        want = str(rel or "").strip().replace("\\", "/").removeprefix("./")
+        if want and "/" not in want:
+            want = f"references/{want}"
+        return self.dir / want if want in self.references else None
+
     def summary_line(self) -> str:
         return f"- {self.name}: {self.description}"
 
@@ -117,6 +145,7 @@ class Skill:
             "created_by_review": self.created_by_review,
             "browser_profile": self.browser_profile,
             "validate": self.validate,
+            "references": self.references,
             "check": SkillLibrary.check_of(stats, pending=self.state == "pending_review") if self.validate else None,
         }
         if body:

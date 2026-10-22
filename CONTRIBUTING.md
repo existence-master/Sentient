@@ -74,6 +74,22 @@ Life happens, and that's fine. To keep issues moving for everyone, a bot checks 
 Draft pull requests are never touched, and the clock only runs while we are waiting on you, never while you
 are waiting on us.
 
+### We do the chores
+
+You bring the change; we take care of the busywork around it, so a pull request never stalls on housekeeping.
+
+- **What we may do on your branch:** merge `main` into it, resolve conflicts, rename or add a changelog file,
+  fix lint or formatting, re-run checks, and make tiny fixes a review asked for.
+- **What we always do:** say exactly what we pushed in a comment, never force-push, and only push when
+  **Allow edits by maintainers** is ticked on your pull request (it is by default).
+- **What stays yours:** anything that changes how your code behaves or how it is designed comes back to you as
+  a review, never as a surprise commit.
+- **Your branch doesn't need to be up to date to merge.** The merge queue tests your change on top of the
+  latest `main` before it lands. If you want `main` merged in anyway, comment `/update` on the pull request:
+  a bot tries to merge it in (a merge, never a rebase) and tells you what happened. If it can't update your
+  branch, it shows you how to do it with GitHub's **Update branch** button. If there are conflicts, it lists
+  the files and labels the pull request `needs update`, and a maintainer resolves them for you.
+
 ### PR titles
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) with an area, because the title becomes the

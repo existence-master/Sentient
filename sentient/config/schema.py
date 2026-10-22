@@ -13,7 +13,7 @@ class below and may add fields to it. Do not edit another package's section.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -518,11 +518,13 @@ class MemoryConfig(BaseModel):
         6000, ge=500, description="Max characters injected from each workspace markdown file."
     )
     graph_link_similarity: float = Field(0.80, ge=0.0, le=1.0, description="Memory graph edge threshold.")
-    family_similarity: float = Field(
-        0.78, ge=0.0, le=1.0,
+    family_margin: float = Field(
+        0.02, ge=0.0, le=1.0,
         description="When the English keyword attribute families (residence, job, ...) find nothing in a fact - "
-        "often because it isn't English - a family is assigned instead above this embedding similarity to a short "
-        "description of it. Local embedding models score unrelated text around 0.65, so keep it high.",
+        "often because it isn't English - a family is assigned instead, whichever embeds closest to a short "
+        "description of it, as long as it's ahead of the next closest by at least this much. A fixed similarity "
+        "floor doesn't travel between embedding models (one scored an unrelated Hindi fact 0.44-0.49 against "
+        "every family alike), so this compares the best match against the runner-up instead of an absolute score.",
     )
     summarize_after_minutes: int = Field(
         60, ge=5, description="Conversation chunks older than this are summarized into episodic memory."
@@ -552,9 +554,55 @@ class MemoryConfig(BaseModel):
         description="Memories waiting for your review (from emails, web pages, imports or work Sentient did on its "
         "own) are let go after this many days without an answer.",
     )
+    keep_superseded_days: int = Field(
+        180, ge=0, le=3650,
+        description="When a newer memory replaces an older one, the older one is kept as history for this many days, "
+        "then deleted for good. Your current memories are never deleted by this. 0 keeps the history forever.",
+    )
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
+class EmailTasksConfig(BaseModel):
+    """Tasks by email (#159): an email forwarded or copied to the user's Sentient address becomes a task."""
+
+    enabled: bool = Field(
+        False,
+        description="Forward or copy an email to your Sentient address and Sentient makes a task from it. Off until "
+        "you turn it on.",
+    )
+    address: str = Field(
+        "",
+        description="Your Sentient address, for example you+sentient@gmail.com. Email sent or copied to it becomes a "
+        "task. Most email services deliver an address with +something to your normal inbox.",
+    )
+    label: str = Field(
+        "",
+        description="Optional. A Gmail label or email folder: email that lands there becomes a task too. Over IMAP, "
+        "also add the folder to the folders the account watches.",
+    )
+    allowed_senders: list[str] = Field(
+        default_factory=list,
+        description="Other people who may give Sentient tasks by email, by their real address. Your own addresses "
+        "(the email accounts you connected) can always send tasks. The name shown next to an address never counts.",
+    )
+
+    @field_validator("address", "label")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("allowed_senders")
+    @classmethod
+    def _senders(cls, value: list[str]) -> list[str]:
+        seen: dict[str, None] = {}
+        for item in value or []:
+            for part in str(item).replace(";", ",").split(","):
+                address = part.strip().lower()
+                if address:
+                    seen.setdefault(address, None)
+        return list(seen)
+
+
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
@@ -613,6 +661,10 @@ class TasksConfig(BaseModel):
     away_ask_hours: int = Field(
         24, ge=0, le=168, description="Before pausing, ask once and wait this many hours for any sign of you. "
         "0 pauses without asking.",
+    )
+    email: EmailTasksConfig = Field(
+        default_factory=EmailTasksConfig,
+        description="Tasks by email: forward or copy an email to your Sentient address to give it a task (#159).",
     )
 
 
@@ -1055,10 +1107,24 @@ class NodesConfig(BaseModel):
         False, description="Accept devices on your local network (encrypted, pairing code required)."
     )
     lan_port: int = Field(7778, ge=1024, le=65535, description="Port devices on your network connect to.")
+    lan_bind_all: bool = Field(
+        False,
+        description="Bind the device listener to every network interface (0.0.0.0) instead of this computer only "
+        "(loopback). Off by default: enable it only if devices cannot reach Sentient, and keep pairing on.",
+    )
     mdns_enabled: bool = Field(
         True,
         description="Announce Sentient on your network (mDNS) so glasses and phones find it without typing an address.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_lan_bind_all(cls, data: Any) -> Any:
+        # Configs saved before nodes.lan_bind_all existed bound the LAN listener to every
+        # interface, so an existing lan_enabled opt-in keeps working until the user chooses otherwise.
+        if isinstance(data, dict) and "lan_bind_all" not in data and data.get("lan_enabled") is True:
+            data = {**data, "lan_bind_all": True}
+        return data
     camera_requires_approval: bool = Field(
         True, description="Ask before the assistant takes a photo or captures a screen with one of your devices."
     )

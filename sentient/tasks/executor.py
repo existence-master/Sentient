@@ -29,12 +29,13 @@ from typing import TYPE_CHECKING, Any
 
 from sentient.agent import dry_run, outcomes, preview, rule_levels
 from sentient.agent.loop import ASK_FIRST_KEY, CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
+from sentient.agent.second_look import BRIEF_FROM_KEY
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.sources import MemorySources
-from sentient.tasks import ask, checklist, continuity, limits, stuck
+from sentient.tasks import ask, checklist, continuity, email_inbox, limits, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -274,8 +275,10 @@ async def _executor_system_prompt(
         name=task.get("name") or "",
         description=task.get("description") or "",
         plan=plan,
-        original_context=task.get("original_context"),
-        trigger_event_data=run.get("trigger_data"),
+        # a task by email reads its email as the event that started it: marked as outside content (#159)
+        original_context=_brief_context(task),
+        trigger_event_data=run.get("trigger_data") or (
+            email_inbox.email_of_task(task) if email_inbox.is_email_task(task) else None),
         memories=[f["content"] for f in facts],
         tool_map=tool_map,
         earlier=earlier,
@@ -285,8 +288,20 @@ async def _executor_system_prompt(
     ), facts, kickoff
 
 
+def _brief_context(task: dict) -> dict | None:
+    """A task's original context for the executor's brief, without the email of a task by email (it goes in as the
+    trigger data, marked as outside content)."""
+    context = task.get("original_context")
+    if email_inbox.is_email_task(task):
+        return {k: v for k, v in (context or {}).items() if k != "email"}
+    return context
+
+
 def _trigger_source(app: Any, task: dict, run: dict) -> str:
-    """The app whose event started this run ("Gmail"), or "" for runs nobody outside started (ADR 0018)."""
+    """The app whose event started this run ("Gmail"), or "" for runs nobody outside started (ADR 0018). A task made
+    from an email (#159) is started by that email, in every run."""
+    if email_inbox.is_email_task(task):
+        return email_inbox.app_name(task)
     if not run.get("trigger_data"):
         return ""
     source = str((task.get("schedule") or {}).get("source") or "")
@@ -408,6 +423,8 @@ async def execute_single(
                 ctx.extra[dry_run.KEY] = trying(svc, run)
             if checklist.asks_first(task):  # the routine's checklist says ask before sending or running anything (#161)
                 ctx.extra[ASK_FIRST_KEY] = True
+            if email_inbox.is_email_task(task):  # its brief was written from an email, not by the user (#159)
+                ctx.extra[BRIEF_FROM_KEY] = email_inbox.app_name(task)
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
                 if svc.holding(run_id):  # paused before an approved call ran: it runs once the task is resumed

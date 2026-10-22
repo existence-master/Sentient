@@ -1,4 +1,4 @@
-import { IconAlertTriangle, IconArrowUpRight, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPackageImport, IconPencil, IconSparkles, IconUserEdit, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconArrowUpRight, IconBooks, IconCheck, IconCode, IconEyeCheck, IconFileDescription, IconFilePencil, IconFirstAidKit, IconPackageImport, IconPencil, IconSparkles, IconUserEdit, IconX } from '@tabler/icons-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
@@ -22,7 +22,7 @@ import { isRepairProposal, splitFrontmatter } from './meta'
 
 function proposalFor(log: EvolutionLogEntry[] | undefined, name: string) {
   return log?.find(
-    (e) => e.detail?.name === name && (e.kind === 'skill_repair_proposed' || ((e.kind === 'skill_created' || e.kind === 'skill_patched') && e.detail?.pending === true))
+    (e) => e.detail?.name === name && (e.kind === 'skill_repair_proposed' || ((e.kind === 'skill_created' || e.kind === 'skill_patched' || e.kind === 'skill_learned') && e.detail?.pending === true))
   )
 }
 
@@ -258,6 +258,21 @@ function ReviewCard({
         <LintList findings={vetting ? pending.lint?.filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule)) : pending.lint} title={pending.lint?.some((f) => f.level === 'error') ? 'Check this proposal carefully' : 'Suggestions for this proposal'} />
 
         <SkillChecks skill={pending} />
+
+        {!!pending.references?.length && (
+          <div className="rounded-xl border border-border bg-sunken/50 px-4 py-3">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
+              <IconBooks size={13} /> Reference files, read only when the skill is used
+            </div>
+            <ul className="mt-1.5 flex flex-wrap gap-1.5">
+              {pending.references.map((f) => (
+                <li key={f} className="rounded-md border border-border bg-surface px-1.5 py-0.5 font-mono text-2xs text-fg-subtle">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* content */}
         {draft ? (

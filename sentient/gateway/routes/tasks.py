@@ -96,6 +96,12 @@ async def away_keep(request: Request):
     return await _tasks(request).away.keep()
 
 
+@router.get("/email")
+async def email_status(request: Request, limit: int = 20):
+    """Tasks by email (#159): the address, who may send tasks and what happened to the latest emails."""
+    return await _tasks(request).inbox.status(limit=limit)
+
+
 @router.get("/{task_id}")
 async def get_task(request: Request, task_id: str):
     return await _guard(_tasks(request).get(task_id))

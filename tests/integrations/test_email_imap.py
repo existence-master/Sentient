@@ -295,7 +295,7 @@ async def test_idle_loop_baseline_push_privacy_and_reconnect(app, keychain, monk
             assert (batch["source"], batch["event"], batch["origin"]) == ("email_imap", "new_email", "feed")
             assert [i["id"] for i in batch["items"]] == ["2"]
             item = batch["items"][0]
-            assert set(item) == GMAIL_KEYS | {"message_id"}
+            assert set(item) == GMAIL_KEYS | {"message_id", "cc", "headers"}  # cc and headers: #159
             assert item["sender_email"] == "jane@y.com" and item["subject"] == "Lunch?"
             assert item["body"] == "Want lunch at 1?" and item["message_id"] == "<m2@x>"
             assert item["labels"] == ["INBOX", "UNREAD", "STARRED"] and item["date"].startswith("2026-09-15T09:00")

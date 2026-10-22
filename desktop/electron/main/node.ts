@@ -15,6 +15,7 @@ import { writeFileSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type { DesktopNodeState, ShellPrefs } from '../../src/types/bridge'
+import { parseSensors, type LiveSensors } from './sensors-logic'
 
 const CAPABILITIES = ['screen.capture', 'camera.photo', 'clipboard.read', 'clipboard.write', 'notify.show'] as const
 const PING_MS = 25_000
@@ -52,6 +53,10 @@ export interface DesktopNodeHost {
   onState(state: DesktopNodeState): void
   /** §17: the engine's Stop everything state (welcome and `stop_state`). */
   onStopState?(stopped: boolean): void
+  /** #170: every live microphone and camera (`sensors`); null while the engine is not connected. */
+  onSensors?(state: LiveSensors | null): void
+  /** #170: the indicator's Turn off for push to talk or dictation on this computer (`stop_sensor`). */
+  onStopSensor?(sensor: 'mic' | 'camera'): void
   icon: string
 }
 
@@ -89,6 +94,7 @@ export class DesktopNode {
   private reconnectTimer: NodeJS.Timeout | null = null
   private pingTimer: NodeJS.Timeout | null = null
   private cameraWebContents = new Set<number>()
+  private micFor: string | null = null // push to talk or dictation has the microphone on (#170)
   private asking: Partial<Record<Privacy, Promise<boolean>>> = {}
 
   constructor(private host: DesktopNodeHost) {}
@@ -109,6 +115,13 @@ export class DesktopNode {
     this.stopped = true
     this.teardown()
     this.setState('off')
+    this.host.onSensors?.(null)
+  }
+
+  /** #170 Tell the engine this computer's microphone is on (push to talk, dictation) or off again. */
+  reportMic(purpose: string | null): void {
+    this.micFor = purpose
+    this.send(purpose ? { type: 'state', mic: true, mic_for: purpose } : { type: 'state', mic: false })
   }
 
   /** The permission handler allows camera access only for the hidden capture window. */
@@ -165,8 +178,15 @@ export class DesktopNode {
           if (keepalive > 0) this.startPing(Math.max(5_000, keepalive * 1000))
           this.setState('online')
           if (typeof msg.stopped === 'boolean') this.host.onStopState?.(msg.stopped)
+          if (this.micFor) this.send({ type: 'state', mic: true, mic_for: this.micFor }) // a reconnect mid recording
           break
         }
+        case 'sensors':
+          this.host.onSensors?.(parseSensors(msg))
+          break
+        case 'stop_sensor':
+          if (msg.sensor === 'mic' || msg.sensor === 'camera') this.host.onStopSensor?.(msg.sensor)
+          break
         case 'stop_state':
           if (typeof msg.stopped === 'boolean') this.host.onStopState?.(msg.stopped)
           break
@@ -186,6 +206,7 @@ export class DesktopNode {
       if (this.ws !== ws) return
       this.stopPing()
       this.ws = null
+      this.host.onSensors?.(null) // the engine's list is unknown until it connects again
       if (!welcomed) this.failuresWithoutWelcome++
       if (this.stopped) return
       // An engine without /ws/node closes before welcoming: say so, keep retrying slowly.

@@ -564,8 +564,13 @@ class DreamingService(Service):
         mem = self.app.memory
         embed_one = mem.embed_query if mem is not None else None
         model_key = mem.llm.model_for("embedding") if mem is not None else ""
-        threshold = self.app.config.memory.family_similarity
-        profiles = [await profile_fact_async(f["content"], embed_one, user, model_key, threshold) for f in facts]
+        margin = self.app.config.memory.family_margin
+        # every active fact already has a stored vector (it was embedded on insert): reusing it here, instead
+        # of embedding the same text again, was the difference between 241 s and 14.5 s over 500 facts (#95)
+        profiles = [
+            await profile_fact_async(f["content"], embed_one, user, model_key, margin, vector=f.get("vector"))
+            for f in facts
+        ]
         groups: dict[str, list[int]] = {}
         for n, prof in enumerate(profiles):
             for s in prof.subjects:

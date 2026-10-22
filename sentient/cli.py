@@ -117,6 +117,9 @@ def node(
     ),
     insecure: bool = typer.Option(False, "--insecure", help="Accept any certificate (development only)"),
     speech: bool = typer.Option(True, "--speech/--no-speech", help="Speak 'speak' requests aloud with pyttsx3"),
+    camera_off: bool = typer.Option(
+        False, "--camera-off", help="Start in camera-off mode: the camera is off on the device (type c to switch)"
+    ),
 ):
     """Run a reference device node that simulates a phone or smart glasses (owner: nodes agent).
 
@@ -126,7 +129,7 @@ def node(
 
     node_main(
         url=url, code=code, name=name, kind=kind, camera=camera, fingerprint=fingerprint, insecure=insecure,
-        speech=speech,
+        speech=speech, camera_off=camera_off,
     )
 
 
@@ -215,6 +218,30 @@ async def _doctor(models: bool = False) -> None:
         row("sqlite-vec", s.store.vec_available, "semantic memory " + ("enabled" if s.store.vec_available else "DISABLED"))
         row("tools", True, f"{len(s.registry.tools())} tools from {len(s.registry.plugins())} plugins")
         row("skills", True, f"{len(s.skills.list())} active, {len(s.skills.list_pending())} pending review")
+        try:
+            lan = s.nodes.lan_status()
+            if lan["enabled"]:
+                if not lan["running"] or lan["error"]:
+                    row(
+                        "lan listener",
+                        False,
+                        f"port {lan['port']}, not running"
+                        + (f": {lan['error']}" if lan["error"] else ""),
+                    )
+                elif lan["bind_all"]:
+                    row(
+                        "lan listener",
+                        None,
+                        f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all); any host on the network can reach it, pairing required",
+                    )
+                else:
+                    row(
+                        "lan listener",
+                        True,
+                        f"port {lan['port']}, this computer only (loopback)",
+                    )
+        except Exception as exc:
+            row("lan listener", False, str(exc))
         try:
             text = ""
             async for chunk in s.llm.stream("primary", [{"role": "user", "content": "Reply with the single word: ready"}]):
