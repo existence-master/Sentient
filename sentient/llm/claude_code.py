@@ -210,6 +210,21 @@ def is_attended() -> bool:
     return _attended.get()
 
 
+_no_stand_in: ContextVar[bool] = ContextVar("sentient_claude_code_no_stand_in", default=False)
+
+
+@contextlib.contextmanager
+def without_stand_in() -> Iterator[None]:
+    """Calls inside keep the fast role's own refusal (no ``stand_in``): a check that has its own way on, such as the
+    rules-from-chat check, which then asks the chat's model as part of the reply (#311)."""
+    token = _no_stand_in.set(True)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(ValueError):
+            _no_stand_in.reset(token)
+
+
 def scratch_root() -> Path:
     """Where each reply's scratch folder goes (system prompt, tool list, MCP config). Removed after the reply."""
     return paths.home() / "tmp" / "claude-code"
@@ -422,8 +437,11 @@ def stand_in(config: SentientConfig, role: str, chain: list[str]) -> str | None:
     None. Saving a memory, pulling memories from a chat, summaries and titles run on the fast role; with it on Claude
     Code (and Claude Code not doing everything) they were refused, so a memory was always added, never updated or
     skipped. They go to the first other model the user set up instead: the main model's fallbacks, the executor, the
-    planner, the main model. Never the chat's own model: these jobs are background work (ADR 0022)."""
+    planner, the main model. Never the chat's own model: these jobs are background work (ADR 0022). Not inside a
+    reply someone waits for (``attended``: the second look asks Claude Code then) or ``without_stand_in``."""
     if role not in STAND_IN_ROLES or not chain or any(m.split("/", 1)[0] != PREFIX for m in chain):
+        return None
+    if is_attended() or _no_stand_in.get():  # part of a reply Claude Code may answer, or a check with its own way on
         return None
     if unattended_refusal(config, role) is None:  # Claude Code does everything (ADR 0032): it does these too
         return None

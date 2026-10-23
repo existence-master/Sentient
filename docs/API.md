@@ -691,8 +691,10 @@ accept or loosen a rule.
   message. When every model of the `fast` role is Claude Code (and it doesn't do everything), its jobs (memory
   decisions and extraction, summaries, titles) go to the first other model set up instead, never the chat's model:
   `fallbacks.primary`, then the executor, the planner, the main model (#474, `claude_code.stand_in`); the log says
-  `the fast model <model> can't do background work ..., so <model> does its jobs` once. The check-up and Settings
-  still flag the fast role. With no other model the refusal stands. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
+  `the fast model <model> can't do background work ..., so <model> does its jobs` once. Not inside a reply someone
+  waits for (the second look asks Claude Code then) or for the rules-from-chat check, which asks the chat's model
+  when the fast role refuses (#311). The check-up and Settings still flag the fast role. With no other model the
+  refusal stands. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
   model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
   (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route

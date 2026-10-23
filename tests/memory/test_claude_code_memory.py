@@ -95,6 +95,13 @@ def test_stand_in_is_another_model_the_user_set_up(cc_config):
     # only the fast role, and only when every model it has is Claude Code
     assert claude_code.stand_in(cc_config, "planner", chain) is None
     assert claude_code.stand_in(cc_config, "fast", ["claude-code/haiku", "openai/gpt-5-mini"]) is None
+    # inside a reply Claude Code may answer (the second look), and for the rules-from-chat check, which asks the
+    # chat's model when the fast role refuses (#311), the refusal stays
+    with claude_code.attended():
+        assert claude_code.stand_in(cc_config, "fast", chain) is None
+    with claude_code.without_stand_in():
+        assert claude_code.stand_in(cc_config, "fast", chain) is None
+    assert claude_code.stand_in(cc_config, "fast", chain) == "openai/gpt-5-mini"
     # Claude Code doing everything (ADR 0032) does these jobs itself
     cc_config.models.claude_code_everywhere = True
     assert claude_code.stand_in(cc_config, "fast", chain) is None
@@ -197,3 +204,23 @@ async def test_a_notice_that_failed_is_tried_again(make_app, model):
     await app.memory.remember("Maya plays the violin on Sundays.")
     await app.memory.remember("Maya reads before bed.")
     assert told == ["failed", "Memories saved without a full check"]  # told once it worked, then not again
+
+
+async def test_the_rules_check_still_goes_to_the_chats_model(make_app, cc_config, model, monkeypatch):
+    """#311 is unchanged: with the fast role only on Claude Code, the rules-from-chat check asks the chat's model
+    as part of the reply, not the stand-in."""
+    cc_config.models.roles.executor = LOCAL
+    app = await make_app()
+    asked: list[str | None] = []
+
+    async def reply(role, messages, tools=None, *, model=None):
+        asked.append(model or app.llm.model_for(role))
+        from sentient.llm.provider import StreamChunk
+
+        yield StreamChunk(text='{"keys": [], "level": "ask"}')
+        yield StreamChunk(done=True)
+
+    monkeypatch.setattr(app.llm, "stream", reply)
+    session_id = await app.store.create_session(title="Rules")
+    assert await app.chat_rules.detect(session_id, [{"role": "user", "content": "hi"}]) == {"keys": [], "level": "ask"}
+    assert asked == [CC] and model.asked == []
