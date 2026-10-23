@@ -484,20 +484,23 @@ function HubPreviewSheet({ source, skill, onOpenChange, onReview }: { source: Hu
       )}
       <ConfirmDialog
         open={ask === 'confirm_source'}
-        onOpenChange={(o) => !o && setAsk(null)}
+        onOpenChange={(o) => !o && setAsk((a) => (a === 'confirm_source' ? null : a))}
         tone="primary"
         title={`Install from ${source.name}?`}
         description="You added this source yourself, so Sentient can't vouch for who runs it. The skill still waits in Pending review with its safety check before Sentient uses it."
         confirmLabel="Yes, install for review"
         onConfirm={() => {
-          setAsk(null)
+          // a high-risk skill asks once more; clear only when no other question follows
           if (high) setAsk('high_risk')
-          else void install(true, false)
+          else {
+            setAsk(null)
+            void install(true, false)
+          }
         }}
       />
       <ConfirmDialog
         open={ask === 'high_risk'}
-        onOpenChange={(o) => !o && setAsk(null)}
+        onOpenChange={(o) => !o && setAsk((a) => (a === 'high_risk' ? null : a))}
         title={`Install ${skill?.name ?? 'this skill'} anyway?`}
         description="The safety check found high-risk problems: it could tell Sentient to ignore its rules or send your data somewhere. It will still wait for review, and approving it will ask again."
         confirmLabel="Install anyway"
