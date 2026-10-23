@@ -414,6 +414,24 @@ def move_leftovers(config: SentientConfig) -> list[dict[str, str | None]]:
     return moved
 
 
+STAND_IN_ROLES = ("fast",)  # quick jobs a chat turn starts (memory decisions, extraction, summaries, titles)
+
+
+def stand_in(config: SentientConfig, role: str, chain: list[str]) -> str | None:
+    """The model that does ``role``'s quick jobs when every model it has is Claude Code that refuses them (#474), or
+    None. Saving a memory, pulling memories from a chat, summaries and titles run on the fast role; with it on Claude
+    Code (and Claude Code not doing everything) they were refused, so a memory was always added, never updated or
+    skipped. They go to the first other model the user set up instead: the main model's fallbacks, the executor, the
+    planner, the main model. Never the chat's own model: these jobs are background work (ADR 0022)."""
+    if role not in STAND_IN_ROLES or not chain or any(m.split("/", 1)[0] != PREFIX for m in chain):
+        return None
+    if unattended_refusal(config, role) is None:  # Claude Code does everything (ADR 0032): it does these too
+        return None
+    roles = config.models.roles
+    candidates = [*config.models.fallbacks.get("primary", []), roles.executor, roles.planner, roles.primary]
+    return next((m for m in candidates if m and m.split("/", 1)[0] != PREFIX and m not in chain), None)
+
+
 ROLE_LABELS = {"primary": "Primary", "fast": "Fast / background", "planner": "Planner", "executor": "Executor",
                "embedding": "Embedding", "vision": "Vision", "voice": "Voice"}  # as Settings > Models names them
 

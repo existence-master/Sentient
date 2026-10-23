@@ -213,6 +213,7 @@ class LiteLLMProvider:
         self.config = config
         self.meter = meter  # set by the app: every call is checked against the budget and counted (#148)
         self._max_context: dict[str, int | None] = {}
+        self._stand_ins_logged: set[tuple[str, str, str]] = set()  # (role, its model, stand-in) said once (#474)
         # one local model call at a time, chats first (#149); reads the config live, so Settings changes apply
         self.jobs = ModelJobs(lambda: self.config.models)
 
@@ -254,7 +255,17 @@ class LiteLLMProvider:
         fallbacks = self.config.models.fallbacks.get(role) or (
             self.config.models.fallbacks.get("primary", []) if role in {"planner", "executor", "vision", "voice"} else []
         )
-        return [primary, *[m for m in fallbacks if m != primary]]
+        chain = [primary, *[m for m in fallbacks if m != primary]]
+        from sentient.llm.claude_code import stand_in
+
+        spare = stand_in(self.config, role, chain)
+        if spare is not None:  # the fast role is only on Claude Code, which would refuse its jobs (#474)
+            if (role, chain[0], spare) not in self._stand_ins_logged:
+                self._stand_ins_logged.add((role, chain[0], spare))
+                log.info("the %s model %s can't do background work (Claude Code only answers chats), so %s does "
+                         "its jobs (memory, summaries, titles)", role, chain[0], spare)
+            return [spare]
+        return chain
 
     def _kwargs_for(self, model: str, role: str | None = None) -> dict:
         prefix = _provider_prefix(model)

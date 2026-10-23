@@ -321,6 +321,10 @@ class SentientApp:
             log.exception("removing the selected text of chat %s failed", session_id)
         self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
 
+    async def _memory_without_model(self, title: str, message: str, job: str) -> None:
+        """No model can do a memory job (#474): one notification, which Activity shows under Memory."""
+        await self.notify("info", message, title=title, payload={"kind": "memory_no_model", "job": job})
+
     def _after_memory_erased(self, erased: Any) -> None:
         """A memory was deleted (#152): its words leave USER.md and MEMORY.md (not a remaining memory's similar lines,
         #456), and the user model reads its insights again (some may be gone with it)."""
@@ -354,6 +358,7 @@ class SentientApp:
             log.warning("sqlite-vec unavailable: semantic memory disabled")
         else:
             self.memory.on_erase = self._after_memory_erased
+            self.memory.on_no_model = self._memory_without_model
 
         with as_kind(self.notifications.model_kind):
             await self.notifications.start()
