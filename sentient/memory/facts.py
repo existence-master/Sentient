@@ -785,10 +785,12 @@ class FactMemory:
         again. ``exc`` says why and what to change (Claude Code only answers chats, Local only...)."""
         why = str(exc).strip()
         if job == "check":
-            log.warning("no model could check %r against saved memories, so it is saved as a new memory: %s", fact, why)
-            title = "Memories saved without a check"
-            message = ("No model can check new memories against the ones Sentient already has, so they are saved as "
-                       f"new memories and may repeat or contradict older ones. {why}")
+            # the checks made in code still run after this (a repeat, a new home), so the outcome isn't known yet
+            log.warning("no model could check %r against saved memories, so only the checks made in code decide "
+                        "whether it is new: %s", fact, why)
+            title = "Memories saved without a full check"
+            message = ("No model can check new memories against the ones Sentient already has, so some may be saved "
+                       f"as new memories that repeat or contradict older ones. {why}")
         else:
             log.warning("no model could pick out memories from the chat, so none were saved from it: %s", why)
             title = "Memories not saved from your chats"
@@ -798,7 +800,8 @@ class FactMemory:
         self._no_model_told.add(job)
         try:
             await self.on_no_model(title, message.strip(), job)
-        except Exception:
+        except Exception:  # not told: try again next time
+            self._no_model_told.discard(job)
             log.exception("could not tell the user that no model can do %s", job)
 
     def _model_worked(self, job: str) -> None:

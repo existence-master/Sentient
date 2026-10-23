@@ -1798,9 +1798,9 @@ correction is never `SKIP`. An UPDATE the model picks for something unrelated ab
 attribute and no word of what it says in common ("a piano recital in July" for "starts school in July"), is added instead.
 The decision is made by the `fast` role, never the chat's model; with the fast role only on Claude Code that doesn't
 do everything, another model does it (section 3, Claude Code, #474). When every model refuses it, the fact is saved
-as `ADD` after the checks made in code (duplicates, corrections, a new home, someone else's facts), the log says
-`no model could check ... so it is saved as a new memory: <why>` every time, and one `info` notification titled
-"Memories saved without a check" (payload `{kind: "memory_no_model", job: "check"}`, shown in Activity under Memory)
+by the checks made in code alone (duplicates, corrections, a new home, someone else's facts), otherwise as `ADD`,
+the log says `no model could check ... so only the checks made in code decide whether it is new: <why>` every time, and one `info` notification titled
+"Memories saved without a full check" (payload `{kind: "memory_no_model", job: "check"}`, shown in Activity under Memory)
 says so, once until a decision works again. Pulling memories out of a chat (after a turn, before compression) that
 every model refuses says so the same way: "Memories not saved from your chats", `job: "extract"`)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)

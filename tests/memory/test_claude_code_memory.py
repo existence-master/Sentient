@@ -145,12 +145,12 @@ async def test_no_model_says_so_plainly_once(make_app, model, caplog):
     assert "defaulting to ADD" not in caplog.text
     notes = await app.store.fetchall("SELECT title, body, payload FROM notifications")
     assert len(notes) == 1  # once, not per memory
-    assert notes[0]["title"] == "Memories saved without a check"
-    assert "may repeat or contradict older ones" in notes[0]["body"]
+    assert notes[0]["title"] == "Memories saved without a full check"
+    assert "repeat or contradict older ones" in notes[0]["body"]
     assert claude_code.CHATS_ONLY in notes[0]["body"]
     assert json.loads(notes[0]["payload"]) == {"kind": "memory_no_model", "job": "check"}
     items = (await app.timeline.past(kinds=["memory"]))["items"]
-    assert any(i["title"] == "Told you: Memories saved without a check" for i in items)
+    assert any(i["title"] == "Told you: Memories saved without a full check" for i in items)
 
 
 async def test_no_model_keeps_the_same_person_guards(make_app, model):
@@ -180,3 +180,20 @@ async def test_the_fast_role_still_refuses_with_nothing_else(make_app, model):
     with pytest.raises(ModelRefused, match="only answers your chats"):
         await app.llm.complete_json("fast", [{"role": "user", "content": "hi"}])
     assert model.asked == []
+
+
+async def test_a_notice_that_failed_is_tried_again(make_app, model):
+    app = await make_app()
+    told: list[str] = []
+
+    async def flaky(title, message, job):
+        if not told:
+            told.append("failed")
+            raise RuntimeError("the notifications table is busy")
+        told.append(title)
+
+    app.memory.on_no_model = flaky
+    await app.memory.remember("Maya enjoys hiking on weekends.")
+    await app.memory.remember("Maya plays the violin on Sundays.")
+    await app.memory.remember("Maya reads before bed.")
+    assert told == ["failed", "Memories saved without a full check"]  # told once it worked, then not again
