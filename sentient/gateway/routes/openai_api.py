@@ -119,7 +119,10 @@ class _PublicAPIRoute(APIRoute):
         return guarded
 
 
-public_router = APIRouter(route_class=_PublicAPIRoute)
+public_router = APIRouter(
+    route_class=_PublicAPIRoute,
+    responses={"4XX": {"description": "OpenAI-shaped request, locality, or authentication error."}},
+)
 
 
 def _text(content: str | list[dict[str, Any]] | None) -> str:

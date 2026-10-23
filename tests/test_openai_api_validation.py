@@ -69,7 +69,11 @@ def test_chat_completions_keeps_its_openapi_request_body_schema(client):
     response = client.get("/openapi.json")
     assert response.status_code == 200
     document = response.json()
-    body = document["paths"]["/v1/chat/completions"]["post"]["requestBody"]
+    operation = document["paths"]["/v1/chat/completions"]["post"]
+    assert "4XX" in operation["responses"]
+    assert "422" not in operation["responses"]
+    assert "4XX" not in document["paths"]["/api/openai-api/key"]["post"]["responses"]
+    body = operation["requestBody"]
     assert body["required"] is True
     schema = body["content"]["application/json"]["schema"]
     assert schema["$ref"].endswith("/ChatCompletionBody")
