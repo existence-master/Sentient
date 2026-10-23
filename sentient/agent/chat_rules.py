@@ -520,7 +520,8 @@ class ChatRules:
         until ``deadline`` (event-loop time, before the reply stops waiting); a slower check ends with no card."""
         llm = self.app.llm
         try:
-            return await llm.complete_json("fast", messages)
+            with claude_code.without_stand_in():  # a fast role only on Claude Code refuses: the chat's model does it
+                return await llm.complete_json("fast", messages)
         except ModelRefused as exc:
             log.info("rule check: the fast model can't do it (%s), so the chat's model does", exc)
         agent = getattr(self.app, "agent", None)
