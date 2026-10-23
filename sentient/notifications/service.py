@@ -42,8 +42,10 @@ class NotificationService(Service):
         *,
         title: str | None = None,
         payload: dict | None = None,
+        notification_id: str | None = None,
     ) -> dict:
-        nid = new_id()
+        """Persist and publish a note; its owner may reserve an ID before awaiting creation."""
+        nid = new_id() if notification_id is None else notification_id
         ts = now_iso()
         await self.app.store.execute(
             "INSERT INTO notifications(id, kind, title, body, payload, created_at) VALUES(?,?,?,?,?,?)",

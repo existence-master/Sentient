@@ -163,8 +163,14 @@ class SentientApp:
             self.incognito,
         ]
 
-    async def notify(self, kind: str, message: str, *, title: str | None = None, payload: dict | None = None) -> dict:
-        return await self.notifications.create(kind, message, title=title, payload=payload)
+    async def notify(
+        self, kind: str, message: str, *, title: str | None = None, payload: dict | None = None,
+        notification_id: str | None = None,
+    ) -> dict:
+        """Publish a notification, optionally with an ID reserved by its owner for cleanup."""
+        return await self.notifications.create(
+            kind, message, title=title, payload=payload, notification_id=notification_id,
+        )
 
     async def user_seen(self, surface: str) -> None:
         """The user did something (a chat message anywhere, the app in use, a paired chat): resets the away timer

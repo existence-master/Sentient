@@ -14,16 +14,21 @@ hangs up doesn't cut it short.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import logging
 import secrets as pysecrets
 import time
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from sentient import secrets
 from sentient.gateway.deps import AUTH, get_core
@@ -92,6 +97,31 @@ def _refusal(request: Request) -> JSONResponse | None:
     return None
 
 
+class _PublicAPIRoute(APIRoute):
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def guarded(request: Request) -> Response:
+            # FastAPI parses JSON before resolving dependencies. Refuse here before parsing; the endpoints
+            # recheck afterwards in case the setting or key changed while the body was arriving.
+            if (refused := _refusal(request)) is not None:
+                return refused
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                return _error(400, "Invalid request body. Send a valid JSON chat completion request.", "invalid_request")
+            except StarletteHTTPException as exc:
+                if exc.status_code != 400:
+                    raise
+                # Invalid text encoding is a body-parsing HTTP 400, not a RequestValidationError.
+                return _error(400, "Invalid request body. Send a valid JSON chat completion request.", "invalid_request")
+
+        return guarded
+
+
+public_router = APIRouter(route_class=_PublicAPIRoute)
+
+
 def _text(content: str | list[dict[str, Any]] | None) -> str:
     if isinstance(content, list):  # [{"type": "text", "text": "..."}, {"type": "image_url", ...}]
         return "\n".join(str(p.get("text") or "") for p in content if p.get("type") == "text")
@@ -125,7 +155,7 @@ async def new_key(request: Request):
     return {"key": key, "base_url": str(request.base_url).rstrip("/") + "/v1"}
 
 
-@router.get("/v1/models")
+@public_router.get("/v1/models")
 async def models(request: Request):
     if (refused := _refusal(request)) is not None:
         return refused
@@ -138,7 +168,7 @@ class _Approvals:
 
     def __init__(self, core: Any, session_id: str) -> None:
         self.core, self.session_id = core, session_id
-        self.open: dict[str, tuple[str, str, float]] = {}  # call_id -> (notification id, what, asked at)
+        self.open: dict[str, tuple[str, str, str, float]] = {}  # call_id -> (notification id, approval id, what, asked at)
         self.not_done: list[str] = []
 
     def what(self, name: str) -> str:
@@ -148,13 +178,16 @@ class _Approvals:
     async def see(self, event: Any) -> None:
         if isinstance(event, ApprovalRequest):
             what = self.what(event.name)
-            note = await self.core.notify(
+            nid = new_id()
+            self.open[event.call_id] = (nid, event.approval_id, what, time.monotonic())
+            await self.core.notify(
                 "approval", f"Another app asked Sentient to use {what}. Allow it?", title="Approval needed",
                 payload={**event.model_dump(mode="json"), "session_id": self.session_id, "source": CHANNEL},
+                notification_id=nid,
             )
-            self.open[event.call_id] = (str(note["id"]), what, time.monotonic())
+            self.open[event.call_id] = (nid, event.approval_id, what, time.monotonic())
         elif isinstance(event, ToolResultEvent) and event.call_id in self.open:
-            nid, what, asked = self.open.pop(event.call_id)
+            nid, _, what, asked = self.open.pop(event.call_id)
             if isinstance(event.result, dict) and event.result.get("declined"):
                 self.not_done.append(what)
                 # ponytail: unanswered means it waited the whole timeout; the broker doesn't say which it was
@@ -173,7 +206,10 @@ class _Approvals:
 
     async def close(self) -> None:
         """Stopped or broken while still waiting: no longer answerable anywhere."""
-        for nid, _, _ in list(self.open.values()):
+        owned = list(self.open.values())
+        for _, approval_id, _, _ in owned:
+            self.core.approvals.cancel(approval_id)
+        for nid, _, _, _ in owned:
             await self.settle(nid, "expired")
         self.open.clear()
 
@@ -184,9 +220,10 @@ class _Approvals:
 async def _run_turn(core: Any, session_id: str, text: str, out: asyncio.Queue, approvals: _Approvals) -> None:
     """One API turn, in its own task; _start's completion callback finishes its event queue."""
     try:
-        async for event in core.agent.run_turn(session_id, text, channel=CHANNEL):
-            await approvals.see(event)
-            out.put_nowait(event)
+        async with contextlib.aclosing(core.agent.run_turn(session_id, text, channel=CHANNEL)) as turn:
+            async for event in turn:
+                await approvals.see(event)
+                out.put_nowait(event)
     except Exception as exc:
         log.exception("API chat turn failed")
         out.put_nowait(exc)
@@ -222,7 +259,7 @@ def _start(core: Any, session_id: str, text: str) -> tuple[asyncio.Queue, _Appro
     return out, approvals
 
 
-@router.post("/v1/chat/completions")
+@public_router.post("/v1/chat/completions")
 async def chat_completions(request: Request, body: ChatCompletionBody):
     if (refused := _refusal(request)) is not None:
         return refused
@@ -293,3 +330,6 @@ async def chat_completions(request: Request, body: ChatCompletionBody):
         "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
                   "total_tokens": prompt_tokens + completion_tokens},
     }
+
+
+router.include_router(public_router)

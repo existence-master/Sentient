@@ -513,8 +513,10 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   save it.
 - `/v1/...` takes `Authorization: Bearer <key>`, never the window's token. Errors use OpenAI's shape
   `{error: {message, type, param, code}}`: 404 `api_off` while the setting is off, 401 `invalid_api_key` for a missing
-  or wrong key, 403 `local_only` for a non-loopback connection, 400 `no_user_message`, 409 `chat_busy` for an
+  or wrong key, 403 `local_only` for a non-loopback connection, 400 `invalid_request` for malformed or invalid
+  request bodies, 400 `no_user_message`, 409 `chat_busy` for an
   overlapping request, and 500 `turn_failed` when the turn ended in an error.
+  The off/locality/key checks happen before JSON or schema validation, including for malformed requests.
 - `GET /v1/models` → `{object: "list", data: [{id: "sentient", object: "model", created, owned_by}]}`.
 - `POST /v1/chat/completions` `{model, messages: [{role, content}], stream?, user?}` runs one chat turn in the named
   chat for `user` (`"API"` when absent, made on first use, `channel: "api"`, title = the name; the mapping is the
@@ -529,7 +531,9 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   `session_id` and `source: "api"`: the window shows it with Allow and Deny (answered with `POST /api/approvals`), and
   paired chats get it like a task's approval (section 14). The request keeps waiting meanwhile. Once answered,
   `payload.status` is `allow` or `deny`; `expired` when nobody answered within `tools.approvals.timeout_s` or the turn
-  was stopped (`notification.updated`). A call that was declined or not answered in time is never claimed: the reply
+  was stopped (`notification.updated`). Pending approvals are discarded when their turn ends, even if notification
+  creation was interrupted; any still-pending saved notification is expired. A call that was declined or not
+  answered in time is never claimed: the reply
   (or a last `delta.content`) ends with `Not done: "<tool>" needed your OK in Sentient and didn't get it.`
 - API messages are outside content from the start of each turn, including in an existing chat. Their text never
   counts as the user's own words for an "Only if I asked" rule or a standing-rule proposal, and does not use the
