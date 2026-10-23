@@ -210,6 +210,7 @@ class EvolutionService(Service):
         if self.app.memory is not None:
             if await self._due("memory.purge_last_run", timedelta(minutes=cfg.memory.purge_interval_minutes), now):
                 await self.app.memory.purge_expired()
+                await self.app.memory.drain_pending_erases()
                 await memory_review.expire(self.app, now)
             if cfg.memory.summaries_enabled and await self._due(
                 "memory.summaries_last_run", timedelta(minutes=cfg.memory.summarize_interval_minutes), now

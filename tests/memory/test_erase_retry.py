@@ -47,7 +47,9 @@ async def test_a_cleanup_step_that_fails_once_is_retried_by_the_next_upkeep(app,
 
     # The next upkeep run drains the queue: the retry replays the same cleanup,
     # the derived data is gone and the wait is cleared.
-    assert await mem.drain_pending_erases() == 1
+    # We simulate the hourly upkeep path (purge_expired + drain_pending_erases).
+    await app.memory.purge_expired()
+    assert await app.memory.drain_pending_erases() == 1
     assert len(calls) == 2
     assert await store.fetchone("SELECT id FROM summaries WHERE id = ?", (summary["id"],)) is None
     assert not await store.fetchall("SELECT id FROM pending_erase")

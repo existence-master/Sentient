@@ -1040,27 +1040,38 @@ class FactMemory:
             " OR fact_id IN (SELECT id FROM facts WHERE merged_into = ? AND status = 'merged')",
             (fid, fid),
         )
+        rows = [row, *copies]
+        texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
+        refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
+        ids = [int(r["id"]) for r in rows]
+        live_refs = [r for r in refs if r]
+        # Record the intended cleanup before the irreversible deletion (#462).
+        pending = None
+        try:
+            cur = await self.store.execute(
+                "INSERT INTO pending_erase(fact_id, payload, at) VALUES(?,?,?)",
+                (fid, json.dumps({"ids": ids, "texts": texts, "refs": live_refs}), now_iso()),
+            )
+            pending = int(cur.lastrowid)
+        except Exception:
+            log.exception("could not record pending cleanup for memory %s; aborting erase", fid)
+            return False
         if not await self.forget(fid, notify=notify):
+            with contextlib.suppress(Exception):
+                await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (pending,))
             return False
         if row["state"] == "superseded" and row["superseded_by"] is not None:
             await self.store.execute(
                 "UPDATE facts SET previous_content = NULL WHERE id = ? AND previous_content = ?",
                 (row["superseded_by"], row["content"]),
             )
-        rows = [row, *copies]
-        texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
-        refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
         try:
-            await self._cascade([int(r["id"]) for r in rows], texts, [r for r in refs if r])
-        except Exception:  # the memory itself is gone; the leftover is queued for the next upkeep, never a failed delete (#462)
-            ids = [int(r["id"]) for r in rows]
-            live_refs = [r for r in refs if r]
-            with contextlib.suppress(Exception):
-                await self.store.execute(
-                    "INSERT INTO pending_erase(fact_id, payload, at) VALUES(?,?,?)",
-                    (fid, json.dumps({"ids": ids, "texts": texts, "refs": live_refs}), now_iso()),
-                )
-            log.exception("cleaning up after memory %s failed; queued for the next upkeep", fid)
+            await self._cascade(ids, texts, live_refs)
+        except Exception:
+            log.exception("cleaning up after memory %s failed; will retry later", fid)
+            return True
+        with contextlib.suppress(Exception):
+            await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (pending,))
         return True
 
     async def drain_pending_erases(self) -> int:
@@ -1068,6 +1079,16 @@ class FactMemory:
         derived data never outlives its memory because one step failed once (a locked file, a transient
         database error). Returns how many waits were cleared."""
         await self.ensure_schema()
+        # Drop stale retries (>7 days) so erased text does not linger indefinitely.
+        cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+        stale = await self.store.fetchall("SELECT id, fact_id FROM pending_erase WHERE at < ?", (cutoff,))
+        for row in stale:
+            log.warning(
+                "dropping stale pending erase for memory %s after 7 days; some derived data may remain",
+                row["fact_id"],
+            )
+        if stale:
+            await self.store.execute("DELETE FROM pending_erase WHERE at < ?", (cutoff,))
         drained = 0
         for row in await self.store.fetchall("SELECT id, fact_id, payload FROM pending_erase ORDER BY id"):
             try:
@@ -2058,7 +2079,7 @@ class FactMemory:
             if r["state"] == "superseded":
                 await self.erase(int(r["id"]))
             else:
-                await self.forget(int(r["id"]))
+                await self.erase(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, reason="expired", count=len(rows))
         return len(rows) + await self.purge_superseded()

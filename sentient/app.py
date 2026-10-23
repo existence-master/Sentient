@@ -324,10 +324,7 @@ class SentientApp:
     def _after_memory_erased(self, erased: Any) -> None:
         """A memory was deleted (#152): its words leave USER.md and MEMORY.md (not a remaining memory's similar lines,
         #456), and the user model reads its insights again (some may be gone with it)."""
-        try:
-            self.workspace.scrub(erased.wordings, self.config.assistant.user_name, repeats=erased)
-        except OSError:
-            log.exception("removing a deleted memory from the workspace files failed")
+        self.workspace.scrub(erased.wordings, self.config.assistant.user_name, repeats=erased)
         model = getattr(self, "user_model", None)
         if model is not None:
             model._vectors = None
