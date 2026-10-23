@@ -2013,7 +2013,8 @@ merges/contradictions, `merged_into` / `superseded_by`.
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
-**Reference files (#167).** A skill may keep text files in a `references/` folder next to its SKILL.md (`.md`, `.txt`,
+**Reference files (#167).** A skill may keep text files in a `references/` folder next to its SKILL.md (also
+`examples/`, `templates/` and `assets/`, which Agent Skills from the Skills hub use; `.md`, `.txt`,
 `.rst`, `.csv`, `.json`, `.yaml`; dotfiles and links are left out; at most 50). `references` lists them. They stay out
 of the prompt: the `skill_view` tool `{name, file?}` returns the steps plus `references`, and with `file` (a path from
 that list, or just its file name) returns `{name, file, content, truncated?}` for that one file (at most 40,000

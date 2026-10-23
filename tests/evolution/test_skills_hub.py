@@ -322,3 +322,21 @@ def test_deleting_a_hub_skill_removes_its_pin(client):
     client.post("/api/skills/meeting-notes/approve")
     assert client.delete("/api/skills/meeting-notes").json() == {"ok": True}
     assert client.get("/api/skills/hub/installed").json() == {"skills": []}
+
+
+def test_agent_skills_keep_guides_in_examples_and_templates_too(tmp_path):
+    """anthropics/skills keeps its guides in examples/: skill_view can read those like references/ files."""
+    from sentient.skills.loader import parse_skill_file
+
+    folder = tmp_path / "internal-comms"
+    (folder / "examples").mkdir(parents=True)
+    (folder / "templates").mkdir()
+    (folder / "scripts").mkdir()
+    (folder / "SKILL.md").write_text(NOTES.replace("meeting-notes", "internal-comms"), encoding="utf-8")
+    (folder / "examples" / "3p-updates.md").write_text("# 3P updates\n", encoding="utf-8")
+    (folder / "templates" / "memo.md").write_text("# Memo\n", encoding="utf-8")
+    (folder / "scripts" / "send.py").write_text("print(1)\n", encoding="utf-8")
+    skill = parse_skill_file(folder / "SKILL.md")
+    assert skill.references == ["examples/3p-updates.md", "templates/memo.md"]
+    assert skill.reference_path("3p-updates.md") == folder / "examples" / "3p-updates.md"
+    assert skill.reference_path("scripts/send.py") is None

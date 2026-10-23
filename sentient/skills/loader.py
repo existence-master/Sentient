@@ -50,6 +50,9 @@ _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 RESERVED = {"pending", "archived"}
 REFERENCE_SUFFIXES = {".md", ".markdown", ".txt", ".rst", ".csv", ".json", ".yaml", ".yml"}
+# folders whose text files skill_view can read: Sentient's references/, and the examples/, templates/ and assets/ that
+# Agent Skills from elsewhere use (anthropics/skills keeps its guides in examples/, #210)
+REFERENCE_DIRS = ("references", "examples", "templates", "assets")
 MAX_REFERENCE_FILES = 50
 _UNSET: Any = object()
 
@@ -90,27 +93,30 @@ class Skill:
 
     @property
     def references(self) -> list[str]:
-        """The skill's reference files (``references/setup.md``, #167): the text files in its ``references`` folder,
-        which ``skill_view`` reads one at a time when the skill is used. Dotfiles and links are left out."""
+        """The skill's reference files (``references/setup.md``, #167): the text files in its ``references`` folder
+        (and ``examples``, ``templates`` and ``assets``, which Agent Skills from elsewhere use), which ``skill_view``
+        reads one at a time when the skill is used. Dotfiles and links are left out."""
         out: list[str] = []
-        base = self.dir / "references"
-        if not base.is_dir() or base.is_symlink():
-            return out
         root = self.dir.resolve()
-        for f in sorted(base.rglob("*")):
-            rel = f.relative_to(self.dir)
-            if any(part.startswith(".") for part in rel.parts) or f.suffix.lower() not in REFERENCE_SUFFIXES:
+        for folder in REFERENCE_DIRS:
+            base = self.dir / folder
+            if not base.is_dir() or base.is_symlink():
                 continue
-            if f.is_file() and not f.is_symlink() and f.resolve().is_relative_to(root):
-                out.append(rel.as_posix())
+            for f in sorted(base.rglob("*")):
+                rel = f.relative_to(self.dir)
+                if any(part.startswith(".") for part in rel.parts) or f.suffix.lower() not in REFERENCE_SUFFIXES:
+                    continue
+                if f.is_file() and not f.is_symlink() and f.resolve().is_relative_to(root):
+                    out.append(rel.as_posix())
         return out[:MAX_REFERENCE_FILES]
 
     def reference_path(self, rel: str) -> Path | None:
         """The reference file ``rel`` names, or None when it isn't one of the skill's reference files."""
         want = str(rel or "").strip().replace("\\", "/").removeprefix("./")
-        if want and "/" not in want:
-            want = f"references/{want}"
-        return self.dir / want if want in self.references else None
+        refs = self.references
+        if want and "/" not in want:  # just the file name: the first folder that has it
+            want = next((f"{d}/{want}" for d in REFERENCE_DIRS if f"{d}/{want}" in refs), f"references/{want}")
+        return self.dir / want if want in refs else None
 
     def summary_line(self) -> str:
         return f"- {self.name}: {self.description}"

@@ -35,7 +35,7 @@ async def list_sources(request: Request):
 @router.post("/sources")
 async def add_source(request: Request, body: dict):
     try:
-        return _hub(request).add_source(str(body.get("url") or ""), body.get("name"))
+        return _hub(request).add_source(str(body.get("url") or ""), body.get("name")).to_dict()
     except HubError as exc:
         raise _error(exc) from exc
 

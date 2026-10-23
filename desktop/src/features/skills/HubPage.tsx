@@ -23,6 +23,7 @@ import {
   IconUserPlus
 } from '@tabler/icons-react'
 import { useMemo, useState, type ReactNode } from 'react'
+import { useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, SegmentedControl, Sheet, Skeleton, Tooltip } from '@/components/ui'
 import { openExternal } from '@/features/integrations/InstructionsGuide'
@@ -70,14 +71,27 @@ export function TrustBadge({ trust, size = 'xs' }: { trust: HubTrust | string; s
 /** The Skills hub (#210): skills other people wrote, from a few sources. Installing puts a skill in pending review. */
 export function HubPage({ onReview }: { onReview: (name: string) => void }) {
   const sources = useHubSources()
-  const [picked, setPicked] = useState<string | null>(null)
+  // the source and the skill being previewed live in the address, so a link (or a screenshot) can open them
+  const [params, setParams] = useSearchParams()
+  const setParam = (patch: Record<string, string | null>) =>
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        Object.entries(patch).forEach(([k, v]) => (v === null ? next.delete(k) : next.set(k, v)))
+        return next
+      },
+      { replace: true }
+    )
+  const picked = params.get('source')
+  const setPicked = (id: string | null) => setParam({ source: id, preview: null })
   const [query, setQuery] = useState('')
-  const [open, setOpen] = useState<HubSkill | null>(null)
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState(false)
   const actions = useHubActions()
   const source = sources.data?.find((s) => s.id === picked) ?? sources.data?.[0] ?? null
   const listing = useHubBrowse(source?.id ?? null)
+  const open = listing.data?.skills.find((s) => s.path === params.get('preview')) ?? null
+  const setOpen = (s: HubSkill | null) => setParam({ preview: s ? s.path : null })
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -441,7 +455,7 @@ function HubPreviewSheet({ source, skill, onOpenChange, onReview }: { source: Hu
           </div>
 
           <div className="sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-border bg-elevated/95 px-5 py-3 backdrop-blur">
-            <p className={cn('mr-auto text-xs', high ? 'font-medium text-danger' : 'text-fg-subtle')}>
+            <p className={cn('mr-auto text-xs', high && !installed ? 'font-medium text-danger' : 'text-fg-subtle')}>
               {installed
                 ? installed.status === 'pending'
                   ? 'Waiting for your review in Pending review.'
@@ -601,7 +615,7 @@ function InstalledPanel({ onReview }: { onReview: (name: string) => void }) {
             <div className="flex-1" />
             {h.status === 'pending' ? (
               <Button size="sm" variant="ghost" leftIcon={<IconEyeCheck size={14} />} onClick={() => onReview(h.name)}>
-                {h.approved_commit ? 'Update in review' : 'In review'}
+                {h.approved_at ? 'Update in review' : 'In review'}
               </Button>
             ) : h.update_available ? (
               <Button size="sm" variant="primary" leftIcon={<IconCloudDownload size={14} />} loading={actions.update.isPending && actions.update.variables?.name === h.name} onClick={() => void getUpdate(h.name)}>
@@ -642,7 +656,7 @@ export function changeSummary(c: HubFileChanges | null | undefined): string {
 /** On a pending card or a skill's page: where a hub skill came from, the pinned version and what an update changes. */
 export function HubOrigin({ hub, className }: { hub: HubInstalled; className?: string }) {
   const c = hub.changes
-  const update = hub.status === 'pending' && !!hub.approved_commit
+  const update = hub.status === 'pending' && !!hub.approved_at
   return (
     <div className={cn('rounded-xl border border-border bg-sunken/50 px-4 py-3', className)}>
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -653,8 +667,8 @@ export function HubOrigin({ hub, className }: { hub: HubInstalled; className?: s
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-6 text-xs text-fg-subtle">
         {update ? (
-          <span className="inline-flex items-center gap-1 font-mono">
-            <IconGitCommit size={12} /> {shortCommit(hub.approved_commit)} → {shortCommit(hub.commit) || 'new version'}
+          <span className={cn('inline-flex items-center gap-1', hub.approved_commit && 'font-mono')}>
+            <IconGitCommit size={12} /> {hub.approved_commit ? `${shortCommit(hub.approved_commit)} → ${shortCommit(hub.commit)}` : 'a new version of its files'}
           </span>
         ) : hub.commit ? (
           <span className="inline-flex items-center gap-1 font-mono" title={hub.commit}>

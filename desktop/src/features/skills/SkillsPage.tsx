@@ -176,7 +176,7 @@ export function SkillsPage() {
         </TabsContent>
 
         <TabsContent value="hub">
-          <HubPage onReview={(name) => set({ tab: 'pending', focus: name, skill: null })} />
+          <HubPage onReview={(name) => set({ tab: 'pending', focus: name, skill: null, preview: null })} />
         </TabsContent>
 
         <TabsContent value="log">
