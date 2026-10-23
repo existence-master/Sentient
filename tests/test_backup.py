@@ -369,6 +369,7 @@ async def test_backups_go_to_documents_by_default(config, isolated_home, tmp_pat
         overview = await app.backups.overview()
         assert overview["folder"] == overview["default_folder"] == str(docs / "Sentient Backups")
         assert overview["home"] == str(isolated_home) and overview["folder_in_home"] is False
+        assert overview["home_is_default"] is True
         assert [b["name"] for b in overview["backups"]] == [made["name"]]
         # snapshots, a staged restore and the restore result stay in the data folder
         assert (await app.backups.snapshot("before a test"))["path"].startswith(str(isolated_home / "backups"))
@@ -396,6 +397,7 @@ async def test_another_data_folder_keeps_its_backups_inside_itself(config, isola
         assert Path(made["path"]).parent == isolated_home / "backups"
         overview = await app.backups.overview()
         assert overview["folder"] == overview["default_folder"] == str(isolated_home / "backups")
+        assert overview["folder_in_home"] is True and overview["home_is_default"] is False
         assert not (docs / "Sentient Backups").exists()
     finally:
         await app.stop()
