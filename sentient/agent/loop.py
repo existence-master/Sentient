@@ -365,17 +365,26 @@ def action_call_history(rows: list[dict], registry) -> list[dict]:
         call = calls.pop(str(row.get("tool_call_id") or ""), None)
         if call is None:
             continue
+        raw = str(row.get("content") or "")
         try:
-            res = json.loads(str(row.get("content") or ""))
+            # a stored result can carry text after the JSON: the loop appends the outcome note when the
+            # read-back disagrees (#386), and long results get a cut marker. Decode the leading JSON and
+            # judge what follows on its own.
+            res, end = json.JSONDecoder().raw_decode(raw.lstrip())
         except (TypeError, ValueError):
-            res = {}
+            res, end = {}, 0
+        tail = raw.lstrip()[end:].strip()
+        # an appended outcome note means the read-back said it did not work: never a success later. A cut
+        # marker ("[Result cut: ...]") says nothing about the outcome and stays a success, so a true reply
+        # is never corrected for it.
+        noted_failure = bool(tail) and not tail.startswith("[Result")
         declined = isinstance(res, dict) and bool(res.get("declined"))
         err = _error_text(res)
         call.update(
             declined=declined,
             # the check semantics: no problem found means it worked (#165); a terse stored result
             # errs toward never correcting a true reply
-            ok=not declined and not err and outcomes.result_problem(res) is None,
+            ok=not declined and not err and not noted_failure and outcomes.result_problem(res) is None,
             uncertain=not declined and bool(err),
         )
         out.append(call)

@@ -28,7 +28,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from sentient.agent import dry_run, outcomes, preview, rule_levels
-from sentient.agent.loop import ASK_FIRST_KEY, CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
+from sentient.agent.loop import ASK_FIRST_KEY, CAN_PAUSE_KEY, Budget, LoopResult, action_call_history, history_to_openai
 from sentient.agent.second_look import BRIEF_FROM_KEY
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
@@ -436,13 +436,13 @@ async def execute_single(
             if isinstance(checkpoint, list) and checkpoint:
                 if svc.holding(run_id):  # paused before an approved call ran: it runs once the task is resumed
                     raise RunHeld()
-                checkpoint, approved_action = await _run_approved_call(
+                checkpoint, _ = await _run_approved_call(
                     svc, task_id, run_id, ctx, checkpoint, model=task.get("model") or None
                 )
-                if approved_action is not None:
-                    # The approved call ran before this resumed segment: its record is this segment's history,
-                    # so a summary of it is never "corrected" (#492 review).
-                    result.action_call_history.append(approved_action)
+                # The resumed checkpoint holds this segment's whole action history: the approved call ran before
+                # it (its result is already recorded in the checkpoint), and so did every earlier action call.
+                # Rebuild it all, so a true summary of any of them is never "corrected" (#492 review).
+                result.action_call_history.extend(action_call_history(checkpoint, app.registry))
                 messages = app.agent.mark_outside_messages(history_to_openai(checkpoint))
                 if not answered and not is_first_retry_attempt(run):  # a retry's checkpoint already has its note
                     messages.append({"role": "user", "content": RESUME_NOTE})

@@ -633,6 +633,114 @@ def test_action_call_history_reads_a_prior_turn():
     assert outcomes.unmade_action_note("I sent the email.", [], history) == ""
 
 
+def test_action_call_history_reads_leading_json_and_outcome_notes():
+    """A stored result can carry text after its JSON: an appended outcome note (#386) or a cut marker.
+
+    The leading JSON is decoded; a note means the read-back said it did not work (never a later success),
+    while a cut marker stays a success so a true reply is never corrected (#492 review).
+    """
+    from types import SimpleNamespace
+
+    class FakeRegistry:
+        def get(self, name):
+            tools = {
+                "gmail_send": SimpleNamespace(outcome="email", name="gmail_send"),
+                "ha_turn_on": SimpleNamespace(outcome="home", name="ha_turn_on"),
+            }
+            return tools.get(name)
+
+    note = outcomes.model_note({"ok": False, "how": "read_back", "detail": "the light is still off"})
+    assert note.startswith("[Sentient checked afterwards")
+    history = action_call_history(
+        [
+            {"role": "assistant", "tool_calls": [tool_call("ha_turn_on", entity_id="light.kitchen")]},
+            {"role": "tool", "tool_call_id": "call_ha_turn_on",
+             "content": f'{{"ok": true}}\n{note}'},
+            {"role": "assistant", "tool_calls": [tool_call("gmail_send", to="a@x.com")]},
+            {"role": "tool", "tool_call_id": "call_gmail_send",
+             "content": '{"ok": true, "sent": ["a@x.com"]}\n\n[Result cut: this is only the first 10 of 80 characters.]'},
+        ],
+        FakeRegistry(),
+    )
+    assert [call["kind"] for call in history] == ["home", "email"]
+    assert history[0]["ok"] is False  # the read-back note says the light is still off
+    assert history[1]["ok"] is True  # a cut marker is not an outcome
+    # a false claim about the noted call is corrected, not hidden by the fake success
+    assert outcomes.unmade_action_note("I turned on the lights.", [], history) == \
+        "I couldn't run the home action, so nothing changed."
+
+
+async def test_resumed_segment_rebuilds_action_history_from_the_whole_checkpoint(config, isolated_home):
+    """The resumed segment rebuilds its action history from the whole checkpoint, not just the approved call.
+
+    A true summary of an earlier action call in the checkpoint is never "corrected" (#492 review).
+    """
+    import json
+
+    from sentient.agent.loop import action_call_history
+    from sentient.tasks import ask
+    from sentient.tasks.executor import _run_approved_call
+    from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+
+    @tool("fake_resume_send", risk=Risk.send, outcome="email")
+    async def fake_resume_send(ctx: ToolContext, to: str) -> dict:
+        """Send an email (test double)."""
+        return {"sent": [to]}
+
+    class FakeResumeMailer(ToolPlugin):
+        id = "fake_resume_mailer"
+        display_name = "Fake resume mailer"
+        tools = [fake_resume_send]
+
+    class StubRepo:
+        async def update_run(self, run_id, fields):
+            return None
+
+        async def get_run(self, run_id):
+            return {}
+
+    class StubSvc:
+        def __init__(self, app):
+            self.app = app
+            self.repo = StubRepo()
+
+        async def progress(self, task_id, run_id, event):
+            return None
+
+    s = await SentientApp(config, llm=FakeProvider(replies=[]),
+                          db_path=isolated_home / "resumed-checkpoint.db").start()
+    try:
+        s.registry.register(FakeResumeMailer())
+        approved_id = "call_approved_send"
+        checkpoint = [
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_earlier_send", "type": "function",
+                "function": {"name": "fake_resume_send",
+                             "arguments": json.dumps({"to": "earlier@example.com"})},
+            }]},
+            {"role": "tool", "tool_call_id": "call_earlier_send",
+             "content": json.dumps({"sent": ["earlier@example.com"]})},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": approved_id, "type": "function",
+                "function": {"name": "fake_resume_send",
+                             "arguments": json.dumps({"to": "arjun@example.com"})},
+            }]},
+            {"role": "tool", "tool_call_id": approved_id,
+             "content": json.dumps({"error": ask.INTERRUPTED_NOTE}), ask.APPROVED_KEY: True},
+        ]
+        svc = StubSvc(s)
+        ctx = s.agent.tool_context(None, "task")
+        messages, _ = await _run_approved_call(svc, "task-1", "run-1", ctx, checkpoint)
+        # what execute_single does on resume: rebuild from the whole updated checkpoint
+        history = action_call_history(messages, s.registry)
+        assert [call["targets"] for call in history] == [["earlier@example.com"], ["arjun@example.com"]]
+        assert all(call["ok"] for call in history)
+        assert outcomes.unmade_action_note("I sent the email to earlier@example.com.", [], history) == ""
+        assert outcomes.unmade_action_note("I sent the email to Arjun.", [], history) == ""
+    finally:
+        await s.stop()
+
+
 async def test_internal_tools_do_not_prompt_in_ask_mode(config, isolated_home):
     config.tools.approvals.mode = "ask"
     llm = FakeProvider(replies=[[tool_call("file_write", name="note.txt", content="hi")], "saved"])
