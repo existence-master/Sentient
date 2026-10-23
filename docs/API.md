@@ -537,13 +537,19 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   turned off (ADR 0018). The user's explicit approval is still required. Facts learned from API messages stay
   pending for review rather than being accepted as the user's own statements (ADR 0021).
   Stored API user messages retain `name: "another app (API)"`; their text is marked as outside content when read
-  into a later prompt. Trusting a chat up to an older message does not cover newer API input.
+  into a later prompt. Keyword and date-based history reads retain that source even after the original chat is
+  trusted again. Summaries containing API messages retain their outside-source mark and are excluded from shared
+  summary search; facts extracted when those messages are compressed still wait for review. Trusting a chat up
+  to an older message does not cover newer API input.
 - Concurrent first requests share the same chat for a given name, and creating one name cannot overwrite another
   name's chat mapping. Only one API turn can run in that chat at a time. An overlapping API request returns
   409 `chat_busy` before starting a turn; it is not queued to run later. Different named chats can proceed independently.
 - **Stop everything** (`POST /api/stop-all`) ends a running API turn, waiting approvals included: 409 `stopped`
   (`Stopped.`), or a `data: {error: {message: "Stopped."}}` line before `[DONE]` when streaming. A client that hangs
   up doesn't end the turn: it runs to the end and is saved, as in the window.
+  Stop also cancels admitted turns that have not started or are waiting during initialization. Requests still
+  allocating their named chat when Stop occurs return 409 `stopped` before starting a turn; a new explicit request
+  made after Stop can start normally.
 - Errors carry `x-should-retry: false`, so OpenAI's SDKs don't retry a failed turn and run its tools again.
 - The chat list marks these chats "From another app (API)", and Activity says
   `From another app (API), in the chat "<name>"` for what they did.

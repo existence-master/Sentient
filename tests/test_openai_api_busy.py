@@ -135,6 +135,9 @@ def test_chat_reopens_after_an_unexpected_turn_exception(client, monkeypatch):
 
 async def test_admission_is_immediate_per_app_and_prestart_cancellation_releases_it(monkeypatch):
     class Agent:
+        def create_turn_task(self, coro):
+            return asyncio.create_task(coro)
+
         def is_busy(self, session_id):
             return False
 

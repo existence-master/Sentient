@@ -32,7 +32,7 @@ import mimetypes
 import re
 import time
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -566,6 +566,13 @@ class Agent:
     def is_busy(self, session_id: str) -> bool:
         """True from the start of a chat turn until its last write (the final or stopped reply) is done."""
         return self._busy.get(session_id, 0) > 0
+
+    def create_turn_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Start a detached chat task owned by Stop before its first step, through its final cleanup."""
+        task = asyncio.create_task(coro)
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+        return task
 
     def _turn_done(self, session_id: str) -> None:
         left = self._busy.get(session_id, 0) - 1
@@ -1674,6 +1681,31 @@ class Agent:
         model: str | None = None,
         on_stopped: Callable[[dict], Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        """One cancellable chat turn, including initialization and quick commands."""
+        task = asyncio.current_task()
+        owns_task = task is not None and task not in self._turn_tasks
+        if owns_task:
+            self._turn_tasks.add(task)
+        try:
+            async with contextlib.aclosing(self._run_turn(
+                session_id, user_text, channel=channel, attachments=attachments, model=model, on_stopped=on_stopped,
+            )) as turn:
+                async for event in turn:
+                    yield event
+        finally:
+            if owns_task:
+                self._turn_tasks.discard(task)
+
+    async def _run_turn(
+        self,
+        session_id: str,
+        user_text: str,
+        *,
+        channel: str = "desktop",
+        attachments: list[str] | None = None,
+        model: str | None = None,
+        on_stopped: Callable[[dict], Any] | None = None,
+    ) -> AsyncIterator[AgentEvent]:
         """One chat turn. ``on_stopped`` is called with ``{message_id, memory_sources}`` of the reply kept when the
         turn is stopped, so the caller can send them with its own ``done`` event."""
         # An authenticated app can request work, but its text is not the user's personal authorization (#211).
@@ -1696,9 +1728,6 @@ class Agent:
             steer = SteerQueue()
             self._steers[session_id] = steer
 
-        turn_task = asyncio.current_task()  # Stop everything cancels this task (halt)
-        if turn_task is not None:
-            self._turn_tasks.add(turn_task)
         # the model serves this reply (and what it runs) first; background work waits until it has been quiet (#149)
         jobs = getattr(self.app, "model_jobs", None)
         turn_scope = contextlib.ExitStack()
@@ -1706,8 +1735,6 @@ class Agent:
 
         def release() -> list[str]:
             turn_scope.close()
-            if turn_task is not None:
-                self._turn_tasks.discard(turn_task)
             if steer is None:
                 return []
             left = steer.close()
@@ -2320,17 +2347,24 @@ class Agent:
             upto = (session or {}).get("context_upto") or ""
             after, params = after_watermark(upto, "created_at", "rowid")  # same-tick messages are not skipped (#236)
             rows = await self.store.fetchall(
-                f"SELECT rowid, role, content, created_at FROM messages WHERE session_id = ? AND {after}"
+                f"SELECT rowid, role, name, content, created_at FROM messages WHERE session_id = ? AND {after}"
                 " AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY created_at, rowid",
                 (session_id, *params),
             )
             older = rows[: max(0, len(rows) - window)]
             if len(older) < 10:
                 return
-            transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
+            # Trusting a chat does not turn another app's words into the owner's statements when they are
+            # compressed later. Keep their source in the transcript and hold any extracted facts for review.
+            api_source = API_SOURCE if any(r["role"] == "user" and r["name"] == API_SOURCE for r in older) else ""
+            lines = []
+            for row in older:
+                source = f"(from {API_SOURCE}) " if row["role"] == "user" and row["name"] == API_SOURCE else ""
+                lines.append(f"{row['role']}: {source}{(row['content'] or '')[:800]}")
+            transcript = "\n".join(lines)
             if flush:
                 await self._flush_memory(
-                    transcript, (session or {}).get("untrusted") or "", session_id,
+                    transcript, (session or {}).get("untrusted") or api_source, session_id,
                     memory_scopes.of_session(self.config, session),
                 )
             prev = (session or {}).get("context_summary") or ""

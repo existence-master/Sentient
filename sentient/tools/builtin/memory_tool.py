@@ -108,19 +108,31 @@ async def _own_words(ctx: ToolContext) -> str | None:
     return "\n".join(reversed(words)) or None
 
 
-async def _mark_if_outside(ctx: ToolContext, session_ids: list) -> None:
-    """Messages from a chat that read outside content bring that content into this run too (ADR 0018, 0021): mark it,
-    so sends ask and what it learns waits for review. Summaries of such chats are not searchable here at all."""
-    ids = sorted({str(s) for s in session_ids if s and s != ctx.session_id})
-    if ctx.untrusted or not ids:
+def _history_source(row: dict) -> str:
+    """A message's own outside source survives trusting its chat again."""
+    if row.get("role") == OTHER_ROLE:
+        return group_source(str(row.get("name") or ""))
+    if row.get("role") == "user" and row.get("name") == API_SOURCE:
+        return API_SOURCE
+    return ""
+
+
+async def _mark_if_outside(ctx: ToolContext, rows: list[dict]) -> None:
+    """History retains outside provenance from its source chats and individual messages (ADR 0018, 0021).
+    The per-message mark still counts after a source chat has been trusted again."""
+    if ctx.untrusted:
         return
-    row = await ctx.store.fetchone(
-        f"SELECT untrusted FROM sessions WHERE id IN ({','.join('?' * len(ids))}) AND COALESCE(untrusted, '') != ''"
-        " LIMIT 1",
-        ids,
-    )
-    if row is not None:
-        ctx.untrusted = str(row["untrusted"])
+    ids = sorted({str(r["session_id"]) for r in rows if r.get("session_id") and r["session_id"] != ctx.session_id})
+    if ids:
+        row = await ctx.store.fetchone(
+            f"SELECT untrusted FROM sessions WHERE id IN ({','.join('?' * len(ids))}) AND COALESCE(untrusted, '') != ''"
+            " LIMIT 1",
+            ids,
+        )
+        if row is not None:
+            ctx.untrusted = str(row["untrusted"])
+    if not ctx.untrusted:
+        ctx.untrusted = next((source for row in rows if (source := _history_source(row))), "")
 
 
 async def _last_outside_result(ctx: ToolContext) -> str | None:
@@ -200,15 +212,10 @@ async def memory_search_history(ctx: ToolContext, query: str, limit: int = 8) ->
         rows = await ctx.store.search_messages(q, limit=limit)
         if rows:
             break
-    await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
-    other = next((r for r in rows if r.get("role") == OTHER_ROLE
-                  or (r.get("role") == "user" and r.get("name") == API_SOURCE)), None)
-    if other is not None and not ctx.untrusted:  # outside words stay outside even after their chat was trusted again
-        ctx.untrusted = API_SOURCE if other.get("role") == "user" else group_source(str(other.get("name") or ""))
+    await _mark_if_outside(ctx, rows)
     return [
         {"when": r["created_at"], "role": r["role"], "session_id": r["session_id"], "text": (r["content"] or "")[:500],
-         **({"from": r.get("name") or "another group member"} if r.get("role") == OTHER_ROLE
-            or (r.get("role") == "user" and r.get("name") == API_SOURCE) else {})}
+         **({"from": r.get("name") or "another group member"} if _history_source(r) else {})}
         for r in rows
     ]
 
@@ -243,9 +250,13 @@ async def history_time_search(ctx: ToolContext, start_date: str, end_date: str, 
         return {"error": "Invalid date format. Use ISO 8601, e.g. 2026-09-14T00:00:00Z."}
     if not rows:
         return {"result": "No messages found in that time period."}
-    await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
-    log = "\n".join(f"[{r['created_at'][:16].replace('T', ' ')}] {r['role']}: {(r['content'] or '')[:600]}" for r in rows)
-    return {"conversation": log, "count": len(rows)}
+    await _mark_if_outside(ctx, rows)
+    lines = []
+    for row in rows:
+        source = _history_source(row)
+        speaker = f"{row['role']} (from {source})" if source else row["role"]
+        lines.append(f"[{row['created_at'][:16].replace('T', ' ')}] {speaker}: {(row['content'] or '')[:600]}")
+    return {"conversation": "\n".join(lines), "count": len(rows)}
 
 
 @tool("user_model_ask", risk=Risk.read)

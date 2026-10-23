@@ -205,7 +205,7 @@ def _start(core: Any, session_id: str, text: str) -> tuple[asyncio.Queue, _Appro
     out: asyncio.Queue = asyncio.Queue()
     approvals = _Approvals(core, session_id)
     # No await between the busy check and reservation, including before Agent.run_turn starts tracking it.
-    task = asyncio.create_task(_run_turn(core, session_id, text, out, approvals))
+    task = core.agent.create_turn_task(_run_turn(core, session_id, text, out, approvals))
     turns[session_id] = task  # also keeps detached turns alive after their HTTP client disconnects
 
     def finished(done: asyncio.Task) -> None:
@@ -230,7 +230,10 @@ async def chat_completions(request: Request, body: ChatCompletionBody):
     if not text:
         return _error(400, "Send at least one user message with text.", "no_user_message")
     core = get_core(request)
+    generation = core.stop_generation
     session_id = await _session(core, (body.user or "").strip() or DEFAULT_NAME)
+    if core.stop_generation != generation:
+        return _error(409, STOPPED, "stopped")
     started = _start(core, session_id, text)
     if started is None:
         return _error(409, "This chat is already answering. Wait for it to finish, then try again.", "chat_busy")

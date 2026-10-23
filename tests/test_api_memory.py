@@ -90,9 +90,7 @@ async def test_api_turn_memory_keeps_genuine_desktop_interjections(memory_chat):
     assert await _own_words(app.agent.tool_context(sid, "api")) == "I prefer green tea."
 
 
-async def test_recalled_api_text_still_requires_approval_after_its_chat_is_trusted(config, isolated_home):
-    calls: list[str] = []
-
+def _history_probe(calls: list[str]) -> ToolPlugin:
     @tool("history_probe_send", risk=Risk.send, untrusted_output=False)
     async def history_probe_send(ctx: ToolContext, body: str) -> dict:
         """Send a note in the history probe."""
@@ -104,17 +102,27 @@ async def test_recalled_api_text_still_requires_approval_after_its_chat_is_trust
         display_name = "History probe"
         tools = [history_probe_send]
 
+    return Probe()
+
+
+@pytest.mark.parametrize("search", ["keyword", "date"])
+async def test_recalled_api_text_still_requires_approval_after_its_chat_is_trusted(config, isolated_home, search):
+    calls: list[str] = []
+    history_tool = "memory_search_history" if search == "keyword" else "history_time_search"
+    arguments = {"query": "orchard"} if search == "keyword" else {
+        "start_date": "2000-01-01", "end_date": "2100-01-01",
+    }
     config.tools.approvals.rules = {"history_probe_send": "allow"}
     llm = FakeProvider(replies=[
         "Received the note.",
-        [tool_call("memory_search_history", query="orchard")],
+        [tool_call(history_tool, **arguments)],
         [tool_call("history_probe_send", body="orchard note")],
         "I did not send it.",
     ])
     app = await SentientApp(
         config, llm=llm, db_path=isolated_home / "api-history.db", enable_background=False,
     ).start()
-    app.registry.register(Probe())
+    app.registry.register(_history_probe(calls))
     try:
         source = await app.store.create_session(channel="api")
         async for _ in app.agent.run_turn(source, "The orchard contact list is ready.", channel="api"):
@@ -125,7 +133,7 @@ async def test_recalled_api_text_still_requires_approval_after_its_chat_is_trust
         destination = await app.store.create_session(channel="desktop")
         asked, hits = [], []
         async for event in app.agent.run_turn(destination, "Find the earlier orchard note and send it."):
-            if isinstance(event, ToolResultEvent) and event.name == "memory_search_history":
+            if isinstance(event, ToolResultEvent) and event.name == history_tool:
                 hits = event.result
             elif isinstance(event, ApprovalRequest):
                 assert calls == []
@@ -135,8 +143,50 @@ async def test_recalled_api_text_still_requires_approval_after_its_chat_is_trust
         assert [event.name for event in asked] == ["history_probe_send"]
         assert API_SOURCE in asked[0].untrusted
         assert calls == []
-        [hit] = [hit for hit in hits if hit["session_id"] == source]
-        assert hit["role"] == "user" and hit["from"] == API_SOURCE
+        if search == "keyword":
+            [hit] = [hit for hit in hits if hit["session_id"] == source]
+            assert hit["role"] == "user" and hit["from"] == API_SOURCE
+        else:
+            assert f"user (from {API_SOURCE}): The orchard contact list is ready." in hits["conversation"]
         assert (await app.store.get_session(destination))["untrusted"] == API_SOURCE
+    finally:
+        await app.stop()
+
+
+@pytest.mark.parametrize("source_mark", ["", "Mail"], ids=["trusted-desktop", "outside-source-chat"])
+async def test_date_history_keeps_the_source_chats_trust_boundary(config, isolated_home, source_mark):
+    calls: list[str] = []
+    config.tools.approvals.rules = {"history_probe_send": "allow"}
+    llm = FakeProvider(replies=[
+        [tool_call("history_time_search", start_date="2000-01-01", end_date="2100-01-01")],
+        [tool_call("history_probe_send", body="orchard note")],
+        "Finished.",
+    ])
+    app = await SentientApp(
+        config, llm=llm, db_path=isolated_home / "date-history.db", enable_background=False,
+    ).start()
+    app.registry.register(_history_probe(calls))
+    try:
+        source = await app.store.create_session(channel="desktop")
+        await app.store.add_message(source, "user", "The orchard contact list is ready.")
+        await app.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source_mark, source))
+        destination = await app.store.create_session(channel="desktop")
+        asked, history = [], {}
+        async for event in app.agent.run_turn(destination, "Find the orchard note by date and send it."):
+            if isinstance(event, ToolResultEvent) and event.name == "history_time_search":
+                history = event.result
+            elif isinstance(event, ApprovalRequest):
+                assert calls == []
+                asked.append(event)
+                app.approvals.resolve(event.approval_id, "deny")
+        assert "user: The orchard contact list is ready." in history["conversation"]
+        assert API_SOURCE not in history["conversation"]
+        assert (await app.store.get_session(destination))["untrusted"] == source_mark
+        if source_mark:
+            assert [event.name for event in asked] == ["history_probe_send"]
+            assert source_mark in asked[0].untrusted
+            assert calls == []
+        else:
+            assert asked == [] and calls == ["orchard note"]
     finally:
         await app.stop()
