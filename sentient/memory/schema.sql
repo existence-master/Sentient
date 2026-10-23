@@ -97,5 +97,9 @@ CREATE TABLE IF NOT EXISTS pending_erase (
     id      INTEGER PRIMARY KEY,
     fact_id INTEGER NOT NULL,
     payload TEXT NOT NULL,
-    at      TEXT NOT NULL
+    at      TEXT NOT NULL,
+    -- 0 until the memory row itself is confirmed gone: upkeep only replays
+    -- completed erases, so a concurrent drain can never strip a live memory's
+    -- derived data while its delete is still running (#462).
+    complete INTEGER NOT NULL DEFAULT 0
 );
