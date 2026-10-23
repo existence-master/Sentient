@@ -153,14 +153,27 @@ async def test_a_retry_deletes_vectors_whose_summary_row_is_already_gone(app):
     """Retries use the vector IDs stored in the payload, so a vector still goes even
     when its summary row disappeared by another route (#462)."""
     mem, store = app.memory, app.store
-    await mem.episodic.vec.upsert(4242, [1.0, 0.0])
+    tg = await store.create_session(channel="telegram")
+    await store.add_message(tg, "user", "I drive a red Honda City to work")
+    honda = int((await mem.remember(HONDA, use_llm=False, session_id=tg))["id"])
+    summary = await mem.episodic.add_summary(
+        tg, "Maya drives a red Honda City to the office.", await store.recent_messages(tg, 10)
+    )
+    # The summary row disappears by another route, orphaning its vector.
+    row = await store.fetchone("SELECT rowid FROM summaries WHERE id = ?", (summary["id"],))
+    assert row is not None
+    await store.execute("DELETE FROM summaries WHERE id = ?", (summary["id"],))
     await store.execute(
         "INSERT INTO pending_erase(fact_id, payload, at, complete) VALUES(?,?,?,1)",
-        (1, json.dumps({"ids": [], "texts": [], "refs": [], "summary_vec_ids": [4242]}), now_iso()),
+        (
+            honda,
+            json.dumps({"ids": [honda], "texts": [], "refs": [], "summary_vec_ids": [int(row["rowid"])]}),
+            now_iso(),
+        ),
     )
 
     assert await mem.drain_pending_erases() == 1
-    assert not await store.fetchall("SELECT rowid FROM summaries_vec WHERE rowid = 4242")
+    assert not await store.fetchall("SELECT rowid FROM summaries_vec WHERE rowid = ?", (int(row["rowid"]),))
     assert not await store.fetchall("SELECT id FROM pending_erase")
 
 
