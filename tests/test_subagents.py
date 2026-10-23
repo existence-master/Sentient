@@ -349,13 +349,8 @@ async def test_files_come_from_any_tool_saving_into_the_files_folder(config, iso
 def test_files_from_browser_screenshot():
     """Test that browser screenshots with a relative 'file' key are included."""
     from sentient.agent.subagents import _files_from
-    
-    
+
     mock_result = {"file": "outputs/browser/screenshot-123.png"}
-    
-    
     names = _files_from(mock_result)
-    
     # Assert: We expect the returned list to contain this file
     assert "outputs/browser/screenshot-123.png" in names
-    

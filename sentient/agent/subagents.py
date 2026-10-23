@@ -100,22 +100,17 @@ def _files_from(result: Any) -> list[str]:
         return []
     names: list[str] = []
     path = result.get("path")
-      
-    
     if not path and isinstance(result.get("file"), str):
         file_path = Path(result["file"])
-        
         if not file_path.is_absolute() and ".." not in file_path.parts:
             names.append(file_path.as_posix())
-            
     if isinstance(path, str) and Path(path).is_absolute():
         with contextlib.suppress(OSError, ValueError):
             names.append(Path(path).resolve().relative_to(paths.files_dir().resolve()).as_posix())
-            
     names += [n for n in result.get("files_created") or [] if isinstance(n, str)]
     return names
-    
-    
+
+
 def _short(value: Any, limit: int = 1000) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     return text if len(text) <= limit else text[:limit] + "..."
