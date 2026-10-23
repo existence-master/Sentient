@@ -350,11 +350,12 @@ def test_files_from_browser_screenshot():
     """Test that browser screenshots with a relative 'file' key are included."""
     from sentient.agent.subagents import _files_from
     
-    # 模拟浏览器截图函数返回的结果（这是你修改代码要兼容的格式）
+    
     mock_result = {"file": "outputs/browser/screenshot-123.png"}
     
-    # 调用被测试的函数
+    
     names = _files_from(mock_result)
     
-    # 断言（Assert）：我们期望它返回的列表里包含这个文件
+    # Assert: We expect the returned list to contain this file
     assert "outputs/browser/screenshot-123.png" in names
+    
