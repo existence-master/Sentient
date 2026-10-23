@@ -504,13 +504,17 @@ accept or loosen a rule.
 ### OpenAI-compatible API (#211)
 Lets other apps on this computer (editors, scripts, shortcuts) chat with Sentient, with its memory and tools, using
 any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `true` (`PATCH /api/config`).
+- Only loopback connections can use `/v1`, even if the gateway also listens on the network or the API is enabled
+  after startup. Both the transport's local address and client address must be numeric loopback IPs (IPv4, IPv6,
+  or IPv4-mapped IPv6). Missing addresses are refused; `Host` and forwarded headers cannot make a network-facing
+  socket local. Connect directly to the local engine; remote access through a proxy is not supported.
 - `POST /api/openai-api/key` (window token) → `{key, base_url}`: a new key (`sk-sentient-...`) in the keychain entry
   `openai_api_key`, replacing the old one. This answer is the only place it is shown. 503 when the keychain can't
   save it.
 - `/v1/...` takes `Authorization: Bearer <key>`, never the window's token. Errors use OpenAI's shape
   `{error: {message, type, param, code}}`: 404 `api_off` while the setting is off, 401 `invalid_api_key` for a missing
-  or wrong key, 400 `no_user_message`, 409 `chat_busy` for an overlapping request, and 500 `turn_failed` when the turn
-  ended in an error.
+  or wrong key, 403 `local_only` for a non-loopback connection, 400 `no_user_message`, 409 `chat_busy` for an
+  overlapping request, and 500 `turn_failed` when the turn ended in an error.
 - `GET /v1/models` → `{object: "list", data: [{id: "sentient", object: "model", created, owned_by}]}`.
 - `POST /v1/chat/completions` `{model, messages: [{role, content}], stream?, user?}` runs one chat turn in the named
   chat for `user` (`"API"` when absent, made on first use, `channel: "api"`, title = the name; the mapping is the

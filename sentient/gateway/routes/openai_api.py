@@ -14,6 +14,7 @@ hangs up doesn't cut it short.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import secrets as pysecrets
@@ -65,9 +66,24 @@ def _error(status: int, message: str, code: str) -> JSONResponse:
     )
 
 
+def _loopback(address: str) -> bool:
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    return parsed.is_loopback
+
+
 def _refusal(request: Request) -> JSONResponse | None:
     if not get_core(request).config.openai_api.enabled:
         return _error(404, "Sentient's OpenAI-compatible API is off.", "api_off")
+    # Check the transport's local address as well as the peer: proxy headers can rewrite the peer, but not the
+    # socket's local address. Host/forwarded headers must never make a network-facing connection count as local.
+    server = request.scope.get("server")
+    if not server or not request.client or not _loopback(server[0]) or not _loopback(request.client.host):
+        return _error(403, "Sentient's OpenAI-compatible API only accepts connections on this computer.", "local_only")
     expected = secrets.get_secret(KEY_NAME)
     header = request.headers.get("authorization", "")
     given = header[7:].strip() if header.lower().startswith("bearer ") else ""

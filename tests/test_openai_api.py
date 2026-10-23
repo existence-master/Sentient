@@ -58,7 +58,7 @@ def client(config, isolated_home, monkeypatch, keychain):
     llm = SessionObservingProvider(replies=["Hello Maya.", "Second reply.", "Third reply."])
     core = SentientApp(config, llm=llm, db_path=isolated_home / "api.db", enable_background=False)
     llm.core = core
-    with TestClient(create_app(core)) as c:
+    with TestClient(create_app(core), base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as c:
         made = c.post("/api/openai-api/key", headers={"Authorization": f"Bearer {TOKEN}"})
         assert made.status_code == 200
         c.key = made.json()["key"]
@@ -81,7 +81,8 @@ def test_off_by_default(config, isolated_home, monkeypatch, keychain):
     monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", TOKEN)
     keychain["openai_api_key"] = "sk-sentient-x"
     with TestClient(create_app(SentientApp(config, llm=FakeProvider(), db_path=isolated_home / "off.db",
-                                           enable_background=False))) as c:
+                                           enable_background=False)),
+                    base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as c:
         r = c.post("/v1/chat/completions", json={"model": "sentient", "messages": [{"role": "user", "content": "hi"}]},
                    headers={"Authorization": "Bearer sk-sentient-x"})
         assert r.status_code == 404 and r.json()["error"]["code"] == "api_off"
@@ -179,9 +180,10 @@ def test_a_failed_turn_is_shown_and_not_retried_by_the_openai_sdk(config, isolat
     config.openai_api.enabled = True
     llm = Unreachable()
     with TestClient(create_app(SentientApp(config, llm=llm, db_path=isolated_home / "fail.db",
-                                           enable_background=False))) as c:
+                                           enable_background=False)),
+                    base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as c:
         key = c.post("/api/openai-api/key", headers={"Authorization": f"Bearer {TOKEN}"}).json()["key"]
-        sdk = openai.OpenAI(base_url="http://testserver/v1", api_key=key, http_client=c)
+        sdk = openai.OpenAI(base_url="http://127.0.0.1/v1", api_key=key, http_client=c)
         with pytest.raises(openai.InternalServerError) as err:
             sdk.chat.completions.create(model="sentient", messages=[{"role": "user", "content": "hi"}])
         [chat] = _sessions(c)

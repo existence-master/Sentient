@@ -67,3 +67,45 @@ async def test_deny_on_the_phone_means_not_done(tg, isolated_home):
     await _finish(out)
     assert not (isolated_home / "files" / "a.txt").exists()
     assert await _status(tg.app) == "deny"
+
+
+async def test_settlement_during_send_is_processed_after_delivery_is_registered(tg, isolated_home, monkeypatch):
+    await tg.pair(42)
+    sent, release = asyncio.Event(), asyncio.Event()
+    send_approval = tg.ch.send_approval
+
+    async def delayed_send(chat_id, event):
+        message_id = await send_approval(chat_id, event)
+        sent.set()
+        # The platform has the message, but _deliver_live_approval has not registered its ID yet.
+        await release.wait()
+        return message_id
+
+    monkeypatch.setattr(tg.ch, "send_approval", delayed_send)
+    try:
+        async with tg.app.bus.subscribe() as events:
+            out = await _api_turn(tg)
+            await asyncio.wait_for(sent.wait(), timeout=5)
+            msg = _approval_messages(tg, 42)[-1]
+            [note] = [n for n in await tg.app.notifications.list(20) if n["kind"] == "approval"]
+            assert note["id"] not in tg.app.channels._delivered
+
+            assert tg.app.approvals.resolve(note["payload"]["approval_id"], "deny")
+            await _finish(out)
+            assert await _status(tg.app) == "deny"
+            published = [events.get_nowait() for _ in range(events.qsize())]
+            assert any(event["type"] == "notification.updated" and event["data"]["id"] == note["id"]
+                       and event["data"]["payload"]["status"] == "deny" for event in published)
+            assert not any(p["message_id"] == msg["_id"] for p in tg.api.sent("editMessageText"))
+
+        # The single production listener finishes delivery before consuming the queued settlement.
+        release.set()
+        await until(lambda: any(p["message_id"] == msg["_id"] for p in tg.api.sent("editMessageText")))
+        edits = [p for p in tg.api.sent("editMessageText") if p["message_id"] == msg["_id"]]
+        assert "Denied" in edits[-1]["text"]
+        assert not edits[-1].get("reply_markup")
+        assert ("42", str(msg["_id"])) not in tg.ch._button_text
+        assert note["id"] not in tg.app.channels._delivered
+        assert not (isolated_home / "files" / "a.txt").exists()
+    finally:
+        release.set()
