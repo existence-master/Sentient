@@ -2517,6 +2517,8 @@ export interface Skill {
   check?: SkillCheckReport | null
   /** Reference files in its `references` folder (#167), read one at a time only when the skill is used. */
   references?: string[]
+  /** Installed from the Skills hub (#210): where it came from and the version pinned in the lockfile. */
+  hub?: HubInstalled | null
 }
 
 /** One check in a skill's `validate` header: a file that must exist, or Python run in the code sandbox. */
@@ -2585,6 +2587,123 @@ export interface SkillsList {
   pending: Skill[]
   archived: Skill[]
   broken?: BrokenSkill[]
+}
+
+// ---------------------------------------------------------------------------- Skills hub (#210)
+/** `trusted`: a source Sentient lists. `community`: one the user added (installing asks once more). */
+export type HubTrust = 'trusted' | 'community'
+
+export interface HubSource {
+  id: string
+  name: string
+  /** `github`: a repository of skill folders. `index`: a site with /.well-known/skills/index.json. */
+  kind: 'github' | 'index'
+  url: string
+  trust: HubTrust
+  default?: boolean
+  description?: string
+  owner?: string
+  repo?: string
+  ref?: string
+  path?: string
+  index_url?: string
+  added_at?: string | null
+}
+
+/** One thing a skill asks for: tools, programs, keys, platforms, what it needs, or the scripts it brings. */
+export interface HubAsk {
+  kind: 'tools' | 'apps' | 'keys' | 'platform' | 'needs' | 'programs' | string
+  label: string
+  items: string[]
+  more?: number
+}
+
+export interface HubSkill {
+  source: string
+  /** Its folder in the source; pass it back to preview and install. */
+  path: string
+  name: string
+  description: string
+  /** Who made it: the maker the skill names, else the source's publisher. */
+  author: string
+  license: string | null
+  version: string | null
+  asks: HubAsk[]
+  files: string[]
+  /** Its page at the exact version listed. */
+  url: string
+  fingerprint: string | null
+  /** Why it can't be installed (too large, unreadable header). */
+  problem: string | null
+  installed?: { name: string; status: 'pending' | 'active' | string; update_available?: boolean } | null
+}
+
+export interface HubListing {
+  source: HubSource
+  /** The exact commit listed (GitHub sources). */
+  commit: string | null
+  fetched_at: string
+  truncated: boolean
+  skills: HubSkill[]
+}
+
+export interface HubPreview extends HubSkill {
+  source_info: HubSource
+  commit: string | null
+  /** The SKILL.md exactly as written by its maker. */
+  skill_md: string | null
+  vetting: SkillVetting | null
+  sizes?: Record<string, number> | null
+}
+
+export interface HubFileChanges {
+  added: string[]
+  removed: string[]
+  changed: string[]
+}
+
+/** A skill's entry in the hub lockfile (`hub` on a skill, GET /api/skills/hub/installed). */
+export interface HubInstalled {
+  name: string
+  source: string
+  source_name: string
+  source_url: string
+  trust: HubTrust
+  path: string
+  url: string
+  /** The exact commit of the newest version fetched (null for an index source). */
+  commit: string | null
+  version: string | null
+  made_by: string
+  /** `pending`: the newest version waits for review. */
+  status: 'pending' | 'active' | string
+  installed_at: string
+  approved_commit: string | null
+  approved_at: string | null
+  /** An update waiting for review: the files it adds, removes or changes. */
+  changes: HubFileChanges | null
+  /** With `?check=true`. */
+  update_available?: boolean
+  latest_version?: string | null
+  problem?: string
+}
+
+export interface HubInstall {
+  source: string
+  path: string
+  /** Installing from a source the user added. */
+  confirm_source?: boolean
+  /** Installing although the safety check found high-risk problems. */
+  accept_risk?: boolean
+}
+
+export interface HubUpdateResult {
+  changed: boolean
+  name: string
+  commit: string | null
+  from_commit?: string | null
+  changes?: HubFileChanges
+  skill?: SkillDetail
 }
 
 export interface SkillCreate {

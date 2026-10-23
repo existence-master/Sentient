@@ -349,12 +349,16 @@ class SkillLibrary:
         )
         return path
 
-    def approve_pending(self, name: str) -> Path:
+    def approve_pending(self, name: str, *, keep_files: bool = True) -> Path:
+        """Make the pending copy active. ``keep_files=False``: the pending folder is the whole new version (an update
+        from the Skills hub), so files it no longer has are not carried over from the active copy."""
         name = name.strip().lower()
         src = self.pending_dir / name
         dst = self.root / name
         if not (src / "SKILL.md").exists():
             raise FileNotFoundError(name)
+        if dst.exists() and not keep_files:
+            shutil.rmtree(dst)
         if dst.exists():
             # a proposal holds only its SKILL.md: keep the skill's other files (scripts, references) with it
             for f in dst.rglob("*"):
