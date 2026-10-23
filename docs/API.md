@@ -509,7 +509,8 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   save it.
 - `/v1/...` takes `Authorization: Bearer <key>`, never the window's token. Errors use OpenAI's shape
   `{error: {message, type, param, code}}`: 404 `api_off` while the setting is off, 401 `invalid_api_key` for a missing
-  or wrong key, 400 `no_user_message`, 500 `turn_failed` when the turn ended in an error.
+  or wrong key, 400 `no_user_message`, 409 `chat_busy` for an overlapping request, and 500 `turn_failed` when the turn
+  ended in an error.
 - `GET /v1/models` → `{object: "list", data: [{id: "sentient", object: "model", created, owned_by}]}`.
 - `POST /v1/chat/completions` `{model, messages: [{role, content}], stream?, user?}` runs one chat turn in the named
   chat for `user` (`"API"` when absent, made on first use, `channel: "api"`, title = the name; the mapping is the
@@ -529,12 +530,13 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
 - API messages are outside content from the start of each turn, including in an existing chat. Their text never
   counts as the user's own words for an "Only if I asked" rule or a standing-rule proposal, and does not use the
   quick-command shortcut. Calls that run code or send data out ask for approval even with an Allow rule or approvals
-  turned off (ADR 0018). A desktop user's explicit approval is still required. Facts learned from API messages stay
+  turned off (ADR 0018). The user's explicit approval is still required. Facts learned from API messages stay
   pending for review rather than being accepted as the user's own statements (ADR 0021).
   Stored API user messages retain `name: "another app (API)"`; their text is marked as outside content when read
   into a later prompt. Trusting a chat up to an older message does not cover newer API input.
 - Concurrent first requests share the same chat for a given name, and creating one name cannot overwrite another
-  name's chat mapping.
+  name's chat mapping. Only one API turn can run in that chat at a time. An overlapping API request returns
+  409 `chat_busy` before starting a turn; it is not queued to run later. Different named chats can proceed independently.
 - **Stop everything** (`POST /api/stop-all`) ends a running API turn, waiting approvals included: 409 `stopped`
   (`Stopped.`), or a `data: {error: {message: "Stopped."}}` line before `[DONE]` when streaming. A client that hangs
   up doesn't end the turn: it runs to the end and is saved, as in the window.

@@ -41,7 +41,6 @@ MODEL = "sentient"
 DEFAULT_NAME = "API"
 STOPPED = "Stopped."
 NOT_DONE = "Not done: {what} needed your OK in Sentient and didn't get it."
-_turns: set[asyncio.Task] = set()  # turns still running after their client hung up
 
 
 class ChatMessage(BaseModel):
@@ -72,7 +71,7 @@ def _refusal(request: Request) -> JSONResponse | None:
     expected = secrets.get_secret(KEY_NAME)
     header = request.headers.get("authorization", "")
     given = header[7:].strip() if header.lower().startswith("bearer ") else ""
-    if not expected or not given or not pysecrets.compare_digest(given, expected):
+    if not expected or not given or not pysecrets.compare_digest(given.encode(), expected.encode()):
         return _error(401, "Invalid or missing API key.", "invalid_api_key")
     return None
 
@@ -167,28 +166,43 @@ class _Approvals:
 
 
 async def _run_turn(core: Any, session_id: str, text: str, out: asyncio.Queue, approvals: _Approvals) -> None:
-    """One API turn, in its own task (Stop everything cancels it). Its events go to ``out``, then None."""
+    """One API turn, in its own task; _start's completion callback finishes its event queue."""
     try:
         async for event in core.agent.run_turn(session_id, text, channel=CHANNEL):
             await approvals.see(event)
             out.put_nowait(event)
-    except asyncio.CancelledError:
-        out.put_nowait(asyncio.CancelledError())
-        raise
     except Exception as exc:
         log.exception("API chat turn failed")
         out.put_nowait(exc)
     finally:
         await approvals.close()
-        out.put_nowait(None)
 
 
-def _start(core: Any, session_id: str, text: str) -> tuple[asyncio.Queue, _Approvals]:
+def _start(core: Any, session_id: str, text: str) -> tuple[asyncio.Queue, _Approvals] | None:
+    """Reserve one API turn per chat without queuing another request behind it."""
+    turns = getattr(core, "_openai_api_turns", None)
+    if turns is None:
+        turns = core._openai_api_turns = {}
+    active = turns.get(session_id)
+    if (active is not None and not active.done()) or core.agent.is_busy(session_id):
+        return None
     out: asyncio.Queue = asyncio.Queue()
     approvals = _Approvals(core, session_id)
+    # No await between the busy check and reservation, including before Agent.run_turn starts tracking it.
     task = asyncio.create_task(_run_turn(core, session_id, text, out, approvals))
-    _turns.add(task)
-    task.add_done_callback(_turns.discard)
+    turns[session_id] = task  # also keeps detached turns alive after their HTTP client disconnects
+
+    def finished(done: asyncio.Task) -> None:
+        if turns.get(session_id) is done:
+            turns.pop(session_id)
+        # A task cancelled before its first step never enters _run_turn's finally block.
+        if done.cancelled():
+            out.put_nowait(asyncio.CancelledError())
+        elif (error := done.exception()) is not None:
+            out.put_nowait(error)
+        out.put_nowait(None)
+
+    task.add_done_callback(finished)
     return out, approvals
 
 
@@ -201,8 +215,11 @@ async def chat_completions(request: Request, body: ChatCompletionBody):
         return _error(400, "Send at least one user message with text.", "no_user_message")
     core = get_core(request)
     session_id = await _session(core, (body.user or "").strip() or DEFAULT_NAME)
+    started = _start(core, session_id, text)
+    if started is None:
+        return _error(409, "This chat is already answering. Wait for it to finish, then try again.", "chat_busy")
     cid, created = f"chatcmpl-{new_id()}", int(time.time())
-    out, approvals = _start(core, session_id, text)
+    out, approvals = started
 
     def chunk(delta: dict, finish: str | None = None) -> str:
         data = {"id": cid, "object": "chat.completion.chunk", "created": created, "model": MODEL,

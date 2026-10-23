@@ -105,6 +105,20 @@ def test_a_new_key_replaces_the_old_one(client):
     assert _ask(client, key=new).status_code == 200
 
 
+@pytest.mark.parametrize("endpoint", ["/v1/models", "/v1/chat/completions"])
+def test_non_ascii_bearer_is_an_auth_error_without_retries_or_model_calls(client, endpoint):
+    headers = {b"Authorization": b"Bearer \xe9"}  # Starlette decodes raw header bytes as Latin-1.
+    if endpoint == "/v1/models":
+        response = client.get(endpoint, headers=headers)
+    else:
+        response = client.post(endpoint, headers=headers, json={"messages": [{"role": "user", "content": "hi"}]})
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_api_key"
+    assert response.headers["x-should-retry"] == "false"
+    assert client.llm.calls == []
+    assert _sessions(client) == []
+
+
 def test_models_lists_sentient(client):
     r = client.get("/v1/models", headers={"Authorization": f"Bearer {client.key}"})
     assert r.status_code == 200 and [m["id"] for m in r.json()["data"]] == ["sentient"]
