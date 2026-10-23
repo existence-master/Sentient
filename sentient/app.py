@@ -61,6 +61,7 @@ from sentient.reminders import ReminderService
 from sentient.sandbox import SandboxService
 from sentient.sensors import SensorRegistry
 from sentient.services import Service
+from sentient.skills.hub import SkillsHub
 from sentient.skills.loader import SkillLibrary
 from sentient.snapshots import FileSnapshots
 from sentient.store.db import Store, now_iso
@@ -104,6 +105,7 @@ class SentientApp:
         self.skills = SkillLibrary(
             [paths.skills_dir(), *[Path(d).expanduser() for d in self.config.skills.extra_dirs]]
         )
+        self.skills_hub = SkillsHub(self.skills)  # finding and installing skills others wrote (#210)
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
         # Read only connections (#141) are read from the live config on every check, so a switch applies at once

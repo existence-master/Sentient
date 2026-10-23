@@ -2013,7 +2013,8 @@ merges/contradictions, `merged_into` / `superseded_by`.
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
-**Reference files (#167).** A skill may keep text files in a `references/` folder next to its SKILL.md (`.md`, `.txt`,
+**Reference files (#167).** A skill may keep text files in a `references/` folder next to its SKILL.md (also
+`examples/`, `templates/` and `assets/`, which Agent Skills from the Skills hub use; `.md`, `.txt`,
 `.rst`, `.csv`, `.json`, `.yaml`; dotfiles and links are left out; at most 50). `references` lists them. They stay out
 of the prompt: the `skill_view` tool `{name, file?}` returns the steps plus `references`, and with `file` (a path from
 that list, or just its file name) returns `{name, file, content, truncated?}` for that one file (at most 40,000
@@ -2056,7 +2057,7 @@ text pushed out of view. `outbound` (a `warning`): it always sends to one fixed 
 
 **Safety check of skills from outside (#146, ADR 0027).** Skills brought over from Hermes and skills added from a link
 wait in pending with **Vetting** `{verdict: "high|check|clear", summary, findings: [Lint finding & {file}], files,
-programs, hash, scanner, source: "link|hermes", origin, imported_at, decision: "approved"|null, changed_since_import,
+programs, hash, scanner, source: "link|hermes|learn|hub", origin, imported_at, decision: "approved"|null, changed_since_import,
 changed_since_approval}` (`source: "learn"` for a skill learned from docs, `origin` then the page, file or folder): the `danger`, `hidden` and `outbound` rules on the SKILL.md and every text file in its folder
 (`file` says which; dotfiles and `auth.json` are never opened), plus a `programs` warning listing the scripts it brings.
 `high` = any `error` finding; `check` = only warnings. It is computed again from the files every time it is returned.
@@ -2113,6 +2114,84 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
 - `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed, user_edited, changed_since_proposal}`
 - `POST /api/skills/review-now` `{session_id?}` → `{reviewed, proposed: [name]}` (with `session_id`: review that chat now; without: every chat with enough tool calls not yet reviewed, plus completed task runs seen on the bus)
 - `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_check_failed|skill_archived|skill_reset|skill_imported|skill_import_declined|skill_learned|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
+
+### Skills hub (#210, ADR 0035)
+
+Skills other people wrote, from a few sources, installed into pending review and pinned in a lockfile. A **HubSource**
+`{id, name, kind: "github"|"index", url, trust: "trusted"|"community", default?: true, description?, owner?, repo?,
+ref?, path?, index_url?, added_at}` is a public GitHub repository of Agent Skills folders (`<path>/<skill>/SKILL.md`
+with its `scripts/`, `references/`, `assets/`; https://agentskills.io/specification, the layout of
+`anthropics/skills` and `openai/skills` and the format Hermes and OpenClaw read), or a site that publishes the Hermes
+`well-known` index (`<base>/.well-known/skills/index.json` = `{skills: [{name, description, files?: [path], version?}]}`,
+each file at `<base>/.well-known/skills/<name>/<file>`). The defaults are `anthropic` (anthropics/skills, `skills/`)
+and `openai` (openai/skills, `skills/.curated/`), `trust: "trusted"`. Sources the user adds are `community` and kept
+in `skills/.hub/sources.json`. A GitHub source is read through `api.github.com` without an account (two requests per
+listing: the commit, then the tree at that commit; GitHub allows about 60 an hour) and its files from
+`raw.githubusercontent.com` at that exact commit; a listing is kept for 15 minutes. Redirects are never followed.
+
+**HubSkill** `{source, path, name, description, author, license, version, asks: [HubAsk], files, url, fingerprint,
+problem, installed: {name, status: "pending"|"active", update_available}|null}`. `path` is its folder below the
+source's folder (an index skill's name). `author` is who made it: `metadata.author` or a top-level `author` that isn't
+one of Sentient's own values, else the source's publisher. `url` is its page at the listed commit. `fingerprint` is
+SHA-256 over each file's path and git blob hash (GitHub's tree gives it without downloading; `null` for index sources).
+`problem` says why it can't be installed (an unreadable header; more than 120 files or 12 MB). Dotfiles, `auth.json`
+and other secrets files are never listed or fetched; a SKILL.md inside another skill's folder belongs to that skill;
+at most 150 skills per source, 4 folders deep. **HubAsk** `{kind: "tools"|"apps"|"keys"|"platform"|"needs"|"programs",
+label, items, more?}` is what it asks for, read from Agent Skills (`allowed-tools`, `compatibility`), Hermes
+(`platforms`, `required_environment_variables`, `metadata.hermes.requires_tools|requires_toolsets`), OpenClaw
+(`metadata.openclaw.requires.bins|anyBins|env`, `primaryEnv`, `os`) and the scripts among its files.
+
+Everything fetched is outside content: it is never shown to the model before the user approves the skill. A skill is
+downloaded into `skills/.hub/quarantine/` (removed afterwards), GitHub files must match the tree's blob hashes, and the
+safety check of skills from outside (Vetting above, `source: "hub"`, `origin` its page at that version) runs before it
+is staged. Installed, its SKILL.md header gets Sentient's name and `author: community` (a maker named in `author` is
+kept as `metadata.author`); its steps and other files are kept byte for byte.
+
+The **lockfile** `skills/.hub/lock.json` is `{version: 1, skills: {<name>: {source, source_name, source_url, trust,
+kind, path, repo_path, upstream_name, commit, version, fingerprint, files: {<path>: <git blob sha>}, url, made_by,
+installed_at, status: "pending"|"active", active: {commit, version, fingerprint, files, url, made_by, approved_at}|null,
+changes: HubFileChanges|null, updated_at?}}}`. The top level is the newest version fetched; `active` is the one the user
+approved. **HubFileChanges** `{added, removed, changed}` lists file paths. **HubInstalled** (`hub` on a Skill in
+`GET /api/skills` and `GET /api/skills/{name}`, `null` for other skills) `{name, source, source_name, source_url,
+trust, path, url, commit, version, made_by, status, installed_at, approved_commit, approved_at, changes}`.
+
+- `GET /api/skills/hub/sources` → `[HubSource]`
+- `POST /api/skills/hub/sources` `{url, name?}` → `HubSource` (`trust: "community"`). `url` is a GitHub repository
+  (`github.com/<o>/<r>`, read at its default branch) or folder (`github.com/<o>/<r>/tree/<ref>/<path>`), or a site
+  (https; plain http only on this computer) whose index is at `/.well-known/skills/index.json` (or the `index.json`
+  address itself). 400 with a plain reason; 409 when it is already a source.
+- `DELETE /api/skills/hub/sources/{id}` → `{ok}` (409 for a default source; skills installed from it stay)
+- `GET /api/skills/hub/browse?source=&refresh=` → `{source: HubSource, commit, fetched_at, truncated, skills:
+  [HubSkill]}` (`commit` is the exact commit listed, `null` for an index source). 404 no such source or repository; 503
+  "GitHub limits how often it can be asked without an account. Try again in about N minutes."; 502 for other errors
+  from the site; all with a plain `detail`.
+- `GET /api/skills/hub/preview?source=&path=` → `HubSkill & {source_info: HubSource, commit, skill_md, vetting:
+  Vetting|null, sizes}`: downloads the skill into quarantine and checks it without installing anything. `skill_md` is
+  the SKILL.md exactly as its maker wrote it. `vetting` is `null` when it has a `problem`.
+- `POST /api/skills/hub/install` `{source, path, confirm_source?, accept_risk?}` → `Skill & {body, lint, vetting, hub}`
+  (the pending copy, `state: "pending_review"`; never active). 409 `{detail, code: "confirm_source"}` when the source
+  is not a default one and `confirm_source` isn't the literal `true`; 409 `{detail, code: "high_risk", vetting}` when
+  the safety check says `high` and `accept_risk` isn't `true` (nothing is staged; approving it later still needs
+  `accept_risk` on `/approve`). 409 when it is already installed or its name is taken (a taken name first gets
+  `-<source id>` added); 502 when a file doesn't match GitHub's hash. The skill's file checks run (code checks never
+  do, it came from outside), the lockfile gets its entry with `status: "pending"`, and the evolution log
+  `skill_imported {name, source: "hub", hub_source, origin, verdict, commit, pending: true, reason: "Installed from
+  <source> in the Skills hub", update: false}`, with a `skill.updated` event.
+- `GET /api/skills/hub/installed?check=` → `{skills: [HubInstalled]}` from the lockfile. With `check=true` each source
+  is asked again and every item adds `update_available`, `latest_version`, `latest_fingerprint`, or `problem` (the
+  source no longer has it, or can't be reached).
+- `POST /api/skills/hub/update/{name}` `{accept_risk?}` → `{changed: false, name, commit}` when the source has the same
+  version, else `{changed: true, name, from_commit, commit, changes: HubFileChanges, skill: Skill & {body, lint,
+  vetting, hub}}`: the new version is fetched and checked the same way and waits in pending as a proposed update (see
+  `/diff`), while the approved version stays in use; the lock entry gets the new version on top with `status: "pending"`
+  and `changes`. 404 not from the hub; 409 when a version already waits for review or the skill isn't active; 409
+  `code: "high_risk"` as for install. Evolution log `skill_imported {..., update: true, reason: "Update from <source>:
+  N files changed"}`.
+- Approving (`/approve`) a hub skill copies the lock entry's top level into `active` (`status: "active"`, `changes:
+  null`); for an update the whole pending folder replaces the active one, so files the update removed don't come
+  back. Declining (`/reject`) a first install removes its lock entry and its `skill_imports` record; declining an
+  update puts `active` back on top and keeps the approved version's safety record. `DELETE /api/skills/{name}` removes
+  the lock entry.
 
 Skills proposed by the background reviewer or curator always land in pending with a `skill` notification `payload: {skill, action: "create"|"patch", origin}`.
 Repair proposals (section 15) send `payload: {skill, action: "patch", origin: "repair", reason, session_id?, turn_id?, task_id?, run_id?}` with title "Skill fix to review".
