@@ -2,7 +2,7 @@
 
 Claude Code only answers chats (ADR 0022), so with the fast role on it the add-or-update decision (CUD) was refused
 and every memory was added, never updated or skipped. The fast role's jobs now go to another model the user set up
-(``claude_code.stand_in``); when there is none, Sentient says so in the log and once in a notification, which
+(``claude_code.stand_ins``); when there is none, Sentient says so in the log and once in a notification, which
 Activity shows under Memory. The model is faked at ``litellm.acompletion``: Claude Code itself is never started,
 because a refused call never reaches it.
 """
@@ -85,26 +85,28 @@ async def make_app(cc_config, isolated_home):
 
 def test_stand_in_is_another_model_the_user_set_up(cc_config):
     chain = ["claude-code/haiku"]
-    assert claude_code.stand_in(cc_config, "fast", chain) is None  # nothing else set up: the plain refusal stays
+    assert claude_code.stand_ins(cc_config, "fast", chain) == []  # nothing else set up: the plain refusal stays
     cc_config.models.roles.planner = "ollama_chat/qwen3:14b"
-    assert claude_code.stand_in(cc_config, "fast", chain) == "ollama_chat/qwen3:14b"
+    assert claude_code.stand_ins(cc_config, "fast", chain) == ["ollama_chat/qwen3:14b"]
     cc_config.models.roles.executor = LOCAL
-    assert claude_code.stand_in(cc_config, "fast", chain) == LOCAL  # the executor before the planner
+    assert claude_code.stand_ins(cc_config, "fast", chain) == [LOCAL, "ollama_chat/qwen3:14b"]  # executor, planner
     cc_config.models.fallbacks["primary"] = ["claude-code/opus", "openai/gpt-5-mini"]
-    assert claude_code.stand_in(cc_config, "fast", chain) == "openai/gpt-5-mini"  # never another Claude Code model
+    # never another Claude Code model; each is tried in turn when one fails
+    everyone = ["openai/gpt-5-mini", LOCAL, "ollama_chat/qwen3:14b"]
+    assert claude_code.stand_ins(cc_config, "fast", chain) == everyone
     # only the fast role, and only when every model it has is Claude Code
-    assert claude_code.stand_in(cc_config, "planner", chain) is None
-    assert claude_code.stand_in(cc_config, "fast", ["claude-code/haiku", "openai/gpt-5-mini"]) is None
+    assert claude_code.stand_ins(cc_config, "planner", chain) == []
+    assert claude_code.stand_ins(cc_config, "fast", ["claude-code/haiku", "openai/gpt-5-mini"]) == []
     # inside a reply Claude Code may answer (the second look), and for the rules-from-chat check, which asks the
     # chat's model when the fast role refuses (#311), the refusal stays
     with claude_code.attended():
-        assert claude_code.stand_in(cc_config, "fast", chain) is None
+        assert claude_code.stand_ins(cc_config, "fast", chain) == []
     with claude_code.without_stand_in():
-        assert claude_code.stand_in(cc_config, "fast", chain) is None
-    assert claude_code.stand_in(cc_config, "fast", chain) == "openai/gpt-5-mini"
+        assert claude_code.stand_ins(cc_config, "fast", chain) == []
+    assert claude_code.stand_ins(cc_config, "fast", chain) == everyone
     # Claude Code doing everything (ADR 0032) does these jobs itself
     cc_config.models.claude_code_everywhere = True
-    assert claude_code.stand_in(cc_config, "fast", chain) is None
+    assert claude_code.stand_ins(cc_config, "fast", chain) == []
 
 
 async def test_the_decision_runs_on_another_model_and_updates(make_app, cc_config, model, caplog):
@@ -224,3 +226,22 @@ async def test_the_rules_check_still_goes_to_the_chats_model(make_app, cc_config
     session_id = await app.store.create_session(title="Rules")
     assert await app.chat_rules.detect(session_id, [{"role": "user", "content": "hi"}]) == {"keys": [], "level": "ask"}
     assert asked == [CC] and model.asked == []
+
+
+async def test_the_next_stand_in_answers_when_one_fails(make_app, cc_config, model, monkeypatch):
+    cc_config.models.roles.executor = "openai/gpt-5-mini"
+    cc_config.models.roles.planner = LOCAL
+    app = await make_app()
+    answer = litellm.acompletion
+
+    async def down_then_up(model, messages, **kwargs):
+        if model.startswith("openai/"):
+            model_asked.append(model)
+            raise ConnectionError("connection refused")
+        return await answer(model, messages, **kwargs)
+
+    model_asked: list[str] = []
+    monkeypatch.setattr(litellm, "acompletion", down_then_up)
+    assert await app.llm.complete_json("fast", [{"role": "user", "content": "hi"}]) == {
+        "topics": ["Personal Identity"], "memory_type": "long-term"}
+    assert model_asked == ["openai/gpt-5-mini"] and model.asked == [LOCAL]

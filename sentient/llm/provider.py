@@ -256,15 +256,15 @@ class LiteLLMProvider:
             self.config.models.fallbacks.get("primary", []) if role in {"planner", "executor", "vision", "voice"} else []
         )
         chain = [primary, *[m for m in fallbacks if m != primary]]
-        from sentient.llm.claude_code import stand_in
+        from sentient.llm.claude_code import stand_ins
 
-        spare = stand_in(self.config, role, chain)
-        if spare is not None:  # the fast role is only on Claude Code, which would refuse its jobs (#474)
-            if (role, chain[0], spare) not in self._stand_ins_logged:
-                self._stand_ins_logged.add((role, chain[0], spare))
+        spares = stand_ins(self.config, role, chain)
+        if spares:  # the fast role is only on Claude Code, which would refuse its jobs (#474)
+            if (role, chain[0], spares[0]) not in self._stand_ins_logged:
+                self._stand_ins_logged.add((role, chain[0], spares[0]))
                 log.info("the %s model %s can't do background work (Claude Code only answers chats), so %s does "
-                         "its jobs (memory, summaries, titles)", role, chain[0], spare)
-            return [spare]
+                         "its jobs (memory, summaries, titles)", role, chain[0], ", then ".join(spares))
+            return spares
         return chain
 
     def _kwargs_for(self, model: str, role: str | None = None) -> dict:

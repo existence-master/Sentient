@@ -689,9 +689,9 @@ accept or loosen a rule.
   other callers (tasks, subagents, proactivity, follow-ups, dreaming, briefs, memory notes, titles, summaries) get
   "Claude Code only answers your chats..." so the role's fallbacks are tried, and embeddings fail with a plain
   message. When every model of the `fast` role is Claude Code (and it doesn't do everything), its jobs (memory
-  decisions and extraction, summaries, titles) go to the first other model set up instead, never the chat's model:
-  `fallbacks.primary`, then the executor, the planner, the main model (#474, `claude_code.stand_in`); the log says
-  `the fast model <model> can't do background work ..., so <model> does its jobs` once. Not inside a reply someone
+  decisions and extraction, summaries, titles) go to the other models set up instead, tried in turn, never the chat's
+  model: `fallbacks.primary`, then the executor, the planner, the main model (#474, `claude_code.stand_ins`); the log
+  says `the fast model <model> can't do background work ..., so <models> does its jobs` once. Not inside a reply someone
   waits for (the second look asks Claude Code then) or for the rules-from-chat check, which asks the chat's model
   when the fast role refuses (#311). The check-up and Settings still flag the fast role. With no other model the
   refusal stands. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
