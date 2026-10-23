@@ -282,10 +282,12 @@ def untrusted_source(tool: Tool, registry: Any = None) -> str:
 
 
 UNAVAILABLE_SOURCE = "a tool that is no longer available"
+# API user rows keep this engine-owned name so later trust checks and history reads retain their provenance.
+API_SOURCE = "another app (API)"
 
 
 def untrusted_in(messages: list[dict] | None, registry: Any) -> str:
-    """The source of the first tool result in a transcript that brought outside content in, else "".
+    """The source of the first API message or tool result that brought outside content in, else "".
 
     A result whose tool is no longer registered (an MCP server that was removed) counts as outside content, since
     its kind can't be checked any more; only the engine's own "unknown tool" refusal for a made-up name does not.
@@ -318,8 +320,12 @@ def _saved_read(message: Any, calls: dict[str, Any]) -> str:
 
 
 def outside_source(message: Any, registry: Any) -> str:
-    """Where a tool message came from when it brought outside content in ("Gmail", ``UNAVAILABLE_SOURCE``), else ""."""
-    if not isinstance(message, dict) or message.get("role") != "tool":
+    """Where an API message or tool result brought outside content from, else ""."""
+    if not isinstance(message, dict):
+        return ""
+    if message.get("role") == "user" and message.get("name") == API_SOURCE:
+        return API_SOURCE
+    if message.get("role") != "tool":
         return ""
     name = str(message.get("name") or "")
     t = registry.get(name)

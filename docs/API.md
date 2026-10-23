@@ -526,6 +526,15 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   `payload.status` is `allow` or `deny`; `expired` when nobody answered within `tools.approvals.timeout_s` or the turn
   was stopped (`notification.updated`). A call that was declined or not answered in time is never claimed: the reply
   (or a last `delta.content`) ends with `Not done: "<tool>" needed your OK in Sentient and didn't get it.`
+- API messages are outside content from the start of each turn, including in an existing chat. Their text never
+  counts as the user's own words for an "Only if I asked" rule or a standing-rule proposal, and does not use the
+  quick-command shortcut. Calls that run code or send data out ask for approval even with an Allow rule or approvals
+  turned off (ADR 0018). A desktop user's explicit approval is still required. Facts learned from API messages stay
+  pending for review rather than being accepted as the user's own statements (ADR 0021).
+  Stored API user messages retain `name: "another app (API)"`; their text is marked as outside content when read
+  into a later prompt. Trusting a chat up to an older message does not cover newer API input.
+- Concurrent first requests share the same chat for a given name, and creating one name cannot overwrite another
+  name's chat mapping.
 - **Stop everything** (`POST /api/stop-all`) ends a running API turn, waiting approvals included: 409 `stopped`
   (`Stopped.`), or a `data: {error: {message: "Stopped."}}` line before `[DONE]` when streaming. A client that hangs
   up doesn't end the turn: it runs to the end and is saved, as in the window.

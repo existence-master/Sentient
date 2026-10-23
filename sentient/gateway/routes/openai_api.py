@@ -85,15 +85,20 @@ def _text(content: str | list[dict[str, Any]] | None) -> str:
 
 async def _session(core: Any, name: str) -> str:
     """The named chat, made on first use and again after it was deleted."""
-    # ponytail: two first requests for one new name at once can make two chats; a lock if clients ever do that
-    known = json.loads(await core.store.get_meta(SESSIONS_META) or "{}")
-    sid = known.get(name)
-    if sid and await core.store.get_session(sid) is not None:
+    # All names share one metadata value, so different names must serialize their updates too.
+    lock = getattr(core.store, "_openai_api_sessions_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        core.store._openai_api_sessions_lock = lock
+    async with lock:
+        known = json.loads(await core.store.get_meta(SESSIONS_META) or "{}")
+        sid = known.get(name)
+        if sid and await core.store.get_session(sid) is not None:
+            return sid
+        sid = await core.store.create_session(channel=CHANNEL, title=name)
+        known[name] = sid
+        await core.store.set_meta(SESSIONS_META, json.dumps(known))
         return sid
-    sid = await core.store.create_session(channel=CHANNEL, title=name)
-    known[name] = sid
-    await core.store.set_meta(SESSIONS_META, json.dumps(known))
-    return sid
 
 
 @router.post("/api/openai-api/key", dependencies=AUTH)

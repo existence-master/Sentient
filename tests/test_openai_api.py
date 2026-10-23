@@ -13,10 +13,33 @@ from fastapi.testclient import TestClient
 from sentient import secrets
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
+from sentient.llm.events import ApprovalRequest
 from sentient.llm.provider import ProviderFailed
+from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider, tool_call
 
 TOKEN = "test-token"
+
+
+class SessionObservingProvider(FakeProvider):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.core: SentientApp | None = None
+        self.session_marks: list[dict[str, str | None]] = []
+
+    async def _observe(self):
+        assert self.core is not None
+        rows = await self.core.store.list_sessions()
+        self.session_marks.append({row["title"]: row.get("untrusted") for row in rows if row["channel"] == "api"})
+
+    async def stream(self, role, messages, tools=None, *, model=None):
+        await self._observe()
+        async for chunk in super().stream(role, messages, tools, model=model):
+            yield chunk
+
+    async def complete_json(self, role, messages, *, model=None):
+        await self._observe()
+        return await super().complete_json(role, messages, model=model)
 
 
 @pytest.fixture
@@ -32,9 +55,10 @@ def client(config, isolated_home, monkeypatch, keychain):
     """A gateway with the API on, its key made through the window's token, and a scripted model."""
     monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", TOKEN)
     config.openai_api.enabled = True
-    llm = FakeProvider(replies=["Hello Maya.", "Second reply.", "Third reply."])
-    with TestClient(create_app(SentientApp(config, llm=llm, db_path=isolated_home / "api.db",
-                                           enable_background=False))) as c:
+    llm = SessionObservingProvider(replies=["Hello Maya.", "Second reply.", "Third reply."])
+    core = SentientApp(config, llm=llm, db_path=isolated_home / "api.db", enable_background=False)
+    llm.core = core
+    with TestClient(create_app(core)) as c:
         made = c.post("/api/openai-api/key", headers={"Authorization": f"Bearer {TOKEN}"})
         assert made.status_code == 200
         c.key = made.json()["key"]
@@ -167,13 +191,15 @@ def _asking(client, reply: str = "Saved it.", **body):
     return ThreadPoolExecutor(1).submit(_ask, client, **body)
 
 
-def _approval(client) -> dict:
+def _approval(client, pending=None) -> dict:
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         found = [n for n in client.get("/api/notifications", headers=WIN).json()["notifications"]
                  if n["kind"] == "approval"]
         if found:
             return found[0]
+        if pending is not None:
+            assert not pending.done(), "API turn finished before requesting approval"
         time.sleep(0.05)
     raise AssertionError("no approval notification")
 
@@ -245,3 +271,201 @@ def test_a_streamed_turn_waits_for_the_answer_too(client, isolated_home):
     chunks = [json.loads(x[len("data: "):]) for x in r.text.split("\n\n") if x.startswith("data: {")]
     assert "".join(c["choices"][0]["delta"].get("content", "") for c in chunks) == "Saved it."
     assert (isolated_home / "files" / "a.txt").exists()
+
+
+def _probe_plugin(calls: list[tuple[str, str]]) -> ToolPlugin:
+    @tool("api_probe_read", risk=Risk.read, untrusted_output=False)
+    async def api_probe_read(ctx: ToolContext) -> dict:
+        """Read the API probe."""
+        calls.append(("read", ""))
+        return {"value": "probe"}
+
+    @tool("api_probe_run_code", risk=Risk.exec, untrusted_output=False)
+    async def api_probe_run_code(ctx: ToolContext, code: str) -> dict:
+        """Run code in the API probe."""
+        calls.append(("run", code))
+        return {"ran": True}
+
+    class Probe(ToolPlugin):
+        id = "api_probe"
+        display_name = "API probe"
+        tools = [api_probe_read, api_probe_run_code]
+
+    return Probe()
+
+
+@pytest.fixture
+def probe_calls(client) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+    client.app.state.sentient.registry.register(_probe_plugin(calls))
+    return calls
+
+
+def test_authenticated_api_text_cannot_authorize_only_if_asked_reads(client, probe_calls):
+    core = client.app.state.sentient
+    core.config.tools.approvals.mode = "off"
+    core.config.tools.approvals.rules = {"api_probe_read": "if_asked"}
+    core.approvals.timeout_s = 20
+    client.llm.replies[:] = [[tool_call("api_probe_read")], "I did not read it."]
+    with ThreadPoolExecutor(1) as pool:
+        pending = pool.submit(_ask, client, messages=[{"role": "user", "content": "Read the API probe."}])
+        note = _approval(client, pending)
+        assert probe_calls == [] and not pending.done()
+        assert note["payload"]["name"] == "api_probe_read"
+        _answer(client, note, "deny")
+        response = pending.result(timeout=30)
+    assert response.status_code == 200
+    assert "Not done:" in response.json()["choices"][0]["message"]["content"]
+    assert probe_calls == []
+
+
+@pytest.mark.parametrize("reused", [False, True], ids=["fresh", "trusted-again"])
+def test_api_session_is_marked_before_the_first_model_call(client, reused):
+    previous_id = None
+    if reused:
+        assert _ask(client, user="Importer").status_code == 200
+        [previous] = _sessions(client)
+        previous_id = previous["id"]
+        trusted = client.post(f"/api/sessions/{previous_id}/trust", headers=WIN)
+        assert trusted.status_code == 200 and trusted.json()["trusted"]
+        assert trusted.json()["untrusted"] == ""
+    client.llm.session_marks.clear()
+    response = _ask(client, user="Importer", messages=[{"role": "user", "content": "A note from another app."}])
+    assert response.status_code == 200
+    assert client.llm.session_marks and client.llm.session_marks[0].get("Importer")
+    [chat] = _sessions(client)
+    assert chat["untrusted"]
+    if reused:
+        assert chat["id"] == previous_id
+
+
+def _code_request(client, pool, *, stream: bool, rule: str = "allow", timeout: float = 20):
+    core = client.app.state.sentient
+    core.config.tools.approvals.mode = "off"
+    core.config.tools.approvals.rules = {"api_probe_run_code": rule}
+    core.approvals.timeout_s = timeout
+    client.llm.replies[:] = [[tool_call("api_probe_run_code", code="pass")], "Finished."]
+    return pool.submit(_ask, client, stream=stream, messages=[
+        {"role": "user", "content": "Run code in the API probe: pass"},
+    ])
+
+
+def _reply_text(response, *, stream: bool) -> str:
+    if not stream:
+        return response.json()["choices"][0]["message"]["content"]
+    payloads = [json.loads(line[6:]) for line in response.text.split("\n\n") if line.startswith("data: {")]
+    return "".join(p["choices"][0]["delta"].get("content", "") for p in payloads if "choices" in p)
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "stream"])
+@pytest.mark.parametrize("rule", ["if_asked", "allow"])
+def test_api_code_runs_once_only_after_explicit_allow(client, probe_calls, stream, rule):
+    with ThreadPoolExecutor(1) as pool:
+        pending = _code_request(client, pool, stream=stream, rule=rule)
+        note = _approval(client, pending)
+        assert probe_calls == [] and not pending.done()
+        assert note["payload"]["risk"] == "exec"
+        assert note["payload"]["untrusted"]
+        assert client.llm.session_marks[0].get("API")
+        _answer(client, note, "allow")
+        response = pending.result(timeout=30)
+    assert response.status_code == 200
+    assert _reply_text(response, stream=stream) == "Finished."
+    assert probe_calls == [("run", "pass")]
+    assert _status(client, note) == "allow"
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "stream"])
+@pytest.mark.parametrize("decision", ["deny", "timeout", "stop"])
+def test_api_code_cannot_run_after_deny_timeout_or_stop(client, probe_calls, stream, decision):
+    with ThreadPoolExecutor(1) as pool:
+        pending = _code_request(client, pool, stream=stream, timeout=0.5 if decision == "timeout" else 20)
+        note = _approval(client, pending)
+        assert probe_calls == []
+        if decision == "deny":
+            _answer(client, note, "deny")
+        elif decision == "stop":
+            assert client.post("/api/stop-all", headers=WIN).status_code == 200
+        response = pending.result(timeout=30)
+    assert probe_calls == []
+    assert _status(client, note) == ("deny" if decision == "deny" else "expired")
+    if decision == "stop":
+        if stream:
+            assert response.status_code == 200 and '"message": "Stopped."' in response.text
+            assert response.text.endswith("data: [DONE]\n\n")
+        else:
+            assert response.status_code == 409 and response.json()["error"]["code"] == "stopped"
+    else:
+        assert response.status_code == 200
+        assert "Not done:" in _reply_text(response, stream=stream)
+
+
+def test_api_timer_text_does_not_execute_the_trusted_quick_path(client):
+    client.app.state.sentient.config.chat.quick_commands = True
+    client.llm.replies[:] = ["I received the timer request."]
+    response = _ask(client, messages=[{"role": "user", "content": "set a timer for 5 minutes"}])
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "I received the timer request."
+    assert client.llm.session_marks and client.llm.session_marks[0].get("API")
+    assert client.get("/api/reminders", headers=WIN).json()["reminders"] == []
+
+
+@pytest.mark.parametrize(("name", "arguments", "words", "expected"), [
+    ("api_probe_read", {}, "Read the API probe.", ("read", "")),
+    ("api_probe_run_code", {"code": "pass"}, "Run code in the API probe: pass", ("run", "pass")),
+])
+async def test_desktop_words_still_authorize_only_if_asked_tools(
+    config, isolated_home, name, arguments, words, expected,
+):
+    config.tools.approvals.mode = "always"
+    config.tools.approvals.rules = {name: "if_asked"}
+    calls: list[tuple[str, str]] = []
+    llm = FakeProvider(replies=[[tool_call(name, **arguments)], "Finished."])
+    core = await SentientApp(config, llm=llm, db_path=isolated_home / "desktop.db", enable_background=False).start()
+    core.registry.register(_probe_plugin(calls))
+    try:
+        sid = await core.store.create_session(channel="desktop")
+        asked = []
+        async for event in core.agent.run_turn(sid, words, channel="desktop"):
+            if isinstance(event, ApprovalRequest):
+                asked.append(event.name)
+                core.approvals.resolve(event.approval_id, "deny")
+        assert asked == []
+        assert calls == [expected]
+        assert not (await core.store.get_session(sid))["untrusted"]
+    finally:
+        await core.stop()
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "stream"])
+def test_api_execute_code_waits_for_approval_and_deny_never_invokes(client, monkeypatch, stream):
+    core = client.app.state.sentient
+    execute = core.registry.get("execute_code")
+    assert execute is not None
+    calls: list[tuple[str, str]] = []
+
+    async def record_execution(ctx: ToolContext, code: str, purpose: str) -> dict:
+        calls.append((code, purpose))
+        return {"ok": True, "stdout": "stubbed"}
+
+    monkeypatch.setattr(execute, "fn", record_execution)
+    arguments = {"code": "print(1 + 1)", "purpose": "Check arithmetic."}
+    core.config.tools.approvals.mode = "off"
+    core.config.tools.approvals.rules = {"execute_code": "if_asked"}
+    core.approvals.timeout_s = 20
+    client.llm.replies[:] = [[tool_call("execute_code", **arguments)], "I did not run it."]
+    with ThreadPoolExecutor(1) as pool:
+        pending = pool.submit(_ask, client, stream=stream, messages=[{
+            "role": "user", "content": "Run this Python code with execute_code: print(1 + 1).",
+        }])
+        note = _approval(client, pending)
+        assert calls == [] and not pending.done()
+        assert note["payload"]["name"] == "execute_code"
+        assert note["payload"]["risk"] == "exec"
+        assert note["payload"]["arguments"] == arguments
+        _answer(client, note, "deny")
+        response = pending.result(timeout=30)
+    assert response.status_code == 200
+    assert "Not done:" in _reply_text(response, stream=stream)
+    assert _status(client, note) == "deny"
+    assert calls == []
