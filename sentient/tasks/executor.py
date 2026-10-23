@@ -28,7 +28,14 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from sentient.agent import dry_run, outcomes, preview, rule_levels
-from sentient.agent.loop import ASK_FIRST_KEY, CAN_PAUSE_KEY, Budget, LoopResult, action_call_history, history_to_openai
+from sentient.agent.loop import (
+    ASK_FIRST_KEY,
+    CAN_PAUSE_KEY,
+    Budget,
+    LoopResult,
+    action_call_history,
+    history_to_openai,
+)
 from sentient.agent.second_look import BRIEF_FROM_KEY
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
