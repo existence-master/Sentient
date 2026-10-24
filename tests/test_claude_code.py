@@ -822,8 +822,8 @@ async def test_stop_everything_drops_calls_still_waiting(fake_claude, everywhere
         return await llm.complete_text("fast", [{"role": "user", "content": "hi"}])
 
     first = asyncio.create_task(one())
-    for _ in range(300):
-        if claude_code._live:
+    for _ in range(300):  # running and logged, not just spawned: slow to start on Windows (claude.cmd, then Python)
+        if claude_code._live and fake_claude.runs():
             break
         await asyncio.sleep(0.05)
     second = asyncio.create_task(one())

@@ -1,6 +1,9 @@
 
+from sentient.agent import outcomes
+from sentient.agent.loop import browser_click_history
 from sentient.app import SentientApp
 from sentient.llm.events import ApprovalRequest, Done, TextDelta, ToolResultEvent
+from sentient.llm.provider import StreamChunk, ToolCall
 from tests.conftest import FakeProvider, tool_call
 
 
@@ -79,6 +82,7 @@ async def test_approval_gate_deny_and_allow(config, isolated_home):
         sid = await s.store.create_session(channel="cli")
 
         async def deny(ev):
+            """Decline the browser-click approval shown by this test."""
             if isinstance(ev, ApprovalRequest):
                 assert ev.risk == "write"
                 s.approvals.resolve(ev.approval_id, "deny")
@@ -89,6 +93,7 @@ async def test_approval_gate_deny_and_allow(config, isolated_home):
         assert sent == []
 
         async def allow(ev):
+            """Allow the postcard approval shown by this test."""
             if isinstance(ev, ApprovalRequest):
                 s.approvals.resolve(ev.approval_id, "allow_session")
 
@@ -97,6 +102,257 @@ async def test_approval_gate_deny_and_allow(config, isolated_home):
         assert not res.is_error and sent == ["y"]
         # session allowance now skips the prompt for the same tool
         assert not s.approvals.needs_approval(s.registry.get("send_postcard"), sid)
+    finally:
+        await s.stop()
+
+
+async def test_reply_corrects_a_browser_click_it_never_made(config, isolated_home):
+    """A natural-language click claim needs evidence from a browser click call."""
+    llm = FakeProvider(replies=["I clicked the subscription button. "])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "never-clicked.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+        events = await _collect(s.agent, sid, "click the subscription button")
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text == "I clicked the subscription button. \n\nCorrection: I didn't click it, so nothing changed on the page."
+        assert (await s.store.recent_messages(sid, 1))[-1]["content"] == text
+    finally:
+        await s.stop()
+
+
+async def test_reply_copying_an_earlier_correction_gets_no_second_one(config, isolated_home):
+    """A reply that already carries the correction, copied from the chat, is not corrected again (#488)."""
+    copied = "I clicked the subscription button.\n\nCorrection: I didn't click it, so nothing changed on the page."
+    llm = FakeProvider(replies=[copied])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "copied-correction.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+        events = await _collect(s.agent, sid, "click the subscription button")
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text == copied
+        assert text.count("Correction:") == 1
+    finally:
+        await s.stop()
+
+
+async def test_reply_quoting_the_note_without_the_correction_line_is_still_corrected(config, isolated_home):
+    """Only a copied correction line counts as one: the same words elsewhere in the reply do not (#488)."""
+    reply = "I didn't click it, so nothing changed on the page. Now it is done: I clicked the subscription button."
+    llm = FakeProvider(replies=[reply])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "quoted-note.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+        events = await _collect(s.agent, sid, "click the subscription button")
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text == reply + "\n\nCorrection: I didn't click it, so nothing changed on the page."
+    finally:
+        await s.stop()
+
+
+async def test_reply_corrects_a_browser_click_the_user_declined(config, isolated_home):
+    """A denied browser-click approval must remain visible in the final reply."""
+    config.tools.approvals.mode = "ask"
+    llm = FakeProvider(replies=[[tool_call("browser_click", ref="e1")], "It was clicked, but the action was declined."])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "declined-click.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async def deny(ev):
+            """Decline the browser-click approval shown by this test."""
+            if isinstance(ev, ApprovalRequest):
+                s.approvals.resolve(ev.approval_id, "deny")
+
+        events = await _collect(s.agent, sid, "click the subscription button", deny)
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text.endswith("Correction: I didn't click it: you declined, so nothing changed on the page.")
+        result = next(e for e in events if isinstance(e, ToolResultEvent))
+        assert result.result["declined"] is True
+    finally:
+        await s.stop()
+
+
+async def test_step_limit_corrects_a_declined_browser_click_claim(config, isolated_home):
+    """A streamed claim is corrected even when its tool call exhausts the final round."""
+    class ClaimAndClick(FakeProvider):
+        async def stream(self, role, messages, tools=None, *, model=None):
+            """Stream a textual click claim and its tool call in one final round."""
+            self.calls.append({"role": role, "messages": messages, "tools": tools, "model": model})
+            yield StreamChunk(text="The subscription button was clicked.", model="fake")
+            yield StreamChunk(done=True, tool_calls=[ToolCall(**tool_call("browser_click", ref="e1"))], model="fake")
+
+    config.models.max_tool_rounds = 1
+    config.tools.approvals.mode = "ask"
+    s = await SentientApp(config, llm=ClaimAndClick(), db_path=isolated_home / "limit-click.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async def deny(ev):
+            if isinstance(ev, ApprovalRequest):
+                s.approvals.resolve(ev.approval_id, "deny")
+
+        events = await _collect(s.agent, sid, "click the subscription button", deny)
+        text = "".join(e.text for e in events if isinstance(e, TextDelta))
+        assert text.endswith("Correction: I didn't click it: you declined, so nothing changed on the page.")
+        assert isinstance(events[-1], Done) and events[-1].content == text
+    finally:
+        await s.stop()
+
+
+def test_browser_click_correction_keeps_a_click_that_succeeded_before_a_declined_retry():
+    """A true claim stays alone when any click of the claimed control succeeded, also if a later try was declined
+    (#488)."""
+    subscribe_then_declined_subscribe = [
+        {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+        {"name": "browser_click", "declined": True, "target": 'button "Subscribe"'},
+    ]
+    assert outcomes.unmade_browser_click_note("I clicked the Subscribe button.", subscribe_then_declined_subscribe) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", [], subscribe_then_declined_subscribe
+    ) == ""
+    # with no successful click of that control, the latest outcome still words the correction
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", [{"name": "browser_click", "declined": True, "target": 'button "Subscribe"'}]
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+
+
+def test_browser_click_correction_uses_the_latest_call():
+    """The latest known click outcome controls its correction wording."""
+    assert outcomes.unmade_browser_click_note(
+        "The button was clicked.", [{"name": "browser_click", "ok": True, "declined": False}]
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "The button was clicked.", [
+            {"name": "browser_click", "ok": True, "declined": False},
+            {"name": "browser_click", "ok": False, "declined": True},
+        ]
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "The button was clicked.", [{"name": "browser_click", "ok": False, "uncertain": True}]
+    ) == "I couldn't confirm whether it was clicked."
+    assert outcomes.unmade_browser_click_note("The button hasn't been clicked yet.", []) == ""
+    assert outcomes.unmade_browser_click_note("My friend clicked a link in a phishing email.", []) == ""
+    assert outcomes.unmade_browser_click_note("The subscription button was clicked.", []) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I did not click A, but I clicked B.", []
+    ) == "I didn't click it, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "You clicked A, and I clicked B.", []
+    ) == "I didn't click it, so nothing changed on the page."
+    prior_success = [{"name": "browser_click", "ok": True}]
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the upgrade button.", [], prior_success
+    ) == ""
+    assert outcomes.unmade_browser_click_note("I clicked it.", [], prior_success) == ""
+    prior_subscribe = [{"name": "browser_click", "ok": True, "target": 'button "Subscribe"'}]
+    assert outcomes.unmade_browser_click_note("I clicked the Subscribe button.", [], prior_subscribe) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.", [], prior_subscribe
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "The Subscribe button was clicked, but the action failed.", [], [{"name": "browser_click", "declined": True}]
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note("If I clicked it, you would be charged $19.", []) == ""
+    assert outcomes.unmade_browser_click_note("I've clicked the button.", []) == "I didn't click it, so nothing changed on the page."
+    subscribe_then_declined_delete = [
+        {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+        {"name": "browser_click", "declined": True, "target": 'button "Delete account"'},
+    ]
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", subscribe_then_declined_delete
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.", subscribe_then_declined_delete
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button.", [], subscribe_then_declined_delete
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.", [], subscribe_then_declined_delete
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the account settings button.", [{"name": "browser_click", "ok": True, "target": 'button "Delete account"'}]
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "If it were clicked, you would be charged $19.", [{"name": "browser_click", "declined": True}]
+    ) == ""
+    successful_subscribe_then_declined_delete = [
+        {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+        {"name": "browser_click", "declined": True, "target": 'button "Delete account"'},
+    ]
+    for reply in (
+        'I clicked the "Subscribe" button (e1) for the newsletter and attempted to click the "Delete account" button (e2).',
+        "The subscription button was clicked successfully.",
+        "Yes, I clicked the Subscribe button for the free weekly newsletter.",
+        'Today I clicked just one thing: the "Subscribe" button on the Garden Notes page.',
+    ):
+        assert outcomes.unmade_browser_click_note(reply, successful_subscribe_then_declined_delete) == ""
+    assert outcomes.unmade_browser_click_note(
+        "Nothing was clicked.", successful_subscribe_then_declined_delete
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "Yes, I clicked the Subscribe button for the free weekly newsletter.",
+        [{"name": "browser_click", "declined": True, "target": 'button "Delete account"'}],
+        [{"name": "browser_click", "ok": True, "target": 'button "Subscribe"'}],
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Delete account button.",
+        [
+            {"name": "browser_click", "ok": True, "target": 'button "Subscribe"'},
+            {"name": "browser_click", "declined": True},
+        ],
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I clicked the Subscribe button and I clicked the Delete account button.",
+        successful_subscribe_then_declined_delete,
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+    assert outcomes.unmade_browser_click_note(
+        "I successfully clicked the Subscribe button.", successful_subscribe_then_declined_delete
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "Today I clicked Subscribe, which succeeded. I also clicked Delete account, but that one was declined.",
+        successful_subscribe_then_declined_delete,
+    ) == ""
+    assert outcomes.unmade_browser_click_note(
+        "I also clicked the Delete account button.", successful_subscribe_then_declined_delete
+    ) == "I didn't click it: you declined, so nothing changed on the page."
+
+
+def test_browser_click_history_retains_a_truncated_successful_result():
+    """A context-truncated result must not turn a recorded click into a false failure."""
+    history = browser_click_history([
+        {"role": "assistant", "tool_calls": [tool_call("browser_click", ref="e1")]},
+        {"role": "tool", "tool_call_id": "call_browser_click", "content":
+         '{"ok": true, "clicked": "[e1] button \\"Subscribe\\"", "url": "https://example.test/'},
+    ])
+    assert history == [{"name": "browser_click", "target": '[e1] button "Subscribe"', "declined": False,
+                        "ok": True, "uncertain": False}]
+    declined = browser_click_history([
+        {"role": "assistant", "tool_calls": [tool_call("browser_click", ref="e2")]},
+        {"role": "tool", "tool_call_id": "call_browser_click", "content": '{"declined": true}',
+         "approval": {"target": "Delete account"}},
+    ])
+    assert declined == [{"name": "browser_click", "target": "Delete account", "declined": True,
+                         "ok": False, "uncertain": False}]
+
+
+async def test_reply_uses_the_chat_history_for_a_declined_browser_click(config, isolated_home):
+    """A later unsupported click claim retains the preceding declined-click context."""
+    config.tools.approvals.mode = "ask"
+    llm = FakeProvider(replies=[[tool_call("browser_click", ref="e1")], "I didn't click it: you declined.", "I clicked it."])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "prior-declined-click.db").start()
+    try:
+        sid = await s.store.create_session(channel="cli")
+
+        async def deny(ev):
+            """Decline the browser-click approval shown by this test."""
+            if isinstance(ev, ApprovalRequest):
+                s.approvals.resolve(ev.approval_id, "deny")
+
+        first = await _collect(s.agent, sid, "click the subscription button", deny)
+        assert "Correction:" not in "".join(e.text for e in first if isinstance(e, TextDelta))
+        second = await _collect(s.agent, sid, "did it work?")
+        text = "".join(e.text for e in second if isinstance(e, TextDelta))
+        assert text.endswith("Correction: I didn't click it: you declined, so nothing changed on the page.")
     finally:
         await s.stop()
 

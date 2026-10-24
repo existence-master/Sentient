@@ -50,6 +50,27 @@ def test_websocket_chat_with_tool(client):
         assert "tool_call" in second and "tool_result" in second
 
 
+def test_websocket_delivers_browser_click_correction(config, isolated_home):
+    """The final WebSocket message includes corrections appended after model text streamed."""
+    app = create_app(SentientApp(
+        config, llm=FakeProvider(replies=["I clicked the subscription button."]), db_path=isolated_home / "ws.db"
+    ))
+    with TestClient(app) as client:
+        token = client.app.state.token
+        with client.websocket_connect(f"/ws?token={token}") as ws:
+            assert ws.receive_json()["type"] == "hello"
+            ws.send_json({"type": "chat.send", "text": "click the subscription button"})
+            messages = []
+            while True:
+                message = ws.receive_json()
+                messages.append(message)
+                if message["type"] == "done":
+                    break
+    correction = "Correction: I didn't click it, so nothing changed on the page."
+    assert messages[-1]["content"].endswith(correction)
+    assert any(message["type"] == "text_delta" and correction in message.get("text", "") for message in messages)
+
+
 def test_websocket_rejects_bad_token(client):
     with pytest.raises(WebSocketDisconnect), client.websocket_connect("/ws?token=nope") as ws:
         ws.receive_json()

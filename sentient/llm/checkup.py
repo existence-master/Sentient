@@ -20,7 +20,7 @@ import httpx
 
 from sentient import secrets
 from sentient.config.schema import ModelRoles, SentientConfig
-from sentient.llm import chatgpt, claude_code
+from sentient.llm import chatgpt, claude_code, responses
 from sentient.llm.provider import CLAUDE_CODE, PlainProviderError, ToolCall, provider_config
 
 ROLES = ("primary", "fast", "planner", "executor", "vision", "voice", "embedding")
@@ -43,6 +43,11 @@ LABELS = {
     "claude-code": "Claude Code",
 }
 ORDER = {"fail": 3, "warn": 2, "pass": 1, "skip": 0}
+# #241: a ChatGPT plan model refused with 401/403 needs a new sign-in, never a provider key
+CHATGPT_SIGN_IN = "Settings > Models > Use a plan you already have"
+CHATGPT_SIGN_IN_AGAIN = f"Sign in with ChatGPT again under {CHATGPT_SIGN_IN}."
+CHATGPT_SIGN_IN_PLAN = f"Sign in with ChatGPT again with a ChatGPT Plus or Pro account, under {CHATGPT_SIGN_IN}."
+_AUTH_REFUSED = re.compile(r"\b(401|403)\b|unauthori[sz]ed|forbidden", re.IGNORECASE)
 
 FIND_CITY = {
     "type": "function",
@@ -83,6 +88,31 @@ def _worst(checks: list[dict]) -> str:
 def _short(exc: BaseException) -> str:
     text = str(exc).strip() or type(exc).__name__
     return text if len(text) <= 240 else text[:237] + "..."
+
+
+def _http_status(exc: BaseException) -> int | None:
+    """The HTTP status of the request behind ``exc``, from it or the errors it was raised from."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        status = getattr(cur, "status", None) or getattr(cur, "status_code", None)
+        if isinstance(status, int) and status:
+            return status
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def chatgpt_fix(exc: BaseException) -> str | None:
+    """The fix for a ChatGPT plan model that was turned down for its sign-in (401, 403, signed out, an account that
+    can't share its plan), or None for other failures (a usage limit, an outage), whose message says what to do."""
+    msg = str(exc)
+    if responses.NOT_ELIGIBLE in msg:
+        return CHATGPT_SIGN_IN_PLAN
+    if (_http_status(exc) in (401, 403) or _AUTH_REFUSED.search(msg)
+            or "sign in with chatgpt" in msg.lower()):
+        return CHATGPT_SIGN_IN_AGAIN
+    return None
 
 
 def _gb(n: int) -> str:
@@ -178,6 +208,8 @@ class _RoleCheck:
         if isinstance(exc, TimeoutError):
             return (f"No reply within {int(self.run.timeout_s)} seconds. The model may be too big for this "
                     "computer: try a smaller model, or a shorter context length.")
+        if self.prefix == chatgpt.PREFIX:  # a sign-in, never a key (#241)
+            return chatgpt_fix(exc) or ""
         if isinstance(exc, PlainProviderError):
             return ""  # the reason already says what to do
         msg = str(exc).lower()
@@ -286,7 +318,7 @@ class _RoleCheck:
         if self.prefix == "chatgpt":
             if not chatgpt.signed_in():
                 self.add("connection", "Connection", "fail", "You're not signed in with ChatGPT.",
-                         "Sign in with ChatGPT under Settings > Models > Use a plan you already have.")
+                         f"Sign in with ChatGPT under {CHATGPT_SIGN_IN}.")
                 return False
             self.add("connection", "Connection", "pass", "You're signed in with ChatGPT.")
             return True

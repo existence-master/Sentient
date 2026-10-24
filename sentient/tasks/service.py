@@ -1899,20 +1899,21 @@ class TaskService(Service):
         return sched
 
     @staticmethod
-    def _script_request(task: dict) -> str:
+    def _script_request(task: dict, *, separate: bool = False) -> str | list[str]:
         """What the user asked for, for the planner's script checks (#375): the request, what they said in the task's
         chat since and their answers to clarifying questions."""
         said = [str(task.get("original_prompt") or task.get("description") or task.get("name") or "")]
+        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
         said += [str(m.get("content") or "") for m in task.get("chat_history") or []
                  if isinstance(m, dict) and m.get("role") == "user"]
-        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
-        return "\n".join(s for s in said if s.strip())
+        said = [s for s in said if s.strip()]
+        return said if separate else "\n".join(said)
 
     @staticmethod
     def _default_condition(task: dict, script: dict) -> dict:
         """A page watch the planner left on plain ``changed`` becomes ``noteworthy`` (#298, ``scripts.planner_default``)."""
         previous = task.get("script") if task.get("task_type") == "script" else None
-        return scripts.planner_default(script, str(task.get("original_prompt") or ""), previous)
+        return scripts.planner_default(script, TaskService._script_request(task, separate=True), previous)
 
     def _no_script_plan(self, task: dict, script_tools: list[str], planned: list[dict]) -> list[dict]:
         """The plan of an AI-run task that replaces a rejected check script (#310): the user's own request as the step,

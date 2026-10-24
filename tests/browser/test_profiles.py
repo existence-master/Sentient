@@ -1581,7 +1581,6 @@ async def test_download_save_error_includes_underlying_reason(tmp_path, monkeypa
     assert not (tmp_path / "downloads" / "broken.pdf").exists()
 
 
-@pytest.mark.flaky(reruns=2)  # 0.5 s outer guard, timed out on Windows CI: #421
 async def test_stalled_download_cancel_is_bounded_and_partial_file_is_removed(tmp_path, monkeypatch):
     svc = BrowserService(make_app())
     cancel_started = asyncio.Event()
@@ -1602,7 +1601,9 @@ async def test_stalled_download_cancel_is_bounded_and_partial_file_is_removed(tm
     monkeypatch.setattr(browser_service, "DOWNLOAD_CANCEL_TIMEOUT_S", 0.01)
 
     with pytest.raises(BrowserError, match=r"Browser cancellation failed: timed out after 0.01 seconds"):
-        await asyncio.wait_for(svc._save_download(StalledDownload()), timeout=0.5)
+        # The 0.01 s limits above are what this checks; the outer guard only stops a hang, so it allows for a
+        # loaded runner.
+        await asyncio.wait_for(svc._save_download(StalledDownload()), timeout=10)
 
     assert cancel_started.is_set()
     assert not (tmp_path / "downloads" / "stalled.pdf").exists()

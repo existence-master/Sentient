@@ -335,10 +335,12 @@ class Timeline:
                     app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
 
     async def _call_arguments(self, session_id: str, call_id: str, at: str) -> dict | None:
-        """The arguments a chat tool call was given, read from the assistant message that made it."""
+        """The arguments a chat tool call was given, read from the assistant message that made it. Found by the call's
+        id: Windows' clock can give a tool result and the next call the same ``created_at`` (#485)."""
         row = await self.store.fetchone(
             "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant' AND created_at <= ?"
-            " AND tool_calls IS NOT NULL ORDER BY created_at DESC LIMIT 1", (session_id, at),
+            " AND tool_calls IS NOT NULL AND instr(tool_calls, ?) > 0 ORDER BY created_at DESC LIMIT 1",
+            (session_id, at, json.dumps(call_id)),  # quoted and escaped as stored; the loop below checks the id
         )
         calls = _loads(row["tool_calls"]) if row else None
         for call in calls if isinstance(calls, list) else []:

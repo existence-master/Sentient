@@ -39,6 +39,7 @@ proposing a change to one of them.
 | [0032](0032-claude-code-for-everything-as-an-opt-in.md) | Let people opt in to using their own Claude Code for everything | Accepted | 2026-10-17 |
 | [0033](0033-tasks-by-email.md) | Take tasks by email only from allowed real addresses, and treat the email as outside content | Accepted | 2026-10-18 |
 | [0034](0034-serve-sentient-to-other-agents-over-mcp.md) | Serve Sentient itself to other agents over MCP, off by default and read-mostly | Accepted | 2026-10-21 |
+| [0035](0035-skills-hub-installs-into-review-and-pins-versions.md) | Install skills from the hub into review, check them first, and pin the exact version | Accepted | 2026-10-23 |
 
 ## Adding a record
 

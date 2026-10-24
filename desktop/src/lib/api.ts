@@ -138,6 +138,12 @@ import type {
   SkillDiff,
   SkillReviewResult,
   SkillsList,
+  HubInstall,
+  HubInstalled,
+  HubListing,
+  HubPreview,
+  HubSource,
+  HubUpdateResult,
   SkillUpdate,
   SuggestionActionResponse,
   Task,
@@ -218,6 +224,13 @@ export function isNotImplemented(e: unknown): boolean {
 /** React Query `retry`: give up at once when the endpoint is missing, otherwise retry twice. */
 export function noRetryWhenMissing(count: number, err: unknown): boolean {
   return !isNotImplemented(err) && count < 2
+}
+
+/** The extra yes a Skills hub install asks for (#210): a source the user added, or high-risk findings. */
+export function hubConfirmCode(e: unknown): 'confirm_source' | 'high_risk' | null {
+  if (!isApiError(e) || e.status !== 409 || !e.body || typeof e.body !== 'object') return null
+  const code = (e.body as { code?: unknown }).code
+  return code === 'confirm_source' || code === 'high_risk' ? code : null
 }
 
 export function errorMessage(e: unknown): string {
@@ -787,7 +800,19 @@ export const api = {
     diff: (name: string) => http.get<SkillDiff>(`/api/skills/${enc(name)}/diff`),
     reviewNow: (session_id?: string) => http.post<SkillReviewResult>('/api/skills/review-now', { session_id }),
     evolutionLog: (limit?: number) =>
-      http.get<EvolutionLogEntry[]>('/api/skills/evolution-log', { query: { limit } })
+      http.get<EvolutionLogEntry[]>('/api/skills/evolution-log', { query: { limit } }),
+    /** The Skills hub (#210): browse sources, preview, install into review, updates pinned in the lockfile. */
+    hub: {
+      sources: () => http.get<HubSource[]>('/api/skills/hub/sources'),
+      addSource: (url: string, name?: string) => http.post<HubSource>('/api/skills/hub/sources', { url, name }),
+      removeSource: (id: string) => http.delete<OkResponse>(`/api/skills/hub/sources/${enc(id)}`),
+      browse: (source: string, refresh = false) => http.get<HubListing>('/api/skills/hub/browse', { query: { source, refresh: refresh || undefined } }),
+      preview: (source: string, path: string) => http.get<HubPreview>('/api/skills/hub/preview', { query: { source, path } }),
+      /** 409 with `code` `confirm_source` or `high_risk` asks for the extra yes (`hubConfirmCode`). */
+      install: (body: HubInstall) => http.post<SkillDetail>('/api/skills/hub/install', body),
+      installed: (check = false) => http.get<{ skills: HubInstalled[] }>('/api/skills/hub/installed', { query: { check: check || undefined } }),
+      update: (name: string, acceptRisk = false) => http.post<HubUpdateResult>(`/api/skills/hub/update/${enc(name)}`, acceptRisk ? { accept_risk: true } : undefined)
+    }
   },
 
   // §9 voice ---------------------------------------------------------------------

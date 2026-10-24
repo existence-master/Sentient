@@ -619,7 +619,9 @@ accept or loosen a rule.
   graphics card, since qwen3:8b at 8,192 tokens keeps about 90% there on an 8 GB card; its fix names the recommended model and context length and its action shortens to the recommended length when that is
   shorter, else 8,192), `embedding` (embedding role only). A model that fails the tool checks gets the recommended model
   as its fix (`qwen3:8b` when the computer only fits a small one). Cloud and
-  LM Studio models get no Ollama checks. `action` is an optional one-click fix the window may offer:
+  LM Studio models get no Ollama checks. A `chatgpt/` model turned down with 401 or 403, or whose sign-in ran out,
+  gets the fix "Sign in with ChatGPT again under Settings > Models > Use a plan you already have.", never a provider
+  key; an account that can't share its plan is asked to sign in with a Plus or Pro account (#241). `action` is an optional one-click fix the window may offer:
   `{kind: "use_model", role, model, label}` (`PUT /api/models/roles`), `{kind: "pull_model", name, label}`
   (`POST /api/models/ollama/pull`), `{kind: "set_reasoning", role, value, label}` (`models.reasoning`),
   `{kind: "set_context_length", value, role: string|null, label}` (`models.context_length`, or
@@ -650,7 +652,8 @@ accept or loosen a rule.
     can_undo, local_only}`. Applied in one config save (`config.updated`); the setup it replaced is kept for undo. 404
     unknown preset, 409 `available: false`. `local_only: true` (#335; the window asks first when Local only is applied
     with the switch off) also turns `models.local_only` on in the same save, 409 for a `cloud` preset; without it the
-    switch is left as it is. The result's `local_only` is the switch after the call. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
+    switch is left as it is. Only Cloud and Mixed can load a ChatGPT plan's model list; applying "Local only" or a
+    preset of the user's never asks ChatGPT for it (#241). The result's `local_only` is the switch after the call. **Missing** `{kind: "pull_model"|"add_key"|"start_ollama"|"sign_in", roles, model, provider?,
     detail, fix, action}`: an Ollama model that is not downloaded (`action {kind: "pull_model", name, label}`, see the
     pull route below), a cloud key that is not set (`action {kind: "add_key", provider, label}`, see `PUT /api/secrets`),
     no ChatGPT sign-in for a `chatgpt/` model (`sign_in`, `action: null`), or Ollama not answering (`action: null`). Checked with Ollama `/api/tags` and the keychain; no model is called.
@@ -685,7 +688,13 @@ accept or loosen a rule.
   assistant message or `result` (no price: the plan pays). Only a chat reply or `POST /api/models/test` may use it:
   other callers (tasks, subagents, proactivity, follow-ups, dreaming, briefs, memory notes, titles, summaries) get
   "Claude Code only answers your chats..." so the role's fallbacks are tried, and embeddings fail with a plain
-  message. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
+  message. When every model of the `fast` role is Claude Code (and it doesn't do everything), its jobs (memory
+  decisions and extraction, summaries, titles) go to the other models set up instead, tried in turn, never the chat's
+  model: `fallbacks.primary`, then the executor, the planner, the main model (#474, `claude_code.stand_ins`); the log
+  says `the fast model <model> can't do background work ..., so <models> does its jobs` once. Not inside a reply someone
+  waits for (the second look asks Claude Code then) or for the rules-from-chat check, which asks the chat's model
+  when the fast role refuses (#311). The check-up and Settings still flag the fast role. With no other model the
+  refusal stands. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
   model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
   (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails
   this way has it as its `error` (instead of "Sorry, the AI model is unavailable right now...") and a task route
@@ -1864,7 +1873,14 @@ date, place, number or name ("Mira's school now starts in July" for "Maya's daug
 With one value swapped for another the old wording is kept with the new value ("... starts school in July"); the
 result carries `previous` as any update does. Looser cases are marked `changes_value` for the model, which is told a
 correction is never `SKIP`. An UPDATE the model picks for something unrelated about the same person, with no
-attribute and no word of what it says in common ("a piano recital in July" for "starts school in July"), is added instead)
+attribute and no word of what it says in common ("a piano recital in July" for "starts school in July"), is added instead.
+The decision is made by the `fast` role, never the chat's model; with the fast role only on Claude Code that doesn't
+do everything, another model does it (section 3, Claude Code, #474). When every model refuses it, the fact is saved
+by the checks made in code alone (duplicates, corrections, a new home, someone else's facts), otherwise as `ADD`,
+the log says `no model could check ... so only the checks made in code decide whether it is new: <why>` every time, and one `info` notification titled
+"Memories saved without a full check" (payload `{kind: "memory_no_model", job: "check"}`, shown in Activity under Memory)
+says so, once until a decision works again. Pulling memories out of a chat (after a turn, before compression) that
+every model refuses says so the same way: "Memories not saved from your chats", `job: "extract"`)
 - `PUT /api/memories/{id}` `{content}` → `Memory` (id kept; topics, long/short-term and expiry re-analyzed; embedding refreshed; 404 if missing)
 - `GET /api/memories/{id}` → `Memory` with `sources`, and `superseded_by_content` (the words that replaced it) when
   superseded. 404 if missing.
@@ -2086,7 +2102,8 @@ merges/contradictions, `merged_into` / `superseded_by`.
 that profile, section 12, and the result includes it.)
 (`success_count`/`failure_count` count chat turns and task runs that viewed the skill and went well or failed, see section 15)
 
-**Reference files (#167).** A skill may keep text files in a `references/` folder next to its SKILL.md (`.md`, `.txt`,
+**Reference files (#167).** A skill may keep text files in a `references/` folder next to its SKILL.md (also
+`examples/`, `templates/` and `assets/`, which Agent Skills from the Skills hub use; `.md`, `.txt`,
 `.rst`, `.csv`, `.json`, `.yaml`; dotfiles and links are left out; at most 50). `references` lists them. They stay out
 of the prompt: the `skill_view` tool `{name, file?}` returns the steps plus `references`, and with `file` (a path from
 that list, or just its file name) returns `{name, file, content, truncated?}` for that one file (at most 40,000
@@ -2129,7 +2146,7 @@ text pushed out of view. `outbound` (a `warning`): it always sends to one fixed 
 
 **Safety check of skills from outside (#146, ADR 0027).** Skills brought over from Hermes and skills added from a link
 wait in pending with **Vetting** `{verdict: "high|check|clear", summary, findings: [Lint finding & {file}], files,
-programs, hash, scanner, source: "link|hermes", origin, imported_at, decision: "approved"|null, changed_since_import,
+programs, hash, scanner, source: "link|hermes|learn|hub", origin, imported_at, decision: "approved"|null, changed_since_import,
 changed_since_approval}` (`source: "learn"` for a skill learned from docs, `origin` then the page, file or folder): the `danger`, `hidden` and `outbound` rules on the SKILL.md and every text file in its folder
 (`file` says which; dotfiles and `auth.json` are never opened), plus a `programs` warning listing the scripts it brings.
 `high` = any `error` finding; `check` = only warnings. It is computed again from the files every time it is returned.
@@ -2186,6 +2203,84 @@ didn't overwrite it" and `payload.user_edited: true`, and review, repair and cur
 - `GET /api/skills/{name}/diff` (pending update of an existing skill) → `{current, proposed, user_edited, changed_since_proposal}`
 - `POST /api/skills/review-now` `{session_id?}` → `{reviewed, proposed: [name]}` (with `session_id`: review that chat now; without: every chat with enough tool calls not yet reviewed, plus completed task runs seen on the bus)
 - `GET /api/skills/evolution-log?limit=` → `[{ts, kind: "skill_created|skill_patched|skill_repair_proposed|skill_check_failed|skill_archived|skill_reset|skill_imported|skill_import_declined|skill_learned|profile_updated|curator_run|summary_created", detail: {}}]` newest first. `detail` examples: `skill_created {name, pending, reason?, session_id?|task_id?, user_edited?: true}` (`user_edited` on a proposal for a skill the user edited, also on `skill_patched` and `skill_repair_proposed`), `skill_repair_proposed {name, pending: true, origin: "repair", failure: "tool_errors"|"user_correction"|"run_failed", reason, session_id?, turn_id?, task_id?, run_id?}`, `curator_run {staled: [], archived: [], merge_proposals: []}`, `profile_updated {learned_appended, facts_considered, summaries_considered, memory_chars}`, `summary_created {id, session_id, start_at, end_at}`.
+
+### Skills hub (#210, ADR 0035)
+
+Skills other people wrote, from a few sources, installed into pending review and pinned in a lockfile. A **HubSource**
+`{id, name, kind: "github"|"index", url, trust: "trusted"|"community", default?: true, description?, owner?, repo?,
+ref?, path?, index_url?, added_at}` is a public GitHub repository of Agent Skills folders (`<path>/<skill>/SKILL.md`
+with its `scripts/`, `references/`, `assets/`; https://agentskills.io/specification, the layout of
+`anthropics/skills` and `openai/skills` and the format Hermes and OpenClaw read), or a site that publishes the Hermes
+`well-known` index (`<base>/.well-known/skills/index.json` = `{skills: [{name, description, files?: [path], version?}]}`,
+each file at `<base>/.well-known/skills/<name>/<file>`). The defaults are `anthropic` (anthropics/skills, `skills/`)
+and `openai` (openai/skills, `skills/.curated/`), `trust: "trusted"`. Sources the user adds are `community` and kept
+in `skills/.hub/sources.json`. A GitHub source is read through `api.github.com` without an account (two requests per
+listing: the commit, then the tree at that commit; GitHub allows about 60 an hour) and its files from
+`raw.githubusercontent.com` at that exact commit; a listing is kept for 15 minutes. Redirects are never followed.
+
+**HubSkill** `{source, path, name, description, author, license, version, asks: [HubAsk], files, url, fingerprint,
+problem, installed: {name, status: "pending"|"active", update_available}|null}`. `path` is its folder below the
+source's folder (an index skill's name). `author` is who made it: `metadata.author` or a top-level `author` that isn't
+one of Sentient's own values, else the source's publisher. `url` is its page at the listed commit. `fingerprint` is
+SHA-256 over each file's path and git blob hash (GitHub's tree gives it without downloading; `null` for index sources).
+`problem` says why it can't be installed (an unreadable header; more than 120 files or 12 MB). Dotfiles, `auth.json`
+and other secrets files are never listed or fetched; a SKILL.md inside another skill's folder belongs to that skill;
+at most 150 skills per source, 4 folders deep. **HubAsk** `{kind: "tools"|"apps"|"keys"|"platform"|"needs"|"programs",
+label, items, more?}` is what it asks for, read from Agent Skills (`allowed-tools`, `compatibility`), Hermes
+(`platforms`, `required_environment_variables`, `metadata.hermes.requires_tools|requires_toolsets`), OpenClaw
+(`metadata.openclaw.requires.bins|anyBins|env`, `primaryEnv`, `os`) and the scripts among its files.
+
+Everything fetched is outside content: it is never shown to the model before the user approves the skill. A skill is
+downloaded into `skills/.hub/quarantine/` (removed afterwards), GitHub files must match the tree's blob hashes, and the
+safety check of skills from outside (Vetting above, `source: "hub"`, `origin` its page at that version) runs before it
+is staged. Installed, its SKILL.md header gets Sentient's name and `author: community` (a maker named in `author` is
+kept as `metadata.author`); its steps and other files are kept byte for byte.
+
+The **lockfile** `skills/.hub/lock.json` is `{version: 1, skills: {<name>: {source, source_name, source_url, trust,
+kind, path, repo_path, upstream_name, commit, version, fingerprint, files: {<path>: <git blob sha>}, url, made_by,
+installed_at, status: "pending"|"active", active: {commit, version, fingerprint, files, url, made_by, approved_at}|null,
+changes: HubFileChanges|null, updated_at?}}}`. The top level is the newest version fetched; `active` is the one the user
+approved. **HubFileChanges** `{added, removed, changed}` lists file paths. **HubInstalled** (`hub` on a Skill in
+`GET /api/skills` and `GET /api/skills/{name}`, `null` for other skills) `{name, source, source_name, source_url,
+trust, path, url, commit, version, made_by, status, installed_at, approved_commit, approved_at, changes}`.
+
+- `GET /api/skills/hub/sources` → `[HubSource]`
+- `POST /api/skills/hub/sources` `{url, name?}` → `HubSource` (`trust: "community"`). `url` is a GitHub repository
+  (`github.com/<o>/<r>`, read at its default branch) or folder (`github.com/<o>/<r>/tree/<ref>/<path>`), or a site
+  (https; plain http only on this computer) whose index is at `/.well-known/skills/index.json` (or the `index.json`
+  address itself). 400 with a plain reason; 409 when it is already a source.
+- `DELETE /api/skills/hub/sources/{id}` → `{ok}` (409 for a default source; skills installed from it stay)
+- `GET /api/skills/hub/browse?source=&refresh=` → `{source: HubSource, commit, fetched_at, truncated, skills:
+  [HubSkill]}` (`commit` is the exact commit listed, `null` for an index source). 404 no such source or repository; 503
+  "GitHub limits how often it can be asked without an account. Try again in about N minutes."; 502 for other errors
+  from the site; all with a plain `detail`.
+- `GET /api/skills/hub/preview?source=&path=` → `HubSkill & {source_info: HubSource, commit, skill_md, vetting:
+  Vetting|null, sizes}`: downloads the skill into quarantine and checks it without installing anything. `skill_md` is
+  the SKILL.md exactly as its maker wrote it. `vetting` is `null` when it has a `problem`.
+- `POST /api/skills/hub/install` `{source, path, confirm_source?, accept_risk?}` → `Skill & {body, lint, vetting, hub}`
+  (the pending copy, `state: "pending_review"`; never active). 409 `{detail, code: "confirm_source"}` when the source
+  is not a default one and `confirm_source` isn't the literal `true`; 409 `{detail, code: "high_risk", vetting}` when
+  the safety check says `high` and `accept_risk` isn't `true` (nothing is staged; approving it later still needs
+  `accept_risk` on `/approve`). 409 when it is already installed or its name is taken (a taken name first gets
+  `-<source id>` added); 502 when a file doesn't match GitHub's hash. The skill's file checks run (code checks never
+  do, it came from outside), the lockfile gets its entry with `status: "pending"`, and the evolution log
+  `skill_imported {name, source: "hub", hub_source, origin, verdict, commit, pending: true, reason: "Installed from
+  <source> in the Skills hub", update: false}`, with a `skill.updated` event.
+- `GET /api/skills/hub/installed?check=` → `{skills: [HubInstalled]}` from the lockfile. With `check=true` each source
+  is asked again and every item adds `update_available`, `latest_version`, `latest_fingerprint`, or `problem` (the
+  source no longer has it, or can't be reached).
+- `POST /api/skills/hub/update/{name}` `{accept_risk?}` → `{changed: false, name, commit}` when the source has the same
+  version, else `{changed: true, name, from_commit, commit, changes: HubFileChanges, skill: Skill & {body, lint,
+  vetting, hub}}`: the new version is fetched and checked the same way and waits in pending as a proposed update (see
+  `/diff`), while the approved version stays in use; the lock entry gets the new version on top with `status: "pending"`
+  and `changes`. 404 not from the hub; 409 when a version already waits for review or the skill isn't active; 409
+  `code: "high_risk"` as for install. Evolution log `skill_imported {..., update: true, reason: "Update from <source>:
+  N files changed"}`.
+- Approving (`/approve`) a hub skill copies the lock entry's top level into `active` (`status: "active"`, `changes:
+  null`); for an update the whole pending folder replaces the active one, so files the update removed don't come
+  back. Declining (`/reject`) a first install removes its lock entry and its `skill_imports` record; declining an
+  update puts `active` back on top and keeps the approved version's safety record. `DELETE /api/skills/{name}` removes
+  the lock entry.
 
 Skills proposed by the background reviewer or curator always land in pending with a `skill` notification `payload: {skill, action: "create"|"patch", origin}`.
 Repair proposals (section 15) send `payload: {skill, action: "patch", origin: "repair", reason, session_id?, turn_id?, task_id?, run_id?}` with title "Skill fix to review".
@@ -2590,7 +2685,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 ### Subagents
 - Tools (plugin `subagents`):
   - `delegate_task(goal, context="", tools: list[str] | None = None, background: bool = False)` (risk `write`, internal).
-    Foreground: waits and returns `{subagent_id, status, summary, files_created}`. Background: returns
+    Foreground: waits and returns `{subagent_id, status, summary, files_created}`; `files_created` lists the files its
+    own tool calls saved in the files folder, relative to that folder (#94). Background: returns
     `{subagent_id, status: "running"}` at once; when it finishes, a summary is added to the chat as an assistant message,
     `subagent.updated` fires and a notification is created.
   - `delegate_tasks(tasks: list[{goal, context?}])` runs up to `subagents.max_concurrent` in parallel and returns every summary.
@@ -2839,7 +2935,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `POST /api/nodes/{id}/invoke` `{capability, params, timeout_ms?}` → `{ok, data?, error?, code?}` with `code` `offline`, `unsupported`,
   `timeout`, `not_allowed` (desktop screen capture off), `bad_upload`, `camera_off` (camera-off mode, section 24), `stopped` (the
   camera was turned off from the indicator mid photo) or the device's own code;
-  `GET /api/nodes/lan` → `{enabled, running, port, urls, web_urls, fingerprint, mdns, error}`.
+  `GET /api/nodes/lan` → `{enabled, running, port, urls, web_urls, fingerprint, mdns, bind_all, error}` (`bind_all`
+  true when the listener is bound to every network interface because `nodes.lan_bind_all` is on, false when it
+  listens on this computer only, #177).
 - Domain events `node.updated` → `Node`, `node.deleted` `{node_id}`, `node.event` `{node_id, event, data}`.
 - Tools (plugin `devices`, hidden unless an online device offers a capability the tools use; the desktop node counts only for
   `screen.capture`): `device_list()` read; `device_take_photo(device="", question="")` read (effective risk `send` while

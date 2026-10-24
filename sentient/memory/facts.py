@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from sentient.config.schema import SentientConfig
-from sentient.llm.provider import LLMProvider
+from sentient.llm.provider import LLMProvider, ModelRefused
 from sentient.memory import origins, prompts
 from sentient.memory import review as reviews
 from sentient.memory import scopes as memory_scopes
@@ -770,9 +770,42 @@ class FactMemory:
         # set by the app: also scrub the words of erased memories from the workspace files and the user model's
         # caches (#152); called with an ``origins.Erased``: the texts that went, and which lines repeat them (#456)
         self.on_erase: Any = None
+        # set by the app: ``(title, message, job)`` -> a notification, which Activity shows too. Told once per job
+        # while no model can do it, again after it worked (#474)
+        self.on_no_model: Any = None
+        self._no_model_told: set[str] = set()
 
     async def ensure_schema(self) -> None:
         await ensure_memory_schema(self.store)
+
+    # ------------------------------------------------------------------ no model can do a memory job (#474)
+    async def _no_model(self, job: str, exc: ModelRefused, fact: str | None = None) -> None:
+        """Say plainly that no model can do ``job`` ("check": is a new memory a repeat or an update; "extract": pull
+        memories out of a chat), in the log every time and once in a notification (Activity shows it) until it works
+        again. ``exc`` says why and what to change (Claude Code only answers chats, Local only...)."""
+        why = str(exc).strip()
+        if job == "check":
+            # the checks made in code still run after this (a repeat, a new home), so the outcome isn't known yet
+            log.warning("no model could check %r against saved memories, so only the checks made in code decide "
+                        "whether it is new: %s", fact, why)
+            title = "Memories saved without a full check"
+            message = ("No model can check new memories against the ones Sentient already has, so some may be saved "
+                       f"as new memories that repeat or contradict older ones. {why}")
+        else:
+            log.warning("no model could pick out memories from the chat, so none were saved from it: %s", why)
+            title = "Memories not saved from your chats"
+            message = f"No model can pick out new memories from your chats right now, so none were saved. {why}"
+        if job in self._no_model_told or not callable(self.on_no_model):
+            return
+        self._no_model_told.add(job)
+        try:
+            await self.on_no_model(title, message.strip(), job)
+        except Exception:  # not told: try again next time
+            self._no_model_told.discard(job)
+            log.exception("could not tell the user that no model can do %s", job)
+
+    def _model_worked(self, job: str) -> None:
+        self._no_model_told.discard(job)
 
     # ------------------------------------------------------------------ events
     def publish(self, action: str, fid: int | None, content: str | None = None, **extra: Any) -> None:
@@ -1621,6 +1654,10 @@ class FactMemory:
                         fid = None
                     content = name_the_user(str(raw.get("content") or fact), user).strip()  # #475
                     topics, memory_type, duration = _analysis_from(raw)
+                    log.info("CUD for %r: the model says %s%s", fact, action, f" of fact {fid}" if fid else "")
+                self._model_worked("check")
+            except ModelRefused as exc:  # every model refused this job: say so instead of quietly adding (#474)
+                await self._no_model("check", exc, fact)
             except Exception as exc:
                 log.warning("CUD decision failed, defaulting to ADD: %s", exc)
 
@@ -1822,9 +1859,13 @@ class FactMemory:
                     {"role": "user", "content": prompts.FLUSH_USER.format(username=name, transcript=text)},
                 ],
             )
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("memory flush extraction failed: %s", exc)
             return []
+        self._model_worked("extract")
         results: list[dict] = []
         for fact in self._facts_from(raw, user_name)[: cfg.flush_max_facts]:
             try:
@@ -1846,6 +1887,10 @@ class FactMemory:
         turn), so a fact they fully back is saved even with ``review`` (#234, ``review.grounded``)."""
         try:
             facts = await self.extract_facts(text, username)
+            self._model_worked("extract")
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("fact extraction failed: %s", exc)
             return []
