@@ -19,39 +19,57 @@ from urllib.parse import urlparse
 
 import httpx
 
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+LOOPBACK_HOSTS = {"127.0.0.1", "::1"}  # literal addresses only; names are pinned (below)
 
 
 class EngineError(RuntimeError):
     """The engine could not be reached or refused the call. The message is safe to show the caller."""
 
 
+def _canonical_loopback_url(base_url: str) -> str:
+    """The canonical form of an engine address: a literal loopback address, nothing else.
+
+    A name is not good enough: "localhost" can resolve to ::1 first (on Windows it does),
+    where a different process can listen on the same port as the real engine on 127.0.0.1,
+    so the name is pinned to the literal 127.0.0.1 and every other name is refused."""
+    parsed = urlparse(base_url)
+    host = parsed.hostname or ""
+    if host == "localhost":
+        host = "127.0.0.1"
+    if host not in LOOPBACK_HOSTS:
+        raise EngineError(
+            f"Refusing to talk to a non-local engine address ({base_url!r}). "
+            "The MCP server only works on this computer."
+        )
+    hostpart = f"[{host}]" if ":" in host else host
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme or 'http'}://{hostpart}{port}"
+
+
 def discovered_engine_url() -> str:
-    """The running engine's address from its discovery file (loopback, port only)."""
+    """The running engine's address from its discovery file (the address it bound, no secret)."""
     from sentient import paths
 
     try:
         data = json.loads(paths.discovery_file().read_text(encoding="utf-8"))
         port = int(data["port"])
+        host = str(data.get("host") or "127.0.0.1")  # a file from an older engine has no host
     except Exception:
         port = 0
+        host = "127.0.0.1"
     if not port:
         raise EngineError(
             "Sentient's engine is not running (no discovery file). Start Sentient first, then try again."
         )
-    return f"http://127.0.0.1:{port}"
+    hostpart = f"[{host}]" if ":" in host else host
+    return _canonical_loopback_url(f"http://{hostpart}:{port}")
 
 
 class EngineClient:
     """Synchronous REST calls to the engine. One instance per MCP server process."""
 
     def __init__(self, base_url: str, token: str, *, timeout: float = 30.0, follow_discovery: bool = False):
-        parsed = urlparse(base_url)
-        if parsed.hostname not in LOOPBACK_HOSTS:
-            raise EngineError(
-                f"Refusing to talk to a non-local engine address ({base_url!r}). "
-                "The MCP server only works on this computer."
-            )
+        base_url = _canonical_loopback_url(base_url)  # literal loopback only, "localhost" pinned
         self._token = token  # kept for the identity proof below; it is only ever sent to an
         # engine that has already proven it holds the same one
         self._timeout = timeout
@@ -153,10 +171,11 @@ class EngineClient:
         The health answer (``"name": "sentient"``) is a public marker anything listening on the
         port can copy, so before the token is sent anywhere the engine must answer a challenge
         it cannot forge: a fresh nonce goes out bare, and the reply must be the HMAC of that
-        nonce and this address's port under the token (``GET /api/mcp/proof``). The port binds
-        the proof to this address: a process squatting here can relay the challenge to the real
-        engine on another port, but the proof it gets back is keyed to that port and fails here.
-        The token itself never travels."""
+        nonce and this address (host and port) under the token (``GET /api/mcp/proof``). The
+        address binds the proof to this endpoint: a process squatting here can relay the
+        challenge to the real engine, but the proof it gets back is keyed to the real engine's
+        address (another port, or 127.0.0.1 against the squatter's ::1 on the same port) and
+        fails here. The token itself never travels."""
         nonce = secrets.token_hex(16)
         try:
             resp = self._bare.get("/api/mcp/proof", params={"nonce": nonce})
@@ -169,7 +188,7 @@ class EngineClient:
         parsed = urlparse(self.base_url)
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         expected = hmac.new(
-            self._token.encode("utf-8"), f"{nonce}:{port}".encode(), hashlib.sha256
+            self._token.encode("utf-8"), f"{nonce}:{parsed.hostname}:{port}".encode(), hashlib.sha256
         ).hexdigest()
         return hmac.compare_digest(proof, expected)
 

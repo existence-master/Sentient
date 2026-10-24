@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from sentient.app_names import clean_app_name
 from sentient.gateway.deps import MCP_OK, get_core
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.tasks.service import TaskConflict, TaskNotFound
@@ -74,7 +75,7 @@ async def create_task(request: Request, body: CreateTaskBody):
         # an outside app's task (issue #443): made in the app's name and marked as outside
         # content, so its plan always waits for approval and every send asks, like a task by
         # email (#159). Only the MCP token can be this caller; the app name is display only.
-        app_name = (body.app or "").strip() or "An MCP app"
+        app_name = clean_app_name(body.app) or "An MCP app"  # the name is the app's own text: cleaned
         return await _guard(_tasks(request).create_from_mcp(body.prompt, app_name))
     return await _guard(_tasks(request).create_task(
         body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile,

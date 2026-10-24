@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from sentient import __version__, paths
+from sentient.app_names import clean_app_name
 from sentient.config import config_json_schema
 from sentient.config.schema import SentientConfig
 from sentient.files import names as file_names
@@ -450,6 +451,9 @@ async def chat(request: Request, body: ChatBody):
         body.model = None
         body.attachments = []
         body.incognito = False
+        # the app's name is its own text, shown to the user in approvals and notes: cleaned
+        # (capped, no control characters) before it is used anywhere (see app_names)
+        body.app = clean_app_name(body.app)
         if body.session_id:
             # the session must be one of the app's own: naming one of the user's chats would hand
             # the app that chat's history and let its words into it, so anything else starts fresh

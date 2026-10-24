@@ -19,22 +19,24 @@ router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 async def proof(request: Request, nonce: str = ""):
     """How the MCP server knows it found the real engine before it sends the token (issue #443).
 
-    The caller picks a fresh nonce; the answer is the HMAC of that nonce and the port this
-    request arrived on, under the MCP token, which only a process holding the token (this
-    engine, through the keychain) can produce. A health answer can be copied by anything that
-    took over the discovery file's port, so the marker alone is never trusted. Binding the port
-    in stops a relay: a process squatting on the engine's old port can forward the challenge to
-    the real engine on its new port, but the proof it gets back is keyed to that port, not to
-    its own, so the caller's check fails and the token never travels. The token itself never
-    travels either, and without an issued token there is nothing to prove with, so the route
-    simply does not exist then."""
+    The caller picks a fresh nonce; the answer is the HMAC of that nonce and the address this
+    request arrived on (host and port), under the MCP token, which only a process holding the
+    token (this engine, through the keychain) can produce. A health answer can be copied by
+    anything that took over the discovery file's port, so the marker alone is never trusted.
+    Binding the address in stops a relay: a process squatting on the engine's old address can
+    forward the challenge to the real engine, but the proof it gets back is keyed to the
+    address it was asked on, not to the squatter's own (the port alone would not notice a
+    squatter on the same port at the other loopback address, ::1 against 127.0.0.1), so the
+    caller's check fails and the token never travels. The token itself never travels either,
+    and without an issued token there is nothing to prove with, so the route simply does not
+    exist then."""
     current = mcp_token.current_token()
     if current is None or not 16 <= len(nonce) <= 128:
         raise HTTPException(404, "not found")
     server = request.scope.get("server") or (None, None)
-    if server[1] is None:
+    if server[0] is None or server[1] is None:
         raise HTTPException(404, "not found")
-    signed = f"{nonce}:{server[1]}".encode()
+    signed = f"{nonce}:{server[0]}:{server[1]}".encode()
     digest = hmac.new(current.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     return {"proof": digest}
 

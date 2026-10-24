@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
+from sentient.app_names import clean_app_name
 from sentient.gateway.deps import MCP_OK, get_core
 from sentient.memory import export as memory_export
 from sentient.memory import forget as memory_forget
@@ -252,7 +253,7 @@ async def create_memory(request: Request, body: dict):
     if getattr(request.state, "caller", "gateway") == "mcp":
         source = "mcp"
         if not get_core(request).config.integrations.mcp_server_memories_skip_review:
-            review = memory_review.note(str(body.get("app") or "an MCP app"), snippet=content)
+            review = memory_review.note(clean_app_name(body.get("app")) or "an MCP app", snippet=content)
     else:
         source = str(body.get("source") or "manual")
         if body.get("hold_for_review"):

@@ -1811,9 +1811,11 @@ class TaskService(Service):
         short = display_name[:50] + ("..." if len(display_name) > 50 else "")
         message = f"I've created a new plan for you: '{short}'"
         if mcp_tasks.is_mcp_task(task):
-            # the note names the app that asked for the task, like the approval notes do (#443)
-            app_label = (task.get("original_context") or {}).get("app") or "an MCP app"
-            message = f"I've created a new plan for {app_label}: '{short}'"
+            # the note names the app that asked for the task, framed as a name like the
+            # approval notes do: the name is the app's own text, cleaned where it came in
+            who = (task.get("original_context") or {}).get("app")
+            framed = f'an app called "{who}"' if who and who != "an MCP app" else "an MCP app"
+            message = f"I've created a new plan for {framed}: '{short}'"
         await self._notify(task, message, "Plan ready for approval", "approval_needed")
 
     async def _planned_script(

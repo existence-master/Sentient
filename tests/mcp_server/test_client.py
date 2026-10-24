@@ -35,13 +35,13 @@ def test_the_readiness_probe_never_carries_the_token():
 def test_identity_is_proven_by_challenge_not_by_the_health_marker():
     # a listener on the discovered port can copy the health answer word for word; only the
     # holder of the token can answer a fresh nonce with its HMAC under that token, keyed to
-    # the port the challenge was asked on (7777, this client's own port)
+    # the address the challenge was asked on (127.0.0.1:7777, this client's own address)
     import hashlib
     import hmac as hmac_mod
 
     def answer_challenge(request: httpx.Request) -> httpx.Response:
         nonce = request.url.params["nonce"]
-        digest = hmac_mod.new(b"test-token", f"{nonce}:7777".encode(), hashlib.sha256).hexdigest()
+        digest = hmac_mod.new(b"test-token", f"{nonce}:127.0.0.1:7777".encode(), hashlib.sha256).hexdigest()
         return httpx.Response(200, json={"proof": digest})
 
     with respx.mock() as router:
@@ -62,19 +62,39 @@ def test_identity_is_proven_by_challenge_not_by_the_health_marker():
 
 def test_a_relayed_proof_does_not_count():
     # a squatter on the engine's old port can relay the challenge to the real engine on its
-    # new port, but the proof it gets back is keyed to THAT port (9999), not to the port it
-    # is squatting on (7777), so the check fails and the token is never sent (review 5609721491)
+    # new port, but the proof it gets back is keyed to THAT address (127.0.0.1:9999), not to
+    # the address it is squatting on (127.0.0.1:7777), so the check fails and the token is
+    # never sent (review 5609721491). The same holds on the same port at the other loopback
+    # address: a proof keyed to ::1 is worthless at 127.0.0.1 (review 5624575781)
     import hashlib
     import hmac as hmac_mod
 
     def relayed_answer(request: httpx.Request) -> httpx.Response:
         nonce = request.url.params["nonce"]
-        digest = hmac_mod.new(b"test-token", f"{nonce}:9999".encode(), hashlib.sha256).hexdigest()
+        digest = hmac_mod.new(b"test-token", f"{nonce}:127.0.0.1:9999".encode(), hashlib.sha256).hexdigest()
         return httpx.Response(200, json={"proof": digest})
 
     with respx.mock() as router:
         router.get(f"{BASE}/api/mcp/proof").mock(side_effect=relayed_answer)
         assert _client().prove_identity() is False
+
+    def other_loopback_answer(request: httpx.Request) -> httpx.Response:
+        nonce = request.url.params["nonce"]
+        digest = hmac_mod.new(b"test-token", f"{nonce}:::1:7777".encode(), hashlib.sha256).hexdigest()
+        return httpx.Response(200, json={"proof": digest})
+
+    with respx.mock() as router:
+        router.get(f"{BASE}/api/mcp/proof").mock(side_effect=other_loopback_answer)
+        assert _client().prove_identity() is False
+
+
+def test_engine_addresses_are_pinned_to_literal_loopback():
+    # "localhost" can resolve to ::1 first, where something else can listen on the engine's
+    # port: the name is pinned to the literal 127.0.0.1, and any other name is refused
+    assert EngineClient("http://localhost:7777", "test-token").base_url == "http://127.0.0.1:7777"
+    assert EngineClient("http://[::1]:7777", "test-token").base_url == "http://[::1]:7777"
+    with pytest.raises(EngineError, match="only works on this computer"):
+        EngineClient("http://localhost.localdomain:7777", "test-token")
 
 
 def test_refresh_address_follows_the_engine_when_it_moves(isolated_home):
@@ -145,6 +165,19 @@ def test_the_engine_is_found_through_its_discovery_file(isolated_home):
     found.write_text(_json.dumps({"port": 8123}), encoding="utf-8")
     assert discovered_engine_url() == "http://127.0.0.1:8123"
     EngineClient(discovered_engine_url(), "test-token")  # passes the client's own loopback check
+
+
+def test_the_discovery_file_records_the_host_too(isolated_home):
+    # the engine writes the address it bound; a file naming ::1 is followed there, in the
+    # bracketed form a URL needs (a file from an older engine has no host: 127.0.0.1 above)
+    import json as _json
+
+    from sentient import paths
+
+    found = paths.discovery_file()
+    found.parent.mkdir(parents=True, exist_ok=True)
+    found.write_text(_json.dumps({"host": "::1", "port": 8123}), encoding="utf-8")
+    assert discovered_engine_url() == "http://[::1]:8123"
 
 
 def test_calls_carry_the_token_and_hit_the_right_routes():

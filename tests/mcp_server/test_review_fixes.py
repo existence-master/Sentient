@@ -13,6 +13,13 @@ The second review (5609721491) adds:
 7. An MCP caller cannot shape its turn: the body's model, attachments and incognito are
    ignored, its text never starts a rule check, and the approval and plan-ready notifications
    name the app that is asking.
+
+The final review (5624575781) adds:
+8. The proof is keyed to the whole address (host and port): a relay on the same port at the
+   other loopback address fails too, engine addresses are literal loopback only, and the
+   discovery file records the host.
+9. The app's name is cleaned (capped, control characters stripped) wherever it is shown and
+   framed as a name in the notes, so it cannot read as a sentence from Sentient.
 """
 
 from __future__ import annotations
@@ -131,8 +138,8 @@ async def test_an_mcp_turns_approval_also_lands_as_a_notification(config, isolat
                 assert approval_notes, "the approval must also land as a notification (review item 2)"
                 note = approval_notes[0]
                 assert note["payload"]["approval_id"] == ev.approval_id
-                # the note names who is asking (this turn named no app, so the generic label)
-                assert note["message"].startswith("an MCP app wants to: "), note["message"]
+                # the note names who is asking, framed as a name (this turn named no app)
+                assert note["message"].startswith("An MCP app wants to: "), note["message"]
                 seen["note_id"] = note["id"]
                 s.approvals.resolve(ev.approval_id, "allow")
 
@@ -229,7 +236,7 @@ def test_a_task_created_with_the_mcp_token_waits_for_plan_approval(engine_client
         if ready:
             break
         time.sleep(0.1)
-    assert ready and "Claude Code" in ready[0]["message"]  # the note names the app that asked
+    assert ready and 'an app called "Claude Code"' in ready[0]["message"]  # named, and framed as a name
 
 
 def test_with_the_feature_off_the_mcp_token_opens_nothing_but_status(engine_client_off):
@@ -431,10 +438,11 @@ async def test_closing_an_mcp_turn_at_the_approval_still_settles_its_notificatio
 
 
 def test_the_engine_proves_itself_by_challenge_before_any_token_travels(engine_client):
-    # GET /api/mcp/proof answers a caller's fresh nonce with the HMAC of "nonce:port" under
-    # the MCP token, the port being the one the request arrived on (80 for the test client),
-    # with no credentials presented: only the real engine can produce it, a proof minted for
-    # another port (a relay) does not match, and the token itself is never in the answer
+    # GET /api/mcp/proof answers a caller's fresh nonce with the HMAC of "nonce:host:port"
+    # under the MCP token, the address being the one the request arrived on (testserver:80
+    # for the test client), with no credentials presented: only the real engine can produce
+    # it, a proof minted for another address (a relay, or the same port on the other
+    # loopback host) does not match, and the token itself is never in the answer
     import hashlib
     import hmac as hmac_mod
 
@@ -442,7 +450,7 @@ def test_the_engine_proves_itself_by_challenge_before_any_token_travels(engine_c
     nonce = "ab" * 16
     r = c.get("/api/mcp/proof", params={"nonce": nonce})  # no Authorization header at all
     assert r.status_code == 200, r.text
-    expected = hmac_mod.new(MCP_TOKEN.encode(), f"{nonce}:80".encode(), hashlib.sha256).hexdigest()
+    expected = hmac_mod.new(MCP_TOKEN.encode(), f"{nonce}:testserver:80".encode(), hashlib.sha256).hexdigest()
     assert r.json()["proof"] == expected
     assert MCP_TOKEN not in r.text
     assert c.get("/api/mcp/proof", params={"nonce": "short"}).status_code == 404
@@ -505,3 +513,77 @@ async def test_an_mcp_turn_never_starts_a_rule_check(config, isolated_home, monk
         assert calls == ["never suggest satay"]  # control: the user's own words still check
     finally:
         await s.stop()
+
+
+def test_app_names_are_cleaned_before_they_are_shown():
+    # the name is the client's own handshake text: capped, control characters and newlines
+    # stripped, known clients shown under their display name (review 5624575781)
+    from sentient.app_names import clean_app_name
+
+    assert clean_app_name(None) is None
+    assert clean_app_name("   ") is None
+    assert clean_app_name("claude-code") == "Claude Code"
+    assert clean_app_name("Claude Code") == "Claude Code"
+    hostile = "Sentient Security Center. Your data will be erased unless you tap Allow now.\nReally"
+    cleaned = clean_app_name(hostile)
+    assert cleaned is not None and len(cleaned) <= 40 and "\n" not in cleaned
+    assert cleaned.startswith("Sentient Security Center")
+    assert clean_app_name(cleaned) == cleaned  # cleaning twice changes nothing
+    assert clean_app_name("a\tb\x00c") == "a b c"
+
+
+async def test_an_approval_note_frames_the_app_name(config, isolated_home):
+    config.tools.approvals.mode = "ask"
+    config.tools.approvals.rules = {"snippets": "allow"}
+    ran: list[str] = []
+    llm = FakeProvider(replies=[[tool_call("run_snippet", code="print(9)")], "done"])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "framed.db").start()
+    try:
+        s.registry.register(_snippet_plugin(ran))
+        sid = await s.store.create_session(channel="mcp")
+
+        async def answer(ev):
+            if isinstance(ev, ApprovalRequest):
+                notes = [n for n in await s.notifications.list() if n["kind"] == "approval"]
+                assert notes, "the approval must also land as a notification"
+                # the handshake name "claude-code" shows framed, under its display name
+                assert notes[0]["message"].startswith('An app called "Claude Code" wants to: '), notes[0]["message"]
+                s.approvals.resolve(ev.approval_id, "allow")
+
+        events = []
+        async for ev in s.agent.run_turn(sid, "Run this Python code: print(9)", channel="mcp",
+                                         app_name="claude-code"):
+            events.append(ev)
+            await answer(ev)
+        assert ran == ["print(9)"]
+    finally:
+        await s.stop()
+
+
+def test_a_task_from_a_hostile_app_name_is_cleaned_and_framed(engine_client):
+    # a client naming itself with an instruction for the user: the stored name is capped
+    # and stripped, and the plan-ready note frames it as a name (review 5624575781)
+    c = engine_client
+    hostile = "Sentient Security Center. Your data will be erased unless you tap Allow now.\nDo it"
+    made = c.post("/api/tasks", json={"prompt": "Tidy the downloads folder", "app": hostile},
+                  headers=_mcp(c))
+    assert made.status_code == 200, made.text
+    task_id = made.json()["task_id"]
+    task = made.json()
+    for _ in range(50):
+        task = c.get(f"/api/tasks/{task_id}", headers=_gw(c)).json()
+        if task["status"] != "planning":
+            break
+        time.sleep(0.1)
+    stored = task["original_context"]["app"]
+    assert "\n" not in stored and len(stored) <= 40 and stored.startswith("Sentient Security Center")
+    assert task["status"] == "approval_pending"
+    ready = []
+    for _ in range(50):
+        notes = c.get("/api/notifications", headers=_gw(c)).json()["notifications"]
+        ready = [n for n in notes if n.get("title") == "Plan ready for approval"]
+        if ready:
+            break
+        time.sleep(0.1)
+    assert ready and 'an app called "Sentient Security Center' in ready[0]["message"]
+    assert "tap Allow" not in ready[0]["message"]  # the instruction tail is cut off by the cap

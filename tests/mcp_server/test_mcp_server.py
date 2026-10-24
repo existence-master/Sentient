@@ -321,6 +321,9 @@ async def test_the_gate_sends_the_token_nowhere_until_the_engine_proves_itself()
     engine.prove_ok = False
     out = await _call(build_server(engine), "memory_search", {"query": "Maya"})
     assert "could not prove it holds the MCP token" in out["error"]
+    # and the wording is honest: the gate retries on the next call and recovers by itself,
+    # only a replaced token needs a restart (review 5624575781, the nit)
+    assert "clears by itself" in out["error"] and "to reconnect" not in out["error"]
     assert engine.status_calls == 0  # the status call is the first token carrier: it never happened
 
 

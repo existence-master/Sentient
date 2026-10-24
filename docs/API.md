@@ -1604,8 +1604,10 @@ run the same masking again before their prompts. The original stays in the user'
 The other direction: other AI apps on this computer (Claude Code, Cursor, any MCP client) can use Sentient
 itself. The command `sentient mcp` (package `sentient/mcp_server/`) runs an MCP server over stdio and is a
 thin client of this same REST API. It finds the engine through the discovery file the engine writes at
-startup (`engine-discovery.json` in the Sentient home: the loopback port only, never a secret; the desktop
-picks a fresh port every launch), refuses a non-loopback engine address, and holds no state. An HTTP
+startup (`engine-discovery.json` in the Sentient home: the loopback address it bound, never a secret; the
+desktop picks a fresh port every launch), refuses a non-loopback engine address (a name like `localhost`
+is pinned to the literal `127.0.0.1`, so the address the server talks to is the address the engine
+proves), and holds no state. An HTTP
 transport is deliberately not offered; it may return later, protected by the same MCP-only token.
 
 - **Its own token.** Turning the feature on issues an MCP-only token, stored in the keychain
@@ -1621,12 +1623,13 @@ transport is deliberately not offered; it may return later, protected by the sam
   everywhere; `sentient mcp` never reads or writes it.
 - **Endpoints of its own.** `GET /api/mcp/status` (either token) → `{enabled, memories_skip_review,
   token_issued}`: what an MCP app may do right now, without reading the config. `GET /api/mcp/proof?nonce=...`
-  (no credentials) → `{proof}`: the HMAC-SHA256 of `nonce:port` under the MCP token, the port being the
-  one the request arrived on, how `sentient mcp` verifies that a discovered port is really the engine
-  before it sends the token there. Keying the proof to the port stops a relay (a squatter on the
-  engine's old port forwarding the challenge gets a proof keyed to the real engine's port, which
-  fails the check), and the server re-proves before every call, following the discovery file when
-  the engine has moved ports; 404 when no token has been issued. `POST /api/mcp/token/rotate`
+  (no credentials) → `{proof}`: the HMAC-SHA256 of `nonce:host:port` under the MCP token, the address
+  being the one the request arrived on, how `sentient mcp` verifies that a discovered address is
+  really the engine before it sends the token there. Keying the proof to the address stops a relay
+  (a squatter forwarding the challenge gets a proof keyed to the real engine's address, which fails
+  the check; the host matters because a squatter can share the port on the other loopback address,
+  ::1 against 127.0.0.1), and the server re-proves before every call, following the discovery file
+  when the engine has moved; 404 when no token has been issued. `POST /api/mcp/token/rotate`
   (gateway token only) → `{rotated: true}`: replaces the MCP-only token in the keychain; apps holding the
   old one stop working at once and pick the new one up when they restart. It is also issued from
   `SentientApp.save_config` whenever `integrations.mcp_server_enabled` is saved on and none exists.
@@ -1650,7 +1653,10 @@ transport is deliberately not offered; it may return later, protected by the sam
   `channel: "mcp"` whatever the body says: the turn is marked outside content from the start, its text
   never counts as the user's words (memories it states wait in Review by default; sends, code runs and deletes always
   ask; its text never proposes standing rules), an approval it raises also lands as a `kind: "approval"`
-  notification (section 6) the user can answer in the window or on their phone, and the body's `model`,
+  notification (section 6) the user can answer in the window or on their phone. The app's name is the
+  client's own handshake text, so wherever it is shown (the turn's mark, the approval and plan-ready
+  notes, the Review list) it is cleaned first (control characters stripped, capped at 40 characters)
+  and framed as a name (`An app called "..."`), never left to read as a sentence from Sentient. The body's `model`,
   `attachments` and `incognito` are ignored, so the app cannot pull files into the turn, pick a model or
   flip the user's incognito switch. The MCP client is outside content and can never answer an approval.
 - `mcp` is also in the frozen engine's command list (`packaging/engine_entry.py`), which `tests/test_packaging.py`

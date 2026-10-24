@@ -58,6 +58,7 @@ from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
+from sentient.app_names import clean_app_name
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
 from sentient.integrations.base import IntegrationPlugin
@@ -1306,10 +1307,12 @@ class Agent:
             # the answer reaches this same approval_id through the broker, whichever surface sends it
             label = wording.get("risk_label") or "Changes something"
             target = wording.get("target")
-            # the note names the app that is asking (the turn's mark on this channel), so the
-            # user sees whose request they are answering: "Claude Code wants to: Runs code"
-            who = ctx.untrusted or "an MCP app"
-            message = f"{who} wants to: {label}: {target}" if target else f"{who} wants to: {label}"
+            # the note names the app that is asking (the turn's mark on this channel), framed
+            # as a name rather than a sentence the app could speak as Sentient: the name is
+            # the client's own handshake text, cleaned where the turn was marked
+            who = ctx.untrusted
+            framed = f'An app called "{who}"' if who and who != "an MCP app" else "An MCP app"
+            message = f"{framed} wants to: {label}: {target}" if target else f"{framed} wants to: {label}"
             try:
                 note = await self.app.notify(
                     "approval", message, title="Approval needed",
@@ -1817,7 +1820,9 @@ class Agent:
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
             if from_mcp and not ctx.untrusted:
-                ctx.untrusted = app_name or "an MCP app"  # the app's name, when it gave one, so the user sees who is asking
+                # the app's name, when it gave one, so the user sees who is asking; it is the
+                # app's own text, so it is cleaned (capped, no control characters) first
+                ctx.untrusted = clean_app_name(app_name) or "an MCP app"
                 await self.store.execute(
                     "UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id)
                 )

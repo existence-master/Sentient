@@ -34,14 +34,17 @@ it was waiting on.
   REST API, so there is one implementation of every safety rule, in the engine, and this process
   cannot bypass it. It only talks to a loopback address and refuses any other at startup. It
   finds the engine through a discovery file the engine writes at startup (`engine-discovery.json`,
-  the port only): the desktop starts the engine on a fresh port every launch, so the configured
-  port is not where it listens. Because the file holds only a port, the server proves the
-  engine's identity before it sends the token anywhere: the health probe goes out without
-  credentials, and the engine must then answer a nonce challenge (`GET /api/mcp/proof`, the
-  HMAC of `nonce:port` under the MCP token), which a process that merely copied the health
-  marker cannot forge. Keying the proof to the port the request arrived on stops a relay: a
-  squatter on the engine's old port can forward the challenge to the real engine, but the
-  proof it gets back is keyed to the real engine's port and fails the check. The proof is not
+  the address it bound): the desktop starts the engine on a fresh port every launch, so the
+  configured port is not where it listens. Because the file holds only an address, the server
+  proves the engine's identity before it sends the token anywhere: the health probe goes out
+  without credentials, and the engine must then answer a nonce challenge (`GET /api/mcp/proof`,
+  the HMAC of `nonce:host:port` under the MCP token), which a process that merely copied the
+  health marker cannot forge. Keying the proof to the address the request arrived on stops a
+  relay: a squatter can forward the challenge to the real engine, but the proof it gets back
+  is keyed to the real engine's address and fails the check (the host half matters because a
+  squatter can share the port on the other loopback address, ::1 against 127.0.0.1; for the
+  same reason the server only talks to literal loopback addresses and pins "localhost" to
+  127.0.0.1). The proof is not
   a startup-only step: the server re-reads the discovery file and proves again before every
   call, so a running server follows the engine to its new port after a restart instead of
   sending the token to whatever took over the old one.

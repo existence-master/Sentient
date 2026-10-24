@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
+from sentient.app_names import clean_app_name
 from sentient.gateway.deps import MCP_OK, get_core
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=MCP_OK)
@@ -35,7 +36,7 @@ async def create_notification(request: Request, body: dict):
         # a note from an outside app is titled as one, under a fixed attribution the app cannot
         # replace: naming itself "Sentient" in `app` still lands as "From MCP app (Sentient)"
         # (issue #443)
-        app_name = str(body.get("app") or "").strip() or "An MCP app"
+        app_name = clean_app_name(body.get("app")) or "An MCP app"  # the name itself is cleaned too
         title = f"From MCP app ({app_name}): {title}" if title else f"From MCP app ({app_name})"
         payload = {**(payload or {}), "app": app_name}
     return await get_core(request).notify("info", message, title=title, payload=payload)

@@ -103,8 +103,10 @@ class Gate:
         if not self.client.prove_identity():
             raise EngineError(
                 f"The engine answering at {self.client.base_url} could not prove it holds the MCP "
-                "token, so the token was not sent to it. Sentient may have restarted, or its MCP "
-                "token may have been replaced in the app; restart this MCP server to reconnect."
+                "token, so the token was not sent to it. Sentient may have restarted; the check "
+                "runs again on the next call and clears by itself once the real engine answers. "
+                "If the MCP token was replaced in Sentient, restart this MCP server to pick up "
+                "the new one."
             )
         status = self.client.status()
         return status if status.get("enabled") else None
