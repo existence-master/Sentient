@@ -41,13 +41,18 @@ KINDS: dict[str, tuple[str, str, str]] = {
     "home": ("run the home action", "ran the home action", "home action done"),
 }
 
+# the verbs a final answer uses to say an action happened, by kind ("sent the email", "turned on the lights")
+_CLAIM_VERBS: dict[str, str] = {
+    "email": r"sent|emailed|delivered|mailed",
+    "message": r"sent|posted|messaged|delivered",
+    "file": r"saved|written|wrote|created|stored",
+    "event": r"created|added|scheduled|booked",
+    "home": r"turned|switched|set|done|ran",
+}
+
 # words in a final answer that claim the action happened, by kind
 _CLAIMS: dict[str, re.Pattern] = {
-    "email": re.compile(r"\b(sent|emailed|delivered|mailed)\b", re.I),
-    "message": re.compile(r"\b(sent|posted|messaged|delivered)\b", re.I),
-    "file": re.compile(r"\b(saved|written|wrote|created|stored)\b", re.I),
-    "event": re.compile(r"\b(created|added|scheduled|booked)\b", re.I),
-    "home": re.compile(r"\b(turned|switched|set|done|ran)\b", re.I),
+    kind: re.compile(rf"\b(?:{verbs})\b", re.I) for kind, verbs in _CLAIM_VERBS.items()
 }
 _CLAIM_ANY = re.compile(r"\b(done|completed|finished|success(?:fully)?|sent|saved|created|updated)\b", re.I)
 _BROWSER_CLICK_CLAIM = re.compile(r"\b(?:clicked|was clicked)\b", re.I)
@@ -64,6 +69,101 @@ _ASSISTANT_BROWSER_CLICK = re.compile(
 _HYPOTHETICAL_BROWSER_CLICK = re.compile(
     r"\b(?:if|would|could|might|may)\b[^.!?]{0,50}\b(?:clicked|was clicked|were clicked)\b", re.I
 )
+
+_ACTION_SUBJECT = r"(?:i(?:'ve)?|we|sentient)"
+_ACTION_MODIFIERS = r"(?:have|had|just|only|also|then|already|recently|finally|even|really|\w+ly)"
+# continuations that never describe the tool's own action: "ran into an issue", "set out to help"
+_NON_ACTION_TAIL = r"(?!\s+(?:into|out of|across|through|over|apart|aside)\b)"
+# a self-attributed completed claim, by kind ("I've sent the email", "I turned on the lights")
+_ASSISTANT_ACTION_CLAIM: dict[str, re.Pattern] = {
+    kind: re.compile(
+        rf"\b{_ACTION_SUBJECT}\s+(?:{_ACTION_MODIFIERS}\s+){{0,2}}(?:{verbs})\b{_NON_ACTION_TAIL}",
+        re.I,
+    )
+    for kind, verbs in _CLAIM_VERBS.items()
+}
+_NEGATED_ACTION_CLAIM: dict[str, re.Pattern] = {
+    kind: re.compile(
+        # also U+2019 (the curly apostrophe): a model writing one must not read as a completed claim (#492 review)
+        rf"\b(?:not|didn['\u2019]t|hasn['\u2019]t|wasn['\u2019]t|haven['\u2019]t|never|nothing)\b[^.!?]{{0,50}}\b(?:{verbs})\b",
+        re.I,
+    )
+    for kind, verbs in _CLAIM_VERBS.items()
+}
+_OTHER_PERSON_ACTION_CLAIM: dict[str, re.Pattern] = {
+    kind: re.compile(
+        rf"\b(?:you|he|she|they|someone|anyone|(?:my|your|his|her|their)\s+\w+)\s+"
+        rf"(?:have\s+|had\s+|just\s+)?(?:{verbs})\b",
+        re.I,
+    )
+    for kind, verbs in _CLAIM_VERBS.items()
+}
+_HYPOTHETICAL_ACTION_CLAIM: dict[str, re.Pattern] = {
+    kind: re.compile(rf"\b(?:if|would|could|might|may)\b[^.!?]{{0,50}}\b(?:{verbs})\b", re.I)
+    for kind, verbs in _CLAIM_VERBS.items()
+}
+# nouns that name the kind in a claim ("sent the email"): shared verbs ("sent" is email and message, "created"
+# is file and event) stay ambiguous without one, and an ambiguous never-made claim is left alone
+_KIND_NOUNS: dict[str, re.Pattern] = {
+    "email": re.compile(r"\be-?mails?\b", re.I),
+    "message": re.compile(r"\b(messages?|texts?|sms|dms?|posts?|chats?)\b", re.I),
+    "file": re.compile(r"\b(files?|notes?|drafts?|spreadsheets?)\b", re.I),
+    "event": re.compile(r"\b(events?|meetings?|appointments?|calendar)\b", re.I),
+    "home": re.compile(
+        r"\b(lights?|lamps?|thermostat|alarm|doors?|locks?|blinds?|covers?|scenes?|heating|cooling)\b",
+        re.I,
+    ),
+}
+# verbs that also describe ordinary chat text ("wrote a summary", "added context"): a never-made claim with one
+# is only corrected when it names the kind ("saved the file", "created the meeting")
+_CHAT_VERBS = {"wrote", "written", "created", "added", "stored"}
+# what names the action in a claim, by kind: an email or message noun, a file name, a calendar word, a device.
+# Verbs like "saved", "scheduled", "set" or "ran" alone also describe actions this check doesn't track (memory,
+# tasks, reminders), so a never-made claim with only such a verb is left alone (#492 review).
+_ACTION_NAMERS: dict[str, re.Pattern] = {
+    "email": re.compile(r"\be-?mails?\b", re.I),
+    "message": re.compile(r"\b(messages?|texts?|sms|dms?|posts?|chats?)\b", re.I),
+    "file": re.compile(r"\b[\w~.-]+\.[a-z0-9]{1,6}\b", re.I),
+    "event": re.compile(r"\b(events?|meetings?|appointments?|calendar)\b", re.I),
+    "home": re.compile(
+        r"\b(lights?|lamps?|thermostat|alarm|doors?|locks?|blinds?|covers?|scenes?|heating|cooling)\b",
+        re.I,
+    ),
+}
+
+
+def _names_action(kind: str, claim_text: str) -> bool:
+    """True when the sentence names the action for ``kind``: an email or message noun, a file name, a calendar
+    word, or a device. A never-made claim is only corrected when it does, or when this turn actually tried that
+    action: otherwise the verb alone may describe an untracked action ("I saved that..." after memory_remember)."""
+    return bool(_ACTION_NAMERS[kind].search(claim_text))
+
+
+def _owns_claim(kind: str, claim_text: str) -> bool:
+    """True when ``kind`` unambiguously owns a self-attributed claim: its verb is unique to the kind and not an
+    ordinary chat verb, or the claim names the kind ("sent the email", "created the meeting"). A shared verb
+    without a naming noun ("I sent it") stays ambiguous: saying which action didn't happen would risk
+    contradicting a true reply about the other kind."""
+    kinds = [k for k, pattern in _ASSISTANT_ACTION_CLAIM.items() if pattern.search(claim_text)]
+    if kind not in kinds:
+        return False
+    verb_match = _CLAIMS[kind].search(claim_text)
+    verb = verb_match.group(0).lower() if verb_match else ""
+    if verb in _CHAT_VERBS and not _KIND_NOUNS[kind].search(claim_text):
+        return False
+    if len(kinds) == 1:
+        return True
+    return bool(_KIND_NOUNS[kind].search(claim_text))
+
+
+def _owns_passive_claim(kind: str, claim: str) -> bool:
+    """True when ``kind`` unambiguously owns a passive claim ("the email was sent")."""
+    kinds = [k for k in _CLAIM_VERBS if _CLAIMS[k].search(claim)]
+    if kind not in kinds:
+        return False
+    if len(kinds) == 1:
+        return True
+    return bool(_KIND_NOUNS[kind].search(claim))
 
 # an MCP tool's kind from its name (servers declare nothing like it)
 _NAME_KINDS: list[tuple[str, re.Pattern, re.Pattern]] = [
@@ -211,6 +311,34 @@ def checked(tool: Any, *, mcp: bool) -> bool:
     return mcp and int(getattr(tool, "risk", 0)) >= 1
 
 
+def action_call(
+    tool: Any,
+    arguments: dict,
+    res: Any,
+    *,
+    ran: bool,
+    declined: bool,
+    is_error: bool,
+    err: str | None,
+    check: dict | None,
+) -> dict | None:
+    """The code-recorded evidence for one call of an action tool with a clear outcome (#492): its kind, whether
+    the user declined it, whether it worked, and what it acted on. None when the tool has no clear outcome.
+    Recorded for calls that ran and for declined ones, mirroring ``browser_clicks`` for #407."""
+    kind = kind_of(tool)
+    if kind not in KINDS or not (ran or declined):
+        return None
+    targets = check.get("targets") if isinstance(check, dict) else None
+    return {
+        "kind": kind,
+        "declined": declined,
+        "ok": ran and not is_error and not err and result_problem(res) is None
+        and (not isinstance(check, dict) or check.get("ok") is not False),
+        "uncertain": ran and is_error,
+        "targets": list(targets or []) or targets_of(kind, arguments),
+    }
+
+
 def _short_name(tool: Any) -> str:
     name = str(getattr(tool, "name", "") or "")
     plugin = str(getattr(tool, "plugin", "") or "")
@@ -228,7 +356,7 @@ def labels(check: dict) -> tuple[str, str, str]:
     return f"do {what}", f"did {what}", what
 
 
-def _targets(kind: str | None, arguments: dict) -> list[str]:
+def targets_of(kind: str | None, arguments: dict) -> list[str]:
     """What a call acted on, for telling whether a later call covered a failure: recipients, a file name, a title."""
     args = arguments or {}
     if kind in {"email", "message"}:
@@ -277,7 +405,7 @@ async def check(tool: Any, arguments: dict, res: Any, is_error: bool, ctx: Any, 
     out: dict[str, Any] = {
         "tool": getattr(tool, "name", ""), "app": app, "kind": kind,
         "action": KINDS[kind][2] if kind in KINDS else _short_name(tool),
-        "ok": True, "detail": "", "how": "result", "targets": _targets(kind, arguments), "missed": [],
+        "ok": True, "detail": "", "how": "result", "targets": targets_of(kind, arguments), "missed": [],
     }
     problem = result_problem(res)
     if is_error and problem is None:
@@ -431,6 +559,170 @@ def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] 
             and not _OTHER_PERSON_BROWSER_CLICK.search(claim)
         )
         if passive and (note := _click_note(clicks, _claimed_click_target(claim))):
+            return note
+    return ""
+
+
+def _claimed_action_target(text: str, kind: str) -> str:
+    """The named target after an action claim ("alice" in "I sent the email to Alice"), or "" for "it" and for a
+    bare kind noun ("the file" in "I saved the file"): the claim could refer to any recorded call of the kind."""
+    match = _CLAIMS[kind].search(text)
+    tail = text[match.end():] if match is not None else ""
+    # A "." only ends the target at a sentence boundary: "arjun@example.com" and "plan.md" name the full
+    # address or file name (#492 review).
+    tail = re.split(r"\b(?:on|and|but|because|so)\b|[,;!?]|\.(?=\s|$)", tail, maxsplit=1, flags=re.I)[0]
+    target = re.sub(r"^\s*(?:only|just|the|a|an|to|for|my|your)\s+", "", tail, flags=re.I).strip()
+    if target.lower() in {"", "it", "that", "this", "them", "everything"}:
+        return ""
+    return "" if _KIND_NOUNS[kind].fullmatch(target) else target
+
+
+def _call_target_words(call: dict) -> set[str]:
+    """Meaningful words in what a recorded action call acted on."""
+    return _target_words(" ".join(str(target) for target in call.get("targets") or []))
+
+
+def _matches_action_target(claim: str, call: dict) -> bool:
+    """Whether a named claim plausibly refers to what this recorded action call acted on."""
+    if not claim:
+        return True
+    claim_words = _target_words(claim)
+    target_words = _call_target_words(call)
+
+    def same_word(left: str, right: str) -> bool:
+        """Accept the small morphological variations common in a natural-language reply."""
+        return left == right or (
+            len(left) >= 6 and len(right) >= 6 and left[:6] == right[:6]
+        )
+
+    # The recorded target is the dependable evidence.  It need only appear in
+    # the claim: a reply naturally adds context such as "for the newsletter"
+    # after naming what the action acted on.
+    return bool(target_words) and all(
+        any(same_word(target_word, claim_word) for claim_word in claim_words)
+        for target_word in target_words
+    )
+
+
+def _action_note(
+    kind: str,
+    target: str,
+    calls: list[dict],
+    claim_text: str,
+    turn_kinds: set[str],
+    history_complete: bool,
+) -> str:
+    """The correction for an action claim after selecting evidence for its kind and named target.
+
+    ``turn_kinds`` are the kinds this turn actually tried; ``history_complete`` is False when the loaded
+    history doesn't cover the whole conversation, so a missing record is "unsure", never "never made"."""
+    same = [call for call in calls if call.get("kind") == kind]
+    has_success = any(call.get("ok") for call in same)
+    if not target and has_success:
+        # A targetless claim could refer to any completed action. A later
+        # declined call is not enough evidence to contradict it.
+        return ""
+    matches = [call for call in same if _matches_action_target(target, call)]
+    if target and not matches and not has_success:
+        # A declined call may name only its transient target; it is still evidence the named action was not made.
+        matches = [call for call in same if not call.get("ok") and not _call_target_words(call)]
+    doing, did, _label = labels({"kind": kind})
+    if target and not matches:
+        if has_success:
+            # A successful action on another target makes an unmatched claim
+            # ambiguous. Do not turn an honest report into a correction.
+            return ""
+        # Only correct when the kind is unambiguous, never on a shared verb ("sent" is email and message) that
+        # could contradict a true reply about the other kind; and only when the sentence names the action or
+        # this turn actually tried it: a bare verb may describe an untracked action ("I saved that..." after
+        # memory_remember, "I've scheduled a task...").
+        if _owns_claim(kind, claim_text) and (_names_action(kind, claim_text) or kind in turn_kinds):
+            if any(call.get("uncertain") for call in same) or not history_complete:
+                # An uncertain call may have done it, and calls outside the loaded history window are invisible
+                # here: neither is proof it never happened.
+                return f"I couldn't confirm whether I {did}."
+            return f"I didn't {doing}, so nothing changed."
+        return ""
+    if not matches:
+        if _owns_claim(kind, claim_text) and (_names_action(kind, claim_text) or kind in turn_kinds):
+            if not history_complete:
+                return f"I couldn't confirm whether I {did}."
+            return f"I didn't {doing}, so nothing changed."
+        return ""
+    if any(call.get("ok") for call in matches):
+        # the claimed action did happen; a later declined or failed try of the same target doesn't undo it (#488)
+        return ""
+    call = matches[-1]
+    if call.get("declined"):
+        return f"I didn't {doing}: you declined, so nothing changed."
+    if call.get("uncertain"):
+        return f"I couldn't confirm whether I {did}."
+    return f"I couldn't {doing}, so nothing changed."
+
+
+def unmade_action_note(
+    text: str,
+    action_calls: list[dict],
+    history: list[dict] | None = None,
+    *,
+    history_complete: bool = True,
+) -> str:
+    """A short correction when a reply says an action happened although this turn did not (#492).
+
+    The #407 approach for the other action tools with a clear outcome: send email/message, file write,
+    calendar create, Home Assistant calls. Reuses the outcome checks (#165/#380) through the code-recorded
+    ``action_calls`` of this turn and ``history`` of earlier turns. Deliberately narrow: it only corrects
+    completed claims the run's own records contradict, never a true reply, and leaves the text alone when
+    unsure. ``history_complete`` is False when the loaded history doesn't cover the whole conversation: a
+    missing record then reads as "unsure", never "never made". Voice and channel replies are covered too:
+    they speak and post this same final text.
+    """
+    calls = [*(history or []), *(action_calls or [])]
+    turn_kinds = {call.get("kind") for call in action_calls or []}
+    for kind in _CLAIM_VERBS:
+        if note := _unmade_action_claim_note(text, kind, calls, turn_kinds, history_complete):
+            return note
+    return ""
+
+
+def _unmade_action_claim_note(
+    text: str, kind: str, calls: list[dict], turn_kinds: set[str], history_complete: bool
+) -> str:
+    claims = re.split(r"(?<=[.!?])\s+", text or "")
+    explicit = _ASSISTANT_ACTION_CLAIM[kind]
+    for claim in claims:
+        if _HYPOTHETICAL_ACTION_CLAIM[kind].search(claim):
+            continue
+        found = list(explicit.finditer(claim))
+        # Each self-attributed claim needs its own evidence.  In particular, a
+        # successful "I sent the report" must not hide a later false
+        # "I also booked the room" in the same sentence.
+        parts = [
+            claim[match.start(): found[i + 1].start() if i + 1 < len(found) else None]
+            for i, match in enumerate(found)
+        ]
+        for part in parts:
+            # The reply already tells the user that this attempted action was
+            # declined, so a second correction would add no information.
+            if re.search(r"\b(?:declined|denied)\b", part, re.I):
+                continue
+            if note := _action_note(
+                kind, _claimed_action_target(part, kind), calls, part, turn_kinds, history_complete
+            ):
+                return note
+        passive = (
+            not found
+            and any(call.get("kind") == kind for call in calls)
+            and _owns_passive_claim(kind, claim)
+            and _CLAIMS[kind].search(claim)
+            and not _NEGATED_ACTION_CLAIM[kind].search(claim)
+            and not _OTHER_PERSON_ACTION_CLAIM[kind].search(claim)
+        )
+        if passive and (
+            note := _action_note(
+                kind, _claimed_action_target(claim, kind), calls, claim, turn_kinds, history_complete
+            )
+        ):
             return note
     return ""
 

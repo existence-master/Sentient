@@ -344,6 +344,54 @@ def browser_click_history(rows: list[dict]) -> list[dict]:
     return out
 
 
+def action_call_history(rows: list[dict], registry) -> list[dict]:
+    """Completed action-tool outcomes in stored chat history, oldest first (#492)."""
+    calls: dict[str, dict] = {}
+    out: list[dict] = []
+    for row in rows:
+        if row.get("role") == "assistant":
+            for call in _normalize_tool_calls(row.get("tool_calls")):
+                tool = registry.get(call["function"]["name"]) if registry is not None else None
+                kind = outcomes.kind_of(tool)
+                if kind in outcomes.KINDS:
+                    calls[call["id"]] = {
+                        "kind": kind,
+                        "targets": outcomes.targets_of(
+                            kind, _arguments(call["function"].get("arguments"))
+                        ),
+                    }
+            continue
+        if row.get("role") != "tool":
+            continue
+        call = calls.pop(str(row.get("tool_call_id") or ""), None)
+        if call is None:
+            continue
+        raw = str(row.get("content") or "")
+        try:
+            # a stored result can carry text after the JSON: the loop appends the outcome note when the
+            # read-back disagrees (#386), and long results get a cut marker. Decode the leading JSON and
+            # judge what follows on its own.
+            res, end = json.JSONDecoder().raw_decode(raw.lstrip())
+        except (TypeError, ValueError):
+            res, end = {}, 0
+        tail = raw.lstrip()[end:].strip()
+        # an appended outcome note means the read-back said it did not work: never a success later. A cut
+        # marker ("[Result cut: ...]") says nothing about the outcome and stays a success, so a true reply
+        # is never corrected for it.
+        noted_failure = bool(tail) and not tail.startswith("[Result")
+        declined = isinstance(res, dict) and bool(res.get("declined"))
+        err = _error_text(res)
+        call.update(
+            declined=declined,
+            # the check semantics: no problem found means it worked (#165); a terse stored result
+            # errs toward never correcting a true reply
+            ok=not declined and not err and not noted_failure and outcomes.result_problem(res) is None,
+            uncertain=not declined and bool(err),
+        )
+        out.append(call)
+    return out
+
+
 def is_tool_format_error(exc: Exception) -> bool:
     """True when the provider rejected the request because the model cannot do tool calling
     (e.g. an old Ollama model template emitting malformed tool calls)."""
@@ -443,6 +491,14 @@ class LoopResult:
     browser_clicks: list[dict] = field(default_factory=list)
     # completed browser clicks from earlier chat turns, consulted only for an explicit reference to one (#402)
     browser_click_history: list[dict] = field(default_factory=list)
+    # action calls with a clear outcome attempted in this run, recorded by code so a final reply cannot invent
+    # one (#492): send email/message, file write, calendar create, Home Assistant calls
+    action_calls: list[dict] = field(default_factory=list)
+    # completed action calls from earlier chat turns, consulted only for an explicit reference to one (#492)
+    action_call_history: list[dict] = field(default_factory=list)
+    # False when the loaded chat history doesn't cover the whole session: a missing record then means "unsure",
+    # never "never made" (#492 review)
+    action_history_complete: bool = True
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -981,6 +1037,15 @@ class Agent:
                     correction = f"\n\nCorrection: {note}"
                     text_acc += correction
                     yield TextDelta(text=correction, **ev)
+                note = outcomes.unmade_action_note(
+                    text_acc, result.action_calls, result.action_call_history,
+                    history_complete=result.action_history_complete,
+                )
+                # the model may copy an earlier correction from the chat into its reply: one is enough (#488)
+                if note and f"Correction: {note}" not in text_acc:
+                    correction = f"\n\nCorrection: {note}"
+                    text_acc += correction
+                    yield TextDelta(text=correction, **ev)
                 result.text = text_acc
                 result.messages = messages
                 return
@@ -1114,6 +1179,15 @@ class Agent:
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
         note = outcomes.unmade_browser_click_note(result.text, result.browser_clicks, result.browser_click_history)
+        if note and f"Correction: {note}" not in result.text:
+            correction = f"\n\nCorrection: {note}"
+            result.text += correction
+            yield TextDelta(text=correction, **ev)
+        note = outcomes.unmade_action_note(
+            result.text, result.action_calls, result.action_call_history,
+            history_complete=result.action_history_complete,
+        )
+        # the model may copy an earlier correction from the chat into its reply: one is enough (#488)
         if note and f"Correction: {note}" not in result.text:
             correction = f"\n\nCorrection: {note}"
             result.text += correction
@@ -1553,6 +1627,9 @@ class Agent:
         check = await self._check_outcome(p, res, is_error, ctx) if ran else None
         if check is not None:
             result.checks.append(check)
+        if (action := outcomes.action_call(p.tool, tc.arguments, res, ran=ran, declined=declined,
+                                           is_error=is_error, err=err, check=check)) is not None:
+            result.action_calls.append(action)  # the run's own record, so a reply cannot invent the action (#492)
         if (is_error or err) and err != DECLINED:
             result.tool_errors.append({"name": tc.name, "error": err or str(res)[:500]})
         elif check is not None and check.get("ok") is False:  # the call said it worked but did not (#165)
@@ -1802,6 +1879,10 @@ class Agent:
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
             result.browser_click_history.extend(browser_click_history(history))
+            result.action_call_history.extend(action_call_history(history, self.registry))
+            # the history window may not reach the session's first message: a missing record is then "unsure",
+            # never proof the action never happened (#492 review)
+            result.action_history_complete = await self.store.count_messages(session_id) <= len(history)
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the
