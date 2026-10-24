@@ -220,6 +220,7 @@ class TaskService(Service):
         self._runs: dict[str, asyncio.Task] = {}
         self._cancel_requested: set[str] = set()
         self._holding: set[str] = set()  # runs whose task was paused: they stop at their next safe point (#408)
+        self._paused_scripts: set[str] = set()  # watch checks whose task was paused: they don't start a run
         self._locks: dict[str, asyncio.Lock] = {}
         self._sem: asyncio.Semaphore | None = None
         self._bus_subscription: Any = None
@@ -706,6 +707,7 @@ class TaskService(Service):
         if resuming:
             for run in await self.repo.processing_runs(task_id):  # resumed before it reached a safe point: it goes on
                 self._holding.discard(run["id"])
+            self._paused_scripts.discard(task_id)
             await self._carry_on(task_id, held)
         if needs_approval:
             await self.publish(task_id)
@@ -860,7 +862,7 @@ class TaskService(Service):
         if task.get("task_type") == "script":
             if not self._runnable(task):
                 raise TaskConflict("Task has no check script to run.")
-            await self._start_script(task)
+            await self._start_script(task, manual=True)
             return await self.get_and_publish(task_id)
         if not task.get("plan"):
             raise TaskConflict("Task has no plan to run.")
@@ -1488,11 +1490,19 @@ class TaskService(Service):
     async def _pause_work(self, task_id: str) -> None:
         """The user paused the task (#408): a run working right now stops at its next safe point, before its next
         model or tool call, never in the middle of one (``holding``, ``_held_by_pause``), and a run waiting on an
-        approval is held at once. Both end like work a restart held (#304). A swarm's run, and a one-call run whose
+        approval is held at once. Both end like work a restart held (#304). A task being planned stays in planning
+        with the note, and a running check script does not start a run. A swarm's run, and a one-call run whose
         call already started, can't stop part-way: they finish, and their log says so."""
         task = await self.repo.get_task(task_id)
         if task is None:
             return
+        if task["status"] == "planning":
+            if task.get("error") != PLAN_PAUSED_NOTE:
+                await self._set(task_id, {"error": PLAN_PAUSED_NOTE})
+                await self.publish(task_id)
+            return
+        if self._job_running("script", task_id):
+            self._paused_scripts.add(task_id)
         for run in await self.repo.processing_runs(task_id):
             live = self._runs.get(run["id"])
             if live is None or live.done():
@@ -1613,7 +1623,24 @@ class TaskService(Service):
             "schedule": schedule,
         }
 
+    async def _planning_paused(self, task_id: str) -> bool:
+        """True when the task is not in planning or has been paused: leaves the note and stops planning (#405)."""
+        task = await self.repo.get_task(task_id)
+        if task is None or task["status"] != "planning":
+            return True
+        if not task["enabled"]:
+            if task.get("error") != PLAN_PAUSED_NOTE:
+                await self._set(task_id, {"error": PLAN_PAUSED_NOTE})
+                await self.publish(task_id)
+            return True
+        if task.get("error") == PLAN_PAUSED_NOTE:
+            await self._set(task_id, {"error": None})
+            await self.publish(task_id)
+        return False
+
     async def _refine_and_plan(self, task_id: str, *, auto_approve: bool = False) -> None:
+        if await self._planning_paused(task_id):
+            return
         task = await self.repo.get_task(task_id)
         if task is None or task["status"] != "planning":
             return
@@ -1625,6 +1652,8 @@ class TaskService(Service):
             details = {"schedule": spoken_schedule(normalize_schedule(None, self.tz_name()), prompt)}
         await self._set(task_id, details)
         await self.publish(task_id)
+        if await self._planning_paused(task_id):
+            return
         await self._plan_job(task_id, auto_approve=auto_approve)
 
     async def _plan_job(self, task_id: str, *, auto_approve: bool = False) -> None:
@@ -1639,8 +1668,8 @@ class TaskService(Service):
 
     async def _plan_failed(self, task_id: str, error: str) -> None:
         task = await self.repo.get_task(task_id)
-        if task is None or task["status"] != "planning":
-            return  # the user declined/archived/edited it meanwhile
+        if task is None or task["status"] != "planning" or not task["enabled"]:
+            return  # the user declined/archived/edited/paused it meanwhile
         if not await self.repo.update_task_if_status(
             task_id, {"planning"}, {"status": "error", "error": error, "updated_at": self.now_iso()}
         ):
@@ -1649,6 +1678,8 @@ class TaskService(Service):
         await self._notify(task, f"I couldn't create a plan for '{task.get('name')}'. {error}", "Planning failed", "planning_failed")
 
     async def _plan(self, task_id: str, *, auto_approve: bool = False) -> None:
+        if await self._planning_paused(task_id):
+            return
         task = await self.repo.get_task(task_id)
         if task is None or task["status"] != "planning" or task.get("task_type") == "swarm":
             return
@@ -1688,14 +1719,20 @@ class TaskService(Service):
             parts.append("Answers to your clarifying questions:\n" + "\n".join(
                 f"- Q: {q.get('text')}\n  A: {q.get('answer')}" for q in answered
             ))
+        if await self._planning_paused(task_id):
+            return
         data = await complete_json_object(self.app.llm,
             "planner",
             [{"role": "system", "content": system}, {"role": "user", "content": "\n\n".join(parts)}],
             keys=("plan", "steps", "clarifying_questions"),
         )
+        if await self._planning_paused(task_id):
+            return
         if not isinstance(data, dict):
             raise TypeError(f"Planner agent returned invalid JSON: {str(data)[:200]}")
         script, data, script_tools = await self._planned_script(task, data, system, parts)
+        if await self._planning_paused(task_id):
+            return
         no_script = script_tools is not None
         raw_plan = data.get("plan") or data.get("steps")
         if raw_plan is None and data.get("tool"):  # a lone step object
@@ -1705,6 +1742,8 @@ class TaskService(Service):
             plan = self._no_script_plan(task, script_tools, plan)
         new_questions = normalize_questions(data.get("clarifying_questions"), start=len(questions) if answered else 0)
 
+        if await self._planning_paused(task_id):
+            return
         current = await self.repo.get_task(task_id)
         if current is None or current["status"] != "planning":
             return  # deleted or changed while the model was thinking
@@ -1763,6 +1802,8 @@ class TaskService(Service):
                 fields["name"] = name
             if str(data.get("description") or "").strip():
                 fields["description"] = str(data["description"]).strip()
+        if await self._planning_paused(task_id):
+            return
         if not await self.repo.update_task_if_status(task_id, {"planning"}, {**fields, "updated_at": self.now_iso()}):
             return  # declined, archived or edited while the planner was running
         # a plan written from someone's email always waits for the user's approval (#159)
@@ -1792,6 +1833,8 @@ class TaskService(Service):
             script = normalize_script(raw, previous, model_written=True, request=request)
             return self._default_condition(task, script), data, None
         except ScriptInvalid as exc:
+            if await self._planning_paused(task["id"]):
+                return previous, data, None
             log.info("planner script for task %s rejected, asking for a fix: %s", task["id"], exc)
             retry = [*parts, (
                 f"Your previous reply included this `script` code:\n```python\n{str(raw.get('code'))[:4000]}\n```\n"
@@ -1803,6 +1846,8 @@ class TaskService(Service):
                 [{"role": "system", "content": system}, {"role": "user", "content": "\n\n".join(retry)}],
                 keys=("plan", "steps", "clarifying_questions"),
             )
+            if await self._planning_paused(task["id"]):
+                return previous, data, None
         if not isinstance(fixed, dict):
             raise TypeError(f"Planner agent returned invalid JSON: {str(fixed)[:200]}")
         codes = [str(raw.get("code"))]
@@ -2336,9 +2381,9 @@ class TaskService(Service):
             log.exception("could not publish task.run_finished for run %s", run_id)
 
     # ------------------------------------------------------------------ script jobs
-    async def _start_script(self, task: dict, *, trigger_data: dict | None = None) -> None:
+    async def _start_script(self, task: dict, *, trigger_data: dict | None = None, manual: bool = False) -> None:
         await self._set(task["id"], {"status": "processing", "last_execution_at": self.now_iso(), "error": None})
-        self._spawn(self._script_job(task["id"], trigger_data), f"script:{task['id']}")
+        self._spawn(self._script_job(task["id"], trigger_data, manual=manual), f"script:{task['id']}")
 
     def _script_tool_names(self) -> list[str]:
         return [
@@ -2365,10 +2410,10 @@ class TaskService(Service):
             return {**SANDBOX_RESULT, "error": "the code runner returned an unexpected result"}
         return {**SANDBOX_RESULT, **out}
 
-    async def _script_job(self, task_id: str, trigger_data: dict | None) -> None:
+    async def _script_job(self, task_id: str, trigger_data: dict | None, *, manual: bool = False) -> None:
         try:
             async with self._lock(task_id):
-                await self._script_check(task_id, trigger_data)
+                await self._script_check(task_id, trigger_data, manual=manual)
         except asyncio.CancelledError:
             if self.app.stopped:  # Stop everything: settle the task now (a shutdown leaves it to recovery)
                 await self._after_run(task_id, "cancelled", None)
@@ -2378,6 +2423,8 @@ class TaskService(Service):
             log.exception("script job %s crashed", task_id)
             await self._after_run(task_id, "error", "The check script could not be run.")
             await self.publish(task_id)
+        finally:
+            self._paused_scripts.discard(task_id)
 
     async def _save_script_state(self, task_id: str, code: str, state: dict) -> None:
         """Store check state unless the code was edited while the check ran (that resets the state)."""
@@ -2390,11 +2437,13 @@ class TaskService(Service):
         script.update(state)
         await self._set(task_id, {"script": script})
 
-    async def _script_check(self, task_id: str, trigger_data: dict | None) -> None:
+    async def _script_check(self, task_id: str, trigger_data: dict | None, *, manual: bool = False) -> None:
         """One check: run the code with no model, act on the condition, record state, settle the task."""
         task = await self.repo.get_task(task_id)
         if task is None or task.get("task_type") != "script":
             return
+        if manual:
+            self._paused_scripts.discard(task_id)
         script = dict(task.get("script") or {})
         code = str(script.get("code") or "")
         name = task.get("name") or "Untitled task"
@@ -2422,11 +2471,6 @@ class TaskService(Service):
         act = scripts.should_act(condition, value, previous)
         message = scripts.alert_message(name, condition, value) if act else ""
         outcome_name, note = self._check_outcome(condition, act, value, previous)
-        if act and condition == "noteworthy":  # something changed: the fast model judges whether it matters
-            act, change = await self._judge_change(task, previous, value)
-            outcome_name, note = ("changed", change) if act else ("minor", change)
-            if act and change:
-                message = change
         current = await self.repo.get_task(task_id)
         if current is None or current.get("task_type") != "script" or _check_settings(current) != _check_settings(task):
             # the user changed the check while it ran (or while the model judged it): drop this stale decision, the
@@ -2434,6 +2478,21 @@ class TaskService(Service):
             await self._after_run(task_id, "completed", None)
             await self.publish(task_id)
             return
+        paused = task_id in self._paused_scripts or (not current["enabled"] and not manual)
+        if act and condition == "noteworthy":  # something changed: the fast model judges whether it matters
+            if paused:
+                act = False
+            else:
+                act, change = await self._judge_change(task, previous, value)
+                outcome_name, note = ("changed", change) if act else ("minor", change)
+                if act and change:
+                    message = change
+        current = await self.repo.get_task(task_id)
+        if current is None or current.get("task_type") != "script" or _check_settings(current) != _check_settings(task):
+            await self._after_run(task_id, "completed", None)
+            await self.publish(task_id)
+            return
+        paused = paused or task_id in self._paused_scripts or (not current["enabled"] and not manual)
         state: dict[str, Any] = {
             "last_run_at": now, "last_error": None,
             "checks": scripts.add_check(script.get("checks"), outcome_name, now, note),
@@ -2441,9 +2500,9 @@ class TaskService(Service):
         if value is not None or condition not in scripts.COMPARING:  # an empty result keeps the baseline
             state["last_result"] = value
         await self._save_script_state(task_id, code, state)
-        if previous_error:
+        if previous_error and not paused:
             await self._notify(task, f"The check for '{name}' is working again.", "Check recovered", "script_recovered")
-        if act:
+        if act and not paused:
             if script.get("then") == "run":
                 context: dict[str, Any] = {"script_result": value, "message": message}
                 if trigger_data:
@@ -2452,6 +2511,7 @@ class TaskService(Service):
                 await self._start_run(fresh, trigger_data=context, next_execution_at=_KEEP)
             else:
                 await self._notify(task, message, name, "script_alert", {"result": value})
+        self._paused_scripts.discard(task_id)
         await self._after_run(task_id, "completed", None)
         await self.publish(task_id)
 

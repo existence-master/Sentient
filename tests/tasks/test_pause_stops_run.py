@@ -13,10 +13,11 @@ import asyncio
 
 from sentient.tasks import ask
 from sentient.tasks.prompts import PAUSE_RESUMED_NOTE
-from sentient.tasks.service import CALL_FINISHES_NOTE, PAUSED_NOTE
+from sentient.tasks.scripts import normalize_script
+from sentient.tasks.service import CALL_FINISHES_NOTE, PAUSED_NOTE, PLAN_PAUSED_NOTE
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from tests.conftest import FakeProvider
-from tests.tasks.conftest import RESULT, GatedProvider, stream_calls
+from tests.tasks.conftest import PLAN_FILES, REFINE_ONCE, RESULT, GatedProvider, stream_calls
 
 
 def write(name: str, n: int) -> list[dict]:
@@ -207,3 +208,133 @@ async def test_a_question_to_the_user_keeps_waiting_when_paused(make_app):
     await app.tasks.update(task_id, {"enabled": False})
     task = await app.tasks.get(task_id)
     assert task["status"] == "waiting_for_user" and task["runs"][-1]["status"] == "waiting_for_user"
+
+
+class GatedJsonProvider(FakeProvider):
+    def __init__(self, *args, block_on_call: int | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.block_on_call = block_on_call
+        self.json_call_count = 0
+        self.gate = asyncio.Event()
+        self.blocked = asyncio.Event()
+
+    async def complete_json(self, role, messages, *, model=None):
+        self.json_call_count += 1
+        if self.block_on_call is not None and self.json_call_count == self.block_on_call:
+            self.blocked.set()
+            await self.gate.wait()
+        return await super().complete_json(role, messages, model=model)
+
+
+async def test_pausing_a_task_being_planned_stops_before_the_next_model_call_and_resume_plans_it(make_app):
+    # Call 1 is refine, call 2 is planner. Block on call 1.
+    llm = GatedJsonProvider(json_replies=[REFINE_ONCE, PLAN_FILES], block_on_call=1)
+    app = await make_app(llm)
+    task = await app.tasks.create_task("Save notes to a.txt")
+    task_id = task["task_id"]
+    await asyncio.wait_for(llm.blocked.wait(), 5)
+
+    # Pausing while refine is in flight leaves the task in planning with PLAN_PAUSED_NOTE
+    task = await app.tasks.update(task_id, {"enabled": False})
+    assert task["status"] == "planning" and not task["enabled"]
+    assert task["error"] == PLAN_PAUSED_NOTE
+
+    # Unblock call 1: the planner checks if the task is paused before its next model call (call 2)
+    llm.gate.set()
+    await app.tasks.drain()
+
+    # No second model call was made!
+    assert len(llm.calls) == 1
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "planning" and not task["enabled"]
+    assert task["error"] == PLAN_PAUSED_NOTE
+
+    # Resuming the task carries on planning it
+    task = await app.tasks.update(task_id, {"enabled": True})
+    await app.tasks.drain()
+    assert len(llm.calls) == 2
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "approval_pending" and task["enabled"]
+    assert task["error"] is None
+    assert task["plan"]
+
+
+async def test_pausing_during_planner_call_stops_and_leaves_task_in_planning(make_app):
+    # Call 1 is refine, call 2 is planner. Block on call 2 (planner in flight).
+    llm = GatedJsonProvider(json_replies=[REFINE_ONCE, PLAN_FILES, PLAN_FILES], block_on_call=2)
+    app = await make_app(llm)
+    task = await app.tasks.create_task("Save notes to a.txt")
+    task_id = task["task_id"]
+    await asyncio.wait_for(llm.blocked.wait(), 5)
+
+    # Call 2 is in flight: pause now
+    task = await app.tasks.update(task_id, {"enabled": False})
+    assert task["status"] == "planning" and not task["enabled"]
+
+    # Release call 2: planner returns, but seeing task is paused, leaves it in planning
+    llm.gate.set()
+    await app.tasks.drain()
+
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "planning" and not task["enabled"]
+    assert task["error"] == PLAN_PAUSED_NOTE
+
+    # Resuming plans it
+    task = await app.tasks.update(task_id, {"enabled": True})
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "approval_pending" and task["enabled"] and task["plan"]
+    assert task["error"] is None
+
+
+async def test_watch_check_finishing_on_paused_task_does_not_start_a_run(make_app):
+    llm = FakeProvider(replies=["Logged price."], json_replies=[dict(RESULT)])
+    app = await make_app(llm)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_sandbox(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return {"ok": True, "result": {"price": 90}}
+
+    app.sandbox.run = slow_sandbox
+    script = normalize_script({"code": "result({'price': 90})", "condition": "changed", "then": "run"})
+    schedule = {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "UTC"}
+    now = app.tasks.now_iso()
+    task_id = await app.tasks.repo.insert_task({
+        "name": "Price watch", "description": "Watch price", "status": "active",
+        "task_type": "script", "script": {**script, "last_result": {"price": 100}},
+        "schedule": schedule, "plan": [{"tool": "files", "description": "Log price"}],
+        "created_at": now, "updated_at": now, "enabled": True,
+    })
+
+    # The check starts running in the background
+    task = await app.tasks.repo.get_task(task_id)
+    await app.tasks._start_script(task)
+    await asyncio.wait_for(started.wait(), 5)
+
+    # While the check is in flight, the user pauses the task
+    await app.tasks.update(task_id, {"enabled": False})
+
+    # Release the check
+    release.set()
+    await app.tasks.drain()
+
+    # The check finished, but because the task was paused, no run was started
+    task = await app.tasks.get(task_id)
+    assert task["runs"] == []
+    assert not task["enabled"]
+    assert llm.calls == []
+
+    # "Run now" on a paused task still works as today because the user explicitly asked for it
+    async def fast_sandbox(*args, **kwargs):
+        return {"ok": True, "result": {"price": 80}}
+
+    app.sandbox.run = fast_sandbox
+    await app.tasks.run_now(task_id)
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert len(task["runs"]) == 1
+    assert task["runs"][0]["status"] == "completed"
