@@ -100,6 +100,10 @@ def _files_from(result: Any) -> list[str]:
         return []
     names: list[str] = []
     path = result.get("path")
+    if not path and isinstance(result.get("file"), str):
+        file_path = Path(result["file"])
+        if not file_path.is_absolute() and ".." not in file_path.parts:
+            names.append(file_path.as_posix())
     if isinstance(path, str) and Path(path).is_absolute():
         with contextlib.suppress(OSError, ValueError):
             names.append(Path(path).resolve().relative_to(paths.files_dir().resolve()).as_posix())
