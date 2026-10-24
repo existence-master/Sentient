@@ -16,7 +16,7 @@ import { useConfigEditor } from '@/hooks/config'
 import { useClaudeCodeStatus, useHardware, useLocalModels, useSetRoles } from '@/hooks/models'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
-import { claudeCodeState, isClaudeCode, otherModel, refusingRoles } from '@/lib/claudeCode'
+import { claudeCodeState, fastStandIns, isClaudeCode, otherModel, refusingRoles } from '@/lib/claudeCode'
 import { modelShortName, recommendFastLocal, recommendLocal, ROLE_META } from '@/lib/models'
 import type { RoleName } from '@/lib/types'
 
@@ -204,6 +204,9 @@ export function ClaudeCodeRoleWarning() {
   const refusing = refusingRoles(roles, status.data?.roles)
   if (!refusing.length) return null
   const chat = refusing.filter((r) => r.role !== 'embedding')
+  // the engine does the fast role's quick jobs on another model when it can (#474): say which, not that they fail
+  const [standIn] = fastStandIns(roles, config.models.fallbacks, status.data?.roles)
+  const stuck = standIn ? refusing.filter((r) => r.role !== 'fast') : refusing
   const rec = hardware.data?.recommendation
   const installed = (local.data?.ollama.models ?? []).map((m) => m.name)
   const recInstalled = rec && !rec.cloud_first && installed.some((n) => n === rec.name || n === `${rec.name}:latest`)
@@ -219,8 +222,8 @@ export function ClaudeCodeRoleWarning() {
     local.data ? recommendFastLocal(local.data) : null
   ])
   const label = (r: { role: string }) => ROLE_META[r.role as RoleName].label
-  const own = refusing.filter((r) => !r.inherited)
-  const inherited = refusing.filter((r) => r.inherited)
+  const own = stuck.filter((r) => !r.inherited)
+  const inherited = stuck.filter((r) => r.inherited)
   const parts = [
     own.length ? `${listText(own.map(label))} ${own.length === 1 ? 'is' : 'are'} set to it` : '',
     inherited.length ? `${listText(inherited.map(label))} ${inherited.length === 1 ? 'gets' : 'get'} it from your main model` : ''
@@ -233,10 +236,18 @@ export function ClaudeCodeRoleWarning() {
 
   return (
     <Alert tone="warning" icon={<IconAlertTriangle />} title="Some work can't run on Claude Code">
-      <p>
-        Claude Code only answers your chats, but {parts.join(', and ')}. Until {refusing.length === 1 ? 'it uses' : 'they use'} another model,{' '}
-        {consequences(refusing.map((r) => r.role))} won&apos;t work. You can pick one under Roles.
-      </p>
+      {stuck.length > 0 && (
+        <p>
+          Claude Code only answers your chats, but {parts.join(', and ')}. Until {stuck.length === 1 ? 'it uses' : 'they use'} another model,{' '}
+          {consequences(stuck.map((r) => r.role))} won&apos;t work. You can pick one under Roles.
+        </p>
+      )}
+      {standIn && (
+        <p>
+          Claude Code can&apos;t do quick background jobs, so {standIn} does them.
+          {stuck.length === 0 && ' You can pick another model for them under Roles.'}
+        </p>
+      )}
       {fix && chat.length > 0 && (
         <Button size="sm" variant="secondary" className="mt-2.5" loading={setRoles.isPending} onClick={useFix}>
           Use {modelShortName(fix)} for {chat.length === 1 ? ROLE_META[chat[0].role as RoleName].label.toLowerCase() : 'these'}

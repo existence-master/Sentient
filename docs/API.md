@@ -693,7 +693,8 @@ accept or loosen a rule.
   model: `fallbacks.primary`, then the executor, the planner, the main model (#474, `claude_code.stand_ins`); the log
   says `the fast model <model> can't do background work ..., so <models> does its jobs` once. Not inside a reply someone
   waits for (the second look asks Claude Code then) or for the rules-from-chat check, which asks the chat's model
-  when the fast role refuses (#311). The check-up and Settings still flag the fast role. With no other model the
+  when the fast role refuses (#311). The check-up still flags the fast role. Settings names the model that does its jobs (the window works
+  it out from the saved roles in the same order, `fastStandIns`, #510) and keeps the plain warning when there is none. With no other model the
   refusal stands. The refusal names the setting to change for the `planner` role ("...so it can't plan tasks. Pick a planner
   model in Settings > Models.") and the `executor` role ("...Pick an executor model..."). It is a `ModelRefused`
   (a `ProviderError`); when every model of a role refused, that sentence is the error as is, so a task that fails

@@ -1,7 +1,7 @@
 // Claude through your own Claude Code (#246): the status asked for right after the switch changes.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { allowedForRole, claudeCodeState, claudeWayFor, isClaudeCode, otherModel, refusingRoles, retryWhileSaving, SAVE_RETRIES, statusOnceSaved, SwitchNotSavedYet } from '../src/lib/claudeCode.ts'
+import { allowedForRole, claudeCodeState, claudeWayFor, fastStandIns, isClaudeCode, otherModel, refusingRoles, retryWhileSaving, SAVE_RETRIES, statusOnceSaved, SwitchNotSavedYet } from '../src/lib/claudeCode.ts'
 
 test('a status from before the switch was saved is asked for again', async () => {
   const answers = [
@@ -48,6 +48,29 @@ test('the background model is the first one that is not Claude Code', () => {
   assert.equal(otherModel(['claude-code/sonnet', undefined]), '')
   assert.equal(isClaudeCode('claude-code/opus'), true)
   assert.equal(isClaudeCode('anthropic/claude-sonnet-5-5'), false)
+})
+
+// #510: the model that does the fast role's quick jobs while it is only on Claude Code (`stand_ins` in the engine, #474)
+test('the fast role stands in on another model, in the engine order', () => {
+  const roles = { primary: 'claude-code/sonnet', fast: 'claude-code/haiku', planner: 'ollama_chat/qwen3:14b', executor: 'ollama_chat/qwen3:8b', voice: null }
+  assert.deepEqual(fastStandIns(roles, {}, ACCEPTING), ['ollama_chat/qwen3:8b', 'ollama_chat/qwen3:14b']) // executor, planner
+  const fallbacks = { primary: ['claude-code/opus', 'openai/gpt-5-mini', 'ollama_chat/qwen3:8b'] }
+  // the main model's fallbacks come first; never Claude Code, never twice
+  assert.deepEqual(fastStandIns(roles, fallbacks, ACCEPTING), ['openai/gpt-5-mini', 'ollama_chat/qwen3:8b', 'ollama_chat/qwen3:14b'])
+  assert.deepEqual(fastStandIns({ ...roles, planner: null, executor: '' }, {}, ACCEPTING), [])
+  // an empty fast role uses the main model; a main model that is not Claude Code is a stand-in too
+  assert.deepEqual(fastStandIns({ ...roles, fast: null }, {}, ACCEPTING), ['ollama_chat/qwen3:8b', 'ollama_chat/qwen3:14b'])
+  assert.deepEqual(fastStandIns({ primary: 'openai/gpt-5-mini', fast: 'claude-code/haiku' }, {}, ACCEPTING), ['openai/gpt-5-mini'])
+})
+
+test('the fast role keeps the refusal when the engine does not stand in', () => {
+  const roles = { primary: 'claude-code/sonnet', fast: 'claude-code/haiku', planner: null, executor: 'ollama_chat/qwen3:8b' }
+  assert.deepEqual(fastStandIns(roles, { fast: ['claude-code/opus'] }, ACCEPTING), ['ollama_chat/qwen3:8b'])
+  assert.deepEqual(fastStandIns(roles, { fast: ['claude-code/opus', 'openai/gpt-5-mini'] }, ACCEPTING), []) // it has a model of its own
+  assert.deepEqual(fastStandIns({ ...roles, fast: 'ollama_chat/qwen3:8b' }, {}, ACCEPTING), [])
+  assert.deepEqual(fastStandIns(roles, {}, [...ACCEPTING, 'fast']), []) // Claude Code does everything
+  assert.deepEqual(fastStandIns(roles, {}, undefined), []) // the engine hasn't said yet
+  assert.deepEqual(fastStandIns({ primary: '', fast: null }, {}, ACCEPTING), [])
 })
 
 test('Connect Claude starts on the choice that is set up now (#444)', () => {
