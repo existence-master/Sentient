@@ -3100,13 +3100,19 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   message for `dreaming.require_idle_minutes`. Steps: merge near-duplicates (similarity ≥ `merge_similarity` and word
   overlap ≥ `merge_min_overlap`, never facts whose names/places/numbers conflict; the kept fact keeps its id), settle
   contradictions: facts are paired when they are about the same subject (name, possessive relation like "Maya's sister
-  Riya", or the user as "I"/"the user") and share an attribute family or differ in names/places/numbers or negation;
-  place, job, relationship and diet pairs are always checked, broader families (routine, ownership, health) need
-  similarity ≥ `contradiction_similarity`; the model confirms and names the current fact (the newer one wins unless the
-  model picks the older and only the older has explicit recent wording such as "now" or "this month"); the loser is
-  deleted and its text kept as the winner's `previous_content`; pairs the model cleared are not asked again until either
-  fact changes. Between the two (`dreaming.merge_languages`, default on, #353), the same memory saved in two languages
-  is kept once: a fact led by Devanagari is paired with up to 3 facts without Devanagari that are clearly about the same
+  Riya", or the user as "I"/"the user" - a fact led by Devanagari gets its subject from `scripts.devanagari_subjects`
+  instead, since it has no capital letters to read, #95) and share an attribute family or differ in names/places/numbers
+  or negation; families come from English keywords, and a fact they miss (often one that isn't in English) gets
+  whichever family's short description its embedding is closest to, as long as it's ahead of the runner-up by at least
+  `memory.family_margin` (default 0.02) - a fixed similarity floor doesn't travel between embedding models, so this
+  compares the best match against the next-best instead of an absolute score, and reuses the fact's own stored
+  embedding rather than computing a new one; place, job, relationship and diet pairs are always checked, broader
+  families (routine, ownership, health) need similarity ≥ `contradiction_similarity`; the model confirms and names the
+  current fact (the newer one wins unless the model picks the older and only the older has explicit recent wording
+  such as "now" or "this month"); the loser is deleted and its text kept as the winner's `previous_content`; pairs the
+  model cleared are not asked again until either fact changes. Between the two (`dreaming.merge_languages`, default on,
+  #353), the same memory saved in two languages is kept once: a fact led by Devanagari is paired with up to 3 facts
+  without Devanagari that are clearly about the same
   person (both have a subject and the names match across scripts, #351), have the same numbers, and have no name or
   place the Hindi one lacks; with a multilingual embedding model (bge-m3) also similarity ≥
   `dreaming.language_merge_similarity` (0.7), otherwise the similarity only orders them. The `fast`-role model (the
