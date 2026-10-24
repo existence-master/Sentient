@@ -17,6 +17,7 @@ backups                     : core (backup, restore and snapshots)
 timeline                    : core (the activity timeline)
 folders                     : folders package (folders and Obsidian vaults as notes)
 reminders                   : reminders package (timers and one-off reminders)
+openai_api                  : core (the OpenAI-compatible chat API, #211)
 """
 
 from sentient.gateway.routes import (
@@ -32,6 +33,7 @@ from sentient.gateway.routes import (
     models,
     nodes,
     notifications,
+    openai_api,
     proactivity,
     reminders,
     sandbox,
@@ -69,4 +71,5 @@ ROUTERS = [
     timeline.router,
     folders.router,
     reminders.router,
+    openai_api.router,
 ]

@@ -32,7 +32,7 @@ import mimetypes
 import re
 import time
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -112,6 +112,7 @@ from sentient.tools.base import (
 from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
+    API_SOURCE,
     ASK,
     EVENT_ROLE,
     HAND_OFF,
@@ -266,6 +267,8 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
             content = r.get("content") or ""
             if r.get("attachments"):
                 content += "\n\n(Attached earlier: " + ", ".join(r["attachments"]) + ")"
+            if role == "user" and r.get("name") == API_SOURCE:
+                content = mark_outside(content, API_SOURCE)
             out.append({"role": role, "content": content})
 
     # every assistant tool call needs its reply right after it; tool messages need their call
@@ -614,6 +617,13 @@ class Agent:
     def is_busy(self, session_id: str) -> bool:
         """True from the start of a chat turn until its last write (the final or stopped reply) is done."""
         return self._busy.get(session_id, 0) > 0
+
+    def create_turn_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Start a detached chat task owned by Stop before its first step, through its final cleanup."""
+        task = asyncio.create_task(coro)
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+        return task
 
     def _turn_done(self, session_id: str) -> None:
         left = self._busy.get(session_id, 0) - 1
@@ -1746,9 +1756,37 @@ class Agent:
         model: str | None = None,
         on_stopped: Callable[[dict], Any] | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        """One cancellable chat turn, including initialization and quick commands."""
+        task = asyncio.current_task()
+        owns_task = task is not None and task not in self._turn_tasks
+        if owns_task:
+            self._turn_tasks.add(task)
+        try:
+            async with contextlib.aclosing(self._run_turn(
+                session_id, user_text, channel=channel, attachments=attachments, model=model, on_stopped=on_stopped,
+            )) as turn:
+                async for event in turn:
+                    yield event
+        finally:
+            if owns_task:
+                self._turn_tasks.discard(task)
+
+    async def _run_turn(
+        self,
+        session_id: str,
+        user_text: str,
+        *,
+        channel: str = "desktop",
+        attachments: list[str] | None = None,
+        model: str | None = None,
+        on_stopped: Callable[[dict], Any] | None = None,
+    ) -> AsyncIterator[AgentEvent]:
         """One chat turn. ``on_stopped`` is called with ``{message_id, memory_sources}`` of the reply kept when the
         turn is stopped, so the caller can send them with its own ``done`` event."""
-        quick = await self._quick_plan(session_id, user_text, attachments or [])
+        # An authenticated app can request work, but its text is not the user's personal authorization (#211).
+        # Mark before any planning, and retain the mark even if the user trusts the stored chat during this turn.
+        api_source = await self._mark_chat(session_id, API_SOURCE) if channel == "api" else ""
+        quick = None if api_source else await self._quick_plan(session_id, user_text, attachments or [])
         if quick is not None:  # a plain timer or reminder command: done now, without the model (#150)
             async for event in self._quick_turn(session_id, user_text, quick, channel=channel):
                 yield event
@@ -1765,9 +1803,6 @@ class Agent:
             steer = SteerQueue()
             self._steers[session_id] = steer
 
-        turn_task = asyncio.current_task()  # Stop everything cancels this task (halt)
-        if turn_task is not None:
-            self._turn_tasks.add(turn_task)
         # the model serves this reply (and what it runs) first; background work waits until it has been quiet (#149)
         jobs = getattr(self.app, "model_jobs", None)
         turn_scope = contextlib.ExitStack()
@@ -1775,8 +1810,6 @@ class Agent:
 
         def release() -> list[str]:
             turn_scope.close()
-            if turn_task is not None:
-                self._turn_tasks.discard(turn_task)
             if steer is None:
                 return []
             left = steer.close()
@@ -1790,10 +1823,16 @@ class Agent:
         used = AnswerSources()  # pages, emails, files and apps it used (#174)
         notes: list[dict] = []  # pieces of the user's notes put into the prompt (#354)
         try:
-            user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
-            if self.app is not None and hasattr(self.app, "user_seen"):
+            user_message_id = await self.store.add_message(
+                session_id, "user", user_text, attachments=attachments, name=API_SOURCE if api_source else None,
+            )
+            if api_source:
+                # A trust request may have cleared the early mark before this message was stored. Now its saved
+                # source also prevents trusting an older screen snapshot from covering this new API input.
+                await self._mark_chat(session_id, api_source)
+            if not api_source and self.app is not None and hasattr(self.app, "user_seen"):
                 await self.app.user_seen(channel)  # a chat message on any surface means the user is around (#163)
-            rule_check = self._start_rule_check(session_id, user_message_id, user_text)
+            rule_check = None if api_source else self._start_rule_check(session_id, user_message_id, user_text)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
@@ -1807,7 +1846,7 @@ class Agent:
             # Keep the stored user message unchanged. Add the current time to the
             # model-facing user message so it doesn't invalidate the system prompt cache.
             if convo and convo[-1]["role"] == "user":
-                content = await self._user_content(user_text, attachments)
+                content = await self._user_content(mark_outside(user_text, API_SOURCE) if api_source else user_text, attachments)
                 tz = resolve_tz(self.config.assistant.timezone)
                 now = datetime.now(tz)
                 time_note = f"[Current time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})]"
@@ -1835,9 +1874,9 @@ class Agent:
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = incognito
             ctx.memory_scope = memory_scopes.of_session(self.config, session)  # recall and saving use it (#155)
-            ctx.user_words = [user_text]  # what the user typed or said, never attachments (#140)
+            ctx.user_words = [] if api_source else [user_text]  # the user's own words, never API input or attachments
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
-            ctx.untrusted = await self._chat_untrusted(session_id, session)
+            ctx.untrusted = api_source or await self._chat_untrusted(session_id, session)
             brought = next((src for a in attachments if (src := attachment_source(a))), "")
             if not ctx.untrusted and brought:
                 # a shared window or region, or text selected in another app, can hold text someone else wrote: it
@@ -1945,7 +1984,8 @@ class Agent:
                     # a chat that read outside content holds what it learns for the user's review (ADR 0021)
                     log.info("chat %s: fact extraction started for this turn", session_id)
                     self._spawn(
-                        self._extract(said, memory_review.for_context(ctx), session_id, ctx.memory_scope), "memory"
+                        self._extract(said, memory_review.for_context(ctx), session_id, ctx.memory_scope,
+                                      own=not bool(api_source)), "memory"
                     )
                 if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
                     self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
@@ -2094,8 +2134,8 @@ class Agent:
             return str(stored)
         rows = await self.store.fetchall(
             "SELECT role, name, content, tool_calls, tool_call_id FROM messages WHERE session_id = ?"
-            " AND role IN ('tool', 'assistant') ORDER BY created_at, rowid",
-            (session_id,),
+            " AND (role IN ('tool', 'assistant') OR (role = 'user' AND name = ?)) ORDER BY created_at, rowid",
+            (session_id, API_SOURCE),
         )
         transcript = []
         for r in rows:
@@ -2135,12 +2175,15 @@ class Agent:
     async def mark_group_chat(self, session_id: str, sender: str) -> str:
         """Mark a chat because a group member wrote in it (ADR 0029), unless it is marked already. Done as soon as the
         message arrives, also while it waits for a reply to end. Returns the chat's mark."""
+        return await self._mark_chat(session_id, group_source(sender))
+
+    async def _mark_chat(self, session_id: str, source: str) -> str:
+        """Persist incoming outside content before it can start work, preserving an existing source."""
         async with self._mark_locks.setdefault(session_id, asyncio.Lock()):
             session = await self.store.get_session(session_id)
             current = (session or {}).get("untrusted")
             if current:
                 return str(current)
-            source = group_source(sender)
             await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         self._publish_mark(session_id, source)
         return source
@@ -2153,16 +2196,16 @@ class Agent:
         return str(row["id"]) if row else None
 
     async def _newer_outside(self, session_id: str, upto: str) -> tuple[str, str] | None:
-        """(source, writer) of the newest outside content stored after message ``upto``: a group member's message or
-        a tool result that brought outside content in. None when there is none. ValueError for a message that isn't
-        in this chat."""
+        """(source, writer) of the newest outside content after ``upto``: a group member, API input or a tool result.
+        None when there is none. ValueError for a message that isn't in this chat."""
         row = await self.store.fetchone("SELECT rowid FROM messages WHERE id = ? AND session_id = ?", (upto, session_id))
         if row is None:
             raise ValueError("that message isn't in this chat")
         rows = await self.store.fetchall(
-            "SELECT role, name, content FROM messages WHERE session_id = ? AND rowid > ? AND role IN (?, 'tool')"
+            "SELECT role, name, content FROM messages WHERE session_id = ? AND rowid > ?"
+            " AND (role IN (?, 'tool') OR (role = 'user' AND name = ?))"
             " ORDER BY rowid DESC",
-            (session_id, row[0], OTHER_ROLE),
+            (session_id, row[0], OTHER_ROLE, API_SOURCE),
         )
         for r in rows:
             if r["role"] == OTHER_ROLE:
@@ -2314,18 +2357,19 @@ class Agent:
                 )
 
     async def _extract(
-        self, user_text: str, review: dict | None = None, session_id: str | None = None, scope: str | None = None
+        self, user_text: str, review: dict | None = None, session_id: str | None = None, scope: str | None = None,
+        *, own: bool = True,
     ) -> None:
-        """Only the user's own words are mined for facts; the assistant's reply is
-        mostly restated context (dates, tool output) and produced junk memories.
+        """Mine incoming text for facts; the assistant's reply is mostly restated context and produced junk memories.
         With ``review`` (the chat read outside content) a fact is held for the user's review unless the user's own
-        words back all of it (#234); instruction-shaped ones are always held. New facts go in the chat's ``scope``."""
+        words back all of it (#234); API input never counts as own words. Instruction-shaped facts are always held.
+        New facts go in the chat's ``scope``."""
         assert self.memory is not None
         if len(user_text.split()) < 4:
             return
         try:
             results = await self.memory.extract_and_store(
-                user_text, self.config.assistant.user_name, own=True, session_id=session_id,
+                user_text, self.config.assistant.user_name, own=own, session_id=session_id,
                 **({"review": review} if review else {}),
                 **({"scope": scope} if scope and scope != memory_scopes.PERSONAL else {}),
             )
@@ -2381,17 +2425,24 @@ class Agent:
             upto = (session or {}).get("context_upto") or ""
             after, params = after_watermark(upto, "created_at", "rowid")  # same-tick messages are not skipped (#236)
             rows = await self.store.fetchall(
-                f"SELECT rowid, role, content, created_at FROM messages WHERE session_id = ? AND {after}"
+                f"SELECT rowid, role, name, content, created_at FROM messages WHERE session_id = ? AND {after}"
                 " AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY created_at, rowid",
                 (session_id, *params),
             )
             older = rows[: max(0, len(rows) - window)]
             if len(older) < 10:
                 return
-            transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
+            # Trusting a chat does not turn another app's words into the owner's statements when they are
+            # compressed later. Keep their source in the transcript and hold any extracted facts for review.
+            api_source = API_SOURCE if any(r["role"] == "user" and r["name"] == API_SOURCE for r in older) else ""
+            lines = []
+            for row in older:
+                source = f"(from {API_SOURCE}) " if row["role"] == "user" and row["name"] == API_SOURCE else ""
+                lines.append(f"{row['role']}: {source}{(row['content'] or '')[:800]}")
+            transcript = "\n".join(lines)
             if flush:
                 await self._flush_memory(
-                    transcript, (session or {}).get("untrusted") or "", session_id,
+                    transcript, (session or {}).get("untrusted") or api_source, session_id,
                     memory_scopes.of_session(self.config, session),
                 )
             prev = (session or {}).get("context_summary") or ""

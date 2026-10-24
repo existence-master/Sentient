@@ -36,6 +36,7 @@ from sentient.channels.formatting import summary_text
 from sentient.channels.store import ChannelStore
 from sentient.channels.telegram import TelegramChannel
 from sentient.channels.whatsapp import WhatsAppChannel
+from sentient.llm.events import ApprovalRequest
 from sentient.memory.forget import forget as forget_learned
 from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
@@ -51,7 +52,7 @@ TASK_RESULT_EVENTS = {
 }
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
-    "expired": "Expired",
+    "expired": "Expired", "allow": "Allowed", "deny": "Denied",
     "kept": "Keeping them running", "paused": "Paused", "resumed": "Resumed",  # routines while away (#163)
 }
 APPROVAL_HINT = "Tap a button, or reply to this message with {words}."
@@ -460,9 +461,34 @@ class ChannelService(Service):
 
     @staticmethod
     def is_approval(note: dict) -> bool:
-        """A task's approval request (#139, ADR 0018), as opposed to an ordinary question."""
+        """A task's approval request (#139, ADR 0018), as opposed to an ordinary question, or a live one."""
         payload = note.get("payload") or {}
-        return note.get("kind") == "task" and payload.get("event") == "question" and isinstance(payload.get("approval"), dict)
+        task = note.get("kind") == "task" and payload.get("event") == "question" and isinstance(payload.get("approval"), dict)
+        return task or ChannelService.is_live_approval(note)
+
+    @staticmethod
+    def is_live_approval(note: dict) -> bool:
+        """An approval a chat turn without a window is waiting on (an API turn, #211): ``payload`` is its
+        ``approval_request``, answered through ``app.approvals`` like a chat's."""
+        return note.get("kind") == "approval" and bool((note.get("payload") or {}).get("approval_id"))
+
+    async def _deliver_live_approval(self, note: dict) -> int:
+        """The channel's own Allow and Deny message for a live approval, whose buttons answer it."""
+        payload = note.get("payload") or {}
+        if payload.get("status") or payload.get("approval_id") not in self.app.approvals.pending_ids():
+            return 0
+        event = ApprovalRequest.model_validate(payload)
+        sent = 0
+        for ch, chat in await self._delivery_targets():
+            # ponytail: a channel answers from one chat per request (the last one sent to); fine with one paired chat
+            mid = await ch.send_approval(chat["chat_id"], event)
+            if mid is None:
+                continue
+            sent += 1
+            self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], mid))
+            await self.record_delivery(ch, chat, "**Approval needed**", what="approval", reason="default",
+                                       ref=self._source_ref(note))
+        return sent
 
     @staticmethod
     def _format_approval(note: dict) -> tuple[str, list[list[Button]] | None] | None:
@@ -510,7 +536,7 @@ class ChannelService(Service):
         for nid, note in list(self._held.items()):
             self._held.pop(nid, None)
             run_id = str((note.get("payload") or {}).get("run_id") or "")
-            if run_id and await self._waiting_question(run_id) is not None:
+            if self.is_live_approval(note) or (run_id and await self._waiting_question(run_id) is not None):
                 sent += await self.deliver_notification(note)
         return sent
 
@@ -575,6 +601,8 @@ class ChannelService(Service):
             if note.get("id") and not (note.get("payload") or {}).get("status"):
                 self._held[str(note["id"])] = note  # the person is looking at the app: ask there first (#139)
             return 0
+        if self.is_live_approval(note):
+            return await self._deliver_live_approval(note)
         if note.get("kind") == "reminder":  # a timer or reminder goes back to the chat it was set in (#150)
             where = await self._reminder_delivery(note)
         else:

@@ -284,6 +284,14 @@ class GatewayConfig(BaseModel):
     port: int = Field(7777, ge=0, le=65535, description="0 lets the desktop app pick a free port.")
 
 
+class OpenAIApiConfig(BaseModel):
+    enabled: bool = Field(
+        False,
+        description="Let apps on this computer (editors, scripts, shortcuts) chat with Sentient, with its memory and "
+        "tools, through an OpenAI-compatible API at /v1/chat/completions. Each app needs Sentient's API key.",
+    )
+
+
 class ChatConfig(BaseModel):
     history_window: int = Field(30, ge=2, description="Recent messages sent to the model per turn.")
     compress_after_messages: int = Field(
@@ -1338,6 +1346,7 @@ class SentientConfig(BaseModel):
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    openai_api: OpenAIApiConfig = Field(default_factory=OpenAIApiConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
