@@ -178,6 +178,9 @@ _PREPOSITIONS = frozenset({
 # Enough to clear a short leading clause ("Last year in March, after the wedding, Riya ..."); the subject is
 # still whichever word looks name-like first, so this is a bound on how far to look, not a guess of where it is.
 _SUBJECT_SCAN_WORDS = 12
+# A sentence that leads with one of these has no subject here on purpose ("She moved to Delhi, India." - the
+# comma is "Delhi, India", not a leading clause): never treat it as one just because a comma turns up later.
+_SUBJECT_PRONOUNS = frozenset({"he", "she", "it", "they", "this", "that", "these", "those", "we"})
 _RELATION_WORDS = {
     "sister", "brother", "mother", "mom", "mum", "father", "dad", "wife", "husband", "partner", "girlfriend",
     "boyfriend", "son", "daughter", "friend", "manager", "boss", "colleague", "cousin", "uncle", "aunt", "grandmother",
@@ -270,8 +273,13 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
     words = [m.group() for m in found]
     # Ordinary words before the last comma of a leading clause ("Last year in March, after the wedding, Riya
     # ...") don't have to be recognised to be skipped - only words after it do, same as without a leading
-    # clause at all ("She moved to Delhi" still has no subject).
-    permissive_until = sum(len(_NAME_WORD_RE.findall(c)) for c in text.split(",")[:-1]) if "," in text else 0
+    # clause at all ("She moved to Delhi" still has no subject). A sentence that leads with a pronoun never
+    # gets this treatment: a comma later on is something else entirely ("She moved to Delhi, India.").
+    permissive_until = (
+        sum(len(_NAME_WORD_RE.findall(c)) for c in text.split(",")[:-1])
+        if "," in text and (not words or words[0].lower() not in _SUBJECT_PRONOUNS)
+        else 0
+    )
 
     def joined(j: int) -> bool:  # words j and j + 1 are only a space apart ("Maya Rao", not "Priya, Maya")
         return j + 1 < len(found) and not text[found[j].end():found[j + 1].start()].strip()

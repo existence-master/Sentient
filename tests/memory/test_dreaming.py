@@ -73,6 +73,14 @@ def test_subject_never_a_leading_number_or_a_place_after_a_preposition():
     assert fact_subjects("After the trip to Goa, Karan started working at Wipro.") == {"karan"}
 
 
+def test_subject_pronoun_stays_unclear_even_with_a_later_comma():
+    # CodeRabbit review on #338: a comma doesn't always open a leading clause - "Delhi, India" is a place, and
+    # a sentence leading with a pronoun has no subject here regardless of what shows up after it.
+    assert fact_subjects("She moved to Delhi, India.") == set()
+    assert fact_subjects("He moved to Paris, France.") == set()
+    assert fact_subjects("They moved to Austin, Texas.") == set()
+
+
 async def test_embedding_attribute_families_matches_the_closest_prototype():
     # Distinct, non-orthogonal vectors per family (orthogonal ones would make every margin equally wide,
     # which isn't how a real embedding model's scores for related-but-wrong families behave).
