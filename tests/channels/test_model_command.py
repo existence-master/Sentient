@@ -28,6 +28,7 @@ async def test_model_lists_presets_and_a_button_applies_one(tg):
     assert [b["text"] for b in buttons] == ["Local only"]  # Cloud and Mixed need a key first
     assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)
 
+    app.config.models.local_only = True  # already on, so the button has nothing to ask (see the tests below)
     tg.ch.dispatch(callback(42, msg["_id"], buttons[0]["callback_data"]))
     await tg.ch.wait_idle()
     assert app.config.models.active_preset == "Local only"
@@ -164,3 +165,33 @@ async def test_local_only_preset_by_number_asks_and_skips_the_question_when_alre
     await tg.say(42, "/model Local only")  # the switch is already on: nothing to ask
     assert tg.api.screen()[-1].startswith("Already using Local only.")  # no question, and nothing left to turn on
     assert app.config.models.local_only
+
+
+async def test_local_only_button_asks_before_turning_the_switch_on(tg):
+    """Tapping "Local only" in the /model list asks the same question as ``/model Local only`` (#457)."""
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model")
+    msg = tg.api.button_messages()[-1]
+    tg.ch.dispatch(callback(42, msg["_id"], keyboard(msg)[0]["callback_data"]))
+    await tg.ch.wait_idle()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "Turn on Local only too?"
+    edit = [p for p in tg.api.sent("editMessageText") if p["message_id"] == msg["_id"]][-1]
+    assert "Turn on Local only too?" in edit["text"] and "reply_markup" not in edit
+    assert "/model Local only yes" in tg.api.screen()[-1] and "/model Local only no" in tg.api.screen()[-1]
+    assert app.config.models.active_preset is None and not app.config.models.local_only  # nothing changed yet
+
+    await tg.say(42, "/model Local only yes")
+    assert tg.api.screen()[-1].startswith("Switched to Local only, and Local only is on.")
+    assert app.config.models.active_preset == "Local only" and app.config.models.local_only
+
+
+async def test_local_only_no_cancels(tg):
+    """``/model Local only no`` (#457) answers the question by leaving everything as it is."""
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model Local only")
+    assert "/model Local only no" in tg.api.screen()[-1]
+    await tg.say(42, "/model Local only no")
+    assert tg.api.screen()[-1] == "Okay, I left your models as they are."
+    assert app.config.models.active_preset is None and not app.config.models.local_only
