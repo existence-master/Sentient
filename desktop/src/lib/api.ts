@@ -83,6 +83,7 @@ import type {
   LocalModels,
   McpServer,
   McpServerCreate,
+  McpCatalogEntry,
   McpSignInStart,
   McpTestResult,
   Memory,
@@ -682,6 +683,8 @@ export const api = {
     setEntities: (id: string, choice: EntityChoice) => http.put<EntityChoice>(`/api/integrations/${enc(id)}/entities`, choice),
     mcp: {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
+      catalog: () => http.get<McpCatalogEntry[]>('/api/integrations/mcp/catalog'),
+      addCatalog: (id: string) => http.post<McpServer>(`/api/integrations/mcp/catalog/${enc(id)}`),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
       remove: (name: string, forget = false) =>
         http.delete<OkResponse & Forgotten>(`/api/integrations/mcp/${enc(name)}`, forget ? { query: { forget: true } } : undefined),

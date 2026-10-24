@@ -70,6 +70,19 @@ async def list_mcp(request: Request):
     return _mgr(request).mcp.list()
 
 
+@router.get("/mcp/catalog")
+async def list_mcp_catalog(request: Request):
+    return _mgr(request).mcp.catalog()
+
+
+@router.post("/mcp/catalog/{catalog_id}")
+async def add_mcp_catalog(request: Request, catalog_id: str):
+    try:
+        return await _mgr(request).mcp.add_catalog(catalog_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.post("/mcp")
 async def add_mcp(request: Request, body: MCPServerBody):
     try:
