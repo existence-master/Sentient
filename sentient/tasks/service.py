@@ -47,6 +47,7 @@ from typing import Any
 from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
 from sentient.agent.prompt import mark_outside
+from sentient.app_names import framed_app_name
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.memory import scopes as memory_scopes
@@ -1812,9 +1813,10 @@ class TaskService(Service):
         message = f"I've created a new plan for you: '{short}'"
         if mcp_tasks.is_mcp_task(task):
             # the note names the app that asked for the task, framed as a name like the
-            # approval notes do: the name is the app's own text, cleaned where it came in
+            # approval notes do: the name is the app's own text, cleaned where it came in,
+            # and, the note being rendered as Markdown, escaped so it cannot form a link
             who = (task.get("original_context") or {}).get("app")
-            framed = f'an app called "{who}"' if who and who != "an MCP app" else "an MCP app"
+            framed = framed_app_name(who, capital=False)
             message = f"I've created a new plan for {framed}: '{short}'"
         await self._notify(task, message, "Plan ready for approval", "approval_needed")
 

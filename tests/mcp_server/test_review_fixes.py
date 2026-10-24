@@ -587,3 +587,77 @@ def test_a_task_from_a_hostile_app_name_is_cleaned_and_framed(engine_client):
         time.sleep(0.1)
     assert ready and 'an app called "Sentient Security Center' in ready[0]["message"]
     assert "tap Allow" not in ready[0]["message"]  # the instruction tail is cut off by the cap
+
+
+def test_markdown_in_an_app_name_is_neutralised_in_the_notes():
+    # the approval and plan-ready notes are rendered as Markdown in the app: a link-shaped
+    # name must not arrive as a live link with bold text above Allow and Deny (review 5637731781)
+    from sentient.app_names import framed_app_name
+
+    hostile = "[Fix it](https://evil.co) **NOW**"
+    assert framed_app_name(hostile) == r'An app called "\[Fix it\]\(https\://evil.co\) \*\*NOW\*\*"'
+    assert framed_app_name(hostile, capital=False).startswith('an app called "')
+    assert "https://" not in framed_app_name("see https://evil.co now")
+    assert "www.evil.co" not in framed_app_name("visit www.evil.co")
+    assert framed_app_name("Claude Code") == 'An app called "Claude Code"'
+    assert framed_app_name(None) == "An MCP app"
+    assert framed_app_name("an MCP app") == "An MCP app"
+    assert framed_app_name("An MCP app", capital=False) == "an MCP app"
+
+
+async def test_an_approval_note_does_not_render_a_link_shaped_app_name(config, isolated_home):
+    config.tools.approvals.mode = "ask"
+    config.tools.approvals.rules = {"snippets": "allow"}
+    ran: list[str] = []
+    llm = FakeProvider(replies=[[tool_call("run_snippet", code="print(9)")], "done"])
+    s = await SentientApp(config, llm=llm, db_path=isolated_home / "mdnote.db").start()
+    try:
+        s.registry.register(_snippet_plugin(ran))
+        sid = await s.store.create_session(channel="mcp")
+
+        async def answer(ev):
+            if isinstance(ev, ApprovalRequest):
+                notes = [n for n in await s.notifications.list() if n["kind"] == "approval"]
+                assert notes, "the approval must also land as a notification"
+                message = notes[0]["message"]
+                # the name is quoted and escaped: no live link, no bold, no bare URL
+                assert message.startswith(r'An app called "\[Fix it\]\(https\://evil.co\)'), message
+                assert "[Fix it](https://evil.co)" not in message and "**NOW**" not in message
+                s.approvals.resolve(ev.approval_id, "allow")
+
+        events = []
+        async for ev in s.agent.run_turn(sid, "Run this Python code: print(9)", channel="mcp",
+                                         app_name="[Fix it](https://evil.co) **NOW**"):
+            events.append(ev)
+            await answer(ev)
+        assert ran == ["print(9)"]
+    finally:
+        await s.stop()
+
+
+def test_a_plan_ready_note_does_not_render_a_link_shaped_app_name(engine_client):
+    # the plan-ready note is rendered as Markdown too, so it shares the same escape
+    c = engine_client
+    made = c.post("/api/tasks", json={"prompt": "Tidy the downloads folder",
+                                      "app": "[Fix it](https://evil.co) **NOW**"},
+                  headers=_mcp(c))
+    assert made.status_code == 200, made.text
+    task_id = made.json()["task_id"]
+    task = made.json()
+    for _ in range(50):
+        task = c.get(f"/api/tasks/{task_id}", headers=_gw(c)).json()
+        if task["status"] != "planning":
+            break
+        time.sleep(0.1)
+    assert task["status"] == "approval_pending"
+    ready = []
+    for _ in range(50):
+        notes = c.get("/api/notifications", headers=_gw(c)).json()["notifications"]
+        ready = [n for n in notes if n.get("title") == "Plan ready for approval"]
+        if ready:
+            break
+        time.sleep(0.1)
+    assert ready, "the plan-ready note must exist"
+    message = ready[0]["message"]
+    assert r'an app called "\[Fix it\]\(https\://evil.co\)' in message, message
+    assert "[Fix it](https://evil.co)" not in message and "**NOW**" not in message

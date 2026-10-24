@@ -58,7 +58,7 @@ from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
-from sentient.app_names import clean_app_name
+from sentient.app_names import clean_app_name, framed_app_name
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
 from sentient.integrations.base import IntegrationPlugin
@@ -1373,9 +1373,10 @@ class Agent:
             target = wording.get("target")
             # the note names the app that is asking (the turn's mark on this channel), framed
             # as a name rather than a sentence the app could speak as Sentient: the name is
-            # the client's own handshake text, cleaned where the turn was marked
+            # the client's own handshake text, cleaned where the turn was marked, and, the
+            # note being rendered as Markdown, escaped so it cannot form a link or emphasis
             who = ctx.untrusted
-            framed = f'An app called "{who}"' if who and who != "an MCP app" else "An MCP app"
+            framed = framed_app_name(who)
             message = f"{framed} wants to: {label}: {target}" if target else f"{framed} wants to: {label}"
             try:
                 note = await self.app.notify(
