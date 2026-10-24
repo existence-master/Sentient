@@ -182,6 +182,15 @@ class SentientApp:
             self.config = config
         moved = self._claude_code_switched()
         save_config(self.config)
+        if self.config.integrations.mcp_server_enabled:
+            # turning the MCP server on issues its own narrow token in the keychain (#443, ADR 0034);
+            # a keychain problem must never break saving settings, the status endpoint reports it
+            try:
+                from sentient.gateway import mcp_token
+
+                mcp_token.ensure_token()
+            except Exception:
+                pass
         if hasattr(self.llm, "config"):
             self.llm.config = self.config  # type: ignore[attr-defined]
         if self.agent is not None:
@@ -352,6 +361,15 @@ class SentientApp:
         await self._load_stop_state()  # before services start: a stopped Sentient starts paused
         assert self.approvals.grants is not None
         await self.approvals.grants.load()
+        if self.config.integrations.mcp_server_enabled:
+            # the MCP key is issued when the feature is turned on in Settings; a config edited by
+            # hand reaches start with the feature on and no key, so issue it here too (#443)
+            try:
+                from sentient.gateway import mcp_token
+
+                mcp_token.ensure_token()
+            except Exception:
+                log.exception("could not issue the MCP key")
         self.workspace.ensure_defaults(
             self.config.assistant.name, self.config.assistant.user_name, self.config.assistant.timezone
         )

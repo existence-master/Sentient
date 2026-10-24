@@ -1608,6 +1608,71 @@ an email whose subject is a booking or order (with no sign-in cue) keeps all its
 phone numbers and ordinary links are left alone. The proactive pipeline and follow-ups
 run the same masking again before their prompts. The original stays in the user's mail app (`url` for Gmail).
 
+### Sentient as an MCP server: `sentient mcp` (#443, ADR 0034)
+
+The other direction: other AI apps on this computer (Claude Code, Cursor, any MCP client) can use Sentient
+itself. The command `sentient mcp` (package `sentient/mcp_server/`) runs an MCP server over stdio and is a
+thin client of this same REST API. It finds the engine through the discovery file the engine writes at
+startup (`engine-discovery.json` in the Sentient home: the loopback address it bound, never a secret; the
+desktop picks a fresh port every launch), refuses a non-loopback engine address (a name like `localhost`
+is pinned to the literal `127.0.0.1`, so the address the server talks to is the address the engine
+proves), and holds no state. An HTTP
+transport is deliberately not offered; it may return later, protected by the same MCP-only token.
+
+- **Its own token.** Turning the feature on issues an MCP-only token, stored in the keychain
+  (`sentient.secrets`, name `mcp-server-token`) and never written to a config file or returned by any
+  endpoint. `sentient mcp` reads it from the keychain itself, so a client's settings hold only the
+  command: no address to keep current, no secret to paste. The token opens only the endpoints the tools
+  use, as (method, route) pairs: `GET|POST /api/memories`, `GET /api/memories/{id}`, `GET|POST /api/tasks`,
+  `GET /api/tasks/{id}`, `POST /api/notifications`, `POST /api/chat` and `GET /api/mcp/status`. On any
+  other route (config, approvals, sessions, deletes, the memory review inbox) it is refused with 403, and
+  handlers see the caller as `request.state.caller == "mcp"` rather than one of the user's own surfaces.
+  While the feature is off the token opens nothing at all except `GET /api/mcp/status`, so turning the
+  switch off stops direct API callers too, not just the server process. The gateway token still passes
+  everywhere; `sentient mcp` never reads or writes it.
+- **Endpoints of its own.** `GET /api/mcp/status` (either token) → `{enabled, memories_skip_review,
+  token_issued}`: what an MCP app may do right now, without reading the config. `GET /api/mcp/proof?nonce=...`
+  (no credentials) → `{proof}`: the HMAC-SHA256 of `nonce:host:port` under the MCP token, the address
+  being the one the request arrived on, how `sentient mcp` verifies that a discovered address is
+  really the engine before it sends the token there. Keying the proof to the address stops a relay
+  (a squatter forwarding the challenge gets a proof keyed to the real engine's address, which fails
+  the check; the host matters because a squatter can share the port on the other loopback address,
+  ::1 against 127.0.0.1), and the server re-proves before every call, following the discovery file
+  when the engine has moved; 404 when no token has been issued. `POST /api/mcp/token/rotate`
+  (gateway token only) → `{rotated: true}`: replaces the MCP-only token in the keychain; apps holding the
+  old one stop working at once and pick the new one up when they restart. It is also issued from
+  `SentientApp.save_config` whenever `integrations.mcp_server_enabled` is saved on and none exists.
+- **Off by default.** The process refuses to start while the feature is off, with a sentence telling the
+  user where the switch is (the Integrations section, `#/integrations?section=sentient-mcp`), and every
+  tool call reads `GET /api/mcp/status` again, so turning it off stops a running server at its next call.
+  The Integrations screen carries the switch, the full path of the bundled engine for the snippets
+  (`"<engine>" mcp`; a development checkout uses `"<python>" -m sentient mcp`), and the Replace key button.
+- **Tools (a fixed whitelist).** `memory_search` (`GET /api/memories?q=`), `memory_get` (`GET /api/memories/{id}`),
+  `memory_add` (`POST /api/memories` with `source: "mcp"`), `task_create` (`POST /api/tasks`), `task_list`
+  (`GET /api/tasks`), `task_status` (`GET /api/tasks/{id}`), `notify_me` (`POST /api/notifications`, below) and
+  `ask_sentient` (one turn of `POST /api/chat`). There is no tool that sends, deletes or runs anything.
+- **Writes land where the user sees them, marked as outside content.** For an MCP caller the engine
+  itself holds a `memory_add` memory in Review (section 7), under the connected app's name and with its
+  source recorded as `mcp`, unless the user set `integrations.mcp_server_memories_skip_review`; the
+  request body cannot skip the wait or choose the source. `task_create` posts
+  `{prompt, app}`; for an MCP caller the route creates the task in the app's name with
+  `original_context.source = "mcp"`, never refined, and (like a task by email, section 4) its plan always
+  waits for approval, even when `tasks.require_plan_approval` is off, and every run is marked with the app's
+  name so anything that sends asks first. `POST /api/chat` from an MCP caller is forced onto
+  `channel: "mcp"` whatever the body says: the turn is marked outside content from the start, its text
+  never counts as the user's words (memories it states wait in Review by default; sends, code runs and deletes always
+  ask; its text never proposes standing rules), an approval it raises also lands as a `kind: "approval"`
+  notification (section 6) the user can answer in the window or on their phone. The app's name is the
+  client's own handshake text, so wherever it is shown (the turn's mark, the approval and plan-ready
+  notes, the Review list) it is cleaned first (control characters stripped, capped at 40 characters)
+  and framed as a name (`An app called "..."`), never left to read as a sentence from Sentient. Where a
+  note is rendered as Markdown (approval, plan-ready), the name is additionally escaped, so it cannot
+  form a link, emphasis or an autolinked URL above the Allow and Deny buttons. The body's `model`,
+  `attachments` and `incognito` are ignored, so the app cannot pull files into the turn, pick a model or
+  flip the user's incognito switch. The MCP client is outside content and can never answer an approval.
+- `mcp` is also in the frozen engine's command list (`packaging/engine_entry.py`), which `tests/test_packaging.py`
+  keeps equal to the CLI's commands.
+
 ---
 
 ## 6. Notifications & proactivity
@@ -1623,6 +1688,18 @@ Proactive suggestion payload:
 ```
 `source_event` also carries `item_id` and `url` (when the item has one). `source` is the watched app (`gmail`, `gcalendar`,
 `email_imap`), `webhook` (then `event_type` is the hook id and `hook_name` is set) or `heartbeat`.
+
+Approval payload (kind `approval`): an approval raised by a chat turn no chat surface could show (an MCP
+app's turn, #443), posted by the agent loop alongside the stream event so the user can answer it here.
+```json
+{"approval_id": "...", "name": "<tool name>", "risk": "send|exec|write|read", "arguments": {},
+ "session_id": "...", "channel": "mcp", "reason": "...", "untrusted": "an MCP app",
+ "status": "<the decision, once answered>"}
+```
+The notification center renders Allow/Deny from it and answers through `POST /api/approvals` with the same
+`approval_id` (the broker is one for the whole engine, so any surface's answer settles the waiting turn);
+messaging channels deliver it with Allow/Deny buttons of their own. Once answered, the loop sets
+`payload.status` to the decision and marks the notification read (`notification.updated`).
 Notification `title` names what the suggestion is about: `"Gmail: Jane Doe: Meeting Tuesday?"`, `"Webhook: Deploy alerts"`,
 `"Suggestion from Check-in"`; `message` is the suggestion description.
 Suggestions produced during `proactivity.quiet_hours` are held and delivered as notifications when quiet hours end (dropped after 24 h).
@@ -1672,6 +1749,7 @@ dropped and tried again at the next check (`followups.copied_from_them`). A last
 Never rule on that tool or its app (`tools.approvals.rules`) still applies: the run fails with the rule's message and
 nothing is sent.
 - `GET /api/notifications?limit=&unread_only=` → `{notifications: [Notification], unread}`
+- `POST /api/notifications` `{message, title?, source?, app?}` → `Notification`: a plain `info` note in Sentient, for the MCP server's `notify_me` tool below. Always kind `info` with `payload.source` when given; a caller's `kind` is ignored, so an outside caller cannot dress a note up as an approval, a task result or an error. For an MCP caller the title gets a fixed attribution the caller cannot replace (`"From MCP app (Claude Code): ..."`, the name from `app`, or "An MCP app" when it gives none), and the name is kept as `payload.app`, so a note can never pass itself off as one from Sentient. 400 without a `message`.
 - `POST /api/notifications/{id}/read`, `POST /api/notifications/read-all`
 - `DELETE /api/notifications/{id}`, `DELETE /api/notifications`
 - `POST /api/proactivity/suggestions/{notification_id}` `{action: "approve"|"dismiss"}` → `{ok, task_id?}` (approve creates a task from `action_details` with `original_context.source = "proactive"`; for a follow-up it creates the already approved send task described above; both update the learned per-type threshold, mark the notification read and set `payload.status`/`payload.task_id`). Errors: 400 bad action, 404 not a suggestion, 409 already actioned or expired, 503 tasks unavailable. v2 spellings `approved`/`dismissed` are accepted.
@@ -1789,7 +1867,7 @@ Relationships & Social Life, Financial, Goals & Challenges, Miscellaneous.
   `source` also finds memories that source said again), expired short-term facts and memories waiting for review excluded (`q` = hybrid search when embeddings are available: vector neighbours plus FTS5 keyword matches, ordered by `score` = `similarity` + `memory.keyword_weight` × share of query words present, each result carrying `similarity` and `score`; falls back to a keyword match)
 - `GET /api/memories/topics` → `[{name, description, count}]`
 - `GET /api/memories/graph` → `{nodes: [{id, label, title, content, topics, memory_type, source, created_at}], links: [{source, target, value}]}` (`label` = content truncated to 25 chars, `title` = full content, as in v2; a link means cosine similarity ≥ `memory.graph_link_similarity`, `value` is that similarity)
-- `POST /api/memories` `{content, source?, scope?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending", scope?}` (`scope` defaults to `personal`; runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
+- `POST /api/memories` `{content, source?, scope?, hold_for_review?, review_from?}` → `{action: "ADD"|"UPDATE"|"DELETE"|"SKIP", id, content, status?: "pending", scope?}` (`scope` defaults to `personal`; runs the CUD decision, so a duplicate returns `SKIP` with the existing id; `source` defaults to `manual`. `hold_for_review: true` saves the fact as pending instead, with a review note from `review_from` (below, "Memories waiting for review"); for a caller using the MCP token the engine applies the same hold itself whenever the user has not turned the wait off, whatever the body says, and records the source as `mcp`. The decision also sees up to 3 facts about the same person and attribute found by keyword (where they live, job, relationship, diet, health, ownership, routine), and a new current residence ("moved to Bengaluru") always UPDATEs the old one ("lives in Pune") rather than adding a second home; past-tense facts are left alone. Facts that name someone else are never offered to the model, so it can't update, skip or delete them, and the
 near-duplicate shortcut needs the same person too; names in Devanagari (Hindi) count, and match across scripts
 ("माया" is "Maya", "प्रिया" is not "Riya") (#339). Someone the person knows is not the person: "Maya Rao's sister Priya", "my friend Arjun", "her colleague" and "माया राव की बहन" are about that relative or friend, so a fact about them is never offered as an update of Maya's own facts, and the updates decided in code (a correction, a new home) need both facts to clearly name the same person ("She moved to Delhi" names nobody and is left to the model) (#463). An UPDATE only replaces a fact about the same person and the same action on the same thing ("doesn't want files written" or "doesn't want emails deleted" never replaces "doesn't want files deleted"; it is added instead), and a new fact that an existing one already says in full, with no new name, place or number ("sister lives in a city" next to "sister Meera lives in Lisbon"), returns `SKIP` with that fact. A correction always UPDATEs, decided in code without the model and never skipped as a
 near-duplicate (#364): a new fact about the same person and action that says the same thing about it with a changed
