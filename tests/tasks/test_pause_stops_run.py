@@ -441,5 +441,5 @@ async def test_paused_check_early_exit_error_does_not_notify(make_app):
     task = await app.tasks.get(task_id)
     assert not task["enabled"]
     assert "Endpoint 500 error" in task["script"]["last_error"]
-    notes = [n for n in await app.notifications.list() if n.get("kind") == "script_failed"]
+    notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("event") == "script_failed"]
     assert notes == []
