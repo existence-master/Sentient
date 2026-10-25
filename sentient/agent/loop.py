@@ -386,7 +386,10 @@ def action_call_history(rows: list[dict], registry) -> list[dict]:
             # the check semantics: no problem found means it worked (#165); a terse stored result
             # errs toward never correcting a true reply
             ok=not declined and not err and not noted_failure and outcomes.result_problem(res) is None,
-            uncertain=not declined and bool(err),
+            # a stored error is definite evidence the call failed (the tool returned it, e.g. a server
+            # refusal), so it reads "couldn't send", not "couldn't confirm": only a tool that did not
+            # finish is uncertain, since its effect may still have happened (#495 review)
+            uncertain=not declined and bool(err) and err.startswith("tool did not finish"),
         )
         out.append(call)
     return out

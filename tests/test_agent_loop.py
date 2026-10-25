@@ -558,6 +558,64 @@ def test_action_correction_treats_incomplete_history_as_unsure():
     ) == "I didn't send the email, so nothing changed."
 
 
+def test_action_correction_round_two_review_cases():
+    """Round-2 review cases (#495): chat replies, dotted words, event words, same-turn kinds, curly claims."""
+    # 1. chat replies are not message sends: "text"/"chat"/"post" alone need a recipient or an app name
+    assert outcomes.unmade_action_note("I only sent those two exact text replies you asked for.", []) == ""
+    assert outcomes.unmade_action_note("I sent the message to Alice.", []) == \
+        "I didn't send the message, so nothing changed."
+    assert outcomes.unmade_action_note("I sent the message to Alice on Telegram.", []) == \
+        "I didn't send the message, so nothing changed."
+    # 2. dotted words are not file names without a known extension, "file", or "saved to"
+    assert outcomes.unmade_action_note("I saved your 7 a.m. wake-up time.", []) == ""
+    assert outcomes.unmade_action_note("I saved your example.com link.", []) == ""
+    assert outcomes.unmade_action_note("I saved plan.md.", []) == \
+        "I didn't write the file, so nothing changed."
+    # 3. event words do not cover a task reminder or a browser booking with a person
+    assert outcomes.unmade_action_note("I've scheduled a task to remind you about the meeting.", []) == ""
+    assert outcomes.unmade_action_note("I've booked your appointment with Dr. Rao.", []) == ""
+    assert outcomes.unmade_action_note("I booked the meeting.", []) == \
+        "I didn't create the event, so nothing changed."
+    # 4. this turn tried it means tried it for what the sentence names: a declined file write this turn
+    # does not make "I've saved your preference" (after a real memory save) get corrected
+    assert outcomes.unmade_action_note(
+        "I've saved your preference.",
+        [_action_call("file", declined=True, ok=False, targets=["notes.md"])],
+    ) == ""
+    # 5. a curly-apostrophe claim is seen as a claim (#500's helper is now in outcomes)
+    assert outcomes.unmade_action_note("I\u2019ve sent the email.", []) == \
+        "I didn't send the email, so nothing changed."
+    assert outcomes.unmade_action_note(
+        "I\u2019ve sent the email.", [], [_action_call("email", targets=["a@x.com"])]
+    ) == ""
+
+
+def test_action_call_history_server_refusal_is_definite_not_uncertain():
+    """A definite server refusal from an earlier turn reads "couldn't send", not "couldn't confirm" (#495 review)."""
+    from types import SimpleNamespace
+
+    from sentient.agent.loop import action_call_history
+
+    class FakeRegistry:
+        def get(self, name):
+            tools = {"gmail_send": SimpleNamespace(outcome="email", name="gmail_send")}
+            return tools.get(name)
+
+    history = action_call_history(
+        [
+            {"role": "assistant", "tool_calls": [tool_call("gmail_send", to="a@x.com")]},
+            {"role": "tool", "tool_call_id": "call_gmail_send",
+             "content": '{"error": "server refused"}'},
+        ],
+        FakeRegistry(),
+    )
+    assert history == [
+        {"kind": "email", "targets": ["a@x.com"], "declined": False, "ok": False, "uncertain": False}
+    ]
+    assert outcomes.unmade_action_note("I sent the email.", [], history) == \
+        "I couldn't send the email, so nothing changed."
+
+
 async def test_resumed_approved_send_is_not_corrected(config, isolated_home):
     """A resumed task's approved send is the resumed segment's history: no correction (#492 review).
 

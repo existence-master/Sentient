@@ -130,12 +130,44 @@ _ACTION_NAMERS: dict[str, re.Pattern] = {
         re.I,
     ),
 }
+# a message claim names the action only with a recipient or an app name: "text", "chat" and "post" alone also
+# describe chat replies, which are not message-tool calls (#495 review)
+_MESSAGE_APPS = re.compile(r"\b(telegram|slack|discord|whatsapp|signal|teams|imessage|messenger)\b", re.I)
+_MESSAGE_RECIPIENT = re.compile(r"\bto\s+(?:@\S+|[A-Z][\w.-]+(?:\s+[A-Z][\w.-]+)?|the\s+\w+)")
+# a file name names the action only with a known extension (a lowercase stem, so "Node.js" does not count), or
+# with the word "file" / "saved to": dotted words like "a.m.", "e.g.", "example.com" and "3.5" do not (#495 review)
+_FILE_EXTENSIONS = (
+    r"md|txt|json|yaml|yml|toml|csv|pdf|doc|docx|xls|xlsx|ppt|pptx|py|js|ts|jsx|tsx|html|htm|css|sh|bash|"
+    r"go|rs|java|c|cpp|h|hpp|png|jpg|jpeg|gif|svg|mp3|mp4|zip|log|ini|cfg|sql|rb|php|swift|kt|lock"
+)
+_FILE_NAME = re.compile(rf"\b[a-z0-9][a-zA-Z0-9_~.-]*\.(?:{_FILE_EXTENSIONS})\b")
+_FILE_WORD = re.compile(r"\bfile\b", re.I)
+_SAVED_TO = re.compile(r"\b(?:saved|wrote|written|stored)\s+to\b", re.I)
 
 
 def _names_action(kind: str, claim_text: str) -> bool:
     """True when the sentence names the action for ``kind``: an email or message noun, a file name, a calendar
     word, or a device. A never-made claim is only corrected when it does, or when this turn actually tried that
     action: otherwise the verb alone may describe an untracked action ("I saved that..." after memory_remember)."""
+    if kind == "message":
+        # "I only sent those two exact text replies" is a chat reply, not a message-tool call: it needs a
+        # recipient ("to Alice", "@maya") or an app name ("on Telegram") to count as naming a message action.
+        return bool(
+            _MESSAGE_APPS.search(claim_text)
+            or _MESSAGE_RECIPIENT.search(claim_text)
+            or re.search(r"[@#]\w+", claim_text)
+        )
+    if kind == "file":
+        return bool(
+            _FILE_WORD.search(claim_text) or _SAVED_TO.search(claim_text) or _FILE_NAME.search(claim_text)
+        )
+    if kind == "event":
+        # "meeting"/"appointment" alone also describe a task reminder and a browser booking, neither of which
+        # is a calendar event: a task/reminder context, or a booked appointment with a person, does not name one.
+        if re.search(r"\btask\b|\bremind\w*\b", claim_text, re.I):
+            return False
+        if re.search(r"\bbook\w*\b[^.!?]*\bappointment\b[^.!?]*\bwith\b", claim_text, re.I):
+            return False
     return bool(_ACTION_NAMERS[kind].search(claim_text))
 
 
@@ -604,17 +636,37 @@ def _matches_action_target(claim: str, call: dict) -> bool:
     )
 
 
+def _turn_names(kind: str, claim_text: str, target: str, turn_calls: list[dict]) -> bool:
+    """True when this turn actually tried ``kind`` for what the sentence names, not just the kind: a declined
+    file write this turn must not make "I've saved your preference" (after a real memory save) get corrected
+    (#495 review). A targetless claim counts, a matching target counts, and for email/message a person-like
+    target counts (a name may map to an address the record holds); anything else does not."""
+    same = [call for call in turn_calls or [] if call.get("kind") == kind]
+    if not same:
+        return False
+    if not target:
+        return True
+    if any(_matches_action_target(target, call) for call in same):
+        return True
+    return bool(
+        kind in {"email", "message"}
+        and re.search(
+            r"(?:^|[\s,])(?:@\w+|[A-Z][\w.-]+(?:\s+[A-Z][\w.-]+)?)(?:[\s,.]|$)", target
+        )
+    )
+
+
 def _action_note(
     kind: str,
     target: str,
     calls: list[dict],
     claim_text: str,
-    turn_kinds: set[str],
+    turn_calls: list[dict],
     history_complete: bool,
 ) -> str:
     """The correction for an action claim after selecting evidence for its kind and named target.
 
-    ``turn_kinds`` are the kinds this turn actually tried; ``history_complete`` is False when the loaded
+    ``turn_calls`` are the action calls this turn actually tried; ``history_complete`` is False when the loaded
     history doesn't cover the whole conversation, so a missing record is "unsure", never "never made"."""
     same = [call for call in calls if call.get("kind") == kind]
     has_success = any(call.get("ok") for call in same)
@@ -634,9 +686,11 @@ def _action_note(
             return ""
         # Only correct when the kind is unambiguous, never on a shared verb ("sent" is email and message) that
         # could contradict a true reply about the other kind; and only when the sentence names the action or
-        # this turn actually tried it: a bare verb may describe an untracked action ("I saved that..." after
-        # memory_remember, "I've scheduled a task...").
-        if _owns_claim(kind, claim_text) and (_names_action(kind, claim_text) or kind in turn_kinds):
+        # this turn actually tried it for what it names: a bare verb may describe an untracked action
+        # ("I saved that..." after memory_remember, "I've scheduled a task...").
+        if _owns_claim(kind, claim_text) and (
+            _names_action(kind, claim_text) or _turn_names(kind, claim_text, target, turn_calls)
+        ):
             if any(call.get("uncertain") for call in same) or not history_complete:
                 # An uncertain call may have done it, and calls outside the loaded history window are invisible
                 # here: neither is proof it never happened.
@@ -644,7 +698,9 @@ def _action_note(
             return f"I didn't {doing}, so nothing changed."
         return ""
     if not matches:
-        if _owns_claim(kind, claim_text) and (_names_action(kind, claim_text) or kind in turn_kinds):
+        if _owns_claim(kind, claim_text) and (
+            _names_action(kind, claim_text) or _turn_names(kind, claim_text, target, turn_calls)
+        ):
             if not history_complete:
                 return f"I couldn't confirm whether I {did}."
             return f"I didn't {doing}, so nothing changed."
@@ -678,17 +734,18 @@ def unmade_action_note(
     they speak and post this same final text.
     """
     calls = [*(history or []), *(action_calls or [])]
-    turn_kinds = {call.get("kind") for call in action_calls or []}
     for kind in _CLAIM_VERBS:
-        if note := _unmade_action_claim_note(text, kind, calls, turn_kinds, history_complete):
+        if note := _unmade_action_claim_note(text, kind, calls, action_calls or [], history_complete):
             return note
     return ""
 
 
 def _unmade_action_claim_note(
-    text: str, kind: str, calls: list[dict], turn_kinds: set[str], history_complete: bool
+    text: str, kind: str, calls: list[dict], turn_calls: list[dict], history_complete: bool
 ) -> str:
-    claims = re.split(r"(?<=[.!?])\s+", text or "")
+    # fold curly apostrophes first (#500's helper): a claim with a curly apostrophe must read as a claim,
+    # not slip past the subject pattern that only knows the straight apostrophe
+    claims = re.split(r"(?<=[.!?])\s+", _straight_apostrophes(text or ""))
     explicit = _ASSISTANT_ACTION_CLAIM[kind]
     for claim in claims:
         if _HYPOTHETICAL_ACTION_CLAIM[kind].search(claim):
@@ -707,7 +764,7 @@ def _unmade_action_claim_note(
             if re.search(r"\b(?:declined|denied)\b", part, re.I):
                 continue
             if note := _action_note(
-                kind, _claimed_action_target(part, kind), calls, part, turn_kinds, history_complete
+                kind, _claimed_action_target(part, kind), calls, part, turn_calls, history_complete
             ):
                 return note
         passive = (
@@ -720,7 +777,7 @@ def _unmade_action_claim_note(
         )
         if passive and (
             note := _action_note(
-                kind, _claimed_action_target(claim, kind), calls, claim, turn_kinds, history_complete
+                kind, _claimed_action_target(claim, kind), calls, claim, turn_calls, history_complete
             )
         ):
             return note
