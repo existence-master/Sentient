@@ -344,11 +344,13 @@ def test_seed_shortcuts_refuse_the_default_home_before_writing(tmp_path, command
     ["seed-tasks.py"],
     ["seed-integrations-notifications.py"],
     ["seed-automations-usermodel.py", "--reset"],
-], ids=["tasks", "integrations", "automations-reset"])
+    ["seed-memory-skills.py", "--reset"],
+    ["seed-chats-devices-channels.py", "--reset"],
+], ids=["tasks", "integrations", "automations-reset", "memory-skills-reset", "chats-reset"])
 async def test_a_seed_run_refuses_the_default_home_before_wiping_it(config, isolated_home, monkeypatch, tmp_path,
                                                                    command, keep_live):
-    """These runs used to delete ~/.sentient's tasks and notifications (or its whole database) before quiet()
-    refused the folder."""
+    """These runs used to delete ~/.sentient's tasks and notifications, its database or the whole folder before
+    quiet() refused it."""
     from sentient.config.loader import save_config
 
     user = tmp_path / "user"
@@ -363,6 +365,7 @@ async def test_a_seed_run_refuses_the_default_home_before_wiping_it(config, isol
         await app.notify("task", "Your passport renewal is due next week.", title="Renew passport")
     finally:
         await app.stop()
+    (default / ".seeded-demo").write_text("left by an earlier seed run\n", encoding="utf-8")  # lets --reset wipe
 
     done = _run_seed_script(*command, *(["--keep-live"] if keep_live else []), user=user)
     assert done.returncode != 0 and "default data folder" in done.stderr
