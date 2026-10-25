@@ -630,9 +630,10 @@ def main() -> None:
         ap.error("--home or SENTIENT_HOME is required")
     home = Path(args.home).expanduser().resolve()
     if args.theme_only:
-        if not args.keep_live:  # first, so the default data folder is refused before the theme is written
-            seed_safety.announce(seed_safety.quiet(home))
+        seed_safety.check_home(home)  # before the theme is written, also with --keep-live
         set_theme(home, args.theme)
+        if not args.keep_live:
+            seed_safety.announce(seed_safety.quiet(home))
         return
     if home.exists() and any(home.iterdir()):
         if not args.reset:
