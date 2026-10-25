@@ -85,17 +85,21 @@ async def test_a_task_by_email_still_never_reads_its_brief_as_the_users_words(ma
 
 def test_the_request_puts_the_objective_first_and_stays_short():
     steps = [{"tool": "web", "description": "Read the page " + "x" * 400}] * 12
+    confirmed = "**What the user confirmed for this task:**\n- The user expects: a short list\n\n"
     text = build_second_look_request(
         name="Studio events", description="Email me new studio events", original_prompt="Email me new studio events",
-        plan=steps, confirmed="**What the user confirmed for this task:**\n- The user expects: a short list\n\n",
+        plan=steps, confirmed=confirmed,
     )
-    assert text.startswith("My task: Studio events - Email me new studio events\nThe plan I approved:\n1. Read the page")
+    assert text.startswith("My task: Studio events - Email me new studio events\n- The user expects: a short list\n"
+                           "The plan I approved:\n1. Read the page")
     assert "In my words" not in text  # the same words as the description are not repeated
-    assert len(text) <= sl.MAX_REQUEST and "9. " not in text  # at most 8 steps, each cut short
-    short = build_second_look_request(
-        name="Digest", description="", plan=[], confirmed="**What the user confirmed for this task:**\n- The user "
-        "expects: a short list\n\n",
-    )
+    assert len(text) <= sl.MAX_REQUEST and "9. " not in text  # whole steps only, as many as fit, each cut short
+    assert text.splitlines()[-1].endswith("... (with web)")
+    # a long objective, long words and a long plan still keep what the user confirmed
+    long = build_second_look_request(name="N" * 600, description="", original_prompt="P" * 600, plan=steps,
+                                     confirmed=confirmed)
+    assert "\n- The user expects: a short list\n" in long and len(long) <= sl.MAX_REQUEST
+    short = build_second_look_request(name="Digest", description="", plan=[], confirmed=confirmed)
     assert short == "My task: Digest\n- The user expects: a short list"
 
 
