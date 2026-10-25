@@ -81,6 +81,21 @@ def test_subject_pronoun_stays_unclear_even_with_a_later_comma():
     assert fact_subjects("They moved to Austin, Texas.") == set()
 
 
+def test_subject_a_trailing_place_country_is_never_the_subject():
+    # itsskofficial's live-engine review on #338: a sentence ending "..., Country." isn't a leading clause
+    # either way, pronoun-led or not - only "India." follows the last comma, not a clause with its own verb.
+    # On the real engine this silently merged unrelated facts: each of these two pairs shares no subject.
+    assert fact_subjects("The office moved to Pune, India.") == set()
+    assert fact_subjects("Last week the dentist moved to Delhi, India.") == set()
+    assert fact_subjects("Yesterday the neighbours moved to Pune, India.") == set()
+    assert fact_subjects("Last year the bakery moved to Goa, India.") == set()
+    assert fact_subjects("Yesterday we went to Goa, India.") == set()
+    assert fact_subjects("Last week the team moved to Austin, Texas.") == set()
+    # still works when there's a real clause after the last comma, in or out of a "Place, Country" sentence
+    assert fact_subjects("Kabir lives in Delhi, India.") == {"kabir"}
+    assert fact_subjects("Kabir's sister Meera lives in Goa, India.") == {"kabir's sister", "meera"}
+
+
 async def test_embedding_attribute_families_matches_the_closest_prototype():
     # Distinct, non-orthogonal vectors per family (orthogonal ones would make every margin equally wide,
     # which isn't how a real embedding model's scores for related-but-wrong families behave).

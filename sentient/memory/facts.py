@@ -272,12 +272,16 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
     found = list(_NAME_WORD_RE.finditer(text))
     words = [m.group() for m in found]
     # Ordinary words before the last comma of a leading clause ("Last year in March, after the wedding, Riya
-    # ...") don't have to be recognised to be skipped - only words after it do, same as without a leading
-    # clause at all ("She moved to Delhi" still has no subject). A sentence that leads with a pronoun never
-    # gets this treatment: a comma later on is something else entirely ("She moved to Delhi, India.").
+    # moved to Mumbai.") don't have to be recognised to be skipped - only words after it do, same as without
+    # a leading clause at all ("She moved to Delhi" still has no subject). A real leading clause has a clause
+    # of its own after the last comma too ("Riya moved to Mumbai"), not just a trailing tag ("India." in "The
+    # office moved to Pune, India." - more than one word of ", Country." pattern never earns this either,
+    # pronoun-led or not: it isn't a leading clause, so treating it as one made the country the subject and,
+    # worse, a second "X moved to Y, Country." then read as a correction of the first, unrelated fact).
+    trailing_words = len(_NAME_WORD_RE.findall(text.rsplit(",", 1)[-1])) if "," in text else 0
     permissive_until = (
         sum(len(_NAME_WORD_RE.findall(c)) for c in text.split(",")[:-1])
-        if "," in text and (not words or words[0].lower() not in _SUBJECT_PRONOUNS)
+        if "," in text and trailing_words > 1 and (not words or words[0].lower() not in _SUBJECT_PRONOUNS)
         else 0
     )
 
