@@ -446,10 +446,16 @@ class ChatRules:
         running weighs ``tool``, else None."""
         if not session_id:
             return None
-        if any(tool.name in names for names in self._checking.get(session_id, ())):
+        if self.is_checking(tool, session_id):
             return "ask"
         pending = await self._session_pending(session_id)
         return "ask" if pending and (tool.name in pending or tool.plugin in pending) else None
+
+    def is_checking(self, tool: Tool, session_id: str | None) -> bool:
+        """True while a rule check that is still running weighs ``tool`` in this chat."""
+        if not session_id:
+            return False
+        return any(tool.name in names for names in self._checking.get(session_id, ()))
 
     async def pending_rule(self, tool: Tool, session_id: str | None) -> str | None:
         """The strictest still-undecided rule suggestion in this chat naming ``tool`` or its app (#130), or None.

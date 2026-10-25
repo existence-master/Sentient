@@ -1438,8 +1438,10 @@ class Agent:
         pending Ask suggestion stands between the call and running, and the call is an internal write — a helper
         writing inside Sentient's own things (#491: a guess only ever adds a question, and this run has nobody to
         ask); "pending" when the pending suggestion stops the call, with a message that names the rule card waiting
-        for the user's answer in the chat; "rule" when a rule the user set, a call that opens the home (ADR 0028)
-        or a routine set to ask first (#161) stops it."""
+        for the user's answer in the chat, when a rule check is still running for the tool (an older Ask proposal
+        must not let the call through while a matching Never check is still being decided), or when approvals mode
+        is "always" (the user asked to approve every write); "rule" when a rule the user set, a call that opens the
+        home (ADR 0028) or a routine set to ask first (#161) stops it."""
         if rule != ASK or chat_rule != ASK:
             return "rule"
         if self.approvals.rule(tool) in (ASK, IF_ASKED, HAND_OFF):
@@ -1450,10 +1452,17 @@ class Agent:
         if await opens_home(tool, tc.arguments, ctx, plan.risk):
             return "rule"
         chat_rules = getattr(self.app, "chat_rules", None) if self.app is not None else None
+        if chat_rules is not None and chat_rules.is_checking(tool, ctx.session_id):
+            return "pending"  # a running check may still become Never: never let an older Ask proposal through it
         pending = await chat_rules.pending_rule(tool, ctx.session_id) if chat_rules is not None else None
         if pending == NEVER:
             return "pending"  # a pending Never card stops helpers, exactly as main does
-        if pending == ASK and tool.internal and Risk(plan.risk) == Risk.write:
+        if (
+            pending == ASK
+            and tool.internal
+            and Risk(plan.risk) == Risk.write
+            and self.approvals.config.mode != "always"
+        ):
             return "go"  # #491: a pending Ask card lets a helper write inside Sentient's own things
         return "pending"
 
