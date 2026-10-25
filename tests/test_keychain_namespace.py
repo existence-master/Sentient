@@ -3,6 +3,7 @@ gets its own service, and SENTIENT_KEYCHAIN_NAMESPACE overrides it. Uses a fake 
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -309,3 +310,23 @@ async def test_seed_shortcuts_quiet_the_home_unless_kept_live(config, isolated_h
     live = (enabled, deliver, load_config().channels.enabled)
     assert live == ((True, True, True) if keep_live else (False, False, False))
     assert ("quiet demo home:" in done.stdout) is not keep_live
+
+
+@pytest.mark.parametrize("command", [
+    ["seed-memory-skills.py", "--theme", "light", "--theme-only"],
+    ["seed-tasks.py", "--config-only"],
+], ids=["theme-only", "config-only"])
+def test_seed_shortcuts_refuse_the_default_home_before_writing(tmp_path, command):
+    """Pointed at ~/.sentient, a shortcut exits before it changes anything there. The user folder is a stand-in."""
+    user = tmp_path / "user"
+    default = user / ".sentient"
+    default.mkdir(parents=True)
+    (default / "config.yaml").write_text("ui:\n  theme: dark\n", encoding="utf-8")
+    env = {**os.environ, "HOME": str(user), "USERPROFILE": str(user), "SENTIENT_HOME": str(default)}
+
+    script = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / command[0]
+    done = subprocess.run([sys.executable, str(script), *command[1:]], capture_output=True, text=True, timeout=120,
+                          check=False, env=env)
+    assert done.returncode != 0 and "default data folder" in done.stderr
+    assert (default / "config.yaml").read_text(encoding="utf-8") == "ui:\n  theme: dark\n"
+    assert [p.name for p in default.iterdir()] == ["config.yaml"]

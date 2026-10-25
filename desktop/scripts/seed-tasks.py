@@ -747,6 +747,8 @@ async def seed(app: SentientApp) -> dict[str, str]:
 
 
 async def main() -> None:
+    if ARGS.config_only and not ARGS.keep_live:
+        seed_safety.check_home(paths.home())  # before configure() writes to the default data folder
     paths.ensure_layout()
     cfg = configure()
     if ARGS.config_only:
