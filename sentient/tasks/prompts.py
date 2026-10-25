@@ -495,6 +495,37 @@ def build_executor_prompt(
     )
 
 
+def _one_line(text: Any, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def build_second_look_request(
+    *, name: str, description: str, original_prompt: str = "", plan: list[dict], confirmed: str = "",
+    limit: int = 1500,
+) -> str:
+    """What the user asked a task to do, in their voice and plain words, for the second look's model check (#455).
+
+    The rest of the executor's system prompt is Sentient's own instructions ("If a tool fails, analyze the error"),
+    so read as the user's words it gave reasons like "the user asked to analyze an error". The objective comes
+    first and the whole text stays under ``limit``, so it is never the part that gets cut."""
+    objective = name if not description or description == name else f"{name} - {description}"
+    lines = [f"My task: {_one_line(objective, 500)}"]
+    said = _one_line(original_prompt, 500)
+    if said and said.lower() not in objective.lower():  # the words the user typed, when the task was reworded
+        lines.append(f"In my words: {said}")
+    steps = [s for s in plan or [] if isinstance(s, dict) and str(s.get("description") or "").strip()]
+    if steps:
+        lines.append("The plan I approved:")
+        lines += [
+            f"{i}. {_one_line(s['description'], 200)}" + (f" (with {s['tool']})" if s.get("tool") else "")
+            for i, s in enumerate(steps[:8], 1)
+        ]
+    # what the user confirmed in a routine's checklist, without the executor prompt's heading
+    lines += [line.strip() for line in confirmed.splitlines() if line.strip().startswith("- ")]
+    return "\n".join(lines)[:limit]
+
+
 async def build_tool_catalog(app: SentientApp) -> dict[str, str]:
     """``{plugin_id: "Display name: when to use. Tools: a, b"}`` for usable plugins.
 
