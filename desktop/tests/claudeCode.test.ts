@@ -1,7 +1,7 @@
 // Claude through your own Claude Code (#246): the status asked for right after the switch changes.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { allowedForRole, claudeCodeState, claudeWayFor, fastStandIns, isClaudeCode, otherModel, refusingRoles, retryWhileSaving, SAVE_RETRIES, statusOnceSaved, SwitchNotSavedYet } from '../src/lib/claudeCode.ts'
+import { allowedForRole, claudeCodeState, claudeWayFor, fastStandIns, fixableRoles, isClaudeCode, otherModel, refusingRoles, retryWhileSaving, SAVE_RETRIES, statusOnceSaved, SwitchNotSavedYet } from '../src/lib/claudeCode.ts'
 
 test('a status from before the switch was saved is asked for again', async () => {
   const answers = [
@@ -71,6 +71,15 @@ test('the fast role keeps the refusal when the engine does not stand in', () => 
   assert.deepEqual(fastStandIns(roles, {}, [...ACCEPTING, 'fast']), []) // Claude Code does everything
   assert.deepEqual(fastStandIns(roles, {}, undefined), []) // the engine hasn't said yet
   assert.deepEqual(fastStandIns({ primary: '', fast: null }, {}, ACCEPTING), [])
+})
+
+test('the fix button changes only the roles still stuck, never embedding', () => {
+  const roles = { primary: 'claude-code/sonnet', fast: 'claude-code/haiku', planner: null, executor: 'ollama_chat/qwen3:8b', embedding: 'claude-code/opus' }
+  const refusing = refusingRoles(roles, ACCEPTING)
+  assert.deepEqual(fixableRoles(refusing).map((r) => r.role), ['fast', 'planner'])
+  // the fast role has a stand-in, so it is no longer stuck and keeps its model (#510)
+  assert.deepEqual(fixableRoles(refusing.filter((r) => r.role !== 'fast')).map((r) => r.role), ['planner'])
+  assert.deepEqual(fixableRoles(refusing.filter((r) => r.role === 'embedding')), []) // nothing to change: no button
 })
 
 test('Connect Claude starts on the choice that is set up now (#444)', () => {

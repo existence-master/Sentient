@@ -16,7 +16,7 @@ import { useConfigEditor } from '@/hooks/config'
 import { useClaudeCodeStatus, useHardware, useLocalModels, useSetRoles } from '@/hooks/models'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage } from '@/lib/api'
-import { claudeCodeState, fastStandIns, isClaudeCode, otherModel, refusingRoles } from '@/lib/claudeCode'
+import { claudeCodeState, fastStandIns, fixableRoles, isClaudeCode, otherModel, refusingRoles } from '@/lib/claudeCode'
 import { modelShortName, recommendFastLocal, recommendLocal, ROLE_META } from '@/lib/models'
 import type { RoleName } from '@/lib/types'
 
@@ -203,10 +203,11 @@ export function ClaudeCodeRoleWarning() {
   const roles = config.models.roles as unknown as Record<string, string | null>
   const refusing = refusingRoles(roles, status.data?.roles)
   if (!refusing.length) return null
-  const chat = refusing.filter((r) => r.role !== 'embedding')
   // the engine does the fast role's quick jobs on another model when it can (#474): say which, not that they fail
   const [standIn] = fastStandIns(roles, config.models.fallbacks, status.data?.roles)
   const stuck = standIn ? refusing.filter((r) => r.role !== 'fast') : refusing
+  // the button changes only what is still stuck: a fast role the stand-in covers keeps its model
+  const chat = fixableRoles(stuck)
   const rec = hardware.data?.recommendation
   const installed = (local.data?.ollama.models ?? []).map((m) => m.name)
   const recInstalled = rec && !rec.cloud_first && installed.some((n) => n === rec.name || n === `${rec.name}:latest`)

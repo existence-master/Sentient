@@ -65,6 +65,14 @@ export function refusingRoles(roles: Record<string, string | null | undefined>, 
   return out
 }
 
+/**
+ * The roles the "use another model" button changes: the ones still stuck, never the embedding role (it needs an
+ * embedding model, not a chat one). A fast role the engine covers with a stand-in is not stuck, so it keeps its setting.
+ */
+export function fixableRoles(stuck: readonly RefusingRole[]): RefusingRole[] {
+  return stuck.filter((r) => r.role !== 'embedding')
+}
+
 /** The first model that isn't Claude Code, for the work Claude Code refuses. '' when there is none. */
 export function otherModel(candidates: readonly (string | null | undefined)[]): string {
   return candidates.find((m): m is string => !!m && !isClaudeCode(m)) ?? ''
