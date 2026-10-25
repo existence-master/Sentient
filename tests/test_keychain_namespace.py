@@ -3,6 +3,8 @@ gets its own service, and SENTIENT_KEYCHAIN_NAMESPACE overrides it. Uses a fake 
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -272,3 +274,38 @@ async def test_seed_safety_keeps_planning_tasks_and_live_runs_from_calling_the_m
 def test_seed_safety_refuses_the_default_home(user_home):
     with pytest.raises(SystemExit):
         _seed_safety().quiet(user_home / ".sentient")
+
+
+@pytest.mark.parametrize("keep_live", [False, True], ids=["quiet", "keep-live"])
+@pytest.mark.parametrize("command", [
+    ["seed-memory-skills.py", "--theme", "light", "--theme-only"],
+    ["seed-tasks.py", "--config-only"],
+], ids=["theme-only", "config-only"])
+async def test_seed_shortcuts_quiet_the_home_unless_kept_live(config, isolated_home, user_home, command, keep_live):
+    """--theme-only and --config-only change an already seeded home, so they quiet it too (issue #426)."""
+    from sentient.config.loader import load_config, save_config
+
+    save_config(config)
+    app = await SentientApp(config, llm=FakeProvider(), enable_background=False).start()
+    try:
+        await app.tasks.repo.insert_task({"id": "demo-daily", "name": "Daily digest", "status": "active",
+                                          "enabled": True, "plan": [], "created_at": "2026-10-01T00:00:00Z",
+                                          "updated_at": "2026-10-01T00:00:00Z"})
+        await app.channels.store.add_chat("telegram", "100200301", "Maya Rao", deliver=True, session_id=None)
+    finally:
+        await app.stop()
+
+    script = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / command[0]
+    argv = [sys.executable, str(script), *command[1:], *(["--keep-live"] if keep_live else [])]
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+
+    app = await SentientApp(load_config(), llm=FakeProvider(), enable_background=False).start()
+    try:
+        enabled = (await app.tasks.repo.get_task("demo-daily"))["enabled"]
+        deliver = (await app.channels.store.chat("telegram", "100200301"))["deliver"]
+    finally:
+        await app.stop()
+    live = (enabled, deliver, load_config().channels.enabled)
+    assert live == ((True, True, True) if keep_live else (False, False, False))
+    assert ("quiet demo home:" in done.stdout) is not keep_live

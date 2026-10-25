@@ -631,6 +631,8 @@ def main() -> None:
     home = Path(args.home).expanduser().resolve()
     if args.theme_only:
         set_theme(home, args.theme)
+        if not args.keep_live:
+            seed_safety.announce(seed_safety.quiet(home))
         return
     if home.exists() and any(home.iterdir()):
         if not args.reset:
