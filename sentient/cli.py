@@ -143,7 +143,7 @@ def claude_code_tools(tools_file: str):
 
 @app.command()
 def backup(
-    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups)."),
+    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups; a data folder other than ~/.sentient uses its own backups folder)."),
 ):
     """Back up the data folder (database, config, workspace, skills, files) to one zip file."""
     from sentient.backup import archive
@@ -218,6 +218,30 @@ async def _doctor(models: bool = False) -> None:
         row("sqlite-vec", s.store.vec_available, "semantic memory " + ("enabled" if s.store.vec_available else "DISABLED"))
         row("tools", True, f"{len(s.registry.tools())} tools from {len(s.registry.plugins())} plugins")
         row("skills", True, f"{len(s.skills.list())} active, {len(s.skills.list_pending())} pending review")
+        try:
+            lan = s.nodes.lan_status()
+            if lan["enabled"]:
+                if not lan["running"] or lan["error"]:
+                    row(
+                        "lan listener",
+                        False,
+                        f"port {lan['port']}, not running"
+                        + (f": {lan['error']}" if lan["error"] else ""),
+                    )
+                elif lan["bind_all"]:
+                    row(
+                        "lan listener",
+                        None,
+                        f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all); any host on the network can reach it, pairing required",
+                    )
+                else:
+                    row(
+                        "lan listener",
+                        True,
+                        f"port {lan['port']}, this computer only (loopback)",
+                    )
+        except Exception as exc:
+            row("lan listener", False, str(exc))
         try:
             text = ""
             async for chunk in s.llm.stream("primary", [{"role": "user", "content": "Reply with the single word: ready"}]):

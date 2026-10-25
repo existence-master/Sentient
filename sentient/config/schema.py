@@ -13,7 +13,7 @@ class below and may add fields to it. Do not edit another package's section.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -1112,10 +1112,24 @@ class NodesConfig(BaseModel):
         False, description="Accept devices on your local network (encrypted, pairing code required)."
     )
     lan_port: int = Field(7778, ge=1024, le=65535, description="Port devices on your network connect to.")
+    lan_bind_all: bool = Field(
+        False,
+        description="Bind the device listener to every network interface (0.0.0.0) instead of this computer only "
+        "(loopback). Off by default: enable it only if devices cannot reach Sentient, and keep pairing on.",
+    )
     mdns_enabled: bool = Field(
         True,
         description="Announce Sentient on your network (mDNS) so glasses and phones find it without typing an address.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_lan_bind_all(cls, data: Any) -> Any:
+        # Configs saved before nodes.lan_bind_all existed bound the LAN listener to every
+        # interface, so an existing lan_enabled opt-in keeps working until the user chooses otherwise.
+        if isinstance(data, dict) and "lan_bind_all" not in data and data.get("lan_enabled") is True:
+            data = {**data, "lan_bind_all": True}
+        return data
     camera_requires_approval: bool = Field(
         True, description="Ask before the assistant takes a photo or captures a screen with one of your devices."
     )
@@ -1261,8 +1275,8 @@ class BackupsConfig(BaseModel):
     folder: str | None = Field(
         None,
         description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
-        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
-        "folder keeps them safe if this computer fails.",
+        "inside Sentient's data folder when Documents can't be used, and always for a data folder other than the "
+        "default ~/.sentient). A folder on another drive or a synced cloud folder keeps them safe if this computer fails.",
     )
     schedule: Literal["off", "daily", "weekly"] = Field(
         "off", description="Back up automatically every day or every week, while Sentient is running."

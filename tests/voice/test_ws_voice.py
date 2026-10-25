@@ -114,8 +114,10 @@ def test_text_input_and_markdown_is_not_spoken(voice_client):
     assert client.stt.calls == []
 
 
-def test_interrupt_stops_audio_but_text_completes(voice_client):
-    client = voice_client(replies=["One is here. Two is here. Three is here. Four is here."], tts_delay=0.3)
+@pytest.mark.parametrize("chunk_delay", [0.0, 0.05], ids=["fast", "still_streaming"])
+def test_interrupt_stops_audio_but_text_completes(voice_client, chunk_delay):
+    llm = SlowProvider(replies=["One is here. Two is here. Three is here. Four is here."], chunk_delay=chunk_delay)
+    client = voice_client(llm=llm, tts_delay=0.3)
     with client.websocket_connect(f"/ws/voice?token={client.token}") as ws:
         _start(ws)
         ws.send_json({"type": "text", "text": "count"})
@@ -123,14 +125,17 @@ def test_interrupt_stops_audio_but_text_completes(voice_client):
         assert isinstance(recv(ws), bytes)
         ws.send_json({"type": "interrupt"})
         rest = collect_until(ws, lambda m: m["type"] == "audio_end")
+        tail = []
+        if not any(isinstance(m, dict) and m["type"] == "done" for m in first + rest):
+            # under load the text can still be streaming after the interrupt: wait for it, not for a pong (#490)
+            tail = collect_until(ws, lambda m: m["type"] == "done")
         ws.send_json({"type": "ping"})
-        tail = collect_until(ws, lambda m: m["type"] == "pong")
+        tail += collect_until(ws, lambda m: m["type"] == "pong")
     end = rest[-1]
     assert end["interrupted"] is True and end["reason"] == "client"
     everything = first + rest + tail
     assert any(isinstance(m, dict) and m["type"] == "done" and not m.get("cancelled") for m in everything)
-    after_end = [m for m in tail if isinstance(m, dict | bytes)]
-    assert "audio" not in types(after_end) and "<bytes>" not in types(after_end)
+    assert "audio" not in types(tail) and "<bytes>" not in types(tail)
     assert types(everything).count("audio_end") == 1
     assert len(client.tts.texts) < 4
 

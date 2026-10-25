@@ -26,6 +26,7 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sentient import paths
@@ -40,7 +41,6 @@ from sentient.tools.base import Risk, Tool
 log = logging.getLogger(__name__)
 
 MAX_EVENTS = 200
-MAX_FILES_SCANNED = 5000
 PLUGIN_ID = "subagents"
 UpdateFn = Callable[[str, str], Any]  # (subagent_id, message)
 
@@ -92,21 +92,19 @@ def _row(r: Any, *, events: bool = True) -> dict:
     return out
 
 
-def _snapshot_files() -> dict[str, float]:
-    root = paths.files_dir()
-    out: dict[str, float] = {}
-    if not root.exists():
-        return out
-    for i, p in enumerate(root.rglob("*")):
-        if i >= MAX_FILES_SCANNED:
-            break
-        if p.is_file():
-            rel = p.relative_to(root).as_posix()
-            if rel.startswith("outputs/tool-"):  # cut tool results are bookkeeping, not work products
-                continue
-            with contextlib.suppress(OSError):
-                out[rel] = p.stat().st_mtime
-    return out
+def _files_from(result: Any) -> list[str]:
+    """The files one of the subagent's own tool calls saved, relative to the files folder: any result whose ``path``
+    is inside the files folder, plus a script run's ``files_created``. Read from its results rather than by
+    comparing the folder before and after, so helpers running at once never report each other's files (#94)."""
+    if not isinstance(result, dict):
+        return []
+    names: list[str] = []
+    path = result.get("path")
+    if isinstance(path, str) and Path(path).is_absolute():
+        with contextlib.suppress(OSError, ValueError):
+            names.append(Path(path).resolve().relative_to(paths.files_dir().resolve()).as_posix())
+    names += [n for n in result.get("files_created") or [] if isinstance(n, str)]
+    return names
 
 
 def _short(value: Any, limit: int = 1000) -> str:
@@ -424,7 +422,7 @@ class SubagentManager(Service):
         events: list[dict] = []
         result = LoopResult()
         status, error = "completed", None
-        before: dict[str, float] = {}
+        files: list[str] = []
 
         def note(message: dict, text: str | None = None) -> None:
             events.append({"timestamp": now_iso(), "message": message})
@@ -437,7 +435,6 @@ class SubagentManager(Service):
 
         try:
             async with self._slot():
-                before = await asyncio.to_thread(_snapshot_files)
                 note({"type": "info", "content": f"Started: {goal[:200]}"}, "Started")
                 incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
                 private = incognito and not self.app.config.chat.incognito_uses_memory
@@ -471,6 +468,8 @@ class SubagentManager(Service):
                                 f"Using {event.name}",
                             )
                         elif isinstance(event, ToolResultEvent):
+                            if not event.is_error:
+                                files.extend(_files_from(event.result))
                             note(
                                 {"type": "tool_result", "tool_name": event.name, "result": _short(event.result),
                                  "is_error": event.is_error},
@@ -487,12 +486,12 @@ class SubagentManager(Service):
             status, error = "error", f"Stopped after {cfg.timeout_minutes} minutes without finishing."
         except asyncio.CancelledError:
             status, error = "cancelled", None
-            await asyncio.shield(self._finish(sub_id, goal, session_id, background, status, error, result, events, before))
+            await asyncio.shield(self._finish(sub_id, goal, session_id, background, status, error, result, events, files))
             raise
         except Exception as exc:
             log.exception("subagent %s failed", sub_id)
             status, error = "error", f"{type(exc).__name__}: {exc}"
-        await self._finish(sub_id, goal, session_id, background, status, error, result, events, before)
+        await self._finish(sub_id, goal, session_id, background, status, error, result, events, files)
 
     async def _finish(
         self,
@@ -504,16 +503,12 @@ class SubagentManager(Service):
         error: str | None,
         result: LoopResult,
         events: list[dict],
-        before: dict[str, float],
+        files: list[str],
     ) -> None:
         summary = (result.text or "").strip()
         if result.hit_step_limit and summary.startswith("I reached the step limit"):
             summary = ""
-        try:
-            after = await asyncio.to_thread(_snapshot_files) if before is not None else {}
-        except Exception:
-            after = {}
-        files = sorted(n for n, m in after.items() if before and (n not in before or before[n] != m)) if before else []
+        files = sorted(set(files))
         if status == "completed":
             events.append({"timestamp": now_iso(), "message": {"type": "final_answer", "content": summary}})
         elif status == "error":

@@ -106,6 +106,19 @@ async def _all(s: SentientApp, **kw) -> list[dict]:
     raise AssertionError("paging never ended")
 
 
+async def test_a_call_id_that_json_escapes_is_still_found(config, isolated_home):
+    s = await _app(config, isolated_home)
+    try:
+        sid = await s.store.create_session(channel="web", title="Trip")
+        call = {"id": "call_é1", "type": "function",
+                "function": {"name": "mail_search", "arguments": json.dumps({"query": "Goa"})}}
+        await s.store.add_message(sid, "assistant", "", tool_calls=[call])
+        row = await s.store.fetchone("SELECT created_at FROM messages WHERE session_id = ?", (sid,))
+        assert await s.timeline._call_arguments(sid, "call_é1", row["created_at"]) == {"query": "Goa"}
+    finally:
+        await s.stop()
+
+
 async def test_chat_tool_calls_and_approvals_say_what_and_why(config, isolated_home):
     sent: list[str] = []
     llm = FakeProvider(replies=[
@@ -143,6 +156,32 @@ async def test_chat_tool_calls_and_approvals_say_what_and_why(config, isolated_h
         assert (await s.timeline.past(app="gmail"))["items"] == []
         assert len((await s.timeline.past(app="mail"))["items"]) == 3
         assert {"id": "mail", "label": "Mail"} in await s.timeline.apps()
+    finally:
+        await s.stop()
+
+
+async def test_a_calls_details_survive_a_shared_timestamp(config, isolated_home):
+    # Windows' clock (Python 3.12) ticks every 15.6 ms: a tool result and the next call often share created_at
+    s = await _app(config, isolated_home)
+    try:
+        sid = await s.store.create_session(channel="web", title="Weekend plans")
+        search = {"id": "c1", "type": "function",
+                  "function": {"name": "mail_search", "arguments": json.dumps({"query": "Saturday plans"})}}
+        send = {"id": "c2", "type": "function",  # its arguments mention c1, the way a reply to it might
+                "function": {"name": "mail_send", "arguments": json.dumps({"to": "Arjun", "body": "re c1",
+                                                                           "ref": "c1"})}}
+        await s.store.add_message(sid, "assistant", "", tool_calls=[search])
+        await s.store.add_message(sid, "tool", json.dumps({"results": []}), tool_call_id="c1", name="mail_search")
+        await s.store.add_message(sid, "assistant", "", tool_calls=[send])
+        # c1 is asked a tick earlier; its result and the next call (c2) land in the same tick
+        at = "2026-10-20T10:00:00+00:00"
+        await s.store.execute("UPDATE messages SET created_at = ? WHERE session_id = ?", (at, sid))
+        await s.store.execute(
+            "UPDATE messages SET created_at = ? WHERE session_id = ? AND instr(tool_calls, 'mail_search') > 0",
+            ("2026-10-20T09:59:59.984000+00:00", sid),
+        )
+        assert await s.timeline._call_arguments(sid, "c1", at) == {"query": "Saturday plans"}
+        assert await s.timeline._call_arguments(sid, "c2", at) == {"to": "Arjun", "body": "re c1", "ref": "c1"}
     finally:
         await s.stop()
 

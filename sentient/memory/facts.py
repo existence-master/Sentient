@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from sentient.config.schema import SentientConfig
-from sentient.llm.provider import LLMProvider
+from sentient.llm.provider import LLMProvider, ModelRefused
 from sentient.memory import origins, prompts
 from sentient.memory import review as reviews
 from sentient.memory import scopes as memory_scopes
@@ -67,7 +67,17 @@ _UNKNOWN_RE = re.compile(
     r"not provided|unclear)\b",
     re.IGNORECASE,
 )
-_USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
+# the USERNAME placeholder is matched in capitals only, so "my GitHub username" stays a username
+_USER_REF = r"(?<![\w-])((?i:the user)|USERNAME)"
+# "the user research team", "the user agent", "the user name": a kind of thing, not the user
+_USER_COMPOUND_NOUN = (
+    r"(?i:interfaces?|experiences?|research(?:ers?)?|manuals?|guides?|journeys?|stor(?:y|ies)|base|testing|personas?|"
+    r"agents?|names?|ids?|accounts?|profiles?)"
+)
+_USER_REF_RE = re.compile(rf"{_USER_REF}(?![\w-])(?!\s+{_USER_COMPOUND_NOUN}\b)")
+_USER_POSSESSIVE_RE = re.compile(rf"{_USER_REF}['\u2019]s\b")
+# bare "user's" only where it can't be another user's ("a user's account"): first, or after a comma
+_BARE_USER_POSSESSIVE_RE = re.compile(r"(^\s*|[,;:(]\s*)user['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
@@ -216,6 +226,16 @@ TIME_WORDING_RE = re.compile(
     r"since|started|starting|moved|switched|new|anymore|no longer)\b",
     re.IGNORECASE,
 )
+
+
+def name_the_user(text: str, user_name: str) -> str:
+    """"Priya, the user's sister" is "Priya, Maya Rao's sister": a saved fact says the user's name (#475)."""
+    name = user_name.strip()
+    if not name:
+        return text
+    text = _BARE_USER_POSSESSIVE_RE.sub(lambda m: f"{m.group(1)}{name}'s", text)
+    text = _USER_POSSESSIVE_RE.sub(lambda _: f"{name}'s", text)
+    return _USER_REF_RE.sub(lambda _: name, text)
 
 
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
@@ -750,9 +770,42 @@ class FactMemory:
         # set by the app: also scrub the words of erased memories from the workspace files and the user model's
         # caches (#152); called with an ``origins.Erased``: the texts that went, and which lines repeat them (#456)
         self.on_erase: Any = None
+        # set by the app: ``(title, message, job)`` -> a notification, which Activity shows too. Told once per job
+        # while no model can do it, again after it worked (#474)
+        self.on_no_model: Any = None
+        self._no_model_told: set[str] = set()
 
     async def ensure_schema(self) -> None:
         await ensure_memory_schema(self.store)
+
+    # ------------------------------------------------------------------ no model can do a memory job (#474)
+    async def _no_model(self, job: str, exc: ModelRefused, fact: str | None = None) -> None:
+        """Say plainly that no model can do ``job`` ("check": is a new memory a repeat or an update; "extract": pull
+        memories out of a chat), in the log every time and once in a notification (Activity shows it) until it works
+        again. ``exc`` says why and what to change (Claude Code only answers chats, Local only...)."""
+        why = str(exc).strip()
+        if job == "check":
+            # the checks made in code still run after this (a repeat, a new home), so the outcome isn't known yet
+            log.warning("no model could check %r against saved memories, so only the checks made in code decide "
+                        "whether it is new: %s", fact, why)
+            title = "Memories saved without a full check"
+            message = ("No model can check new memories against the ones Sentient already has, so some may be saved "
+                       f"as new memories that repeat or contradict older ones. {why}")
+        else:
+            log.warning("no model could pick out memories from the chat, so none were saved from it: %s", why)
+            title = "Memories not saved from your chats"
+            message = f"No model can pick out new memories from your chats right now, so none were saved. {why}"
+        if job in self._no_model_told or not callable(self.on_no_model):
+            return
+        self._no_model_told.add(job)
+        try:
+            await self.on_no_model(title, message.strip(), job)
+        except Exception:  # not told: try again next time
+            self._no_model_told.discard(job)
+            log.exception("could not tell the user that no model can do %s", job)
+
+    def _model_worked(self, job: str) -> None:
+        self._no_model_told.discard(job)
 
     # ------------------------------------------------------------------ events
     def publish(self, action: str, fid: int | None, content: str | None = None, **extra: Any) -> None:
@@ -1420,6 +1473,7 @@ class FactMemory:
         ``memory.updated`` event, so that chat can show "Remembered: ... Undo". Duplicates, updates and corrections
         only look at facts in ``scope`` and always: a save never changes a memory in another scope."""
         user = self.config.assistant.user_name
+        fact = name_the_user(fact, user)  # the memory tool and the Memory screen save words as given (#475)
         scope = memory_scopes.normalize(scope, memory_scopes.PERSONAL) or memory_scopes.PERSONAL
         refs: dict[str, dict] = {source: ref} if ref else {}
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
@@ -1598,8 +1652,12 @@ class FactMemory:
                         fid = int(raw["fact_id"]) if raw.get("fact_id") is not None else None
                     except (TypeError, ValueError):
                         fid = None
-                    content = str(raw.get("content") or fact).strip()
+                    content = name_the_user(str(raw.get("content") or fact), user).strip()  # #475
                     topics, memory_type, duration = _analysis_from(raw)
+                    log.info("CUD for %r: the model says %s%s", fact, action, f" of fact {fid}" if fid else "")
+                self._model_worked("check")
+            except ModelRefused as exc:  # every model refused this job: say so instead of quietly adding (#474)
+                await self._no_model("check", exc, fact)
             except Exception as exc:
                 log.warning("CUD decision failed, defaulting to ADD: %s", exc)
 
@@ -1713,10 +1771,7 @@ class FactMemory:
         text = " ".join(str(fact).split()).strip(" -*•")
         if len(text) < 6:
             return None
-        name = username.strip()
-        if name:
-            text = re.sub(r"\b(the user|USERNAME)'s\b", f"{name}'s", text, flags=re.IGNORECASE)
-            text = _USER_REF_RE.sub(name, text)
+        text = name_the_user(text, username)
         text = text[:1].upper() + text[1:]
         if _REQUEST_RE.search(text) or _NOISE_RE.search(text) or _UNKNOWN_RE.search(text) or _TAUTOLOGY_RE.match(text):
             return None
@@ -1804,9 +1859,13 @@ class FactMemory:
                     {"role": "user", "content": prompts.FLUSH_USER.format(username=name, transcript=text)},
                 ],
             )
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("memory flush extraction failed: %s", exc)
             return []
+        self._model_worked("extract")
         results: list[dict] = []
         for fact in self._facts_from(raw, user_name)[: cfg.flush_max_facts]:
             try:
@@ -1828,6 +1887,10 @@ class FactMemory:
         turn), so a fact they fully back is saved even with ``review`` (#234, ``review.grounded``)."""
         try:
             facts = await self.extract_facts(text, username)
+            self._model_worked("extract")
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("fact extraction failed: %s", exc)
             return []
