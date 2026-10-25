@@ -338,3 +338,108 @@ async def test_watch_check_finishing_on_paused_task_does_not_start_a_run(make_ap
     task = await app.tasks.get(task_id)
     assert len(task["runs"]) == 1
     assert task["runs"][0]["status"] == "completed"
+
+
+async def test_pause_before_plan_commit_leaves_task_in_planning(make_app):
+    """If the task is paused right before the plan is committed, enabled=True in update_task_if_status
+    prevents the commit/approval, leaving the task in planning with PLAN_PAUSED_NOTE."""
+    llm = FakeProvider(json_replies=[REFINE_ONCE, PLAN_FILES])
+    app = await make_app(llm)
+    task = await app.tasks.create_task("Save notes to a.txt")
+    task_id = task["task_id"]
+
+    orig_update_if_status = app.tasks.repo.update_task_if_status
+
+    async def update_with_pause(tid, statuses, fields, **kwargs):
+        if "plan" in fields:
+            # Simulate a concurrent pause right as the plan is being committed
+            await app.tasks.repo.update_task(tid, {"enabled": 0})
+        return await orig_update_if_status(tid, statuses, fields, **kwargs)
+
+    app.tasks.repo.update_task_if_status = update_with_pause
+    await app.tasks.drain()
+
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "planning" and not task["enabled"]
+    assert task["error"] == PLAN_PAUSED_NOTE
+    assert not task["plan"]
+
+
+async def test_pause_during_save_script_state_does_not_start_a_run(make_app):
+    """Pausing during _save_script_state rechecks task pause state before deciding to act,
+    preventing any run or notification."""
+    llm = FakeProvider(replies=["Logged price."], json_replies=[dict(RESULT)])
+    app = await make_app(llm)
+
+    orig_save = app.tasks._save_script_state
+
+    async def save_with_pause(tid, code, state):
+        res = await orig_save(tid, code, state)
+        # User pauses while state was saving
+        await app.tasks.update(tid, {"enabled": False})
+        return res
+
+    app.tasks._save_script_state = save_with_pause
+
+    async def fast_sandbox(*args, **kwargs):
+        return {"ok": True, "result": {"price": 90}}
+
+    app.sandbox.run = fast_sandbox
+    script = normalize_script({"code": "result({'price': 90})", "condition": "changed", "then": "run"})
+    schedule = {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "UTC"}
+    now = app.tasks.now_iso()
+    task_id = await app.tasks.repo.insert_task({
+        "name": "Price watch", "description": "Watch price", "status": "active",
+        "task_type": "script", "script": {**script, "last_result": {"price": 100}},
+        "schedule": schedule, "plan": [{"tool": "files", "description": "Log price"}],
+        "created_at": now, "updated_at": now, "enabled": True,
+    })
+
+    task = await app.tasks.repo.get_task(task_id)
+    await app.tasks._start_script(task)
+    await app.tasks.drain()
+
+    task = await app.tasks.get(task_id)
+    assert task["runs"] == []
+    assert not task["enabled"]
+    assert llm.calls == []
+
+
+async def test_paused_check_early_exit_error_does_not_notify(make_app):
+    """An in-flight check that errors on a paused task records the error in history but sends no notification."""
+    app = await make_app()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_sandbox(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return {"ok": False, "error": "Endpoint 500 error"}
+
+    app.sandbox.run = slow_sandbox
+    script = normalize_script({"code": "fetch()", "condition": "alert", "then": "notify"})
+    schedule = {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "UTC"}
+    now = app.tasks.now_iso()
+    task_id = await app.tasks.repo.insert_task({
+        "name": "Error watch", "description": "Watch endpoint", "status": "active",
+        "task_type": "script", "script": script,
+        "schedule": schedule, "plan": [],
+        "created_at": now, "updated_at": now, "enabled": True,
+    })
+
+    task = await app.tasks.repo.get_task(task_id)
+    await app.tasks._start_script(task)
+    await asyncio.wait_for(started.wait(), 5)
+
+    # User pauses while check is running
+    await app.tasks.update(task_id, {"enabled": False})
+
+    release.set()
+    await app.tasks.drain()
+
+    task = await app.tasks.get(task_id)
+    assert not task["enabled"]
+    assert "Endpoint 500 error" in task["script"]["last_error"]
+    notes = [n for n in await app.notifications.list() if n.get("kind") == "script_failed"]
+    assert notes == []

@@ -1671,9 +1671,10 @@ class TaskService(Service):
         if task is None or task["status"] != "planning" or not task["enabled"]:
             return  # the user declined/archived/edited/paused it meanwhile
         if not await self.repo.update_task_if_status(
-            task_id, {"planning"}, {"status": "error", "error": error, "updated_at": self.now_iso()}
+            task_id, {"planning"}, {"status": "error", "error": error, "updated_at": self.now_iso()}, enabled=True
         ):
-            return  # changed while we were failing
+            await self._planning_paused(task_id)
+            return  # changed or paused while we were failing
         await self.publish(task_id)
         await self._notify(task, f"I couldn't create a plan for '{task.get('name')}'. {error}", "Planning failed", "planning_failed")
 
@@ -1757,8 +1758,10 @@ class TaskService(Service):
             if not await self.repo.update_task_if_status(
                 task_id, {"planning"},
                 {"status": "clarification_pending", "clarifying_questions": merged, "updated_at": self.now_iso()},
+                enabled=True,
             ):
-                return  # declined, archived or edited while the planner was running
+                await self._planning_paused(task_id)
+                return  # declined, archived, paused or edited while the planner was running
             await self.publish(task_id)
             await self._notify(
                 task, f"I need a bit more information to plan '{display_name}'. Please answer the questions in the task.",
@@ -1804,8 +1807,11 @@ class TaskService(Service):
                 fields["description"] = str(data["description"]).strip()
         if await self._planning_paused(task_id):
             return
-        if not await self.repo.update_task_if_status(task_id, {"planning"}, {**fields, "updated_at": self.now_iso()}):
-            return  # declined, archived or edited while the planner was running
+        if not await self.repo.update_task_if_status(
+            task_id, {"planning"}, {**fields, "updated_at": self.now_iso()}, enabled=True
+        ):
+            await self._planning_paused(task_id)
+            return  # declined, archived, paused or edited while the planner was running
         # a plan written from someone's email always waits for the user's approval (#159)
         if (auto_approve or not cfg.tasks.require_plan_approval) and not email_inbox.is_email_task(task):
             await self.approve(task_id)
@@ -2426,6 +2432,22 @@ class TaskService(Service):
         finally:
             self._paused_scripts.discard(task_id)
 
+    def _script_paused(self, task_id: str, current: dict | None, manual: bool) -> bool:
+        if manual:
+            return False
+        return task_id in self._paused_scripts or not bool((current or {}).get("enabled", True))
+
+    async def _stale_check(self, task_id: str, original: dict) -> dict | None:
+        """Returns the current task, or None if the task is gone or its check settings changed while running."""
+        current = await self.repo.get_task(task_id)
+        if current is None or current.get("task_type") != "script" or _check_settings(current) != _check_settings(original):
+            # the user changed the check while it ran (or while the model judged it): drop this stale decision, the
+            # next check decides with the new settings
+            await self._after_run(task_id, "completed", None)
+            await self.publish(task_id)
+            return None
+        return current
+
     async def _save_script_state(self, task_id: str, code: str, state: dict) -> None:
         """Store check state unless the code was edited while the check ran (that resets the state)."""
         current = await self.repo.get_task(task_id)
@@ -2448,7 +2470,7 @@ class TaskService(Service):
         code = str(script.get("code") or "")
         name = task.get("name") or "Untitled task"
         if reason := await self._missing_source(task, trigger_data):
-            await self._check_source_missing(task, script, code, reason)  # its checklist decides (#161)
+            await self._check_source_missing(task, script, code, reason, manual=manual)  # its checklist decides (#161)
             return
         outcome = await self._sandbox_run(code, trigger_data)
         now = self.now_iso()
@@ -2459,7 +2481,8 @@ class TaskService(Service):
             await self._save_script_state(task_id, code, {"last_run_at": now, "last_error": error, "checks": checks})
             await self._after_run(task_id, "error", error)
             await self.publish(task_id)
-            if not previous_error:  # tell once; recovery is announced below
+            current = await self.repo.get_task(task_id) or task
+            if not previous_error and not self._script_paused(task_id, current, manual):  # tell once; recovery is announced below
                 await self._notify(
                     task, f"The check for '{name}' failed. {error}\n\nI'll keep checking on schedule and tell you when it works again.",
                     "Check failed", "script_failed",
@@ -2471,14 +2494,10 @@ class TaskService(Service):
         act = scripts.should_act(condition, value, previous)
         message = scripts.alert_message(name, condition, value) if act else ""
         outcome_name, note = self._check_outcome(condition, act, value, previous)
-        current = await self.repo.get_task(task_id)
-        if current is None or current.get("task_type") != "script" or _check_settings(current) != _check_settings(task):
-            # the user changed the check while it ran (or while the model judged it): drop this stale decision, the
-            # next check decides with the new settings
-            await self._after_run(task_id, "completed", None)
-            await self.publish(task_id)
+        current = await self._stale_check(task_id, task)
+        if current is None:
             return
-        paused = task_id in self._paused_scripts or (not current["enabled"] and not manual)
+        paused = self._script_paused(task_id, current, manual)
         if act and condition == "noteworthy":  # something changed: the fast model judges whether it matters
             if paused:
                 act = False
@@ -2487,12 +2506,10 @@ class TaskService(Service):
                 outcome_name, note = ("changed", change) if act else ("minor", change)
                 if act and change:
                     message = change
-        current = await self.repo.get_task(task_id)
-        if current is None or current.get("task_type") != "script" or _check_settings(current) != _check_settings(task):
-            await self._after_run(task_id, "completed", None)
-            await self.publish(task_id)
+        current = await self._stale_check(task_id, task)
+        if current is None:
             return
-        paused = paused or task_id in self._paused_scripts or (not current["enabled"] and not manual)
+        paused = paused or self._script_paused(task_id, current, manual)
         state: dict[str, Any] = {
             "last_run_at": now, "last_error": None,
             "checks": scripts.add_check(script.get("checks"), outcome_name, now, note),
@@ -2500,6 +2517,8 @@ class TaskService(Service):
         if value is not None or condition not in scripts.COMPARING:  # an empty result keeps the baseline
             state["last_result"] = value
         await self._save_script_state(task_id, code, state)
+        current = await self.repo.get_task(task_id) or current
+        paused = paused or self._script_paused(task_id, current, manual)
         if previous_error and not paused:
             await self._notify(task, f"The check for '{name}' is working again.", "Check recovered", "script_recovered")
         if act and not paused:
@@ -2515,7 +2534,9 @@ class TaskService(Service):
         await self._after_run(task_id, "completed", None)
         await self.publish(task_id)
 
-    async def _check_source_missing(self, task: dict, script: dict, code: str, reason: str) -> None:
+    async def _check_source_missing(
+        self, task: dict, script: dict, code: str, reason: str, *, manual: bool = False
+    ) -> None:
         """A check script's page (or app, or folder) isn't there (#161): the check is ``skipped`` in its history, and
         the checklist's ``if_missing`` decides the rest, as for a run: nothing more, a notification, or an earlier
         check (``tasks.source_retry_minutes`` from now, at most ``tasks.source_retries`` in a row, then a notice). A
@@ -2550,7 +2571,8 @@ class TaskService(Service):
             if current.get("status") == "active" and due is not None and sooner < due:
                 await self._set(task_id, {"next_execution_at": iso(sooner)})
         await self.publish(task_id)
-        if tell:
+        current = await self.repo.get_task(task_id) or task
+        if tell and not self._script_paused(task_id, current, manual):
             await self._tell_missing(task, error, reason, policy)
 
     @staticmethod
