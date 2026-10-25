@@ -47,6 +47,7 @@ MODEL = "sentient"
 DEFAULT_NAME = "API"
 STOPPED = "Stopped."
 NOT_DONE = "Not done: {what} needed your OK in Sentient and didn't get it."
+TURN_FAILED = "Sentient couldn't finish that reply. The details are in Sentient's log."
 
 
 class ChatMessage(BaseModel):
@@ -173,6 +174,7 @@ class _Approvals:
         self.core, self.session_id = core, session_id
         self.open: dict[str, tuple[str, str, str, float]] = {}  # call_id -> (notification id, approval id, what, asked at)
         self.not_done: list[str] = []
+        self.told = 0  # how many of not_done the client has been given
 
     def what(self, name: str) -> str:
         tool = self.core.registry.get(name)
@@ -217,7 +219,10 @@ class _Approvals:
         self.open.clear()
 
     def note(self) -> str:
-        return "\n\n" + " ".join(NOT_DONE.format(what=w) for w in self.not_done) if self.not_done else ""
+        """The "Not done" lines not given to the client yet. They go before the model's words, so a client that reads
+        only the first line isn't told a declined call ran when a small model says it did (#479 review)."""
+        fresh, self.told = self.not_done[self.told:], len(self.not_done)
+        return " ".join(NOT_DONE.format(what=w) for w in fresh)
 
 
 async def _run_turn(core: Any, session_id: str, text: str, out: asyncio.Queue, approvals: _Approvals) -> None:
@@ -293,16 +298,18 @@ async def chat_completions(request: Request, body: ChatCompletionBody):
         async def gen():
             yield chunk({"role": "assistant"})
             while (item := await out.get()) is not None:
+                if note := approvals.note():  # a declined call: said at once, before the model writes about it
+                    yield chunk({"content": note + "\n\n"})
                 if isinstance(item, TextDelta) and item.text:
                     yield chunk({"content": item.text})
                 elif isinstance(item, Done) and item.error:
                     yield failure(item.error)
                 elif isinstance(item, asyncio.CancelledError):
                     yield failure(STOPPED)
-                elif isinstance(item, Exception):
-                    yield failure(str(item))
+                elif isinstance(item, Exception):  # logged in _run_turn; its text can hold internal details
+                    yield failure(TURN_FAILED)
             if note := approvals.note():
-                yield chunk({"content": note})
+                yield chunk({"content": "\n\n" + note})
             yield chunk({}, "stop")
             yield "data: [DONE]\n\n"
 
@@ -322,11 +329,12 @@ async def chat_completions(request: Request, body: ChatCompletionBody):
             done = item
         elif isinstance(item, asyncio.CancelledError):
             return _error(409, STOPPED, "stopped")
-        elif isinstance(item, Exception):
-            failed = str(item)
+        elif isinstance(item, Exception):  # logged in _run_turn; its text can hold internal details
+            failed = TURN_FAILED
     if failed or (done is not None and done.error):
         return _error(500, failed or done.error, "turn_failed")
-    content = ((done.content if done is not None else "") or "".join(parts)) + approvals.note()
+    note = approvals.note()
+    content = (note + "\n\n" if note else "") + ((done.content if done is not None else "") or "".join(parts))
     return {
         "id": cid, "object": "chat.completion", "created": created, "model": MODEL,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],

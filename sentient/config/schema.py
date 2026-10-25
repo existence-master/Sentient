@@ -287,8 +287,13 @@ class GatewayConfig(BaseModel):
 class OpenAIApiConfig(BaseModel):
     enabled: bool = Field(
         False,
-        description="Let apps on this computer (editors, scripts, shortcuts) chat with Sentient, with its memory and "
-        "tools, through an OpenAI-compatible API at /v1/chat/completions. Each app needs Sentient's API key.",
+        description="Let apps on this computer (editors, scripts, shortcuts) chat with Sentient and use its tools "
+        "through an OpenAI-compatible API at /v1/chat/completions. Each app needs Sentient's API key.",
+    )
+    allow_memory: bool = Field(
+        False,
+        description="Let connected apps use my memories. Apps with the key can then ask about anything Sentient "
+        "remembers, including past chats.",
     )
 
 

@@ -502,8 +502,9 @@ accept or loosen a rule.
   finish, and spending can go past the budget by what they cost.
 
 ### OpenAI-compatible API (#211)
-Lets other apps on this computer (editors, scripts, shortcuts) chat with Sentient, with its memory and tools, using
-any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `true` (`PATCH /api/config`).
+Lets other apps on this computer (editors, scripts, shortcuts) chat with Sentient and use its tools, using any OpenAI
+client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `true` (`PATCH /api/config`). Its memories only
+when `openai_api.allow_memory` is on too (below).
 - Only loopback connections can use `/v1`, even if the gateway also listens on the network or the API is enabled
   after startup. Both the transport's local address and client address must be numeric loopback IPs (IPv4, IPv6,
   or IPv4-mapped IPv6). Missing addresses are refused; `Host` and forwarded headers cannot make a network-facing
@@ -515,7 +516,8 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   `{error: {message, type, param, code}}`: 404 `api_off` while the setting is off, 401 `invalid_api_key` for a missing
   or wrong key, 403 `local_only` for a non-loopback connection, 400 `invalid_request` for malformed or invalid
   request bodies, 400 `no_user_message`, 409 `chat_busy` for an
-  overlapping request, and 500 `turn_failed` when the turn ended in an error.
+  overlapping request, and 500 `turn_failed` when the turn ended in an error (the turn's own error message, or for
+  an unexpected failure a plain sentence; the details are in the engine's log).
   The off/locality/key checks happen before JSON or schema validation, including for malformed requests.
 - `GET /v1/models` → `{object: "list", data: [{id: "sentient", object: "model", created, owned_by}]}`.
 - `POST /v1/chat/completions` `{model, messages: [{role, content}], stream?, user?}` runs one chat turn in the named
@@ -533,18 +535,28 @@ any OpenAI client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `t
   `payload.status` is `allow` or `deny`; `expired` when nobody answered within `tools.approvals.timeout_s` or the turn
   was stopped (`notification.updated`). Pending approvals are discarded when their turn ends, even if notification
   creation was interrupted; any still-pending saved notification is expired. A call that was declined or not
-  answered in time is never claimed: the reply
-  (or a last `delta.content`) ends with `Not done: "<tool>" needed your OK in Sentient and didn't get it.`
-- API messages are outside content from the start of each turn, including in an existing chat. Their text never
+  answered in time is never claimed: the reply starts with `Not done: "<tool>" needed your OK in Sentient and didn't
+  get it.` (streamed, a `delta.content` sent as soon as the call is declined, before the model's words about it).
+- The chat counts as outside content from the start of each API turn, including in an existing chat
+  (`untrusted: "another app (API)"`). In an API turn the model reads the app's requests, this one and earlier ones,
+  as requests: prefixed with `[Sent by another app on this computer through Sentient's API]`, not wrapped as outside
+  content, so a model that keeps the outside-content rule strictly still answers (#479). Their text never
   counts as the user's own words for an "Only if I asked" rule or a standing-rule proposal, and does not use the
   quick-command shortcut. Calls that run code or send data out ask for approval even with an Allow rule or approvals
   turned off (ADR 0018). The user's explicit approval is still required. Facts learned from API messages stay
   pending for review rather than being accepted as the user's own statements (ADR 0021).
-  Stored API user messages retain `name: "another app (API)"`; their text is marked as outside content when read
-  into a later prompt. Keyword and date-based history reads retain that source even after the original chat is
+  Stored API user messages retain `name: "another app (API)"`; their text is marked as outside content when the
+  chat is continued from the window, where the user is the one speaking. Keyword and date-based history reads retain that source even after the original chat is
   trusted again. Summaries containing API messages retain their outside-source mark and are excluded from shared
   summary search; facts extracted when those messages are compressed still wait for review. Trusting a chat up
   to an older message does not cover newer API input.
+- **What the key reaches.** Chatting and Sentient's tools, with approvals as above. Memories stay out unless
+  `openai_api.allow_memory` is on (default off, #479): an API turn then gets no recalled memories, user-model
+  insights, notes or profile files in its prompt (only Sentient's persona, plus a note saying they aren't available),
+  and `memory_recall`, `memory_search_by_source`, `memory_search_history`, `history_semantic_search`,
+  `history_time_search`, `user_model_ask` and `memory_forget` are left out of its tools and refused if called anyway.
+  `memory_remember` stays, and what it saves waits for review. With it on, an API turn reads memory like a chat in
+  the window, so whoever holds the key can ask about anything Sentient remembers, including past chats.
 - Concurrent first requests share the same chat for a given name, and creating one name cannot overwrite another
   name's chat mapping. Only one API turn can run in that chat at a time. An overlapping API request returns
   409 `chat_busy` before starting a turn; it is not queued to run later. Different named chats can proceed independently.

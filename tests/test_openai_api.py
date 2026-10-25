@@ -11,11 +11,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sentient import secrets
+from sentient.agent.loop import API_NO_MEMORY_NOTE, API_NO_MEMORY_TOOLS
+from sentient.agent.prompt import API_REQUEST_NOTE
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
+from sentient.gateway.routes.openai_api import TURN_FAILED
 from sentient.llm.events import ApprovalRequest
 from sentient.llm.provider import ProviderFailed
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+from sentient.tools.rules import API_SOURCE
 from tests.conftest import FakeProvider, tool_call
 
 TOKEN = "test-token"
@@ -253,8 +257,8 @@ def test_a_declined_call_is_never_claimed_done(client, isolated_home):
     note = _approval(client)
     _answer(client, note, "deny")
     content = pending.result(timeout=30).json()["choices"][0]["message"]["content"]
-    assert content.startswith("I couldn't save it.")
-    assert content.endswith(" needed your OK in Sentient and didn't get it.") and "\n\nNot done: " in content
+    # the Not done line comes first, so a client reading only the first line isn't told it ran (#479 review)
+    assert content == 'Not done: "File write" needed your OK in Sentient and didn\'t get it.\n\nI couldn\'t save it.'
     assert not (isolated_home / "files" / "a.txt").exists()
     assert _status(client, note) == "deny"
 
@@ -264,7 +268,7 @@ def test_nobody_answering_is_a_no(client, isolated_home):
     pending = _asking(client, reply="I couldn't save it.")
     note = _approval(client)
     content = pending.result(timeout=30).json()["choices"][0]["message"]["content"]
-    assert "\n\nNot done: " in content
+    assert content.startswith("Not done: ") and content.endswith("\n\nI couldn't save it.")
     assert not (isolated_home / "files" / "a.txt").exists()
     assert _status(client, note) == "expired"
 
@@ -353,6 +357,69 @@ def test_api_session_is_marked_before_the_first_model_call(client, reused):
     assert chat["untrusted"]
     if reused:
         assert chat["id"] == previous_id
+
+
+def test_the_model_reads_an_api_request_as_a_request_while_the_chat_stays_marked(client):
+    """A strong model keeps the outside-content rule, so the app's requests aren't wrapped as data (#479 review).
+    The chat still counts as outside content, so approvals work as before."""
+    for text in ("My code word is HERON-7319. Just say OK.", "What was my code word?"):
+        assert _ask(client, user="Notes app", messages=[{"role": "user", "content": text}]).status_code == 200
+    asked = [m["content"] for m in client.llm.calls[-1]["messages"] if m["role"] == "user"]
+    assert len(asked) == 2 and asked[-1].endswith(f"{API_REQUEST_NOTE}\nWhat was my code word?")
+    assert all(API_REQUEST_NOTE in text and "outside content" not in text for text in asked)
+    [chat] = _sessions(client)
+    assert chat["untrusted"] == API_SOURCE
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "stream"])
+def test_a_broken_turn_says_so_without_its_internal_details(client, monkeypatch, stream):
+    """An unexpected failure is logged; the app gets a plain sentence, not the exception's text (#479 review)."""
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("upstream http://10.0.0.5:8080/v1 refused key sk-internal")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(client.app.state.sentient.agent, "run_turn", broken)
+    r = _ask(client, stream=stream)
+    if stream:
+        errors = [json.loads(line[6:])["error"] for line in r.text.split("\n\n")
+                  if line.startswith("data: {") and '"error"' in line]
+        assert errors == [{"message": TURN_FAILED, "type": "server_error"}]
+    else:
+        assert r.status_code == 500
+        assert (r.json()["error"]["code"], r.json()["error"]["message"]) == ("turn_failed", TURN_FAILED)
+    assert "10.0.0.5" not in r.text and "sk-internal" not in r.text
+
+
+SISTER = "Priya, Maya's sister, lives in Mumbai."
+
+
+@pytest.mark.parametrize("allow", [False, True], ids=["memory-off", "memory-on"])
+def test_connected_apps_get_memories_only_when_allowed(client, allow):
+    """openai_api.allow_memory (off by default): off, an API turn gets no memories, profile or memory and history
+    tools, and the model is told why; on, it gets them like a desktop chat (#479)."""
+    core = client.app.state.sentient
+    assert core.config.openai_api.allow_memory is False
+    core.config.openai_api.allow_memory = allow
+    assert client.post("/api/memories", json={"content": SISTER}, headers=WIN).status_code == 200
+    asking = [{"role": "user", "content": "What do you know about my sister Priya?"}]
+    assert _ask(client, user="Notes app", messages=asking).status_code == 200
+    call = client.llm.calls[-1]
+    system = call["messages"][0]["content"]
+    offered = {t["function"]["name"] for t in call["tools"] or []}
+    assert ("Mumbai" in system) is allow
+    assert (API_NO_MEMORY_NOTE in system) is not allow
+    assert bool(offered & API_NO_MEMORY_TOOLS) is allow
+    assert "memory_remember" in offered  # facts from an API chat still go to Review either way
+
+
+def test_a_memory_tool_the_app_was_not_offered_is_refused(client):
+    """Leaving the tools out is enforced: a call made anyway is refused and returns nothing (#479)."""
+    assert client.post("/api/memories", json={"content": SISTER}, headers=WIN).status_code == 200
+    client.llm.replies[:] = [[tool_call("memory_recall", query="Priya")], "I can't look that up."]
+    assert _ask(client, user="Notes app", messages=[{"role": "user", "content": "Where does Priya live?"}]).status_code == 200
+    [result] = [m["content"] for m in client.llm.calls[-1]["messages"] if m["role"] == "tool"]
+    assert "unknown tool memory_recall" in result and "Mumbai" not in result
 
 
 def _code_request(client, pool, *, stream: bool, rule: str = "allow", timeout: float = 20):
@@ -482,6 +549,6 @@ def test_api_execute_code_waits_for_approval_and_deny_never_invokes(client, monk
         _answer(client, note, "deny")
         response = pending.result(timeout=30)
     assert response.status_code == 200
-    assert "Not done:" in _reply_text(response, stream=stream)
+    assert _reply_text(response, stream=stream).startswith('Not done: "Execute code"')  # before the model's words
     assert _status(client, note) == "deny"
     assert calls == []

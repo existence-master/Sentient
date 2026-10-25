@@ -222,6 +222,8 @@ export interface GatewayConfig {
 /** The OpenAI-compatible chat API (#211, docs/API.md section 2). */
 export interface OpenAIApiConfig {
   enabled: boolean
+  /** Connected apps get memories, the profile and past chats only when this is on (#479). */
+  allow_memory: boolean
 }
 
 export interface ChatConfig {

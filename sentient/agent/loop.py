@@ -55,7 +55,7 @@ from sentient.agent import incognito as incognito_outputs
 from sentient.agent import undo as undo_rules
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
-from sentient.agent.prompt import build_system_prompt, mark_outside
+from sentient.agent.prompt import build_system_prompt, frame_api_request, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.config.schema import SentientConfig
@@ -194,6 +194,14 @@ INCOGNITO_MEMORY_TOOLS = frozenset({
     "memory_recall", "memory_search_by_source", "memory_search_history", "history_semantic_search",
     "history_time_search", "user_model_ask",
 })
+# A /v1 turn while openai_api.allow_memory is off (#479): left out in code, like an incognito chat without memory,
+# plus deleting a memory, since an app that can't read them shouldn't remove them. memory_remember stays (to Review).
+API_NO_MEMORY_TOOLS = INCOGNITO_MEMORY_TOOLS | {"memory_forget"}
+API_NO_MEMORY_NOTE = (
+    "## Another app\nThis chat comes from another app through Sentient's API. Sentient's memories, the user's "
+    "profile and other chats aren't available to it. If asked about them, say the user can allow connected apps to "
+    "use their memories."
+)
 INCOGNITO_NOTE = (
     "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
     "user closes it. Never say you will remember something from it."
@@ -228,7 +236,7 @@ def _normalize_tool_calls(calls: Any) -> list[dict]:
     return out
 
 
-def history_to_openai(rows: list[dict]) -> list[dict]:
+def history_to_openai(rows: list[dict], *, api_turn: bool = False) -> list[dict]:
     """Stored transcript rows -> OpenAI-format messages every provider accepts.
 
     Repairs what history windows and interrupted turns leave behind: tool messages whose call was cut off,
@@ -266,8 +274,8 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
             content = r.get("content") or ""
             if r.get("attachments"):
                 content += "\n\n(Attached earlier: " + ", ".join(r["attachments"]) + ")"
-            if role == "user" and r.get("name") == API_SOURCE:
-                content = mark_outside(content, API_SOURCE)
+            if role == "user" and r.get("name") == API_SOURCE:  # the app's own earlier requests read as requests
+                content = frame_api_request(content) if api_turn else mark_outside(content, API_SOURCE)
             out.append({"role": role, "content": content})
 
     # every assistant tool call needs its reply right after it; tool messages need their call
@@ -687,7 +695,8 @@ class Agent:
         ``chat.incognito_uses_memory`` is on, and is told nothing will be kept. The chat's memory scope (#155) decides
         which facts are recalled; a work or project chat also leaves out the personal profile files."""
         incognito = bool((session or {}).get("incognito"))
-        reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        api_without_memory = channel == "api" and not self.config.openai_api.allow_memory
+        reads_memory = (not incognito or self.config.chat.incognito_uses_memory) and not api_without_memory
         scope = memory_scopes.of_session(self.config, session)
         personal = memory_scopes.is_personal(scope)
         if reads_memory:
@@ -728,6 +737,8 @@ class Agent:
             prompt += "\n\n" + memory_scopes.prompt_note(scope)
         if incognito:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
+        if api_without_memory:
+            prompt += "\n\n" + API_NO_MEMORY_NOTE
         return prompt, sources, notes
 
     def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
@@ -1764,13 +1775,13 @@ class Agent:
             incognito = bool((session or {}).get("incognito"))
             system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
-            convo = self.mark_outside_messages(history_to_openai(history))
+            convo = self.mark_outside_messages(history_to_openai(history, api_turn=bool(api_source)))
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the
             # model-facing user message so it doesn't invalidate the system prompt cache.
             if convo and convo[-1]["role"] == "user":
-                content = await self._user_content(mark_outside(user_text, API_SOURCE) if api_source else user_text, attachments)
+                content = await self._user_content(frame_api_request(user_text) if api_source else user_text, attachments)
                 tz = resolve_tz(self.config.assistant.timezone)
                 now = datetime.now(tz)
                 time_note = f"[Current time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})]"
@@ -1826,6 +1837,9 @@ class Agent:
                 tool_names = None
             if incognito:
                 tool_names = self._incognito_tools(tool_names)
+            if api_source and not self.config.openai_api.allow_memory:  # in code, not by asking the model (#479)
+                names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
+                tool_names = [n for n in names if n not in API_NO_MEMORY_TOOLS]
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
