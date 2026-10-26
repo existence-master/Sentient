@@ -1096,6 +1096,16 @@ class FactMemory:
             )
         if stale:
             await self.store.execute("DELETE FROM pending_erase WHERE at < ?", (cutoff,))
+        # A crash between the delete and its "complete" mark (a forget() that raised
+        # after the fact row went) strands the wait at complete = 0; once the memory
+        # no longer exists the delete really happened, so the wait is safe to replay.
+        # The one-hour age keeps a drain from racing an erase that is still running.
+        settled = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        await self.store.execute(
+            "UPDATE pending_erase SET complete = 1 WHERE complete = 0 AND at < ?"
+            " AND fact_id NOT IN (SELECT id FROM facts)",
+            (settled,),
+        )
         drained = 0
         for row in await self.store.fetchall(
             "SELECT id, fact_id, payload FROM pending_erase WHERE complete = 1 ORDER BY id"
@@ -1122,15 +1132,28 @@ class FactMemory:
         remaining = [(int(r["id"]), str(r["content"])) for r in rows if int(r["id"]) not in gone]
         return origins.Erased(texts, remaining, self.config.assistant.user_name)
 
-    async def _note_summary_vecs(self, pending: int, vec_ids: list[int]) -> None:
+    async def _note_summary_vecs(self, pending: int, vec_ids: list) -> None:
         """Merge summary vector row IDs into a pending erase's payload (#462), so a retry can still reach the
-        vectors once their summary rows are gone."""
+        vectors once their summary rows are gone. Each rowid is stored with its summary's TEXT id, so a retry
+        can tell an orphaned vector apart from a new summary that reused the freed rowid."""
         row = await self.store.fetchone("SELECT payload FROM pending_erase WHERE id = ?", (pending,))
         if row is None:
             return
         payload = json.loads(row["payload"])
-        known = set(payload.get("summary_vec_ids") or [])
-        payload["summary_vec_ids"] = sorted(known | set(vec_ids))
+        merged: dict[int, str | None] = {}
+        for v in payload.get("summary_vec_ids") or []:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                merged[int(v[0])] = str(v[1])
+            else:
+                merged[int(v)] = None
+        for vid, sid in vec_ids:
+            if sid is not None:
+                merged[int(vid)] = str(sid)
+            else:
+                merged.setdefault(int(vid), None)
+        payload["summary_vec_ids"] = [
+            [vid, sid] if sid is not None else vid for vid, sid in sorted(merged.items())
+        ]
         await self.store.execute(
             "UPDATE pending_erase SET payload = ? WHERE id = ?", (json.dumps(payload), pending)
         )
@@ -1144,7 +1167,15 @@ class FactMemory:
 
         # chat summaries made of the messages it came from, that repeat it, and their vectors
         said_in = {str(r["message_id"]) for r in refs if r.get("message_id")}
-        vec_ids = {int(v) for v in summary_vec_ids}
+        # rowid -> the summary's TEXT id, so a retry can tell the original apart from a
+        # new summary SQLite handed the freed rowid (#462); a bare int (a payload from
+        # before ids were recorded next to rowids) keeps the old delete-both semantics.
+        vec_ids: dict[int, str | None] = {}
+        for v in summary_vec_ids:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                vec_ids[int(v[0])] = str(v[1])
+            else:
+                vec_ids[int(v)] = None
         if said_in:
             for r in await store.fetchall("SELECT rowid, id, content, message_ids FROM summaries"):
                 try:
@@ -1152,17 +1183,24 @@ class FactMemory:
                 except ValueError:
                     continue
                 if made_of & said_in and repeats(r["content"]):
-                    vec_ids.add(int(r["rowid"]))
+                    vec_ids[int(r["rowid"])] = str(r["id"])
         if vec_ids and pending is not None:
-            # Note the vector row IDs before any summary row goes, so a retry can
-            # still delete the vectors once their rows are gone (#462).
+            # Note the vector row IDs (with their summary ids) before any summary
+            # row goes, so a retry can still delete the vectors once their rows are
+            # gone (#462) — and can leave a reused rowid alone.
             with contextlib.suppress(Exception):
-                await self._note_summary_vecs(pending, sorted(vec_ids))
-        for vid in sorted(vec_ids):
+                await self._note_summary_vecs(pending, sorted(vec_ids.items()))
+        for vid, sid in sorted(vec_ids.items()):
+            current = await store.fetchone("SELECT id FROM summaries WHERE rowid = ?", (vid,))
+            if current is not None and sid is not None and current["id"] != sid:
+                # SQLite handed the freed rowid to a new summary: the row and the
+                # vector at it are the newcomer's, not part of this cleanup (#462).
+                continue
             # The vector goes first: a failure here leaves the summary row in place,
             # so the next attempt finds both again.
             await self.episodic.vec.delete(vid)
-            await store.execute("DELETE FROM summaries WHERE rowid = ?", (vid,))
+            if current is not None:
+                await store.execute("DELETE FROM summaries WHERE rowid = ?", (vid,))
         # the nightly journal's lines about it
         for r in await store.fetchall("SELECT id, journal_md FROM dreams WHERE journal_md != ''"):
             lines = str(r["journal_md"]).splitlines()

@@ -303,5 +303,10 @@ async def delete_memory(request: Request, memory_id: int):
     mem = _memory(request)
     deleted = await mem.erase(memory_id, notify=True)  # with everything derived from it (#152)
     if not deleted:
+        # A False that left the memory in place means the erase aborted before
+        # touching anything (its pending-cleanup row could not be recorded),
+        # which is a temporary failure, not a missing id (#462).
+        if await mem.get_fact(memory_id) is not None:
+            raise HTTPException(503, "couldn't delete this memory right now, try again")
         raise HTTPException(404, f"memory {memory_id} not found")
     return {"deleted": True}
