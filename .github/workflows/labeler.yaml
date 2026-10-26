@@ -1,3 +1,4 @@
+# Probe for #473: a workflow change on a scratch base branch, deleted after.
 # Adds area labels to pull requests from the files they touch. pull_request_target lets it label PRs from forks;
 # it never checks out or runs the PR's code.
 name: Label pull requests
