@@ -89,10 +89,12 @@ You bring the change; we take care of the busywork around it, so a pull request 
   a bot tries to merge it in (a merge, never a rebase) and tells you what happened. It can update a branch in
   your fork when **Allow edits by maintainers** is ticked, except when `main` has changes to files in
   `.github/workflows/` that your fork doesn't have yet: GitHub never lets a bot bring those into a fork.
-  (Clicking **Sync fork** on your fork's page brings them in, and then `/update` works.) Then, and whenever else
-  it can't update your branch, it tells you why, shows you GitHub's **Update branch** button and labels the pull
-  request `needs update` so a maintainer can do it for you. If there are conflicts, it lists the files and
-  labels the pull request `needs update`, and a maintainer resolves them for you.
+  (Clicking **Sync fork** on your fork's page brings them in, and then `/update` works.) In that case, and when
+  your fork doesn't allow edits by maintainers, it tells you why, shows you GitHub's **Update branch** button
+  and labels the pull request `needs update` so a maintainer can do it for you. If there are conflicts, it lists
+  the files and labels the pull request `needs update`, and a maintainer resolves them for you. If the branch
+  changed while it was working, it leaves it alone and you can comment `/update` again. If anything else goes
+  wrong, it says so and labels the pull request `needs update` for a maintainer.
 
 ### PR titles
 

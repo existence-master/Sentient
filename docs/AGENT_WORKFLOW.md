@@ -160,10 +160,13 @@ have those commits yet. The token can't be given the `workflows` permission that
 an app or a secret for it. The bot still tries, because a synced fork works; when GitHub refuses, it says why,
 points at the **Update branch** button and adds `needs update`. Without conflicts, a maintainer then merges `main`
 in with their own credentials. These need the `workflow` scope: `gh auth status` lists the scopes, and
-`gh auth refresh -s workflow` adds it.
+`gh auth refresh -s workflow` adds it. Set `n` to the pull request's number; the head sha makes GitHub refuse the
+merge if someone pushed meanwhile:
 
 ```bash
-gh api -X PUT repos/existence-master/Sentient/pulls/<n>/update-branch -f expected_head_sha=<current head sha>
+n=123
+sha=$(gh pr view "$n" -R existence-master/Sentient --json headRefOid --jq .headRefOid)
+gh api -X PUT "repos/existence-master/Sentient/pulls/$n/update-branch" -f expected_head_sha="$sha"
 ```
 
 When GitHub refuses the bot for any reason, its status and message are in the run's log (as a warning) and in
