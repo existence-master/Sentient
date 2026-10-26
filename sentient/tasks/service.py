@@ -47,7 +47,7 @@ from typing import Any
 from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
 from sentient.agent.prompt import mark_outside
-from sentient.app_names import framed_app_name
+from sentient.app_names import code_span, framed_app_name
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.memory import scopes as memory_scopes
@@ -1814,10 +1814,12 @@ class TaskService(Service):
         if mcp_tasks.is_mcp_task(task):
             # the note names the app that asked for the task, framed as a name like the
             # approval notes do: the name is the app's own text, cleaned where it came in,
-            # and, the note being rendered as Markdown, escaped so it cannot form a link
+            # and, the note being rendered as Markdown, put in a code span so Markdown
+            # cannot parse it into a link. The plan's title is the app's prompt word for
+            # word, so it goes in a code span too
             who = (task.get("original_context") or {}).get("app")
             framed = framed_app_name(who, capital=False)
-            message = f"I've created a new plan for {framed}: '{short}'"
+            message = f"I've created a new plan for {framed}: {code_span(short)}"
         await self._notify(task, message, "Plan ready for approval", "approval_needed")
 
     async def _planned_script(

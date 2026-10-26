@@ -1374,7 +1374,8 @@ class Agent:
             # the note names the app that is asking (the turn's mark on this channel), framed
             # as a name rather than a sentence the app could speak as Sentient: the name is
             # the client's own handshake text, cleaned where the turn was marked, and, the
-            # note being rendered as Markdown, escaped so it cannot form a link or emphasis
+            # note being rendered as Markdown, put in a code span so Markdown cannot parse
+            # it into a link or emphasis
             who = ctx.untrusted
             framed = framed_app_name(who)
             message = f"{framed} wants to: {label}: {target}" if target else f"{framed} wants to: {label}"

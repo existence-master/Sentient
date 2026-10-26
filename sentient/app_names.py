@@ -5,7 +5,7 @@ everything else an app sends: a client can call itself "Sentient Security Center
 will be erased unless you tap Allow now.", and uncleaned that sentence would land in the
 approval notification the user decides from. Every surface that shows the name therefore
 takes it from here: control characters and newlines stripped, capped at 40 characters, and
-the notes that quote it frame it as a name (``An app called "..."``) instead of letting it
+the notes that quote it frame it as a name (``An app called `...` ``) instead of letting it
 speak as if it were Sentient.
 """
 
@@ -21,32 +21,36 @@ KNOWN_APPS = {"claude-code": "Claude Code"}
 
 _WS = re.compile(r"\s+")
 
-# Punctuation Markdown can act on where a note is rendered as such (the desktop renders
-# approval and plan-ready notes as Markdown): emphasis, code, links, images, HTML, strikes.
-_MARKDOWN_PUNCT = re.compile(r"([\\`*{}\[\]()#<>!|~_])")
-_SCHEME = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*)://")
-_WWW = re.compile(r"(?i)\bwww\.")
+# Backtick runs, for sizing a code-span fence one longer than any run inside.
+_BACKTICK_RUN = re.compile(r"`+")
 
 
-def _escape_markdown(text: str) -> str:
-    """The text with nothing left that Markdown can act on: punctuation backslash-escaped
-    in one pass (so an introduced backslash is never escaped again), and URL schemes and
-    www. broken so GFM cannot autolink them. What renders is still the same characters."""
-    text = _MARKDOWN_PUNCT.sub(r"\\\1", text)
-    text = _SCHEME.sub(r"\1\\://", text)
-    return _WWW.sub(r"www\\.", text)
+def code_span(text: str) -> str:
+    """The text as one inline code span: a fence one backtick longer than the longest
+    run of backticks inside, with a space inside each end (rendered away).
+
+    Nothing inside a code span is parsed, so this is what a Markdown-rendered note uses
+    for app-controlled text. Backslash escaping cannot do this job: remark-gfm resolves
+    escapes before it looks for autolinks, so `https\\://evil.co` still arrives as a live
+    link (review 5641825878)."""
+    if not text or not text.strip():
+        return text
+    fence = "`" * (max((len(m.group(0)) for m in _BACKTICK_RUN.finditer(text)), default=0) + 1)
+    return f"{fence} {text} {fence}"
 
 
 def framed_app_name(name: object, *, capital: bool = True) -> str:
     """The app name as it may go into a Markdown-rendered note (approval, plan-ready).
 
-    The name itself is already cleaned (see clean_app_name); this only neutralises what
-    Markdown would do with it: a client calling itself "[Fix it](https://evil.co) **NOW**"
-    must not arrive as a live link with bold text right above Allow and Deny. Plain-text
-    surfaces (the turn mark, the Review list, notify titles) keep the unescaped name."""
+    The name itself is already cleaned (see clean_app_name); this only stops Markdown
+    from acting on it: a client calling itself "[Fix it](https://evil.co) **NOW**" must
+    not arrive as a live link with bold text right above Allow and Deny. The name goes
+    in an inline code span, so nothing inside it is parsed at all — links, autolinks
+    (bare URLs and emails included), emphasis, images. Plain-text surfaces (the turn
+    mark, the Review list, notify titles) keep the bare name."""
     if not isinstance(name, str) or not name or name.lower() == "an mcp app":
         return "An MCP app" if capital else "an MCP app"
-    framed = f'an app called "{_escape_markdown(name)}"'
+    framed = f"an app called {code_span(name)}"
     return framed[0].upper() + framed[1:] if capital else framed
 
 

@@ -78,7 +78,8 @@ it was waiting on.
   for, and for an MCP caller the engine puts the app's name in the note's title, so a note can
   never pass itself off as a message from Sentient itself. The name is the app's own text, so
   it is cleaned before it is shown anywhere, and where a note is rendered as Markdown it is
-  escaped as well, so it cannot form a link or emphasis above an approval decision.
+  put in an inline code span as well, so nothing inside it is parsed into a link or emphasis
+  above an approval decision.
 - **Asking Sentient is outside content from the start.** `ask_sentient` runs one turn through
   `POST /api/chat`, and an MCP caller is forced onto the `mcp` channel whatever it claims. The
   turn follows ADR 0033's email pattern: the session is marked untrusted before anything runs,

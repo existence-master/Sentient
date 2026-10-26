@@ -1665,9 +1665,11 @@ transport is deliberately not offered; it may return later, protected by the sam
   notification (section 6) the user can answer in the window or on their phone. The app's name is the
   client's own handshake text, so wherever it is shown (the turn's mark, the approval and plan-ready
   notes, the Review list) it is cleaned first (control characters stripped, capped at 40 characters)
-  and framed as a name (`An app called "..."`), never left to read as a sentence from Sentient. Where a
-  note is rendered as Markdown (approval, plan-ready), the name is additionally escaped, so it cannot
-  form a link, emphasis or an autolinked URL above the Allow and Deny buttons. The body's `model`,
+  and framed as a name (`An app called ...`), never left to read as a sentence from Sentient. Where a
+  note is rendered as Markdown (approval, plan-ready), the name goes in an inline code span, so nothing
+  inside it is parsed — no link, emphasis, image or autolinked URL — above the Allow and Deny buttons.
+  A plan-ready note for an MCP task quotes the plan's title the same way, since it is the app's prompt
+  word for word. The body's `model`,
   `attachments` and `incognito` are ignored, so the app cannot pull files into the turn, pick a model or
   flip the user's incognito switch. The MCP client is outside content and can never answer an approval.
 - `mcp` is also in the frozen engine's command list (`packaging/engine_entry.py`), which `tests/test_packaging.py`
