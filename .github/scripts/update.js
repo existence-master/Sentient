@@ -4,9 +4,15 @@
 //   - already up to date      -> says so, and takes the "needs update" label off
 //   - main conflicts with it  -> lists the files, adds "needs update" and says a maintainer will resolve them
 //   - it may push the branch  -> merges main in with GitHub's update-branch API (a merge, never a rebase). That
-//                                works for forks too, when "Allow edits by maintainers" is on.
+//                                works for forks too, anyone's, when "Allow edits by maintainers" is on.
+//   - a fork, and the merge changes a workflow file -> doesn't try: GitHub refuses the workflow token any change
+//                                under .github/workflows/ in a fork, whoever owns it ("refusing to allow a GitHub
+//                                App to create or update workflow ... without `workflows` permission", #473), and
+//                                GITHUB_TOKEN can't be given that permission. (A branch in this repository is fine.)
+//                                Names the files, points at the "Update branch" button and adds the label.
 //   - it may not (a fork without maintainer edits, or GitHub refuses) -> points the author at GitHub's own
 //                                "Update branch" button and adds the label so a maintainer can follow up
+// Whenever update-branch fails, GitHub's status and message go into the run log (as a warning) and the job summary.
 // When the branch is pushed again and is up to date, the label comes off by itself (clearLabel).
 //
 // After its own merge commit the bot restarts the checks, because GitHub treats a commit made with the workflow
@@ -32,8 +38,17 @@ const LABEL = {
 const WRITERS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
 const CLA_CHECK = 'CLAAssistant';
 const POLL = { tries: 12, ms: 5000 };
+// In a fork GitHub only lets a token with the `workflows` permission write here, and the workflow token can't have it.
+const WORKFLOWS_DIR = '.github/workflows/';
 
 const code = (s) => `\`${s}\``;
+
+// The end of every reply that hands the update to the author or a maintainer.
+const buttonHint = (base, clean) =>
+  (clean ? `It has no conflicts with ${code(base)}, so click` : 'Click') +
+  ' **Update branch** near the bottom of this pull request and GitHub merges it in for you. ' +
+  `I have also labelled it ${code(LABEL.name)} so a maintainer can follow up. ` +
+  "There's no rush: the merge queue tests your change against the latest main anyway.";
 
 const MESSAGES = {
   updated: (base, sha, checks) =>
@@ -60,10 +75,12 @@ const MESSAGES = {
     (canEdit
       ? "I can't push to this branch: GitHub refused the update for this fork. "
       : "I can't push to this branch, because it lives in a fork that doesn't allow edits by maintainers. ") +
-    (clean ? `It has no conflicts with ${code(base)}, so click` : 'Click') +
-    ' **Update branch** near the bottom of this pull request and GitHub merges it in for you. ' +
-    `I have also labelled it ${code(LABEL.name)} so a maintainer can follow up. ` +
-    "There's no rush: the merge queue tests your change against the latest main anyway.",
+    buttonHint(base, clean),
+  workflows: (base, files, clean) =>
+    `I can't merge ${code(base)} into this branch myself: it would change the repository's workflow files` +
+    (files && files.length ? ` (${files.map(code).join(', ')})` : '') +
+    ', and GitHub never lets a bot push those to a fork. ' +
+    buttonHint(base, clean),
   headMoved: 'This branch changed while I was updating it, so I left it alone. Comment `/update` again to retry.',
   closed: 'This pull request is closed, so there is nothing to update.',
   notAllowed:
@@ -106,13 +123,17 @@ function isFork(pr, owner, repo) {
 /**
  * Decides what to do once the branch's state is known, without touching GitHub.
  * behind: commits on the base branch the PR lacks. conflicts: conflicting files ([] for none, null if unknown).
- * Returns "upToDate" | "conflicts" | "useButton" | "updateBranch".
+ * workflows: files under .github/workflows/ the merge would change ([] for none, null if unknown).
+ * Returns "upToDate" | "conflicts" | "useButton" | "workflows" | "updateBranch".
  */
-function decide({ behind, conflicts, fork, canEdit }) {
+function decide({ behind, conflicts, workflows, fork, canEdit }) {
   if (behind === 0) return 'upToDate';
   if (conflicts && conflicts.length) return 'conflicts';
   // Without "Allow edits by maintainers" nobody but the author can push to a fork's branch.
   if (fork && !canEdit) return 'useButton';
+  // On a fork (anyone's, the owner's too) GitHub refuses the workflow token any change to a workflow file, so
+  // don't try. A branch in this repository is updated fine (#473).
+  if (fork && workflows && workflows.length) return 'workflows';
   return 'updateBranch';
 }
 
@@ -128,10 +149,11 @@ async function behindBy(github, { owner, repo, pr }) {
 }
 
 /**
- * Files that conflict when the base branch is merged into the PR, found with `git merge-tree` in a fresh bare
- * repository (only git objects, never a checkout). Returns [] when it merges cleanly.
+ * Merges the base branch into the PR with `git merge-tree` in a fresh bare repository (only git objects, never a
+ * checkout). Returns { conflicts, workflows }: the conflicting files ([] when it merges cleanly), and the files
+ * under .github/workflows/ that the merge changes on the PR's branch.
  */
-function gitConflicts({ owner, repo, number, base, dir }) {
+function gitMergeCheck({ owner, repo, number, base, dir }) {
   const { execFileSync } = require('node:child_process');
   const fs = require('node:fs');
   if (!/^[A-Za-z0-9._/-]+$/.test(base) || !/^\d+$/.test(String(number))) throw new Error('unexpected ref');
@@ -149,15 +171,24 @@ function gitConflicts({ owner, repo, number, base, dir }) {
   git('config', 'remote.origin.partialclonefilter', 'blob:none');
   git('fetch', '--quiet', '--no-tags', '--filter=blob:none', 'origin',
     `+refs/heads/${base}:refs/heads/base`, `+refs/pull/${number}/head:refs/heads/pr`);
+  let out;
+  let conflicts = [];
   try {
-    git('merge-tree', '--write-tree', '--name-only', '--no-messages', 'pr', 'base');
-    return [];
+    out = git('merge-tree', '--write-tree', '--name-only', '--no-messages', 'pr', 'base');
   } catch (err) {
     // Exit code 1 means conflicts: the first line is a tree id, the rest are the conflicting files.
     if (err.status !== 1) throw err;
-    const lines = String(err.stdout || '').split('\n').slice(1).map((l) => l.trim()).filter(Boolean);
-    return [...new Set(lines)];
+    out = String(err.stdout || '');
+    conflicts = [...new Set(out.split('\n').slice(1).map((l) => l.trim()).filter(Boolean))];
   }
+  const tree = out.split('\n')[0].trim();
+  if (!/^[0-9a-f]{40,64}$/.test(tree)) throw new Error('git merge-tree gave no tree');
+  // Compares tree entries only (no rename detection), so no file contents are fetched.
+  const workflows = git('diff-tree', '-r', '--name-only', 'pr', tree, '--', WORKFLOWS_DIR)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return { conflicts, workflows };
 }
 
 async function addLabel(github, { owner, repo, issue_number }) {
@@ -281,11 +312,39 @@ async function approveHeldRuns(github, { owner, repo, oldSha, newSha, sleep, pol
 }
 
 /**
+ * GitHub's answer when update-branch fails, for the run log and the job summary: the status, GitHub's message and
+ * the request id (which GitHub support can look up). Never the request itself, whose headers hold the token.
+ */
+function describeError(err) {
+  const response = (err && err.response) || {};
+  const data = response.data || {};
+  const message = String(data.message || (err && err.message) || 'no message').replace(/\s+/g, ' ').trim();
+  const id = response.headers && response.headers['x-github-request-id'];
+  return `${(err && err.status) || 'no status'} ${message}${id ? ` (request ${id})` : ''}`;
+}
+
+/** Writes what happened to the job summary, so nobody has to dig through the log. Never fails the run. */
+async function writeSummary(core, rows) {
+  if (!core.summary) return;
+  try {
+    await core.summary
+      .addHeading('/update', 3)
+      .addTable([
+        [{ data: 'What', header: true }, { data: 'Result', header: true }],
+        ...rows.map(([k, v]) => [k, String(v)]),
+      ])
+      .write();
+  } catch (err) {
+    core.info(`Could not write the job summary: ${err.message}`);
+  }
+}
+
+/**
  * Entry point for actions/github-script:
  * `await require('./.github/scripts/update.js')({ github, context, core })`.
- * `findConflicts`, `sleep` and `poll` are swapped out by the tests.
+ * `checkMerge`, `sleep` and `poll` are swapped out by the tests.
  */
-async function run({ github, context, core, findConflicts, sleep, poll = POLL, workDir }) {
+async function run({ github, context, core, checkMerge, sleep, poll = POLL, workDir }) {
   const { issue, comment } = context.payload;
   if (!issue || !comment) return core.info('Not a comment.');
   if (!issue.pull_request) return core.info('Comment is on an issue, not a pull request: ignored.');
@@ -314,24 +373,28 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
 
   const behind = await behindBy(github, { owner, repo, pr });
   let conflicts = null;
+  let workflows = null;
   if (behind > 0) {
     try {
-      conflicts = await (findConflicts || gitConflicts)({
+      ({ conflicts, workflows } = await (checkMerge || gitMergeCheck)({
         owner,
         repo,
         number: issue_number,
         base,
         dir: workDir || `${process.env.RUNNER_TEMP || require('node:os').tmpdir()}/update-merge-check`,
-      });
+      }));
     } catch (err) {
-      core.warning(`Could not check for conflicts: ${err.message}`);
+      // Unknown, so update-branch is still tried: it may well work.
+      core.warning(`Could not check for conflicts or workflow changes: ${err.message}`);
     }
   }
-  let action = decide({ behind, conflicts, fork, canEdit });
+  let action = decide({ behind, conflicts, workflows, fork, canEdit });
+  const known = (list) => (list === null ? 'unknown' : list.length ? list.join(', ') : 'none');
   core.info(
     `/update by ${commenter} on #${issue_number}: behind ${behind}, fork ${fork}, maintainer edits ${canEdit}, ` +
-      `conflicts ${conflicts === null ? 'unknown' : conflicts.length} -> ${action}`,
+      `conflicts ${known(conflicts)}, workflow changes ${known(workflows)} -> ${action}`,
   );
+  let refused = null;
 
   let newSha = null;
   let ourMerge = false;
@@ -342,9 +405,12 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
       action = 'updated';
     } catch (err) {
       const message = String(err.message || '');
-      core.info(`update-branch answered ${err.status}: ${message}`);
+      refused = describeError(err);
+      core.warning(`update-branch was refused. GitHub answered ${refused}`);
       if (err.status === 422 && /expected head sha/i.test(message)) action = 'headMoved';
       else if (err.status === 422 && /conflict/i.test(message)) action = 'conflicts';
+      // A workflow file the up-front check couldn't see (it failed, or GitHub counts the change differently).
+      else if (fork && err.status === 403 && /workflow/i.test(message)) action = 'workflows';
       // GitHub may still refuse to push to a fork (for example one owned by an organisation).
       else if (fork && [403, 404, 422].includes(err.status)) action = 'useButton';
       else action = 'failed';
@@ -368,17 +434,30 @@ async function run({ github, context, core, findConflicts, sleep, poll = POLL, w
   // Only GitHub's own merge commit proves the branch is current (a push meanwhile could be anything), so
   // otherwise the label stays.
   if (action === 'upToDate' || (action === 'updated' && ourMerge)) await removeLabel(github, { owner, repo, issue_number });
-  if (['conflicts', 'useButton', 'failed'].includes(action)) await addLabel(github, { owner, repo, issue_number });
+  if (['conflicts', 'useButton', 'workflows', 'failed'].includes(action)) {
+    await addLabel(github, { owner, repo, issue_number });
+  }
 
   const reply = {
     upToDate: () => MESSAGES.upToDate(base),
     updated: () => (newSha ? MESSAGES.updated(base, newSha, checks) : MESSAGES.updating(base)),
     conflicts: () => MESSAGES.conflicts(base, conflicts, canEdit),
     useButton: () => MESSAGES.useButton(base, canEdit, Array.isArray(conflicts) && conflicts.length === 0),
+    workflows: () => MESSAGES.workflows(base, workflows, Array.isArray(conflicts) && conflicts.length === 0),
     headMoved: () => MESSAGES.headMoved,
     failed: () => MESSAGES.failed(base),
   }[action]();
   core.info(`Result: ${action}${action === 'updated' ? `, checks ${checks}` : ''}`);
+  await writeSummary(core, [
+    ['Pull request', `#${issue_number} from ${pr.head && pr.head.repo ? pr.head.repo.full_name : 'a deleted fork'}`],
+    ['Asked by', commenter],
+    ['Behind', `${behind} commit(s) on ${base}`],
+    ['Maintainer edits', fork ? String(canEdit) : 'not needed (same repository)'],
+    ['Conflicts', known(conflicts)],
+    ['Workflow files the merge changes', known(workflows)],
+    ['update-branch', refused ? `refused: ${refused}` : action === 'updated' ? 'accepted' : 'not tried'],
+    ['Result', action === 'updated' ? `updated, checks ${checks}` : action],
+  ]);
   return say(reply);
 }
 
@@ -404,6 +483,7 @@ module.exports.parseCommand = parseCommand;
 module.exports.mayUpdate = mayUpdate;
 module.exports.isFork = isFork;
 module.exports.decide = decide;
-module.exports.gitConflicts = gitConflicts;
+module.exports.gitMergeCheck = gitMergeCheck;
+module.exports.describeError = describeError;
 module.exports.MESSAGES = MESSAGES;
 module.exports.LABEL = LABEL;

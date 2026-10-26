@@ -86,9 +86,12 @@ You bring the change; we take care of the busywork around it, so a pull request 
   a review, never as a surprise commit.
 - **Your branch doesn't need to be up to date to merge.** The merge queue tests your change on top of the
   latest `main` before it lands. If you want `main` merged in anyway, comment `/update` on the pull request:
-  a bot tries to merge it in (a merge, never a rebase) and tells you what happened. If it can't update your
-  branch, it shows you how to do it with GitHub's **Update branch** button. If there are conflicts, it lists
-  the files and labels the pull request `needs update`, and a maintainer resolves them for you.
+  a bot tries to merge it in (a merge, never a rebase) and tells you what happened. It can update a branch in
+  your fork when **Allow edits by maintainers** is ticked, except when `main` has changed a file in
+  `.github/workflows/` since your branch started: GitHub never lets a bot push workflow files to a fork. Then,
+  and whenever else it can't update your branch, it tells you why, shows you GitHub's **Update branch** button
+  and labels the pull request `needs update` so a maintainer can do it for you. If there are conflicts, it
+  lists the files and labels the pull request `needs update`, and a maintainer resolves them for you.
 
 ### PR titles
 

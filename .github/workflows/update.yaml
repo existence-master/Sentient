@@ -28,7 +28,8 @@ jobs:
     timeout-minutes: 8
     # Each one was tried for real (#464): update-branch needs both contents and pull-requests write, also for a fork
     # with maintainer edits on. GitHub holds the checks of a commit made with this token, so restarting them needs
-    # the other two (see update.js).
+    # the other two (see update.js). There is no `workflows` permission for this token, so GitHub refuses any merge
+    # that changes a fork's .github/workflows/ files; update.js spots that first and says so (#473).
     permissions:
       contents: write # update-branch writes the merge commit to the pull request's branch
       pull-requests: write # update-branch, the reply and the "needs update" label
