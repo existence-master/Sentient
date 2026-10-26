@@ -44,6 +44,7 @@ import {
 import { AskController } from './ask'
 import { BackendManager } from './backend'
 import { CH } from './channels'
+import { closeAction } from './close-logic'
 import { DictationController, dictationSettingsFromConfig } from './dictation'
 import { DesktopNode } from './node'
 import { liveSensors, LOCAL_MIC_ID, type LiveSensors } from './sensors-logic'
@@ -106,15 +107,25 @@ function createWindow(route: string): BrowserWindow {
     smokeSize: smoke?.size,
     startHidden
   })
+  let quitWhenClosed = false
   w.on('close', (event) => {
-    const toTray = shellState.prefs().minimizeToTray !== false
-    if (!quitting && !smoke && tray && toTray) {
+    const action = closeAction({
+      quitting,
+      smoke: !!smoke,
+      hasTray: !!tray,
+      minimizeToTray: shellState.prefs().minimizeToTray,
+      platform: process.platform
+    })
+    if (action === 'hide') {
       event.preventDefault()
       w.hide()
     }
+    // #439 The hidden pill and ask windows would keep the app (and its engine) running, so quit on purpose.
+    quitWhenClosed = action === 'quit'
   })
   w.on('closed', () => {
     if (win === w) win = null
+    if (quitWhenClosed) app.quit()
   })
   // Always listening needs the renderer (mic + voice socket) to keep running while hidden in the tray.
   if (!smoke && shellState.prefs().alwaysListening) w.webContents.setBackgroundThrottling(false)
