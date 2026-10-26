@@ -17,9 +17,10 @@ x@evil.example"), and a small model can make up a recipient or an amount. Before
    (``Tool.destinations_fn``); one that a Reply-To header redirects to another address is flagged too.
 2. ``model_check`` (only for effective risk ``send`` or ``exec``, and only when the call would otherwise run without
    asking or the run read outside content): one short, tool-free prompt on the ``fast`` role that sees only the
-   user's request, the rules and the action's arguments, never the outside content, and answers whether the action
-   matches what was asked. No usable answer (an error, a refusal, a timeout, unparseable JSON) counts as a mismatch:
-   it fails closed. ``tools.approvals.second_look_model`` turns this part off; the deterministic part always runs.
+   user's request (in a task run, the task's brief in plain words, ``TASK_REQUEST_KEY``), the rules and the action's
+   arguments, never the outside content, and answers whether the action matches what was asked. No usable answer
+   (an error, a refusal, a timeout, unparseable JSON) counts as a mismatch: it fails closed.
+   ``tools.approvals.second_look_model`` turns this part off; the deterministic part always runs.
 
 A warning only ever adds a question, never removes one (AGENTS.md: a model may raise a risk, never lower it). The
 agent loop raises the call to at least ``send``, asks whatever the approvals mode, Allow rules, "Allow for this
@@ -74,6 +75,10 @@ BRIEF_FROM_KEY = "brief_from"
 # what such a run's user asked, in Sentient's words (it holds no outside text): the model check reads it, so a reply
 # the email asked for isn't flagged as "not requested"
 BRIEF_REQUEST = "Do what the email I forwarded asks."
+# ``ToolContext.extra`` key: what the user asked a task to do, in plain words (its objective and approved plan, set by
+# the task executor). The model check reads it instead of the executor's system prompt, whose own instructions ("If a
+# tool fails, analyze the error") it otherwise took for the user's words (#455). Never used for a brief from an email.
+TASK_REQUEST_KEY = "task_request"
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
 _PHONE = re.compile(r"^\+?[\d\s().\-]{7,24}$")
@@ -754,6 +759,16 @@ class Look:
             )
         return self._evidence
 
+    def request(self) -> str:
+        """What the model check reads as the user's words: a task run's brief in plain words when the run has one
+        (``TASK_REQUEST_KEY``, #455), else the request ``gather`` found. The deterministic check keeps reading all of
+        the run's own words."""
+        extra = getattr(self.ctx, "extra", None) or {}
+        brief = str(extra.get(TASK_REQUEST_KEY) or "").strip()
+        if brief and extra.get("task_id") and not extra.get(BRIEF_FROM_KEY):
+            return brief
+        return self.evidence().request
+
     async def destinations(self) -> list[dict]:
         """Who the call goes to when its arguments don't say (a reply: the thread's headers, #144), also kept on the
         plan so the approval card and the undo window show it. [] when the tool can't tell; the call itself then
@@ -798,8 +813,7 @@ class Look:
         if wording.get("target"):
             action += f" ({wording['target']})"
         warning = await model_check(
-            self.agent.llm, self.evidence().request, action, self.arguments, attended=self.attended,
-            model=self.model_name,
+            self.agent.llm, self.request(), action, self.arguments, attended=self.attended, model=self.model_name,
         )
         if warning:
             log.info("second look: %s flagged (model): %s", self.tool.name, warning)

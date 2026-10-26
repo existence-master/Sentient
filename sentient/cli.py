@@ -181,7 +181,7 @@ def claude_code_tools(tools_file: str):
 
 @app.command()
 def backup(
-    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups)."),
+    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups; a data folder other than ~/.sentient uses its own backups folder)."),
 ):
     """Back up the data folder (database, config, workspace, skills, files) to one zip file."""
     from sentient.backup import archive

@@ -10,7 +10,8 @@ A backup is one zip file:
 Never inside: keychain secrets (API keys, tokens, sign-ins), ``gateway.token``, logs, the browser profile,
 WhatsApp's link, downloaded voice models, scratch folders, the backups folder itself, and open incognito chats.
 
-Backups go to ``Documents/Sentient Backups`` by default (:func:`default_folder`), outside the data folder.
+Backups go to ``Documents/Sentient Backups`` by default (:func:`default_folder`), outside the data folder; any
+data folder other than ``~/.sentient`` keeps them in its own ``backups`` folder instead.
 
 A snapshot is the same format without ``files/`` (nothing that takes one changes files). Sentient takes one before
 it updates its database and before an import; the last N are kept.
@@ -37,7 +38,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from sentient import __version__, paths
+from sentient import __version__, paths, secrets
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +93,11 @@ def cloud_service(path: Path) -> str | None:
 
 def default_folder(home: Path | None = None) -> Path:
     """Where backups go unless the user picked a folder: ``Documents/Sentient Backups``, outside the data folder so a
-    backup survives losing it. ``<home>/backups`` when Documents is missing or can't be written to."""
+    backup survives losing it. ``<home>/backups`` when Documents is missing or can't be written to, and always for a
+    data folder other than the default ``~/.sentient`` (a test or demo home, another profile), so its backups never
+    land next to the real ones."""
+    if not secrets.is_default_home(home):
+        return backups_root(home)
     docs = paths.documents_dir()
     target = docs / BACKUP_FOLDER_NAME
     try:
