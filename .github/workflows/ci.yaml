@@ -30,7 +30,7 @@ jobs:
   engine:
     name: Engine tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:

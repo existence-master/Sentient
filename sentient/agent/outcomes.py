@@ -85,6 +85,11 @@ _ERROR_TEXT = re.compile(r"^\s*(error|failed|failure|could ?n[o']t|unable to)\b"
 _ADDRESS = re.compile(r"[^\s,;<>\"']+@[^\s,;<>\"']+")
 
 
+def _straight_apostrophes(text: str) -> str:
+    """Fold curly apostrophes to straight ones so negation patterns match either."""
+    return (text or "").replace("\u2019", "'").replace("\u2018", "'")
+
+
 def _clip(text: Any, limit: int = MAX_DETAIL) -> str:
     s = " ".join(str(text or "").split())
     return s if len(s) <= limit else s[: limit - 3].rstrip() + "..."
@@ -175,7 +180,7 @@ def result_problem(res: Any, _depth: int = 0) -> tuple[str, list[str]] | None:
             if parsed is not None:
                 if found := result_problem(parsed, _depth + 1):
                     return found
-            elif _ERROR_TEXT.match(content):
+            elif _ERROR_TEXT.match(_straight_apostrophes(content)):
                 return _clip(content), []
         for key, value in res.items():
             if key in ("content", "error") or not isinstance(value, dict | list):
@@ -422,7 +427,7 @@ def unmade_browser_click_note(text: str, calls: list[dict], history: list[dict] 
             not explicit
             and clicks
             and _BROWSER_CLICK_CLAIM.search(claim)
-            and not _NEGATED_BROWSER_CLICK.search(claim)
+            and not _NEGATED_BROWSER_CLICK.search(_straight_apostrophes(claim))
             and not _OTHER_PERSON_BROWSER_CLICK.search(claim)
         )
         if passive and (note := _click_note(clicks, _claimed_click_target(claim))):
