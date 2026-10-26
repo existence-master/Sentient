@@ -154,12 +154,13 @@ that changes behaviour or design goes back to them as a review. Pull requests la
 takes the label off once the branch is up to date.
 
 The `/update` bot runs on the built-in `GITHUB_TOKEN`. That token can merge `main` into a branch in this
-repository, and into a fork's branch (anyone's fork) when "Allow edits by maintainers" is on, but GitHub refuses
-it any change to a fork's `.github/workflows/` files, and the token can't be given the `workflows` permission it
-would need. So when `main` changed a workflow file since a fork's branch started, the bot doesn't try: it says
-why, points at the **Update branch** button and adds `needs update`. Without conflicts, a maintainer then
-merges `main` in with their own credentials. These need the `workflow` scope: `gh auth status` lists the scopes,
-and `gh auth refresh -s workflow` adds it.
+repository, and into a fork's branch (anyone's fork, the owner's too) when "Allow edits by maintainers" is on.
+GitHub refuses it one thing: a merge that brings commits changing `.github/workflows/` into a fork that doesn't
+have those commits yet. The token can't be given the `workflows` permission that would allow it, and we don't add
+an app or a secret for it. The bot still tries, because a synced fork works; when GitHub refuses, it says why,
+points at the **Update branch** button and adds `needs update`. Without conflicts, a maintainer then merges `main`
+in with their own credentials. These need the `workflow` scope: `gh auth status` lists the scopes, and
+`gh auth refresh -s workflow` adds it.
 
 ```bash
 gh api -X PUT repos/existence-master/Sentient/pulls/<n>/update-branch -f expected_head_sha=<current head sha>

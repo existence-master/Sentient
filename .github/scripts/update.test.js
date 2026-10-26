@@ -206,13 +206,6 @@ test('isFork and decide', () => {
   assert.equal(decide({ behind: 2, conflicts: [], fork: true, canEdit: false }), 'useButton');
   assert.equal(decide({ behind: 2, conflicts: [], fork: true, canEdit: true }), 'updateBranch');
   assert.equal(decide({ behind: 2, conflicts: null, fork: false, canEdit: true }), 'updateBranch');
-  // A workflow change stops the bot on a fork only; unknown (null) still tries.
-  const wf = ['.github/workflows/ci.yaml'];
-  assert.equal(decide({ behind: 2, conflicts: [], workflows: wf, fork: true, canEdit: true }), 'workflows');
-  assert.equal(decide({ behind: 2, conflicts: [], workflows: wf, fork: false, canEdit: true }), 'updateBranch');
-  assert.equal(decide({ behind: 2, conflicts: [], workflows: null, fork: true, canEdit: true }), 'updateBranch');
-  assert.equal(decide({ behind: 2, conflicts: ['a'], workflows: wf, fork: true, canEdit: true }), 'conflicts');
-  assert.equal(decide({ behind: 2, conflicts: [], workflows: wf, fork: true, canEdit: false }), 'useButton');
 });
 
 test('comments on issues, from bots, and other text are ignored', async () => {
@@ -307,50 +300,57 @@ test('a fork GitHub refuses to push to falls back to the button', async () => {
   assert.doesNotMatch(reply(fake)[0], /doesn't allow edits/);
 });
 
-test('a fork whose merge changes a workflow file: says why, points at the button, labels it, no push tried', async () => {
-  const fake = fakeGithub({ pr: FORK });
-  const log = recordingCore();
-  await runWith(fake, context(), [], { workflows: ['.github/workflows/assign.yaml', '.github/workflows/ci.yaml'], log });
-  assert.ok(!fake.names().includes('updateBranch'));
-  assert.deepEqual(fake.calls.find((c) => c[0] === 'addLabels')[1], ['needs update']);
-  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.workflows('main', ['.github/workflows/assign.yaml', '.github/workflows/ci.yaml'], true)}`);
-  assert.match(
-    reply(fake)[0],
-    /it would change the repository's workflow files \(`\.github\/workflows\/assign\.yaml`, `\.github\/workflows\/ci\.yaml`\), and GitHub never lets a bot push those to a fork\. It has no conflicts with `main`, so click \*\*Update branch\*\*/,
-  );
-  assert.deepEqual(log.rows.find((r) => r[0] === 'update-branch'), ['update-branch', 'not tried']);
-  assert.deepEqual(log.rows.find((r) => r[0] === 'Result'), ['Result', 'workflows']);
-});
+// What GitHub answered on #499 and #521 (#473), as Octokit's RequestError carries it.
+function workflowRefusal(file) {
+  const msg = `refusing to allow a GitHub App to create or update workflow \`${file}\` without \`workflows\` permission`;
+  const err = httpError(403, `${msg} - https://docs.github.com/rest/pulls/pulls#update-a-pull-request-branch`);
+  err.response = { data: { message: msg }, headers: { 'x-github-request-id': 'E450:16DDE7' } };
+  err.request = { headers: { authorization: 'token ghs_secret' } };
+  return err;
+}
 
-test('a same-repo branch whose merge changes a workflow file is still updated', async () => {
-  const fake = fakeGithub();
+test('a fork whose merge changes a workflow file is still tried, because a synced fork is updated fine', async () => {
+  const fake = fakeGithub({ pr: FORK });
   await runWith(fake, context(), [], { workflows: ['.github/workflows/ci.yaml'] });
   assert.ok(fake.names().includes('updateBranch'));
   assert.match(reply(fake)[0], /^@maya-rao Merged the latest `main`/);
 });
 
-test("GitHub's refusal is logged as a warning and in the summary, with the status, message and request id", async () => {
-  const err = httpError(
-    403,
-    'refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yaml` without `workflows` permission - https://docs.github.com/rest/pulls/pulls#update-a-pull-request-branch',
-  );
-  err.response = {
-    data: { message: 'refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yaml` without `workflows` permission' },
-    headers: { 'x-github-request-id': 'E450:16DDE7' },
-  };
-  err.request = { headers: { authorization: 'token ghs_secret' } };
-  const fake = fakeGithub({ update: err, pr: FORK });
+test('GitHub refusing a fork over workflow files: says why plainly, names the files, button and label', async () => {
+  const fake = fakeGithub({ update: workflowRefusal('.github/workflows/ci.yaml'), pr: FORK });
   const log = recordingCore();
-  // The up-front check failed, so the bot tried, and maps GitHub's answer to the same plain reply.
+  const files = ['.github/workflows/assign.yaml', '.github/workflows/ci.yaml'];
+  await runWith(fake, context(), [], { workflows: files, log });
+  assert.deepEqual(fake.calls.find((c) => c[0] === 'addLabels')[1], ['needs update']);
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.workflows('main', files, true)}`);
+  assert.match(
+    reply(fake)[0],
+    /^@maya-rao GitHub didn't let me merge `main` into this branch: `main` has changes to the repository's workflow files \(`\.github\/workflows\/assign\.yaml`, `\.github\/workflows\/ci\.yaml`\) that your fork doesn't have yet, and GitHub never lets a bot bring those into a fork\. It has no conflicts with `main`, so click \*\*Update branch\*\*/,
+  );
+  assert.doesNotMatch(reply(fake)[0], /refused the update for this fork/);
+  assert.deepEqual(log.rows.find((r) => r[0] === 'Result'), ['Result', 'workflows']);
+});
+
+test("GitHub's refusal is logged as a warning and in the summary, with the status, message and request id", async () => {
+  const fake = fakeGithub({ update: workflowRefusal('.github/workflows/ci.yaml'), pr: FORK });
+  const log = recordingCore();
+  // With the merge check failed, the file comes from GitHub's own message.
   await runWith(fake, context(), new Error('fetch failed'), { log });
-  assert.ok(fake.names().includes('updateBranch'));
-  const want = '403 refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yaml` without `workflows` permission (request E450:16DDE7)';
+  const want =
+    '403 refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yaml` without ' +
+    '`workflows` permission (request E450:16DDE7)';
   assert.deepEqual(log.lines.find((l) => /update-branch/.test(l[1])), ['warning', `update-branch was refused. GitHub answered ${want}`]);
   assert.deepEqual(log.rows.find((r) => r[0] === 'update-branch'), ['update-branch', `refused: ${want}`]);
   assert.ok(!JSON.stringify([log.lines, log.rows]).includes('ghs_secret'));
-  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.workflows('main', null, false)}`);
-  assert.match(reply(fake)[0], /workflow files, and GitHub never lets a bot push those to a fork\. Click \*\*Update branch\*\*/);
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.workflows('main', ['.github/workflows/ci.yaml'], false)}`);
+  assert.match(reply(fake)[0], /\(`\.github\/workflows\/ci\.yaml`\) that your fork doesn't have yet.*Click \*\*Update branch\*\*/);
   assert.ok(fake.names().includes('addLabels'));
+});
+
+test('a workflow refusal on a same-repo branch is not blamed on a fork', async () => {
+  const fake = fakeGithub({ update: workflowRefusal('.github/workflows/ci.yaml') });
+  await runWith(fake);
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.failed('main')}`);
 });
 
 test('describeError copes with errors that have no response', () => {

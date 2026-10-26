@@ -5,11 +5,13 @@
 //   - main conflicts with it  -> lists the files, adds "needs update" and says a maintainer will resolve them
 //   - it may push the branch  -> merges main in with GitHub's update-branch API (a merge, never a rebase). That
 //                                works for forks too, anyone's, when "Allow edits by maintainers" is on.
-//   - a fork, and the merge changes a workflow file -> doesn't try: GitHub refuses the workflow token any change
-//                                under .github/workflows/ in a fork, whoever owns it ("refusing to allow a GitHub
-//                                App to create or update workflow ... without `workflows` permission", #473), and
-//                                GITHUB_TOKEN can't be given that permission. (A branch in this repository is fine.)
-//                                Names the files, points at the "Update branch" button and adds the label.
+//   - GitHub refuses a fork because of workflow files -> says so plainly, names the files, points at the "Update
+//                                branch" button and adds the label. GitHub refuses the workflow token a push that
+//                                brings commits changing .github/workflows/ into a fork that doesn't have them yet
+//                                ("refusing to allow a GitHub App to create or update workflow ... without
+//                                `workflows` permission", #473), whoever owns the fork, and GITHUB_TOKEN can't be
+//                                given that permission. A fork that already has them (synced) is updated fine, and
+//                                so is a branch in this repository, so the bot still tries.
 //   - it may not (a fork without maintainer edits, or GitHub refuses) -> points the author at GitHub's own
 //                                "Update branch" button and adds the label so a maintainer can follow up
 // Whenever update-branch fails, GitHub's status and message go into the run log (as a warning) and the job summary.
@@ -38,7 +40,7 @@ const LABEL = {
 const WRITERS = ['OWNER', 'MEMBER', 'COLLABORATOR'];
 const CLA_CHECK = 'CLAAssistant';
 const POLL = { tries: 12, ms: 5000 };
-// In a fork GitHub only lets a token with the `workflows` permission write here, and the workflow token can't have it.
+// Bringing new changes here into a fork needs the `workflows` permission, which the workflow token can't have.
 const WORKFLOWS_DIR = '.github/workflows/';
 
 const code = (s) => `\`${s}\``;
@@ -77,9 +79,10 @@ const MESSAGES = {
       : "I can't push to this branch, because it lives in a fork that doesn't allow edits by maintainers. ") +
     buttonHint(base, clean),
   workflows: (base, files, clean) =>
-    `I can't merge ${code(base)} into this branch myself: it would change the repository's workflow files` +
+    `GitHub didn't let me merge ${code(base)} into this branch: ${code(base)} has changes to the repository's ` +
+    'workflow files' +
     (files && files.length ? ` (${files.map(code).join(', ')})` : '') +
-    ', and GitHub never lets a bot push those to a fork. ' +
+    " that your fork doesn't have yet, and GitHub never lets a bot bring those into a fork. " +
     buttonHint(base, clean),
   headMoved: 'This branch changed while I was updating it, so I left it alone. Comment `/update` again to retry.',
   closed: 'This pull request is closed, so there is nothing to update.',
@@ -123,17 +126,14 @@ function isFork(pr, owner, repo) {
 /**
  * Decides what to do once the branch's state is known, without touching GitHub.
  * behind: commits on the base branch the PR lacks. conflicts: conflicting files ([] for none, null if unknown).
- * workflows: files under .github/workflows/ the merge would change ([] for none, null if unknown).
- * Returns "upToDate" | "conflicts" | "useButton" | "workflows" | "updateBranch".
+ * Returns "upToDate" | "conflicts" | "useButton" | "updateBranch". A change to a workflow file doesn't stop it: on
+ * a fork GitHub may refuse it, but only when the fork lacks those commits, which can't be told from here (#473).
  */
-function decide({ behind, conflicts, workflows, fork, canEdit }) {
+function decide({ behind, conflicts, fork, canEdit }) {
   if (behind === 0) return 'upToDate';
   if (conflicts && conflicts.length) return 'conflicts';
   // Without "Allow edits by maintainers" nobody but the author can push to a fork's branch.
   if (fork && !canEdit) return 'useButton';
-  // On a fork (anyone's, the owner's too) GitHub refuses the workflow token any change to a workflow file, so
-  // don't try. A branch in this repository is updated fine (#473).
-  if (fork && workflows && workflows.length) return 'workflows';
   return 'updateBranch';
 }
 
@@ -388,7 +388,7 @@ async function run({ github, context, core, checkMerge, sleep, poll = POLL, work
       core.warning(`Could not check for conflicts or workflow changes: ${err.message}`);
     }
   }
-  let action = decide({ behind, conflicts, workflows, fork, canEdit });
+  let action = decide({ behind, conflicts, fork, canEdit });
   const known = (list) => (list === null ? 'unknown' : list.length ? list.join(', ') : 'none');
   core.info(
     `/update by ${commenter} on #${issue_number}: behind ${behind}, fork ${fork}, maintainer edits ${canEdit}, ` +
@@ -409,8 +409,14 @@ async function run({ github, context, core, checkMerge, sleep, poll = POLL, work
       core.warning(`update-branch was refused. GitHub answered ${refused}`);
       if (err.status === 422 && /expected head sha/i.test(message)) action = 'headMoved';
       else if (err.status === 422 && /conflict/i.test(message)) action = 'conflicts';
-      // A workflow file the up-front check couldn't see (it failed, or GitHub counts the change differently).
-      else if (fork && err.status === 403 && /workflow/i.test(message)) action = 'workflows';
+      // The fork lacks main's commits that change a workflow file (see the top of this file).
+      else if (fork && err.status === 403 && /workflow/i.test(message)) {
+        action = 'workflows';
+        if (!workflows || !workflows.length) {
+          const named = message.match(/workflow `([^`]+)`/);
+          workflows = named ? [named[1]] : null;
+        }
+      }
       // GitHub may still refuse to push to a fork (for example one owned by an organisation).
       else if (fork && [403, 404, 422].includes(err.status)) action = 'useButton';
       else action = 'failed';
