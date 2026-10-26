@@ -84,6 +84,7 @@ from sentient.llm.locality import usage_source
 from sentient.llm.meter import measure
 from sentient.llm.provider import (
     LLMProvider,
+    ModelRefused,
     PlainProviderError,
     ProviderError,
     StreamChunk,
@@ -2346,6 +2347,8 @@ class Agent:
                 await self.store.rename_session(session_id, title)
                 if self.app is not None:
                     self.app.bus.publish("session.updated", {"session_id": session_id, "title": title})
+        except ModelRefused as exc:  # no model may write it (Claude Code only answers chats): said plainly (#474)
+            log.info("no model could title the chat, so it keeps its current title: %s", exc)
         except Exception as exc:
             log.debug("auto title failed: %s", exc)
 
@@ -2403,6 +2406,8 @@ class Agent:
                 "UPDATE sessions SET context_summary = ?, context_upto = ? WHERE id = ?",
                 (summary.strip(), next_watermark(upto, older, "created_at", "rowid"), session_id),
             )
+        except ModelRefused as exc:  # #474: the older turns drop out of the chat's history without a summary
+            log.warning("no model could summarise the older part of the chat, so it is left out unsummarised: %s", exc)
         except Exception as exc:
             log.debug("context compression skipped: %s", exc)
 

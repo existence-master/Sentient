@@ -4,6 +4,7 @@ core, models, notifications : core (composition root owner)
 tasks                       : tasks package
 integrations                : integrations package
 memory, skills, proactivity : memory / proactivity / evolution package
+skills_hub                  : skills package (the Skills hub, #210)
 voice                       : voice package (also defines the /ws/voice WebSocket)
 subagents                   : core
 sandbox, browser, channels  : their packages
@@ -35,6 +36,7 @@ from sentient.gateway.routes import (
     reminders,
     sandbox,
     skills,
+    skills_hub,
     subagents,
     tasks,
     terminal,
@@ -50,6 +52,7 @@ ROUTERS = [
     tasks.router,
     integrations.router,
     memory.router,
+    skills_hub.router,  # before skills: /api/skills/hub/... must not reach /api/skills/{name}
     skills.router,
     proactivity.router,
     voice.router,
