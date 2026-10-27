@@ -152,3 +152,22 @@ only when "Allow edits by maintainers" is on; never force-push, and comment with
 that changes behaviour or design goes back to them as a review. Pull requests labelled `needs update` still need
 `main` merged in, because of conflicts or because the bot could not update the branch itself; the `/update` bot
 takes the label off once the branch is up to date.
+
+The `/update` bot runs on the built-in `GITHUB_TOKEN`. That token can merge `main` into a branch in this
+repository, and into a fork's branch (anyone's fork, the owner's too) when "Allow edits by maintainers" is on.
+GitHub refuses it one thing: a merge that brings commits changing `.github/workflows/` into a fork that doesn't
+have those commits yet. The token can't be given the `workflows` permission that would allow it, and we don't add
+an app or a secret for it. The bot still tries, because a synced fork works; when GitHub refuses, it says why,
+points at the **Update branch** button and adds `needs update`. Without conflicts, a maintainer then merges `main`
+in with their own credentials. These need the `workflow` scope: `gh auth status` lists the scopes, and
+`gh auth refresh -s workflow` adds it. Set `n` to the pull request's number; the head sha makes GitHub refuse the
+merge if someone pushed meanwhile:
+
+```bash
+n=123
+sha=$(gh pr view "$n" -R existence-master/Sentient --json headRefOid --jq .headRefOid)
+gh api -X PUT "repos/existence-master/Sentient/pulls/$n/update-branch" -f expected_head_sha="$sha"
+```
+
+When GitHub refuses the bot for any reason, its status and message are in the run's log (as a warning) and in
+the run's summary.

@@ -385,6 +385,7 @@ async def seed_dreams(app: SentientApp) -> None:
 
 
 async def main() -> None:
+    seed_safety.check_home(HOME)  # before --reset deletes the database, also with --keep-live
     HOME.mkdir(parents=True, exist_ok=True)
     if ARGS.reset:
         for suffix in ("", "-wal", "-shm"):

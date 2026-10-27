@@ -65,9 +65,38 @@ export function refusingRoles(roles: Record<string, string | null | undefined>, 
   return out
 }
 
+/**
+ * The roles the "use another model" button changes: the ones still stuck, never the embedding role (it needs an
+ * embedding model, not a chat one). A fast role the engine covers with a stand-in is not stuck, so it keeps its setting.
+ */
+export function fixableRoles(stuck: readonly RefusingRole[]): RefusingRole[] {
+  return stuck.filter((r) => r.role !== 'embedding')
+}
+
 /** The first model that isn't Claude Code, for the work Claude Code refuses. '' when there is none. */
 export function otherModel(candidates: readonly (string | null | undefined)[]): string {
   return candidates.find((m): m is string => !!m && !isClaudeCode(m)) ?? ''
+}
+
+/**
+ * The models that do the fast role's quick jobs (memory decisions and extraction, summaries, chat titles) while every
+ * model it has is Claude Code, in the engine's order: the main model's fallbacks, the executor, the planner, the main
+ * model, never Claude Code. [] when the engine keeps the refusal: Claude Code does everything (`accepting` has `fast`),
+ * the fast role has another model of its own, or no other model is set up.
+ *
+ * This mirrors `stand_ins` in `sentient/llm/claude_code.py` (#474); change them together so Settings names the model
+ * the engine uses.
+ */
+export function fastStandIns(
+  roles: Record<string, string | null | undefined>,
+  fallbacks: Record<string, readonly string[] | undefined>,
+  accepting: readonly string[] | undefined
+): string[] {
+  if (!accepting || accepting.includes('fast')) return []
+  const chain = [roles.fast || roles.primary, ...(fallbacks.fast ?? [])]
+  if (!chain[0] || !chain.every(isClaudeCode)) return []
+  const candidates = [...(fallbacks.primary ?? []), roles.executor, roles.planner, roles.primary]
+  return [...new Set(candidates.filter((m): m is string => !!m && !isClaudeCode(m)))]
 }
 
 /** What Settings shows next to Claude Code: off, chats only, or everything. */
