@@ -15,6 +15,7 @@ import type {
   ForgetCounts,
   Forgotten,
   AwayStatus,
+  EmailTasksStatus,
   BackupEntry,
   BackupInspect,
   BackupOverview,
@@ -56,6 +57,8 @@ import type {
   ApprovalDecision,
   ApprovalGrant,
   Bootstrap,
+  SensorState,
+  SensorStopResult,
   StopResult,
   StopState,
   ChatRequest,
@@ -136,6 +139,12 @@ import type {
   SkillDiff,
   SkillReviewResult,
   SkillsList,
+  HubInstall,
+  HubInstalled,
+  HubListing,
+  HubPreview,
+  HubSource,
+  HubUpdateResult,
   SkillUpdate,
   SuggestionActionResponse,
   Task,
@@ -216,6 +225,13 @@ export function isNotImplemented(e: unknown): boolean {
 /** React Query `retry`: give up at once when the endpoint is missing, otherwise retry twice. */
 export function noRetryWhenMissing(count: number, err: unknown): boolean {
   return !isNotImplemented(err) && count < 2
+}
+
+/** The extra yes a Skills hub install asks for (#210): a source the user added, or high-risk findings. */
+export function hubConfirmCode(e: unknown): 'confirm_source' | 'high_risk' | null {
+  if (!isApiError(e) || e.status !== 409 || !e.body || typeof e.body !== 'object') return null
+  const code = (e.body as { code?: unknown }).code
+  return code === 'confirm_source' || code === 'high_risk' ? code : null
 }
 
 export function errorMessage(e: unknown): string {
@@ -441,6 +457,12 @@ export const api = {
   /** The window is in use: resets the timer that pauses routines while you are away (#163). */
   activity: () => http.post<{ ok: boolean; last_active_at: string | null }>('/api/activity'),
 
+  // §24 live microphones and cameras (#170)
+  sensors: {
+    get: () => http.get<SensorState>('/api/sensors'),
+    stop: (id?: string) => http.post<SensorStopResult>('/api/sensors/stop', id ? { id } : {})
+  },
+
   // §17 stop everything
   stop: {
     get: () => http.get<StopState>('/api/stop'),
@@ -606,6 +628,8 @@ export const api = {
     away: () => http.get<AwayStatus>('/api/tasks/away'),
     awayResume: () => http.post<{ resumed: number; status: AwayStatus }>('/api/tasks/away/resume'),
     awayKeep: () => http.post<AwayStatus>('/api/tasks/away/keep'),
+    /** Tasks by email (#159). */
+    email: (limit = 20) => http.get<EmailTasksStatus>(`/api/tasks/email?limit=${limit}`),
     get: (id: string) => http.get<Task>(`/api/tasks/${enc(id)}`),
     create: (body: TaskCreateRequest) => http.post<Task>('/api/tasks', body),
     preview: (prompt: string) => http.post<TaskPreview>('/api/tasks/preview', { prompt }),
@@ -639,6 +663,8 @@ export const api = {
 
   // §5 integrations ------------------------------------------------------------
   integrations: {
+    /** Replace the MCP-only key (#443): apps holding the old one stop working until they restart. */
+    replaceMcpKey: () => http.post<{ rotated: boolean }>('/api/mcp/token/rotate'),
     list: () => http.get<Integration[]>('/api/integrations'),
     get: (id: string) => http.get<Integration>(`/api/integrations/${enc(id)}`),
     connect: (id: string, fields: Record<string, string> = {}, access?: ConnectionAccess) =>
@@ -767,6 +793,8 @@ export const api = {
       http.post<Skill>(`/api/skills/${enc(name)}/approve`, acceptRisk ? { accept_risk: true } : undefined),
     /** Add a skill from a web address; it waits in pending with its safety check (#146). */
     importUrl: (url: string) => http.post<SkillDetail>('/api/skills/import', { url }),
+    /** `/learn` (#167): draft a skill from a web page, a file or a folder; it waits in pending. */
+    learn: (source: string) => http.post<SkillDetail>('/api/skills/learn', { source }),
     reject: (name: string) => http.post<OkResponse>(`/api/skills/${enc(name)}/reject`),
     archive: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/archive`),
     restore: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/restore`),
@@ -775,7 +803,19 @@ export const api = {
     diff: (name: string) => http.get<SkillDiff>(`/api/skills/${enc(name)}/diff`),
     reviewNow: (session_id?: string) => http.post<SkillReviewResult>('/api/skills/review-now', { session_id }),
     evolutionLog: (limit?: number) =>
-      http.get<EvolutionLogEntry[]>('/api/skills/evolution-log', { query: { limit } })
+      http.get<EvolutionLogEntry[]>('/api/skills/evolution-log', { query: { limit } }),
+    /** The Skills hub (#210): browse sources, preview, install into review, updates pinned in the lockfile. */
+    hub: {
+      sources: () => http.get<HubSource[]>('/api/skills/hub/sources'),
+      addSource: (url: string, name?: string) => http.post<HubSource>('/api/skills/hub/sources', { url, name }),
+      removeSource: (id: string) => http.delete<OkResponse>(`/api/skills/hub/sources/${enc(id)}`),
+      browse: (source: string, refresh = false) => http.get<HubListing>('/api/skills/hub/browse', { query: { source, refresh: refresh || undefined } }),
+      preview: (source: string, path: string) => http.get<HubPreview>('/api/skills/hub/preview', { query: { source, path } }),
+      /** 409 with `code` `confirm_source` or `high_risk` asks for the extra yes (`hubConfirmCode`). */
+      install: (body: HubInstall) => http.post<SkillDetail>('/api/skills/hub/install', body),
+      installed: (check = false) => http.get<{ skills: HubInstalled[] }>('/api/skills/hub/installed', { query: { check: check || undefined } }),
+      update: (name: string, acceptRisk = false) => http.post<HubUpdateResult>(`/api/skills/hub/update/${enc(name)}`, acceptRisk ? { accept_risk: true } : undefined)
+    }
   },
 
   // §9 voice ---------------------------------------------------------------------
@@ -841,7 +881,8 @@ export const api = {
     remove: (id: string, forget = false) => http.delete<OkResponse & Forgotten>(`/api/nodes/${enc(id)}`, forget ? { query: { forget: true } } : undefined),
     invoke: (id: string, capability: string, params: Record<string, unknown> = {}, timeout_ms?: number) =>
       http.post<DeviceInvokeResult>(`/api/nodes/${enc(id)}/invoke`, { capability, params, timeout_ms }),
-    pairing: () => http.post<DevicePairing>('/api/nodes/pairing'),
+    /** `replaces`: the code on screen, which stops working when the new one is made (#477). */
+    pairing: (replaces?: string) => http.post<DevicePairing>('/api/nodes/pairing', replaces ? { replaces } : undefined),
     lan: () => http.get<DeviceLanInfo>('/api/nodes/lan')
   },
 

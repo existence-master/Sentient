@@ -87,3 +87,18 @@ CREATE TABLE IF NOT EXISTS task_trigger_seen (
     seen_at     TEXT NOT NULL,
     PRIMARY KEY (task_id, item_key)
 );
+
+-- Tasks by email (#159): every email sent to the Sentient address, once, and what Sentient did with it.
+CREATE TABLE IF NOT EXISTS task_email_log (
+    item_key    TEXT PRIMARY KEY,                 -- the email's Message-ID, else "<app>:<item id>"
+    app         TEXT NOT NULL,                    -- gmail | email_imap
+    sender      TEXT NOT NULL DEFAULT '',         -- the real address its From line names ('' when unclear)
+    from_line   TEXT NOT NULL DEFAULT '',         -- the From line as written, display name included
+    subject     TEXT NOT NULL DEFAULT '',
+    outcome     TEXT NOT NULL,                    -- task | ignored
+    reason      TEXT,                             -- why it was ignored, one plain sentence
+    code        TEXT,                             -- not_allowed | unclear_sender | failed_check | automated | too_many
+    task_id     TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_email_log_created ON task_email_log(created_at);

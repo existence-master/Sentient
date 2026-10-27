@@ -56,6 +56,36 @@ export interface UIConfig {
 }
 
 /** §17 Stop everything. `source`: desktop | tray | hotkey | telegram | discord | device. */
+/** §24 A microphone or camera that is live right now, here or on a paired device (#170). */
+export interface SensorUse {
+  id: string
+  sensor: 'mic' | 'camera'
+  device_id: string
+  /** "This computer" for the desktop app itself, else the device's name. */
+  device: string
+  device_kind: string
+  /** What it is on for, in plain words: "Voice chat", "Push to talk", "Taking a photo". */
+  purpose: string
+  since: ISODate
+  can_stop: boolean
+}
+
+export interface SensorState {
+  mic: boolean
+  camera: boolean
+  active: SensorUse[]
+  /** Devices whose camera is switched off on the device itself. */
+  camera_off: Array<{ device_id: string; device: string }>
+}
+
+export interface SensorStopResult {
+  /** Off now. */
+  stopped: string[]
+  /** The device was asked; it stays shown until the device says it is off. */
+  asked: string[]
+  state: SensorState
+}
+
 export interface StopState {
   stopped: boolean
   stopped_at: ISODate | null
@@ -295,7 +325,51 @@ export interface TasksConfig {
   max_tool_rounds: number
   require_plan_approval: boolean
   swarm_max_agents: number
+  /** Tasks by email (#159). */
+  email?: EmailTasksConfig
   [key: string]: unknown
+}
+
+/** `tasks.email` (#159): forward or copy an email to the Sentient address to give it a task. */
+export interface EmailTasksConfig {
+  enabled: boolean
+  address: string
+  label: string
+  /** Other real addresses that may send tasks; your own addresses always can. */
+  allowed_senders: string[]
+}
+
+/** `GET /api/tasks/email` (#159). */
+export interface EmailTasksStatus {
+  enabled: boolean
+  /** On, with an address or label picked. */
+  active: boolean
+  address: string
+  label: string
+  allowed_senders: string[]
+  /** Who may send tasks right now. */
+  allowed: string[]
+  own_addresses: string[]
+  /** The connected email accounts. */
+  accounts: string[]
+  suggested_address: string
+  /** Connected mail apps new email arrives through: `gmail`, `email_imap`. */
+  watching: string[]
+  recent: EmailTaskLogEntry[]
+}
+
+export interface EmailTaskLogEntry {
+  at: ISODate
+  app: string
+  /** The real address the From line names ("" when it names none clearly). */
+  sender: string
+  /** The From line as written, display name included. */
+  from: string
+  subject: string
+  outcome: 'task' | 'ignored'
+  reason: string | null
+  code: 'not_allowed' | 'unclear_sender' | 'failed_check' | 'automated' | 'too_many' | null
+  task_id: string | null
 }
 
 export interface McpServerConfig {
@@ -315,6 +389,10 @@ export interface IntegrationsConfig {
   searxng_url: string
   weather_provider: 'open_meteo' | 'accuweather'
   mcp_servers: Record<string, McpServerConfig>
+  /** Let other apps use Sentient over MCP (#443). Off by default. */
+  mcp_server_enabled?: boolean
+  /** Let MCP apps save memories without going through Review (#443). */
+  mcp_server_memories_skip_review?: boolean
   /** App ids set to Read only (#141). */
   read_only?: string[]
   [key: string]: unknown
@@ -390,6 +468,15 @@ export interface SentientConfig {
   proactivity: ProactivityConfig
   voice: VoiceConfig
   ui: UIConfig
+  nodes?: NodesConfig
+}
+
+export interface NodesConfig {
+  enabled: boolean
+  lan_enabled: boolean
+  lan_port: number
+  /** Bind the LAN listener to 0.0.0.0 instead of loopback. */
+  lan_bind_all?: boolean
 }
 
 export type ConfigSection = keyof SentientConfig
@@ -1192,6 +1279,8 @@ export interface DomainEventMap {
   'source.items': SourceItemsData
   // §17
   'stop.updated': StopState
+  // §24
+  'sensors.updated': SensorState
   // #149
   'model.busy': ModelBusy
   // §20
@@ -1405,6 +1494,8 @@ export interface DeviceNode {
   /** `lan` = over the home network, `local` = on this computer (gateway). */
   connection?: 'lan' | 'local' | null
   worn?: boolean | null
+  /** The camera is switched off on the device itself; Sentient can't turn it on (#170). null while offline. */
+  camera_off?: boolean | null
 }
 
 export interface DevicePairing {
@@ -1431,6 +1522,8 @@ export interface DeviceLanInfo {
   web_urls?: string[]
   fingerprint: string | null
   mdns?: boolean
+  /** True when the listener accepts connections from the whole network (`nodes.lan_bind_all`), false for this computer only. */
+  bind_all?: boolean
   error?: string | null
 }
 
@@ -1732,7 +1825,7 @@ export interface Task {
   notepad?: string | null
   /** Routines: the setup checklist (§4 "Setup checklist", #161). `null` for other tasks; older engines leave it out. */
   setup?: TaskSetup | null
-  original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | string; [k: string]: unknown }
+  original_context: { source: 'manual_creation' | 'chat' | 'proactive' | 'trigger' | 'email' | string; [k: string]: unknown }
   /** Last planning/run failure message (v2 `task.error`). */
   error: string | null
   next_execution_at: ISODate | null
@@ -2443,6 +2536,10 @@ export interface Skill {
   validate?: SkillCheck[]
   /** The last run of those checks, or null when it declares none or they haven't run. */
   check?: SkillCheckReport | null
+  /** Reference files in its `references` folder (#167), read one at a time only when the skill is used. */
+  references?: string[]
+  /** Installed from the Skills hub (#210): where it came from and the version pinned in the lockfile. */
+  hub?: HubInstalled | null
 }
 
 /** One check in a skill's `validate` header: a file that must exist, or Python run in the code sandbox. */
@@ -2486,8 +2583,8 @@ export interface SkillVetting {
   programs: string[]
   hash: string
   scanner: string
-  source: 'link' | 'hermes' | string | null
-  /** The web address or Hermes folder it came from. */
+  source: 'link' | 'hermes' | 'learn' | string | null
+  /** The web address or Hermes folder it came from (for `learn`: the page, file or folder it was learned from). */
   origin: string | null
   imported_at?: ISODate
   decision?: 'approved' | null
@@ -2511,6 +2608,123 @@ export interface SkillsList {
   pending: Skill[]
   archived: Skill[]
   broken?: BrokenSkill[]
+}
+
+// ---------------------------------------------------------------------------- Skills hub (#210)
+/** `trusted`: a source Sentient lists. `community`: one the user added (installing asks once more). */
+export type HubTrust = 'trusted' | 'community'
+
+export interface HubSource {
+  id: string
+  name: string
+  /** `github`: a repository of skill folders. `index`: a site with /.well-known/skills/index.json. */
+  kind: 'github' | 'index'
+  url: string
+  trust: HubTrust
+  default?: boolean
+  description?: string
+  owner?: string
+  repo?: string
+  ref?: string
+  path?: string
+  index_url?: string
+  added_at?: string | null
+}
+
+/** One thing a skill asks for: tools, programs, keys, platforms, what it needs, or the scripts it brings. */
+export interface HubAsk {
+  kind: 'tools' | 'apps' | 'keys' | 'platform' | 'needs' | 'programs' | string
+  label: string
+  items: string[]
+  more?: number
+}
+
+export interface HubSkill {
+  source: string
+  /** Its folder in the source; pass it back to preview and install. */
+  path: string
+  name: string
+  description: string
+  /** Who made it: the maker the skill names, else the source's publisher. */
+  author: string
+  license: string | null
+  version: string | null
+  asks: HubAsk[]
+  files: string[]
+  /** Its page at the exact version listed. */
+  url: string
+  fingerprint: string | null
+  /** Why it can't be installed (too large, unreadable header). */
+  problem: string | null
+  installed?: { name: string; status: 'pending' | 'active' | string; update_available?: boolean } | null
+}
+
+export interface HubListing {
+  source: HubSource
+  /** The exact commit listed (GitHub sources). */
+  commit: string | null
+  fetched_at: string
+  truncated: boolean
+  skills: HubSkill[]
+}
+
+export interface HubPreview extends HubSkill {
+  source_info: HubSource
+  commit: string | null
+  /** The SKILL.md exactly as written by its maker. */
+  skill_md: string | null
+  vetting: SkillVetting | null
+  sizes?: Record<string, number> | null
+}
+
+export interface HubFileChanges {
+  added: string[]
+  removed: string[]
+  changed: string[]
+}
+
+/** A skill's entry in the hub lockfile (`hub` on a skill, GET /api/skills/hub/installed). */
+export interface HubInstalled {
+  name: string
+  source: string
+  source_name: string
+  source_url: string
+  trust: HubTrust
+  path: string
+  url: string
+  /** The exact commit of the newest version fetched (null for an index source). */
+  commit: string | null
+  version: string | null
+  made_by: string
+  /** `pending`: the newest version waits for review. */
+  status: 'pending' | 'active' | string
+  installed_at: string
+  approved_commit: string | null
+  approved_at: string | null
+  /** An update waiting for review: the files it adds, removes or changes. */
+  changes: HubFileChanges | null
+  /** With `?check=true`. */
+  update_available?: boolean
+  latest_version?: string | null
+  problem?: string
+}
+
+export interface HubInstall {
+  source: string
+  path: string
+  /** Installing from a source the user added. */
+  confirm_source?: boolean
+  /** Installing although the safety check found high-risk problems. */
+  accept_risk?: boolean
+}
+
+export interface HubUpdateResult {
+  changed: boolean
+  name: string
+  commit: string | null
+  from_commit?: string | null
+  changes?: HubFileChanges
+  skill?: SkillDetail
 }
 
 export interface SkillCreate {
@@ -2547,6 +2761,7 @@ export type EvolutionKind =
   | 'skill_patched'
   | 'skill_archived'
   | 'skill_reset'
+  | 'skill_learned'
   | 'profile_updated'
   | 'curator_run'
   | 'summary_created'
@@ -2605,6 +2820,25 @@ export interface VoiceStatus {
   }
   /** Wake-word engine (§16). */
   wake?: WakeStatus
+  /** Where the sound from each microphone goes (#170). */
+  privacy?: VoicePrivacy
+}
+
+/** One way Sentient hears you, and where that sound goes (`GET /api/voice/status` → `privacy`, #170). */
+export interface VoicePrivacyItem {
+  id: 'dictation' | 'wake' | 'voice' | 'voice_notes' | string
+  label: string
+  /** True when the recording stays on this computer. */
+  local: boolean
+  where: string
+}
+
+export interface VoicePrivacy {
+  /** No recording leaves this computer. */
+  audio_local: boolean
+  items: VoicePrivacyItem[]
+  /** Spoken replies: what goes out for them is text, not your voice. */
+  replies: { local: boolean; where: string }
 }
 
 export interface TranscribeResult {
@@ -2660,7 +2894,8 @@ export type VoiceServerMessage =
   /** Followed by one binary frame: a complete PCM16 mono WAV for this sentence. */
   | { type: 'audio'; format: 'wav'; sentence_index: number; text: string; session_id?: string }
   | { type: 'audio_end'; session_id?: string; sentences?: number; metrics?: VoiceAudioMetrics; interrupted?: boolean; reason?: 'client' | 'barge_in' | 'cancelled' }
-  | { type: 'error'; message: string; recoverable?: boolean; session_id?: string }
+  /** `code: "mic_stopped"`: the microphone was turned off from the indicator (#170); the socket closes next. */
+  | { type: 'error'; message: string; recoverable?: boolean; session_id?: string; code?: string }
   | ApprovalAckEvent
   | PongEvent
   | AgentEvent
@@ -3013,6 +3248,8 @@ export interface BackupOverview {
   home: string
   /** The backup folder is inside the data folder (so a backup would not survive losing it). */
   folder_in_home: boolean
+  /** The data folder is the default `~/.sentient`; any other one keeps its backups inside itself. */
+  home_is_default: boolean
   /** The sync service the backup folder is inside (its backups are copied to the cloud too). */
   folder_cloud: 'OneDrive' | 'Dropbox' | 'Google Drive' | 'iCloud' | null
   backups: BackupEntry[]

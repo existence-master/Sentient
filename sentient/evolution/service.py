@@ -25,6 +25,7 @@ import inspect
 import json
 import logging
 import re
+import shutil
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -49,6 +50,7 @@ STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
 # the memory scopes the profile files (MEMORY.md, USER.md) are built from (#155); work and project chats leave them out
 PROFILE_SCOPES = "COALESCE(scope, 'personal') IN ('personal', 'always')"
 DONE_STATUSES = {"completed", "completed_with_errors"}
+PLACEHOLDER_TAGS = {"short", "labels", "learned"}
 FAILED_RUN_STATUSES = {"error", "failed", "completed_with_errors"}
 REPAIR_TRANSCRIPT_BUDGET = 6_000
 MAX_TRACKED_TURNS = 200
@@ -207,8 +209,18 @@ class EvolutionService(Service):
             await self.review_due(now)
         if self.app.memory is not None:
             if await self._due("memory.purge_last_run", timedelta(minutes=cfg.memory.purge_interval_minutes), now):
-                await self.app.memory.purge_expired()
-                await memory_review.expire(self.app, now)
+                try:
+                    await self.app.memory.purge_expired()
+                finally:
+                    # A purge failure must not block the pending-erase retries (#462):
+                    # the drain still runs — its own failure is logged rather than
+                    # raised, so review expiry still happens — then the purge error
+                    # keeps propagating.
+                    try:
+                        await self.app.memory.drain_pending_erases()
+                    except Exception:
+                        log.exception("pending-erase retry failed during upkeep")
+                    await memory_review.expire(self.app, now)
             if cfg.memory.summaries_enabled and await self._due(
                 "memory.summaries_last_run", timedelta(minutes=cfg.memory.summarize_interval_minutes), now
             ):
@@ -554,6 +566,102 @@ class EvolutionService(Service):
             clean = {k: v for k, v in origin.items() if v is not None}
             await log_event(self.app.store, "skill_check_failed", {"name": name, "reason": reason, **clean})
         return report
+
+    # ------------------------------------------------------------------ learning from docs (#167)
+    async def learn_skill(self, source: str, *, via: str = "app", transport: Any = None) -> dict:
+        """``/learn <link|file|folder>``: draft a skill from docs or a written workflow and stage it in pending.
+
+        A short source is drafted from in full. A long one becomes a knowledge skill: its text is kept in
+        ``references/`` files that ``skill_view`` loads only when the skill is used, and the model drafts the steps
+        from an outline. What was read is outside content (ADR 0018): the model sees it marked as data, and the draft
+        waits with the safety check of skills from outside (``skill_imports`` source ``learn``, ADR 0027), so a
+        high-risk finding makes declining the default and its code never runs. Raises ``LearnError`` (a plain
+        sentence) when the source can't be read or no skill could be drafted. Returns ``{name, description, verdict,
+        references, kind, where}``."""
+        from sentient.agent.prompt import mark_outside
+        from sentient.skills import learn, vet
+
+        lib = self.app.skills
+        src = await learn.collect(source, transport=transport)
+        refs = learn.references(src) if src.long else []
+        if refs:
+            content = learn.outline(refs)
+            mode = prompts.LEARN_OUTLINE
+        else:
+            content = "\n\n".join(f"## {d.title}\n{d.text.strip()}" for d in src.docs)[: learn.SMALL_SOURCE]
+            mode = prompts.LEARN_WHOLE
+        try:
+            raw = await self.app.llm.complete_json(
+                "fast",
+                [
+                    {"role": "system", "content": prompts.LEARN_SYSTEM.format(mode=mode)},
+                    {"role": "user", "content": prompts.LEARN_USER.format(
+                        where=src.where, content=mark_outside(content, src.label))},
+                ],
+            )
+        except Exception as exc:
+            log.warning("drafting a skill from %s failed: %s", src.label, exc)
+            raise learn.LearnError(f"Sentient couldn't draft the skill: {str(exc).strip() or type(exc).__name__}") from exc
+        raw = raw if isinstance(raw, dict) else {}
+        body = str(raw.get("body") or "").strip()
+        description = " ".join(str(raw.get("description") or "").split())[:300]
+        if len(body) < 80 or "procedure" not in body.lower() or not description:
+            log.info("learned skill draft from %s was incomplete: %r", src.label, raw.get("name"))
+            raise learn.LearnError("Sentient read it but couldn't turn it into clear steps. Try again, or point it at "
+                                   "the part that describes the workflow.")
+        base = slugify(str(raw.get("name") or ""))
+        if not valid_name(base):
+            base = slugify(src.docs[0].title) if valid_name(slugify(src.docs[0].title)) else "learned-skill"
+        name, n = base, 1
+        while lib.get_any(name) or (lib.pending_dir / name).exists():
+            n += 1
+            name = f"{base[:58]}-{n}"
+        body = ensure_sections(body)
+        if refs:
+            body = f"{body.rstrip()}\n\n{learn.reference_section(refs)}"
+        # how to check it: a knowledge skill's reference files are all there and intact (#386). Sentient drafts this
+        # itself; checks a model drafts from outside text aren't kept (their code would never run anyway, ADR 0027)
+        validate = [{"file": r.path, "expect": f"# {r.text.splitlines()[0].lstrip('# ').strip()}"}
+                    for r in refs[: skill_checks.MAX_CHECKS]]
+        tags = [str(t).strip().lower() for t in raw.get("tags") or [] if str(t).strip()]
+        tags = [*[t for t in tags if t not in PLACEHOLDER_TAGS][:7], "learned"]  # small models copy the example
+        path = lib.write(name, description, body, author="assistant", tags=tags, pending=True, validate=validate)
+        folder = path.parent
+        try:
+            for r in refs:
+                target = folder / r.path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(r.text, encoding="utf-8")
+            report = await skill_checks.run(self.app, name, validate, [folder], run_code=False, outside=True)
+            vetting = vet.vet_folder(folder, source="learn", origin=src.where)
+            await vet.record_import(self.app.store, name, vetting)
+        except BaseException:
+            # never leave a draft without its safety record: approving it would skip the check of skills from outside
+            shutil.rmtree(folder, ignore_errors=True)
+            with contextlib.suppress(Exception):
+                await vet.forget(self.app.store, name)
+            raise
+        await lib.record_patch(name, "pending_review", self.app.store)
+        await lib.record_check(name, report, self.app.store, pending=True)
+        reason = f"Learned from {src.where}"
+        if src.skipped:
+            reason += f" ({src.skipped} file{'s were' if src.skipped != 1 else ' was'} left out)"
+        await log_event(self.app.store, "skill_learned", {
+            "name": name, "pending": True, "reason": reason, "source": src.kind, "origin": src.where,
+            "verdict": vetting["verdict"], "references": [r.path for r in refs], "via": via,
+        })
+        log.info("learned the skill %s from %s (%s, %d reference files, safety check: %s)",
+                 name, src.label, src.kind, len(refs), vetting["verdict"])
+        self.app.bus.publish("skill.updated", {"name": name, "state": "pending_review"})
+        risky = " The safety check found high-risk problems in it, so read it carefully." if vetting["verdict"] == "high" else ""
+        await self.app.notify(
+            "skill",
+            f"I read {src.label} and drafted the skill **{name}**: {description}{risky} Review it in Skills.",
+            title="New skill to review",
+            payload={"skill": name, "action": "create", "origin": {"learned": src.where}},
+        )
+        return {"name": name, "description": description, "verdict": vetting["verdict"],
+                "references": [r.path for r in refs], "kind": src.kind, "where": src.where}
 
     # ------------------------------------------------------------------ repair during use
     async def handle_repair_event(self, event: dict) -> list[str]:

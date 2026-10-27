@@ -385,6 +385,10 @@ class ProactiveEngine(Service):
             if source == "webhook" and await self._hook_has_task(event_type):
                 log.info("webhook %s is handled by a triggered task: no suggestion", event_type)
                 return None
+            mailbox = getattr(getattr(self.app, "tasks", None), "inbox", None)
+            if mailbox is not None and source in ("gmail", "email_imap") and mailbox.addressed(item):
+                log.info("%s item %s went to the Sentient address: tasks by email handle it", source, item.get("id"))
+                return None
             return await self.process_event(source, event_type, item)
         except Exception:
             log.exception("proactive pipeline failed for %s item %s", source, item.get("id"))

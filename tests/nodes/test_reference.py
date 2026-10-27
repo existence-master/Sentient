@@ -84,3 +84,54 @@ def test_auth_errors_are_fatal(tmp_path):
     assert node.saved["token"] is None
     with pytest.raises(ConnectionError):
         node._on_auth_error({"code": "disabled", "message": "off"})
+
+
+async def test_camera_off_mode_refuses_on_the_device(tmp_path):
+    node, lines = _node(tmp_path, camera_off=True)
+    h = node.hello()
+    assert "camera.photo" in h["capabilities"] and h["state"]["camera_off"] is True
+    res = await node.handle_invoke({"id": "6", "capability": "camera.photo"})
+    assert res["ok"] is False and res["error"]["code"] == "camera_off"  # the webcam is never opened
+    assert "[camera] refused: camera-off mode is on" in lines
+    plain, _ = _node(tmp_path)
+    assert "camera_off" not in plain.hello()["state"]  # no camera, nothing to report
+
+
+async def test_a_photo_turned_off_in_sentient_is_dropped(tmp_path):
+    node, lines = _node(tmp_path, camera=0)
+    sent: list[dict] = []
+
+    class WS:
+        async def send(self, raw):
+            sent.append(json.loads(raw))
+
+    def photo(params):  # the webcam is never opened in tests
+        node._photo_stops += 1  # stop_sensor camera arrives while the photo is taken
+        return {"mime": "image/jpeg", "base64": "abc"}
+
+    node._photo = photo
+    await node._answer(WS(), {"type": "invoke", "id": "7", "capability": "camera.photo", "params": {}})
+    assert sent[0] == {"type": "state", "camera": True, "camera_for": "Taking a photo"}
+    assert sent[1]["ok"] is False and sent[1]["error"]["code"] == "stopped"  # no image sent
+    assert sent[2] == {"type": "state", "camera": False}
+    assert "[camera] photo dropped: turned off in Sentient" in lines
+
+
+async def test_a_photo_stopped_before_it_started_is_never_taken(tmp_path):
+    node, lines = _node(tmp_path, camera=0)
+    sent: list[dict] = []
+
+    class WS:
+        async def send(self, raw):
+            sent.append(json.loads(raw))
+
+    def photo(params):
+        raise AssertionError("the camera must not be used")
+
+    node._photo = photo
+    queued_at = node._photo_stops  # the invoke arrived...
+    node._photo_stops += 1  # ...then stop_sensor camera, before its task ran
+    await node._answer(WS(), {"type": "invoke", "id": "8", "capability": "camera.photo", "params": {}}, queued_at)
+    assert sent == [{"type": "result", "id": "8", "ok": False,
+                     "error": {"code": "stopped", "message": "The camera was turned off in Sentient."}}]  # fmt: skip
+    assert "[camera] photo not taken: turned off in Sentient" in lines

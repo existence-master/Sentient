@@ -99,10 +99,33 @@ def serve(
     if not os.environ.get(ENV_TOKEN):
         # started by hand: show how to open the UI in a browser
         console.print(f"Sentient backend on http://{h}:{p}/  (dev UI: http://{h}:{p}/?api=http://{h}:{p}&token={token})")
+    if p:
+        # `sentient mcp` finds the engine through this file (issue #443): the desktop starts the
+        # engine on a fresh port each launch, so the configured port is not where it listens.
+        # The address only, no secret; the file is removed again when the engine stops (below),
+        # and the MCP server proves the engine is Sentient before it sends the token anywhere.
+        import contextlib
+        import json
+
+        from sentient import paths
+
+        with contextlib.suppress(Exception):
+            found = paths.discovery_file()
+            found.parent.mkdir(parents=True, exist_ok=True)
+            found.write_text(json.dumps({"host": h, "port": p}), encoding="utf-8")
     uvicorn.run(
         "sentient.gateway.app:create_app", factory=True, host=h, port=p, reload=reload,
         log_level="warning", ws_ping_interval=20, ws_ping_timeout=60,
     )
+    if p:
+        # the engine stopped: take the discovery file away again, so it cannot outlive the
+        # engine and point a future MCP server at a port something else has since taken over
+        import contextlib
+
+        from sentient import paths
+
+        with contextlib.suppress(Exception):
+            paths.discovery_file().unlink(missing_ok=True)
 
 
 @app.command()
@@ -117,6 +140,9 @@ def node(
     ),
     insecure: bool = typer.Option(False, "--insecure", help="Accept any certificate (development only)"),
     speech: bool = typer.Option(True, "--speech/--no-speech", help="Speak 'speak' requests aloud with pyttsx3"),
+    camera_off: bool = typer.Option(
+        False, "--camera-off", help="Start in camera-off mode: the camera is off on the device (type c to switch)"
+    ),
 ):
     """Run a reference device node that simulates a phone or smart glasses (owner: nodes agent).
 
@@ -126,8 +152,23 @@ def node(
 
     node_main(
         url=url, code=code, name=name, kind=kind, camera=camera, fingerprint=fingerprint, insecure=insecure,
-        speech=speech,
+        speech=speech, camera_off=camera_off,
     )
+
+
+@app.command()
+def mcp(
+    engine_url: str | None = typer.Option(
+        None, help="Engine address (default: the address the running engine left in its discovery file)"
+    ),
+):
+    """Let other AI apps on this computer use Sentient over MCP (off until turned on in Settings).
+
+    Started by the MCP client itself, for example with: claude mcp add sentient -- sentient mcp
+    """
+    from sentient.mcp_server.server import main
+
+    raise typer.Exit(main(engine_url=engine_url))
 
 
 @app.command("claude-code-tools", hidden=True)
@@ -140,7 +181,7 @@ def claude_code_tools(tools_file: str):
 
 @app.command()
 def backup(
-    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups)."),
+    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups; a data folder other than ~/.sentient uses its own backups folder)."),
 ):
     """Back up the data folder (database, config, workspace, skills, files) to one zip file."""
     from sentient.backup import archive
@@ -215,6 +256,30 @@ async def _doctor(models: bool = False) -> None:
         row("sqlite-vec", s.store.vec_available, "semantic memory " + ("enabled" if s.store.vec_available else "DISABLED"))
         row("tools", True, f"{len(s.registry.tools())} tools from {len(s.registry.plugins())} plugins")
         row("skills", True, f"{len(s.skills.list())} active, {len(s.skills.list_pending())} pending review")
+        try:
+            lan = s.nodes.lan_status()
+            if lan["enabled"]:
+                if not lan["running"] or lan["error"]:
+                    row(
+                        "lan listener",
+                        False,
+                        f"port {lan['port']}, not running"
+                        + (f": {lan['error']}" if lan["error"] else ""),
+                    )
+                elif lan["bind_all"]:
+                    row(
+                        "lan listener",
+                        None,
+                        f"port {lan['port']}, bound to all interfaces (nodes.lan_bind_all); any host on the network can reach it, pairing required",
+                    )
+                else:
+                    row(
+                        "lan listener",
+                        True,
+                        f"port {lan['port']}, this computer only (loopback)",
+                    )
+        except Exception as exc:
+            row("lan listener", False, str(exc))
         try:
             text = ""
             async for chunk in s.llm.stream("primary", [{"role": "user", "content": "Reply with the single word: ready"}]):

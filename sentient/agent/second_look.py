@@ -17,9 +17,10 @@ x@evil.example"), and a small model can make up a recipient or an amount. Before
    (``Tool.destinations_fn``); one that a Reply-To header redirects to another address is flagged too.
 2. ``model_check`` (only for effective risk ``send`` or ``exec``, and only when the call would otherwise run without
    asking or the run read outside content): one short, tool-free prompt on the ``fast`` role that sees only the
-   user's request, the rules and the action's arguments, never the outside content, and answers whether the action
-   matches what was asked. No usable answer (an error, a refusal, a timeout, unparseable JSON) counts as a mismatch:
-   it fails closed. ``tools.approvals.second_look_model`` turns this part off; the deterministic part always runs.
+   user's request (in a task run, the task's brief in plain words, ``TASK_REQUEST_KEY``), the rules and the action's
+   arguments, never the outside content, and answers whether the action matches what was asked. No usable answer
+   (an error, a refusal, a timeout, unparseable JSON) counts as a mismatch: it fails closed.
+   ``tools.approvals.second_look_model`` turns this part off; the deterministic part always runs.
 
 A warning only ever adds a question, never removes one (AGENTS.md: a model may raise a risk, never lower it). The
 agent loop raises the call to at least ``send``, asks whatever the approvals mode, Allow rules, "Allow for this
@@ -68,6 +69,16 @@ DESTINATIONS_WAIT_S = 20.0  # reading a reply's headers to see where it goes
 CONTACT_PLUGINS = frozenset({"gpeople"})
 
 UNCHECKED = "Sentient couldn't double-check this against what you asked, so it checks with you first."
+# ``ToolContext.extra`` key: the run's brief (objective, plan, context) was written from outside content, not by the
+# user, so it is outside content too; the value names where it came from ("Email (IMAP)" for a task by email, #159)
+BRIEF_FROM_KEY = "brief_from"
+# what such a run's user asked, in Sentient's words (it holds no outside text): the model check reads it, so a reply
+# the email asked for isn't flagged as "not requested"
+BRIEF_REQUEST = "Do what the email I forwarded asks."
+# ``ToolContext.extra`` key: what the user asked a task to do, in plain words (its objective and approved plan, set by
+# the task executor). The model check reads it instead of the executor's system prompt, whose own instructions ("If a
+# tool fails, analyze the error") it otherwise took for the user's words (#455). Never used for a brief from an email.
+TASK_REQUEST_KEY = "task_request"
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
 _PHONE = re.compile(r"^\+?[\d\s().\-]{7,24}$")
@@ -77,7 +88,7 @@ _MARKED_BLOCK = re.compile(
     r"(?P<body>.*?)\n\[end of outside content (?P=code)\]",
     re.DOTALL,
 )
-_TRIGGER_BLOCK = re.compile(r"---BEGIN TRIGGER DATA---.*?---END TRIGGER DATA---", re.DOTALL)
+_TRIGGER_BLOCK = re.compile(r"---BEGIN TRIGGER DATA---\n?(?P<body>.*?)\n?---END TRIGGER DATA---", re.DOTALL)
 _TIME_NOTE = re.compile(r"\[Current time: [^\]\n]*\]")
 _KEY_SPLIT = re.compile(r"[^a-z0-9]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -296,10 +307,14 @@ def _unmark(text: str) -> str:
     return text
 
 
-def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", task: bool = False) -> Evidence:
+def gather(
+    messages: list[dict] | None, registry: Any, *, user_name: str = "", task: bool = False, brief_from: str = "",
+) -> Evidence:
     """Sort a run's messages into the user's request, trusted records and outside content. In a task run the system
     prompt is the user's brief (objective, plan, context) and counts as the request; in a chat it is Sentient's own
-    text (memories, rules) and counts as a trusted record."""
+    text (memories, rules) and counts as a trusted record. The event that started a task run (its trigger data: an
+    email, a webhook body) is outside content. ``brief_from``: the task's brief itself was written from outside
+    content (a task by email, #159), so it is outside content from there and never the user's request."""
     ev = Evidence()
     request: list[str] = []
     trusted: list[str] = []
@@ -316,7 +331,19 @@ def gather(messages: list[dict] | None, registry: Any, *, user_name: str = "", t
             for b in _MARKED_BLOCK.finditer(text):
                 ev.add_outside(b["source"], b["body"], structured=False)
         elif role == "system":
-            (request if task else trusted).append(own_words(text_of(m.get("content"))))
+            text = text_of(m.get("content"))
+            if task:
+                for block in _TRIGGER_BLOCK.finditer(text):
+                    marked = _MARKED_BLOCK.search(block["body"])
+                    if marked:
+                        ev.add_outside(marked["source"], marked["body"])
+                    else:
+                        ev.add_outside(brief_from or "the event that started this task", block["body"])
+            if task and brief_from:
+                ev.add_outside(brief_from, own_words(text), structured=False)
+                request.append(BRIEF_REQUEST)
+            else:
+                (request if task else trusted).append(own_words(text))
         elif role == "tool":
             text = text_of(m.get("content"))
             body = _unmark(text)
@@ -728,9 +755,19 @@ class Look:
             extra = getattr(self.ctx, "extra", None) or {}
             self._evidence = gather(
                 self.messages, self.agent.registry, user_name=self.agent.config.assistant.user_name,
-                task=bool(extra.get("task_id")),
+                task=bool(extra.get("task_id")), brief_from=str(extra.get(BRIEF_FROM_KEY) or ""),
             )
         return self._evidence
+
+    def request(self) -> str:
+        """What the model check reads as the user's words: a task run's brief in plain words when the run has one
+        (``TASK_REQUEST_KEY``, #455), else the request ``gather`` found. The deterministic check keeps reading all of
+        the run's own words."""
+        extra = getattr(self.ctx, "extra", None) or {}
+        brief = str(extra.get(TASK_REQUEST_KEY) or "").strip()
+        if brief and extra.get("task_id") and not extra.get(BRIEF_FROM_KEY):
+            return brief
+        return self.evidence().request
 
     async def destinations(self) -> list[dict]:
         """Who the call goes to when its arguments don't say (a reply: the thread's headers, #144), also kept on the
@@ -776,8 +813,7 @@ class Look:
         if wording.get("target"):
             action += f" ({wording['target']})"
         warning = await model_check(
-            self.agent.llm, self.evidence().request, action, self.arguments, attended=self.attended,
-            model=self.model_name,
+            self.agent.llm, self.request(), action, self.arguments, attended=self.attended, model=self.model_name,
         )
         if warning:
             log.info("second look: %s flagged (model): %s", self.tool.name, warning)

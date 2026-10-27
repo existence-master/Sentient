@@ -1,6 +1,6 @@
 """Core REST routes. OWNER: core. Contract: docs/API.md sections 2 and 3.
 
-health, bootstrap, stop everything, onboarding, config, sessions, chat (NDJSON),
+health, bootstrap, stop everything, microphones and cameras, onboarding, config, sessions, chat (NDJSON),
 approvals, files, tools catalog, usage.
 """
 
@@ -19,11 +19,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from sentient import __version__, paths
+from sentient.app_names import clean_app_name
 from sentient.config import config_json_schema
 from sentient.config.schema import SentientConfig
 from sentient.files import names as file_names
 from sentient.gateway.auth import require_token
-from sentient.gateway.deps import get_core
+from sentient.gateway.deps import MCP_OK, get_core
 from sentient.llm import availability
 from sentient.llm.events import Done, Error
 from sentient.llm.spending import BudgetError
@@ -99,6 +100,24 @@ async def stop_all(request: Request, body: StopBody | None = None):
 @router.post("/api/resume", dependencies=_auth)
 async def resume(request: Request, body: StopBody | None = None):
     return await get_core(request).resume(source=_source(body))
+
+
+# ----------------------------------------------------------------------------- microphones and cameras (section 24)
+class SensorStopBody(BaseModel):
+    id: str | None = None
+
+
+@router.get("/api/sensors", dependencies=_auth)
+async def sensors(request: Request):
+    return get_core(request).sensors.state()
+
+
+@router.post("/api/sensors/stop", dependencies=_auth)
+async def sensors_stop(request: Request, body: SensorStopBody | None = None):
+    """Turn off one live microphone or camera (``id``), or all of them. One that is already off is not an error."""
+    registry = get_core(request).sensors
+    result = await registry.stop(body.id if body else None)
+    return {**result, "state": registry.state()}
 
 
 class OnboardingBody(BaseModel):
@@ -414,13 +433,34 @@ class ChatBody(BaseModel):
     attachments: list[str] = []
     model: str | None = None
     incognito: bool = False  # a new chat (no session_id) that learns nothing and is deleted when closed (#154)
+    app: str | None = None  # an MCP client's name, display only: whose words these are (#443)
 
 
-@router.post("/api/chat", dependencies=_auth)
+@router.post("/api/chat", dependencies=MCP_OK)
 async def chat(request: Request, body: ChatBody):
     s = get_core(request)
     assert s.agent is not None
-    if body.session_id and not body.attachments and s.agent.steer(body.session_id, body.text):
+    is_mcp = getattr(request.state, "caller", "gateway") == "mcp"
+    if is_mcp:
+        # an MCP app's words are outside content, never the user's (issue #443): the turn runs on
+        # the mcp channel whatever the body claims, and the loop marks it from the start
+        body.channel = "mcp"
+        # the app does not shape the turn either: attachments would pull files from the files
+        # folder into it, a named model could pick a cloud model where the user keeps chats
+        # local, and incognito is the user's own switch to flip, so all three are ignored
+        body.model = None
+        body.attachments = []
+        body.incognito = False
+        # the app's name is its own text, shown to the user in approvals and notes: cleaned
+        # (capped, no control characters) before it is used anywhere (see app_names)
+        body.app = clean_app_name(body.app)
+        if body.session_id:
+            # the session must be one of the app's own: naming one of the user's chats would hand
+            # the app that chat's history and let its words into it, so anything else starts fresh
+            session = await s.store.get_session(body.session_id)
+            if session is None or session.get("channel") != "mcp":
+                body.session_id = None
+    if body.session_id and not body.attachments and not is_mcp and s.agent.steer(body.session_id, body.text):
         # a reply is already running for this chat: the text steers it (docs/API.md section 10)
         ack = {"type": "steer_ack", "session_id": body.session_id, "queued": True}
         return StreamingResponse(iter([json.dumps(ack) + "\n"]), media_type="application/x-ndjson")
@@ -443,7 +483,8 @@ async def chat(request: Request, body: ChatBody):
             ended = False  # the last line sent was a done
             try:
                 async for event in s.agent.run_turn(
-                    session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model
+                    session_id, body.text, channel=body.channel, attachments=body.attachments, model=body.model,
+                    app_name=body.app if is_mcp else None,
                 ):
                     for line in proposals():
                         yield line

@@ -35,13 +35,14 @@ from pathlib import Path
 from typing import Any
 
 from sentient.config.schema import SentientConfig
-from sentient.llm.provider import LLMProvider
+from sentient.llm.provider import LLMProvider, ModelRefused
 from sentient.memory import origins, prompts
 from sentient.memory import review as reviews
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.scripts import (
+    SOMEONE,
     devanagari_subjects,
     leads_with_devanagari,
     names_match,
@@ -66,7 +67,17 @@ _UNKNOWN_RE = re.compile(
     r"not provided|unclear)\b",
     re.IGNORECASE,
 )
-_USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
+# the USERNAME placeholder is matched in capitals only, so "my GitHub username" stays a username
+_USER_REF = r"(?<![\w-])((?i:the user)|USERNAME)"
+# "the user research team", "the user agent", "the user name": a kind of thing, not the user
+_USER_COMPOUND_NOUN = (
+    r"(?i:interfaces?|experiences?|research(?:ers?)?|manuals?|guides?|journeys?|stor(?:y|ies)|base|testing|personas?|"
+    r"agents?|names?|ids?|accounts?|profiles?)"
+)
+_USER_REF_RE = re.compile(rf"{_USER_REF}(?![\w-])(?!\s+{_USER_COMPOUND_NOUN}\b)")
+_USER_POSSESSIVE_RE = re.compile(rf"{_USER_REF}['\u2019]s\b")
+# bare "user's" only where it can't be another user's ("a user's account"): first, or after a comma
+_BARE_USER_POSSESSIVE_RE = re.compile(r"(^\s*|[,;:(]\s*)user['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
@@ -152,7 +163,21 @@ _RELATION_WORDS = {
     "boyfriend", "son", "daughter", "friend", "manager", "boss", "colleague", "cousin", "uncle", "aunt", "grandmother",
     "grandfather", "grandma", "grandpa", "roommate", "cofounder", "co-founder", "fiance", "fiancee", "parents",
     "company", "startup", "team", "dog", "cat",
+    # #463: more people a fact can be about instead of its owner ("Maya's neighbour lives in Pune")
+    "sibling", "siblings", "parent", "child", "children", "kid", "kids", "baby", "niece", "nephew", "grandson",
+    "granddaughter", "grandparents", "stepmother", "stepfather", "sister-in-law", "brother-in-law",
+    "mother-in-law", "father-in-law", "in-laws", "coworker", "co-worker", "teammate", "classmate", "flatmate",
+    "housemate", "neighbour", "neighbor", "mentor", "teacher", "tutor", "coach", "trainer", "doctor", "therapist",
+    "dentist", "landlord", "landlady", "tenant", "client", "assistant", "nanny", "driver", "lawyer", "accountant",
+    "ex", "spouse", "fiancé", "fiancée", "puppy", "pet",
 }
+# words between an owner and a relation: "Maya's younger sister", "my best friend"
+_RELATION_MODIFIERS = frozenset({
+    "best", "close", "old", "older", "oldest", "elder", "eldest", "younger", "youngest", "little", "big", "baby",
+    "twin", "new", "late", "former", "childhood", "college", "school",
+})
+# "her sister", "his colleague": a relation of someone named in another sentence (#463)
+_OWNER_PRONOUNS = frozenset({"her", "his", "their"})
 ATTRIBUTE_FAMILIES: dict[str, re.Pattern[str]] = {
     "residence": re.compile(
         r"\b(lives?|living|lived|moved|moves|moving|relocat\w*|based in|resides?|residing|shifted to|settled in|"
@@ -203,31 +228,77 @@ TIME_WORDING_RE = re.compile(
 )
 
 
+def name_the_user(text: str, user_name: str) -> str:
+    """"Priya, the user's sister" is "Priya, Maya Rao's sister": a saved fact says the user's name (#475)."""
+    name = user_name.strip()
+    if not name:
+        return text
+    text = _BARE_USER_POSSESSIVE_RE.sub(lambda m: f"{m.group(1)}{name}'s", text)
+    text = _USER_POSSESSIVE_RE.sub(lambda _: f"{name}'s", text)
+    return _USER_REF_RE.sub(lambda _: name, text)
+
+
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
-    """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for
-    "Maya's sister Riya ...". "I", "my" and "the user" mean ``user_name``. Empty when unclear."""
+    """Who a fact is about, as lowercase aliases: {"maya"}, {"maya's sister", "riya"} for "Maya's sister Riya ..."
+    and for "Maya Rao's younger sister Riya ..." (a person's first name stands for the whole name). "I", "my" and
+    "the user" mean ``user_name``: "my friend Arjun" is {"maya rao's friend", "arjun"}. "Her colleague Ravi" is
+    {"someone's colleague", "ravi"} (:data:`SOMEONE`). "Priya, Maya's sister, ..." is {"priya", "maya's sister"}.
+    Empty when unclear ("She moved to Delhi")."""
     user = user_name.strip().lower() or "user"
     text = (text or "").replace(_RSQUO, "'").strip()
-    text = re.sub(r"^(the user's|my)\b", f"{user}'s", text, flags=re.IGNORECASE)
-    text = re.sub(r"^(the user|i)\b", user, text, flags=re.IGNORECASE)
-    words = _NAME_WORD_RE.findall(text)
+    found = list(_NAME_WORD_RE.finditer(text))
+    words = [m.group() for m in found]
+
+    def joined(j: int) -> bool:  # words j and j + 1 are only a space apart ("Maya Rao", not "Priya, Maya")
+        return j + 1 < len(found) and not text[found[j].end():found[j + 1].start()].strip()
+
+    def name_at(j: int) -> str:  # a name word at j, lowercase without "'s", or ""
+        if j >= len(words):
+            return ""
+        root = words[j].lower().removesuffix("'s")
+        return root if words[j][0].isupper() and root not in _LEAD_SKIP else ""
+
+    def relation(owner: str, j: int) -> set[str] | None:  # "<owner>'s sister" (and her name) for a relation at j
+        if j < len(words) and words[j].lower() in _RELATION_MODIFIERS and j + 1 < len(words) \
+                and words[j + 1].lower() in _RELATION_WORDS:
+            j += 1
+        if j >= len(words) or words[j].lower() not in _RELATION_WORDS:
+            return None
+        aliases = {f"{owner}'s {words[j].lower()}"}
+        if name := name_at(j + 1):
+            aliases.add(name)
+        return aliases
+
     for i, w in enumerate(words[:6]):
         low = w.lower()
         poss = low.endswith("'s")
         root = low[:-2] if poss else low
+        if low in {"my", "i"} or (root == "user" and i and words[i - 1].lower() == "the"):
+            # the user: "I ...", "the user ...", and what they own or who they know: "my ...", "the user's ..."
+            return (relation(user, i + 1) or {user}) if low == "my" or poss else {user}
+        if low in _OWNER_PRONOUNS:
+            return relation(SOMEONE, i + 1) or set()
         is_name = (w[0].isupper() and root not in _LEAD_SKIP) or root == user
         if not is_name:
             if w[0].isupper() or root in _LEAD_SKIP:
                 continue  # sentence starters like "Every", "Since", "Last"
             return set()
-        nxt = words[i + 1].lower() if i + 1 < len(words) else ""
-        if poss and nxt in _RELATION_WORDS:
-            aliases = {f"{root}'s {nxt}"}
-            after = words[i + 2] if i + 2 < len(words) else ""
-            if after[:1].isupper() and after.lower() not in _LEAD_SKIP:
-                aliases.add(after.lower().removesuffix("'s"))
-            return aliases
-        return {root}
+        # a full name, up to the word that owns something: "Maya Rao's sister" is Maya's sister, not Maya
+        end = i
+        while not words[end].lower().endswith("'s") and end - i < 3 and joined(end) and name_at(end + 1):
+            end += 1
+        # the first name stands for the person, except a namesake of the user: "Maya Singh" is not "Maya Rao"
+        run = [x.lower().removesuffix("'s") for x in words[i:end + 1]]
+        mine = user.split()
+        if len(run) > 1 and len(mine) > 1 and run[0] == mine[0] and run != mine:
+            root = " ".join(run)
+        if words[end].lower().endswith("'s"):
+            return relation(root, end + 1) or {root}
+        aliases = {root}
+        if end + 1 < len(words) and not joined(end) and words[end + 1].lower().endswith("'s") \
+                and (owner := name_at(end + 1)):
+            aliases |= relation(owner, end + 2) or set()  # "Priya, Maya's sister, lives in Mumbai"
+        return aliases
     return set()
 
 
@@ -328,16 +399,41 @@ def same_subject(a: str, b: str, user_name: str = "") -> bool:
     "प्रिया" vs "Riya"). Names match across scripts ("माया" is "Maya"). Unclear subjects count as the same, and so
     does "the user" next to a name while the user's name isn't set."""
     sa, sb = subject_aliases(a, user_name), subject_aliases(b, user_name)
-    if not sa or not sb or sa & sb:
+    return not sa or not sb or _aliases_match(sa, sb, user_name)
+
+
+def _aliases_match(sa: set[str], sb: set[str], user_name: str) -> bool:
+    if sa & sb:
         return True
-    users = {"user", "the user", (user_name or "").strip().lower()} - {""}
-    unnamed = not (user_name or "").strip()
+    full = (user_name or "").strip().lower()
+    # the user by full or first name: "I" (Maya Rao) is "Maya" (#463)
+    users = {"user", "the user", full, full.split()[0] if full else ""} - {""}
+    unnamed = not full
     ka, kb = _subject_keys(sa, users), _subject_keys(sb, users)
     for oa, ra in ka:
         for ob, rb in kb:
-            if ra == rb and (names_match(oa, ob) or (unnamed and "user" in (oa, ob))):
+            if ra != rb:
+                continue
+            # "her sister" may be anyone's sister, but never a person herself (#463)
+            if names_match(oa, ob) or (ra and SOMEONE in (oa, ob)) or (unnamed and "user" in (oa, ob)):
                 return True
     return False
+
+
+def same_person(a: str, b: str, user_name: str = "") -> bool:
+    """Both facts say who they are about, and it is the same person or thing (:func:`same_subject`). What Sentient
+    decides in code, without the model (a correction, a new home), needs this: "She moved to Delhi" says nobody, and
+    "Maya Rao's sister Priya lives in Mumbai" is never about Maya (#463). "Her sister" names no owner either, so it
+    only counts by a name it shares ("her sister Priya" and "Priya")."""
+    unknown_owner = f"{SOMEONE}'s "
+    sa = {s for s in subject_aliases(a, user_name) if not s.startswith(unknown_owner)}
+    sb = {s for s in subject_aliases(b, user_name) if not s.startswith(unknown_owner)}
+    return bool(sa) and bool(sb) and _aliases_match(sa, sb, user_name)
+
+
+def relation_of_someone(text: str, user_name: str = "") -> bool:
+    """The fact is about "her sister", "his colleague" or "उसकी बहन" ("her sister Priya" too): whose it is is unclear."""
+    return any(a.startswith(f"{SOMEONE}'s ") for a in subject_aliases(text, user_name))
 
 
 def same_thing(new_fact: str, existing: str, user_name: str = "") -> bool:
@@ -417,9 +513,14 @@ def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | No
         return None
     if bool(PAST_RE.search(core)) != bool(PAST_RE.search(existing)):
         return None
-    if not same_thing(core, existing, user_name):
-        return None
-    new_vals, old_vals = _values(core), _values(existing)
+    if not same_person(core, existing, user_name) or not same_thing(core, existing, user_name):
+        return None  # decided in code, so both facts must clearly be about one person (#463)
+    # the user's surname is who, not a value ("Maya moved to Mumbai" loses no "Rao"), and an old fact's own replaced
+    # value is history ("moved from Pune to Bengaluru" only states Bengaluru now) (#463)
+    names = set(_TOKEN_RE.findall((user_name or "").lower()))
+    old_core = _REPLACED_RE.sub(" ", existing)
+    new_vals = {k: v for k, v in _values(core).items() if k not in names}
+    old_vals = {k: v for k, v in _values(old_core).items() if k not in names}
     core_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(core)}
     old_words = {w.lower().removesuffix("'s") for w in _DETAIL_WORD_RE.findall(existing)}
     gained = {k: v for k, v in new_vals.items() if k not in old_words}
@@ -428,14 +529,14 @@ def correction_of(new_fact: str, existing: str, user_name: str = "") -> str | No
         return None
     subjects = subject_aliases(core, user_name) | subject_aliases(existing, user_name)
     drop = {w for s in subjects for w in _TOKEN_RE.findall(s)} | set(new_vals) | set(old_vals)
-    drop |= {"user", (user_name or "").strip().lower()}
-    frame_new, frame_old = _frame(core, drop), _frame(existing, drop)
+    drop |= {"user", (user_name or "").strip().lower()} | names
+    frame_new, frame_old = _frame(core, drop), _frame(old_core, drop)
     tight = attribute_families(core) & attribute_families(existing) & TIGHT_FAMILIES
     union = frame_new | frame_old
     alike = bool(frame_old) and (frame_old <= frame_new or len(frame_new & frame_old) / len(union) >= 0.6)
     if not (alike or tight):
         return None
-    if len(gained) == 1 and len(lost) == 1 and frame_new <= frame_old:
+    if len(gained) == 1 and len(lost) == 1 and frame_new <= frame_old and old_core == existing:
         [(old_key, _)] = lost.items()
         [new_value] = gained.values()
         swapped, n = re.subn(rf"\b{re.escape(old_key)}\b", new_value, existing, count=1, flags=re.IGNORECASE)
@@ -669,9 +770,42 @@ class FactMemory:
         # set by the app: also scrub the words of erased memories from the workspace files and the user model's
         # caches (#152); called with an ``origins.Erased``: the texts that went, and which lines repeat them (#456)
         self.on_erase: Any = None
+        # set by the app: ``(title, message, job)`` -> a notification, which Activity shows too. Told once per job
+        # while no model can do it, again after it worked (#474)
+        self.on_no_model: Any = None
+        self._no_model_told: set[str] = set()
 
     async def ensure_schema(self) -> None:
         await ensure_memory_schema(self.store)
+
+    # ------------------------------------------------------------------ no model can do a memory job (#474)
+    async def _no_model(self, job: str, exc: ModelRefused, fact: str | None = None) -> None:
+        """Say plainly that no model can do ``job`` ("check": is a new memory a repeat or an update; "extract": pull
+        memories out of a chat), in the log every time and once in a notification (Activity shows it) until it works
+        again. ``exc`` says why and what to change (Claude Code only answers chats, Local only...)."""
+        why = str(exc).strip()
+        if job == "check":
+            # the checks made in code still run after this (a repeat, a new home), so the outcome isn't known yet
+            log.warning("no model could check %r against saved memories, so only the checks made in code decide "
+                        "whether it is new: %s", fact, why)
+            title = "Memories saved without a full check"
+            message = ("No model can check new memories against the ones Sentient already has, so some may be saved "
+                       f"as new memories that repeat or contradict older ones. {why}")
+        else:
+            log.warning("no model could pick out memories from the chat, so none were saved from it: %s", why)
+            title = "Memories not saved from your chats"
+            message = f"No model can pick out new memories from your chats right now, so none were saved. {why}"
+        if job in self._no_model_told or not callable(self.on_no_model):
+            return
+        self._no_model_told.add(job)
+        try:
+            await self.on_no_model(title, message.strip(), job)
+        except Exception:  # not told: try again next time
+            self._no_model_told.discard(job)
+            log.exception("could not tell the user that no model can do %s", job)
+
+    def _model_worked(self, job: str) -> None:
+        self._no_model_told.discard(job)
 
     # ------------------------------------------------------------------ events
     def publish(self, action: str, fid: int | None, content: str | None = None, **extra: Any) -> None:
@@ -926,7 +1060,7 @@ class FactMemory:
         similar memories never strips the other's lines or evidence."""
         await self.ensure_schema()
         row = await self.store.fetchone(
-            "SELECT id, content, previous_content, source_ref FROM facts WHERE id = ?", (fid,)
+            "SELECT id, content, previous_content, source_ref, state, superseded_by FROM facts WHERE id = ?", (fid,)
         )
         if row is None:
             return False
@@ -939,16 +1073,89 @@ class FactMemory:
             " OR fact_id IN (SELECT id FROM facts WHERE merged_into = ? AND status = 'merged')",
             (fid, fid),
         )
-        if not await self.forget(fid, notify=notify):
-            return False
         rows = [row, *copies]
         texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
         refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
+        ids = [int(r["id"]) for r in rows]
+        live_refs = [r for r in refs if r]
+        # Record the intended cleanup before the irreversible deletion (#462).
+        pending = None
         try:
-            await self._cascade([int(r["id"]) for r in rows], texts, [r for r in refs if r])
-        except Exception:  # the memory itself is gone; a leftover is logged, never a failed delete
-            log.exception("cleaning up after memory %s failed", fid)
+            cur = await self.store.execute(
+                "INSERT INTO pending_erase(fact_id, payload, at) VALUES(?,?,?)",
+                (fid, json.dumps({"ids": ids, "texts": texts, "refs": live_refs}), now_iso()),
+            )
+            pending = int(cur.lastrowid)
+        except Exception:
+            log.exception("could not record pending cleanup for memory %s; aborting erase", fid)
+            return False
+        if not await self.forget(fid, notify=notify):
+            with contextlib.suppress(Exception):
+                await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (pending,))
+            return False
+        try:
+            # Only now may upkeep replay this cleanup: while the delete was still
+            # running, a concurrent drain could strip a live memory's derived data
+            # before forget() had really removed the memory (#462).
+            await self.store.execute("UPDATE pending_erase SET complete = 1 WHERE id = ?", (pending,))
+        except Exception:
+            log.warning("could not mark memory %s's cleanup as ready to retry", fid)
+        if row["state"] == "superseded" and row["superseded_by"] is not None:
+            await self.store.execute(
+                "UPDATE facts SET previous_content = NULL WHERE id = ? AND previous_content = ?",
+                (row["superseded_by"], row["content"]),
+            )
+        try:
+            await self._cascade(ids, texts, live_refs, pending=pending)
+        except Exception:
+            log.exception("cleaning up after memory %s failed; will retry later", fid)
+            return True
+        with contextlib.suppress(Exception):
+            await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (pending,))
         return True
+
+    async def drain_pending_erases(self) -> int:
+        """Cleanup steps an erase could not finish (#462), replayed by memory upkeep until they succeed, so
+        derived data never outlives its memory because one step failed once (a locked file, a transient
+        database error). Returns how many waits were cleared."""
+        await self.ensure_schema()
+        # Drop stale retries (>7 days) so erased text does not linger indefinitely.
+        cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+        stale = await self.store.fetchall("SELECT id, fact_id FROM pending_erase WHERE at < ?", (cutoff,))
+        for row in stale:
+            log.warning(
+                "dropping stale pending erase for memory %s after 7 days; some derived data may remain",
+                row["fact_id"],
+            )
+        if stale:
+            await self.store.execute("DELETE FROM pending_erase WHERE at < ?", (cutoff,))
+        # A crash between the delete and its "complete" mark (a forget() that raised
+        # after the fact row went) strands the wait at complete = 0; once the memory
+        # no longer exists the delete really happened, so the wait is safe to replay.
+        # The one-hour age keeps a drain from racing an erase that is still running.
+        settled = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        await self.store.execute(
+            "UPDATE pending_erase SET complete = 1 WHERE complete = 0 AND at < ?"
+            " AND fact_id NOT IN (SELECT id FROM facts)",
+            (settled,),
+        )
+        drained = 0
+        for row in await self.store.fetchall(
+            "SELECT id, fact_id, payload FROM pending_erase WHERE complete = 1 ORDER BY id"
+        ):
+            try:
+                data = json.loads(row["payload"])
+                await self._cascade(
+                    data["ids"], data["texts"], data["refs"],
+                    summary_vec_ids=data.get("summary_vec_ids") or (), pending=int(row["id"]),
+                )
+            except Exception:
+                log.exception("cleaning up after memory %s failed again", row["fact_id"])
+                continue
+            await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (row["id"],))
+            drained += 1
+            log.info("finished cleaning up after memory %s on retry", row["fact_id"])
+        return drained
 
     async def _erased(self, texts: list[str], ids: list[int]) -> origins.Erased:
         """What ``texts`` said, against every memory still in use (#456): what derived data repeats them goes,
@@ -958,12 +1165,50 @@ class FactMemory:
         remaining = [(int(r["id"]), str(r["content"])) for r in rows if int(r["id"]) not in gone]
         return origins.Erased(texts, remaining, self.config.assistant.user_name)
 
-    async def _cascade(self, ids: list[int], texts: list[str], refs: list[dict]) -> None:
+    async def _note_summary_vecs(self, pending: int, vec_ids: list) -> None:
+        """Merge summary vector row IDs into a pending erase's payload (#462), so a retry can still reach the
+        vectors once their summary rows are gone. Each rowid is stored with its summary's TEXT id, so a retry
+        can tell an orphaned vector apart from a new summary that reused the freed rowid."""
+        row = await self.store.fetchone("SELECT payload FROM pending_erase WHERE id = ?", (pending,))
+        if row is None:
+            return
+        payload = json.loads(row["payload"])
+        merged: dict[int, str | None] = {}
+        for v in payload.get("summary_vec_ids") or []:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                merged[int(v[0])] = str(v[1])
+            else:
+                merged[int(v)] = None
+        for vid, sid in vec_ids:
+            if sid is not None:
+                merged[int(vid)] = str(sid)
+            else:
+                merged.setdefault(int(vid), None)
+        payload["summary_vec_ids"] = [
+            [vid, sid] if sid is not None else vid for vid, sid in sorted(merged.items())
+        ]
+        await self.store.execute(
+            "UPDATE pending_erase SET payload = ? WHERE id = ?", (json.dumps(payload), pending)
+        )
+
+    async def _cascade(
+        self, ids: list[int], texts: list[str], refs: list[dict],
+        summary_vec_ids: tuple[int, ...] | list[int] = (), pending: int | None = None,
+    ) -> None:
         store = self.store
         repeats = await self._erased(texts, ids)
 
         # chat summaries made of the messages it came from, that repeat it, and their vectors
         said_in = {str(r["message_id"]) for r in refs if r.get("message_id")}
+        # rowid -> the summary's TEXT id, so a retry can tell the original apart from a
+        # new summary SQLite handed the freed rowid (#462); a bare int (a payload from
+        # before ids were recorded next to rowids) keeps the old delete-both semantics.
+        vec_ids: dict[int, str | None] = {}
+        for v in summary_vec_ids:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                vec_ids[int(v[0])] = str(v[1])
+            else:
+                vec_ids[int(v)] = None
         if said_in:
             for r in await store.fetchall("SELECT rowid, id, content, message_ids FROM summaries"):
                 try:
@@ -971,8 +1216,24 @@ class FactMemory:
                 except ValueError:
                     continue
                 if made_of & said_in and repeats(r["content"]):
-                    await store.execute("DELETE FROM summaries WHERE id = ?", (r["id"],))
-                    await self.episodic.vec.delete(int(r["rowid"]))
+                    vec_ids[int(r["rowid"])] = str(r["id"])
+        if vec_ids and pending is not None:
+            # Note the vector row IDs (with their summary ids) before any summary
+            # row goes, so a retry can still delete the vectors once their rows are
+            # gone (#462) — and can leave a reused rowid alone.
+            with contextlib.suppress(Exception):
+                await self._note_summary_vecs(pending, sorted(vec_ids.items()))
+        for vid, sid in sorted(vec_ids.items()):
+            current = await store.fetchone("SELECT id FROM summaries WHERE rowid = ?", (vid,))
+            if current is not None and sid is not None and current["id"] != sid:
+                # SQLite handed the freed rowid to a new summary: the row and the
+                # vector at it are the newcomer's, not part of this cleanup (#462).
+                continue
+            # The vector goes first: a failure here leaves the summary row in place,
+            # so the next attempt finds both again.
+            await self.episodic.vec.delete(vid)
+            if current is not None:
+                await store.execute("DELETE FROM summaries WHERE rowid = ?", (vid,))
         # the nightly journal's lines about it
         for r in await store.fetchall("SELECT id, journal_md FROM dreams WHERE journal_md != ''"):
             lines = str(r["journal_md"]).splitlines()
@@ -1226,7 +1487,9 @@ class FactMemory:
             raise KeyError(fid)
         if row["scope"] != target:
             await self.store.execute(
-                "UPDATE facts SET scope = ?, updated_at = ? WHERE id = ?", (target, now_iso(), fid)
+                "UPDATE facts SET scope = ?, updated_at = CASE WHEN state = 'superseded' THEN updated_at ELSE ? END"
+                " WHERE id = ?",
+                (target, now_iso(), fid),
             )
             self.publish("UPDATE", fid, row["content"], scope=target, previous_scope=row["scope"], reason="moved")
         fact = await self.get_fact(fid)
@@ -1299,13 +1562,10 @@ class FactMemory:
         user = self.config.assistant.user_name
         if PAST_RE.search(fact) or "residence" not in attribute_families(fact):
             return None
-        subjects = fact_subjects(fact, user)
-        if not subjects:
-            return None
         peers = [
             n for n in candidates
             if "residence" in attribute_families(n["content"])
-            and subjects & fact_subjects(n["content"], user)
+            and same_person(fact, n["content"], user)  # never someone else's home (#463)
             and not PAST_RE.search(n["content"])
             and new_details(fact, n["content"])
         ]
@@ -1335,6 +1595,7 @@ class FactMemory:
         ``memory.updated`` event, so that chat can show "Remembered: ... Undo". Duplicates, updates and corrections
         only look at facts in ``scope`` and always: a save never changes a memory in another scope."""
         user = self.config.assistant.user_name
+        fact = name_the_user(fact, user)  # the memory tool and the Memory screen save words as given (#475)
         scope = memory_scopes.normalize(scope, memory_scopes.PERSONAL) or memory_scopes.PERSONAL
         refs: dict[str, dict] = {source: ref} if ref else {}
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
@@ -1513,8 +1774,12 @@ class FactMemory:
                         fid = int(raw["fact_id"]) if raw.get("fact_id") is not None else None
                     except (TypeError, ValueError):
                         fid = None
-                    content = str(raw.get("content") or fact).strip()
+                    content = name_the_user(str(raw.get("content") or fact), user).strip()  # #475
                     topics, memory_type, duration = _analysis_from(raw)
+                    log.info("CUD for %r: the model says %s%s", fact, action, f" of fact {fid}" if fid else "")
+                self._model_worked("check")
+            except ModelRefused as exc:  # every model refused this job: say so instead of quietly adding (#474)
+                await self._no_model("check", exc, fact)
             except Exception as exc:
                 log.warning("CUD decision failed, defaulting to ADD: %s", exc)
 
@@ -1538,10 +1803,12 @@ class FactMemory:
             if matched and not (
                 same_thing(fact, matched, user) and same_thing(content, matched, user)
                 and not says_something_else(fact, matched, user)
+                and (not relation_of_someone(content, user) or same_person(content, matched, user))
             ):
                 # a different person or action ("files written" vs "files deleted"), in the new fact or in the
                 # model's rewrite that would be stored, or something unrelated about the same person ("a piano
-                # recital in July" vs "starts school in July"): both facts hold
+                # recital in July" vs "starts school in July"): both facts hold. The model may tell whose "her
+                # sister" it is, by naming her in what it stores ("Maya's sister lives in Delhi") (#463)
                 log.info("CUD UPDATE of %s kept as ADD for %r (about something else)", fid, fact)
                 action, content, topics = "ADD", fact, None
             elif dropped and not (
@@ -1626,10 +1893,7 @@ class FactMemory:
         text = " ".join(str(fact).split()).strip(" -*•")
         if len(text) < 6:
             return None
-        name = username.strip()
-        if name:
-            text = re.sub(r"\b(the user|USERNAME)'s\b", f"{name}'s", text, flags=re.IGNORECASE)
-            text = _USER_REF_RE.sub(name, text)
+        text = name_the_user(text, username)
         text = text[:1].upper() + text[1:]
         if _REQUEST_RE.search(text) or _NOISE_RE.search(text) or _UNKNOWN_RE.search(text) or _TAUTOLOGY_RE.match(text):
             return None
@@ -1717,9 +1981,13 @@ class FactMemory:
                     {"role": "user", "content": prompts.FLUSH_USER.format(username=name, transcript=text)},
                 ],
             )
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("memory flush extraction failed: %s", exc)
             return []
+        self._model_worked("extract")
         results: list[dict] = []
         for fact in self._facts_from(raw, user_name)[: cfg.flush_max_facts]:
             try:
@@ -1741,6 +2009,10 @@ class FactMemory:
         turn), so a fact they fully back is saved even with ``review`` (#234, ``review.grounded``)."""
         try:
             facts = await self.extract_facts(text, username)
+            self._model_worked("extract")
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("fact extraction failed: %s", exc)
             return []
@@ -1921,13 +2193,35 @@ class FactMemory:
     # ------------------------------------------------------------------ housekeeping
     async def purge_expired(self) -> int:
         rows = await self.store.fetchall(
-            "SELECT id FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
+            "SELECT id, state FROM facts WHERE expires_at IS NOT NULL AND expires_at < ?", (now_iso(),)
         )
         for r in rows:
-            await self.forget(int(r["id"]))
+            # Superseded rows have derived history too; discard it with the same cascade as retention cleanup.
+            if r["state"] == "superseded":
+                await self.erase(int(r["id"]))
+            else:
+                await self.erase(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, reason="expired", count=len(rows))
-        return len(rows)
+        return len(rows) + await self.purge_superseded()
+
+    async def purge_superseded(self) -> int:
+        """Erase memories that were superseded more than ``memory.keep_superseded_days`` ago, with everything derived
+        from them (:meth:`erase`). 0 keeps them forever. Current and disputed memories are never touched."""
+        days = self.config.memory.keep_superseded_days
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        rows = await self.store.fetchall(
+            "SELECT id FROM facts WHERE state = 'superseded' AND updated_at < ?", (cutoff,)
+        )
+        erased = 0
+        for r in rows:
+            if await self.erase(int(r["id"])):
+                erased += 1
+        if erased:
+            self.publish("DELETE", None, None, reason="superseded_expired", count=erased)
+        return erased
 
     async def count(self) -> int:
         row = await self.store.fetchone(f"SELECT COUNT(*) AS n FROM facts WHERE {ACTIVE}")
@@ -2205,7 +2499,7 @@ class FactMemory:
         await self.ensure_schema()
         rows = await self.store.fetchall(
             f"SELECT {MEMORY_COLUMNS} FROM facts WHERE {ACTIVE} AND memory_type = 'short-term' AND recall_count >= ?"
-            " AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
+            " AND state != 'superseded' AND (expires_at IS NULL OR expires_at > ?) ORDER BY recall_count DESC LIMIT ?",
             (min_recalls, now_iso(), limit),
         )
         out = []

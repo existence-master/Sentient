@@ -74,6 +74,28 @@ Life happens, and that's fine. To keep issues moving for everyone, a bot checks 
 Draft pull requests are never touched, and the clock only runs while we are waiting on you, never while you
 are waiting on us.
 
+### We do the chores
+
+You bring the change; we take care of the busywork around it, so a pull request never stalls on housekeeping.
+
+- **What we may do on your branch:** merge `main` into it, resolve conflicts, rename or add a changelog file,
+  fix lint or formatting, re-run checks, and make tiny fixes a review asked for.
+- **What we always do:** say exactly what we pushed in a comment, never force-push, and only push when
+  **Allow edits by maintainers** is ticked on your pull request (it is by default).
+- **What stays yours:** anything that changes how your code behaves or how it is designed comes back to you as
+  a review, never as a surprise commit.
+- **Your branch doesn't need to be up to date to merge.** The merge queue tests your change on top of the
+  latest `main` before it lands. If you want `main` merged in anyway, comment `/update` on the pull request:
+  a bot tries to merge it in (a merge, never a rebase) and tells you what happened. It can update a branch in
+  your fork when **Allow edits by maintainers** is ticked, except when `main` has changes to files in
+  `.github/workflows/` that your fork doesn't have yet: GitHub never lets a bot bring those into a fork.
+  (Clicking **Sync fork** on your fork's page brings them in, and then `/update` works.) In that case, and when
+  your fork doesn't allow edits by maintainers, it tells you why, shows you GitHub's **Update branch** button
+  and labels the pull request `needs update` so a maintainer can do it for you. If there are conflicts, it lists
+  the files and labels the pull request `needs update`, and a maintainer resolves them for you. If the branch
+  changed while it was working, it leaves it alone and you can comment `/update` again. If anything else goes
+  wrong, it says so and labels the pull request `needs update` for a maintainer.
+
 ### PR titles
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) with an area, because the title becomes the

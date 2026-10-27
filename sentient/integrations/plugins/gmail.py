@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from datetime import UTC, datetime
 from email.message import EmailMessage
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from sentient.integrations import mail, redact
+from sentient.integrations import inbox, mail, redact
 from sentient.integrations.base import FeedBatch, IntegrationError, itool, manager_from
 from sentient.integrations.common import email_blocked, email_of, truncate
 from sentient.integrations.google import gapi
@@ -20,6 +21,8 @@ from sentient.tools.base import Risk, ToolContext
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.integrations.service import IntegrationManager
+
+log = logging.getLogger(__name__)
 
 API = "https://gmail.googleapis.com/gmail/v1/users/me"
 PID = "gmail"
@@ -78,7 +81,7 @@ def normalize_message(msg: dict, body_chars: int | None = LIST_BODY_CHARS, *, hi
     """The gmail item shape. ``hide_codes`` masks one-time codes and sign-in or reset links (``redact``)."""
     h = _headers(msg)
     subject = h.get("subject") or ""
-    sender = email_of(h.get("from"))
+    sender = mail.real_address(h.get("from"))  # the real address, never one written in the display name (#159)
     body = decode_body(msg.get("payload") or {})
     snippet = msg.get("snippet") or ""
     if hide_codes:
@@ -253,7 +256,9 @@ async def gmail_send(ctx: ToolContext, to: str, subject: str, body: str, cc: str
 
 
 def _me(mgr: IntegrationManager) -> set[str]:
-    return {(mgr._get_state(PID).get("account_label") or "").lower()} - {""}
+    """The account's own addresses, plus the Sentient address (#159): a reply-all never copies Sentient in again."""
+    own = (mgr._get_state(PID).get("account_label") or "").lower()
+    return {own, inbox.sentient_address(getattr(mgr, "app", None))} - {""}
 
 
 async def _reply_parts(ctx: ToolContext, message_id: str, reply_all: bool) -> dict:
@@ -400,6 +405,59 @@ async def _get_existing(mgr: IntegrationManager, ids: list[str]) -> list[dict]:
     return [m for m in await asyncio.gather(*(one(i) for i in ids)) if m]
 
 
+def _header_values(msg: dict, name: str) -> list[str]:
+    return [str(h.get("value") or "") for h in (msg.get("payload") or {}).get("headers") or []
+            if str(h.get("name") or "").lower() == name]
+
+
+def feed_item(msg: dict, *, hide_codes: bool = True) -> dict:
+    """``normalize_message`` plus what email-to-task reads (#159): ``cc``, ``message_id`` and ``headers`` (how it was
+    delivered, what Gmail found when it checked the sender, the marks of automated mail). A header given more than
+    once keeps every value, and more than one From line is kept as ``headers.from`` so the sender check refuses it."""
+    item = normalize_message(msg, hide_codes=hide_codes)
+    h = _headers(msg)
+    item["cc"] = h.get("cc")
+    item["message_id"] = h.get("message-id")
+    headers: dict[str, str] = {}
+    for name in ("delivered-to", "x-original-to", "authentication-results", "auto-submitted", "precedence", "list-id",
+                 "list-unsubscribe"):
+        values = _header_values(msg, name)
+        if values:
+            headers[name] = (inbox.AUTH_RESULTS_JOIN if name == "authentication-results" else ", ").join(values)
+    froms = _header_values(msg, "from")
+    if len(froms) > 1:
+        headers["from"] = ", ".join(froms)
+    item["headers"] = headers
+    return item
+
+
+_LABELS_TTL_S = 600.0
+_inbox_label_cache: dict[str, tuple[float, str | None]] = {}
+
+
+async def _inbox_label_id(mgr: IntegrationManager) -> str | None:
+    """The id of the Gmail label email-to-task watches (#159), looked up by name and kept for ten minutes."""
+    cfg = inbox.settings(getattr(mgr, "app", None))
+    name = cfg.label.strip() if cfg is not None else ""
+    if not name:
+        return None
+    now = asyncio.get_running_loop().time()
+    cached = _inbox_label_cache.get(name.lower())
+    if cached is not None and now - cached[0] < _LABELS_TTL_S:
+        return cached[1]
+    listing = await gapi(None, PID, "GET", f"{API}/labels", mgr=mgr)
+    found = next((lab["id"] for lab in listing.get("labels") or [] if str(lab.get("name", "")).lower() == name.lower()),
+                 None)
+    _inbox_label_cache[name.lower()] = (now, found)
+    return found
+
+
+def _for_sentient(item: dict, mgr: IntegrationManager) -> bool:
+    """An email the user sent to their own Sentient address (#159): Gmail files it under SENT and INBOX both."""
+    cfg = inbox.settings(getattr(mgr, "app", None))
+    return cfg is not None and inbox.addressed(item, cfg.address, cfg.label)
+
+
 async def gmail_change_feed(mgr: IntegrationManager, cursor: str | None) -> FeedBatch:
     """New INBOX messages since the stored historyId.
 
@@ -427,7 +485,8 @@ async def gmail_change_feed(mgr: IntegrationManager, cursor: str | None) -> Feed
             for added in h.get("messagesAdded") or []:
                 m = added.get("message") or {}
                 labels = set(m.get("labelIds") or [])
-                if m.get("id") and (not labels or ("INBOX" in labels and not labels & FEED_SKIP_LABELS)):
+                # SENT too: mail to your own Sentient address is in SENT and INBOX (checked below, #159)
+                if m.get("id") and (not labels or ("INBOX" in labels and not labels & (FEED_SKIP_LABELS - {"SENT"}))):
                     ids.append(str(m["id"]))
         latest = str(res.get("historyId") or latest)
         page_token = res.get("nextPageToken")
@@ -435,10 +494,20 @@ async def gmail_change_feed(mgr: IntegrationManager, cursor: str | None) -> Feed
             break
     ids = list(dict.fromkeys(ids))[-FEED_MAX_MESSAGES:]
     items: list[dict] = []
+    label_id = None
+    if ids:
+        try:
+            label_id = await _inbox_label_id(mgr)
+        except httpx.HTTPError as exc:  # the label can't be looked up now: the plus-address still works
+            log.info("couldn't look up the Gmail label for tasks by email: %s", exc)
     for msg in await _get_existing(mgr, ids) if ids else []:
-        item = normalize_message(msg, hide_codes=redact.enabled(mgr))
+        item = feed_item(msg, hide_codes=redact.enabled(mgr))
         labels = set(item["labels"])
-        if "INBOX" not in labels or labels & FEED_SKIP_LABELS:
+        if label_id and label_id in labels:
+            item["label_names"] = [inbox.settings(mgr.app).label.strip()]
+        if "INBOX" not in labels or labels & (FEED_SKIP_LABELS - {"SENT"}):
+            continue
+        if "SENT" in labels and not _for_sentient(item, mgr):
             continue
         item["_key"] = item["id"]
         items.append(item)

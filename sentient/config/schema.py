@@ -13,7 +13,7 @@ class below and may add fields to it. Do not edit another package's section.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -546,9 +546,55 @@ class MemoryConfig(BaseModel):
         description="Memories waiting for your review (from emails, web pages, imports or work Sentient did on its "
         "own) are let go after this many days without an answer.",
     )
+    keep_superseded_days: int = Field(
+        180, ge=0, le=3650,
+        description="When a newer memory replaces an older one, the older one is kept as history for this many days, "
+        "then deleted for good. Your current memories are never deleted by this. 0 keeps the history forever.",
+    )
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
+class EmailTasksConfig(BaseModel):
+    """Tasks by email (#159): an email forwarded or copied to the user's Sentient address becomes a task."""
+
+    enabled: bool = Field(
+        False,
+        description="Forward or copy an email to your Sentient address and Sentient makes a task from it. Off until "
+        "you turn it on.",
+    )
+    address: str = Field(
+        "",
+        description="Your Sentient address, for example you+sentient@gmail.com. Email sent or copied to it becomes a "
+        "task. Most email services deliver an address with +something to your normal inbox.",
+    )
+    label: str = Field(
+        "",
+        description="Optional. A Gmail label or email folder: email that lands there becomes a task too. Over IMAP, "
+        "also add the folder to the folders the account watches.",
+    )
+    allowed_senders: list[str] = Field(
+        default_factory=list,
+        description="Other people who may give Sentient tasks by email, by their real address. Your own addresses "
+        "(the email accounts you connected) can always send tasks. The name shown next to an address never counts.",
+    )
+
+    @field_validator("address", "label")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("allowed_senders")
+    @classmethod
+    def _senders(cls, value: list[str]) -> list[str]:
+        seen: dict[str, None] = {}
+        for item in value or []:
+            for part in str(item).replace(";", ",").split(","):
+                address = part.strip().lower()
+                if address:
+                    seen.setdefault(address, None)
+        return list(seen)
+
+
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
@@ -608,6 +654,10 @@ class TasksConfig(BaseModel):
         24, ge=0, le=168, description="Before pausing, ask once and wait this many hours for any sign of you. "
         "0 pauses without asking.",
     )
+    email: EmailTasksConfig = Field(
+        default_factory=EmailTasksConfig,
+        description="Tasks by email: forward or copy an email to your Sentient address to give it a task (#159).",
+    )
 
 
 # ----------------------------------------------------------------------------- integrations (owner: integrations agent)
@@ -637,6 +687,20 @@ class IntegrationsConfig(BaseModel):
         default_factory=list,
         description="Connections set to Read only, by app id (gmail, github, mcp_<server>). Sentient can look things "
         "up there but never change, send, delete or run anything: those tools are hidden and refused.",
+    )
+    mcp_server_enabled: bool = Field(
+        False,
+        description="Let other AI apps on this computer (Claude Code, Cursor and other MCP clients) use Sentient "
+        "itself through the `sentient mcp` command: search and add memories, create and check tasks, send "
+        "notifications and ask Sentient a question. Off until turned on. There is no tool that sends, deletes "
+        "or runs anything, and the command only works on this computer, with a key of its own that opens "
+        "only what those tools need.",
+    )
+    mcp_server_memories_skip_review: bool = Field(
+        False,
+        description="Only with the MCP server above: save memories an MCP app adds straight away instead of "
+        "holding them for review first. Off is safer: a memory from another app waits in Review until the "
+        "user approves it (ADR 0021).",
     )
 
     @field_validator("read_only", mode="before")
@@ -1050,10 +1114,24 @@ class NodesConfig(BaseModel):
         False, description="Accept devices on your local network (encrypted, pairing code required)."
     )
     lan_port: int = Field(7778, ge=1024, le=65535, description="Port devices on your network connect to.")
+    lan_bind_all: bool = Field(
+        False,
+        description="Bind the device listener to every network interface (0.0.0.0) instead of this computer only "
+        "(loopback). Off by default: enable it only if devices cannot reach Sentient, and keep pairing on.",
+    )
     mdns_enabled: bool = Field(
         True,
         description="Announce Sentient on your network (mDNS) so glasses and phones find it without typing an address.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_lan_bind_all(cls, data: Any) -> Any:
+        # Configs saved before nodes.lan_bind_all existed bound the LAN listener to every
+        # interface, so an existing lan_enabled opt-in keeps working until the user chooses otherwise.
+        if isinstance(data, dict) and "lan_bind_all" not in data and data.get("lan_enabled") is True:
+            data = {**data, "lan_bind_all": True}
+        return data
     camera_requires_approval: bool = Field(
         True, description="Ask before the assistant takes a photo or captures a screen with one of your devices."
     )
@@ -1199,8 +1277,8 @@ class BackupsConfig(BaseModel):
     folder: str | None = Field(
         None,
         description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
-        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
-        "folder keeps them safe if this computer fails.",
+        "inside Sentient's data folder when Documents can't be used, and always for a data folder other than the "
+        "default ~/.sentient). A folder on another drive or a synced cloud folder keeps them safe if this computer fails.",
     )
     schedule: Literal["off", "daily", "weekly"] = Field(
         "off", description="Back up automatically every day or every week, while Sentient is running."

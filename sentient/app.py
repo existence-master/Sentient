@@ -59,7 +59,9 @@ from sentient.presence import Presence
 from sentient.proactivity import ProactiveEngine
 from sentient.reminders import ReminderService
 from sentient.sandbox import SandboxService
+from sentient.sensors import SensorRegistry
 from sentient.services import Service
+from sentient.skills.hub import SkillsHub
 from sentient.skills.loader import SkillLibrary
 from sentient.snapshots import FileSnapshots
 from sentient.store.db import Store, now_iso
@@ -103,6 +105,7 @@ class SentientApp:
         self.skills = SkillLibrary(
             [paths.skills_dir(), *[Path(d).expanduser() for d in self.config.skills.extra_dirs]]
         )
+        self.skills_hub = SkillsHub(self.skills)  # finding and installing skills others wrote (#210)
         self.registry = ToolRegistry(disabled=self.config.tools.disabled)
         self.approvals = ApprovalBroker(self.config.tools.approvals, timeout_s=self.config.tools.approvals.timeout_s)
         # Read only connections (#141) are read from the live config on every check, so a switch applies at once
@@ -114,6 +117,7 @@ class SentientApp:
         self.approvals.grants = GrantStore(self)
         self.undo = UndoBroker()  # emails, messages and posts waiting in their undo window (#142)
         self.presence = Presence(self.bus)  # is the person looking at the window? (#139)
+        self.sensors = SensorRegistry(self.bus)  # live microphones and cameras, here and on devices (#170)
         self.memory: FactMemory | None = None
         self.agent: Agent | None = None
 
@@ -178,6 +182,15 @@ class SentientApp:
             self.config = config
         moved = self._claude_code_switched()
         save_config(self.config)
+        if self.config.integrations.mcp_server_enabled:
+            # turning the MCP server on issues its own narrow token in the keychain (#443, ADR 0034);
+            # a keychain problem must never break saving settings, the status endpoint reports it
+            try:
+                from sentient.gateway import mcp_token
+
+                mcp_token.ensure_token()
+            except Exception:
+                pass
         if hasattr(self.llm, "config"):
             self.llm.config = self.config  # type: ignore[attr-defined]
         if self.agent is not None:
@@ -319,13 +332,14 @@ class SentientApp:
             log.exception("removing the selected text of chat %s failed", session_id)
         self.bus.publish("session.deleted", {"session_id": session_id, **({"reason": reason} if reason else {})})
 
+    async def _memory_without_model(self, title: str, message: str, job: str) -> None:
+        """No model can do a memory job (#474): one notification, which Activity shows under Memory."""
+        await self.notify("info", message, title=title, payload={"kind": "memory_no_model", "job": job})
+
     def _after_memory_erased(self, erased: Any) -> None:
         """A memory was deleted (#152): its words leave USER.md and MEMORY.md (not a remaining memory's similar lines,
         #456), and the user model reads its insights again (some may be gone with it)."""
-        try:
-            self.workspace.scrub(erased.wordings, self.config.assistant.user_name, repeats=erased)
-        except OSError:
-            log.exception("removing a deleted memory from the workspace files failed")
+        self.workspace.scrub(erased.wordings, self.config.assistant.user_name, repeats=erased)
         model = getattr(self, "user_model", None)
         if model is not None:
             model._vectors = None
@@ -344,6 +358,15 @@ class SentientApp:
         await self._load_stop_state()  # before services start: a stopped Sentient starts paused
         assert self.approvals.grants is not None
         await self.approvals.grants.load()
+        if self.config.integrations.mcp_server_enabled:
+            # the MCP key is issued when the feature is turned on in Settings; a config edited by
+            # hand reaches start with the feature on and no key, so issue it here too (#443)
+            try:
+                from sentient.gateway import mcp_token
+
+                mcp_token.ensure_token()
+            except Exception:
+                log.exception("could not issue the MCP key")
         self.workspace.ensure_defaults(
             self.config.assistant.name, self.config.assistant.user_name, self.config.assistant.timezone
         )
@@ -352,6 +375,7 @@ class SentientApp:
             log.warning("sqlite-vec unavailable: semantic memory disabled")
         else:
             self.memory.on_erase = self._after_memory_erased
+            self.memory.on_no_model = self._memory_without_model
 
         with as_kind(self.notifications.model_kind):
             await self.notifications.start()
