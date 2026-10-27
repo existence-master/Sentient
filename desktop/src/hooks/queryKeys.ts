@@ -87,6 +87,13 @@ export const qk = {
     diff: (name: string) => ['skills', 'diff', name] as const,
     evolutionLog: ['skills', 'evolution-log'] as const
   },
+  /** Skills hub (#210). Not under ['skills'], so a skill change doesn't refetch the sources over the network. */
+  skillsHub: {
+    sources: ['skills-hub', 'sources'] as const,
+    browse: (source: string) => ['skills-hub', 'browse', source] as const,
+    preview: (source: string, path: string) => ['skills-hub', 'preview', source, path] as const,
+    installed: ['skills-hub', 'installed'] as const
+  },
 
   voiceStatus: ['voice', 'status'] as const,
   sandboxStatus: ['sandbox', 'status'] as const,

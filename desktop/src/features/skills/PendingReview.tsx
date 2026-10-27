@@ -12,6 +12,7 @@ import type { EvolutionLogEntry, Skill, SkillsList } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { ReviewNowButton } from './actions'
 import { DiffView } from './DiffView'
+import { HubOrigin } from './HubPage'
 import { LintList } from './LintList'
 import { SafetyReport, vetSourceLabel } from './SafetyReport'
 import { SkillChecks, checkWaits } from './SkillChecks'
@@ -207,7 +208,7 @@ function ReviewCard({
           </div>
           <div className="min-w-0 flex-1">
             <div className={cn('text-xs font-medium uppercase tracking-wide', repair ? 'text-warning' : 'text-fg-subtle')}>
-              {repair ? 'Fix proposed after a problem' : isUpdate ? 'Proposed improvement' : vetting ? `${vetSourceLabel(vetting)}, not used until you approve it` : 'Sentient learned a new skill'}
+              {repair ? 'Fix proposed after a problem' : isUpdate && pending.hub ? 'New version from the Skills hub, not used until you approve it' : isUpdate ? 'Proposed improvement' : vetting ? `${vetSourceLabel(vetting)}, not used until you approve it` : 'Sentient learned a new skill'}
               {entry && <span className="normal-case tracking-normal"> · {relativeTime(entry.ts)}</span>}
             </div>
             <h3 className="mt-0.5 flex flex-wrap items-center gap-2 text-md font-semibold text-fg">
@@ -226,6 +227,7 @@ function ReviewCard({
 
       <div className="space-y-4 p-5">
         {/* why, or for a skill from outside its safety check (#146) */}
+        {pending.hub && <HubOrigin hub={pending.hub} />}
         {vetting ? (
           <SafetyReport vetting={vetting} />
         ) : (

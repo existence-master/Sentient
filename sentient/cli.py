@@ -99,10 +99,33 @@ def serve(
     if not os.environ.get(ENV_TOKEN):
         # started by hand: show how to open the UI in a browser
         console.print(f"Sentient backend on http://{h}:{p}/  (dev UI: http://{h}:{p}/?api=http://{h}:{p}&token={token})")
+    if p:
+        # `sentient mcp` finds the engine through this file (issue #443): the desktop starts the
+        # engine on a fresh port each launch, so the configured port is not where it listens.
+        # The address only, no secret; the file is removed again when the engine stops (below),
+        # and the MCP server proves the engine is Sentient before it sends the token anywhere.
+        import contextlib
+        import json
+
+        from sentient import paths
+
+        with contextlib.suppress(Exception):
+            found = paths.discovery_file()
+            found.parent.mkdir(parents=True, exist_ok=True)
+            found.write_text(json.dumps({"host": h, "port": p}), encoding="utf-8")
     uvicorn.run(
         "sentient.gateway.app:create_app", factory=True, host=h, port=p, reload=reload,
         log_level="warning", ws_ping_interval=20, ws_ping_timeout=60,
     )
+    if p:
+        # the engine stopped: take the discovery file away again, so it cannot outlive the
+        # engine and point a future MCP server at a port something else has since taken over
+        import contextlib
+
+        from sentient import paths
+
+        with contextlib.suppress(Exception):
+            paths.discovery_file().unlink(missing_ok=True)
 
 
 @app.command()
@@ -133,6 +156,21 @@ def node(
     )
 
 
+@app.command()
+def mcp(
+    engine_url: str | None = typer.Option(
+        None, help="Engine address (default: the address the running engine left in its discovery file)"
+    ),
+):
+    """Let other AI apps on this computer use Sentient over MCP (off until turned on in Settings).
+
+    Started by the MCP client itself, for example with: claude mcp add sentient -- sentient mcp
+    """
+    from sentient.mcp_server.server import main
+
+    raise typer.Exit(main(engine_url=engine_url))
+
+
 @app.command("claude-code-tools", hidden=True)
 def claude_code_tools(tools_file: str):
     """Sentient's tool list for Claude Code (started by Claude Code itself; see sentient/llm/claude_code_tools.py)."""
@@ -143,7 +181,7 @@ def claude_code_tools(tools_file: str):
 
 @app.command()
 def backup(
-    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups)."),
+    to: Path | None = typer.Option(None, "--to", help="Folder for the backup (default: Documents/Sentient Backups; a data folder other than ~/.sentient uses its own backups folder)."),
 ):
     """Back up the data folder (database, config, workspace, skills, files) to one zip file."""
     from sentient.backup import archive

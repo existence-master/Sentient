@@ -1,9 +1,11 @@
 """All REST routers. One module per feature package; each module is owned by that package.
 
 core, models, notifications : core (composition root owner)
+mcp                         : core (the MCP server's status and token endpoints, #443)
 tasks                       : tasks package
 integrations                : integrations package
 memory, skills, proactivity : memory / proactivity / evolution package
+skills_hub                  : skills package (the Skills hub, #210)
 voice                       : voice package (also defines the /ws/voice WebSocket)
 subagents                   : core
 sandbox, browser, channels  : their packages
@@ -26,6 +28,7 @@ from sentient.gateway.routes import (
     folders,
     hooks,
     integrations,
+    mcp,
     memory,
     migrate,
     models,
@@ -35,6 +38,7 @@ from sentient.gateway.routes import (
     reminders,
     sandbox,
     skills,
+    skills_hub,
     subagents,
     tasks,
     terminal,
@@ -46,10 +50,12 @@ from sentient.gateway.routes import (
 ROUTERS = [
     core.router,
     models.router,
+    mcp.router,
     notifications.router,
     tasks.router,
     integrations.router,
     memory.router,
+    skills_hub.router,  # before skills: /api/skills/hub/... must not reach /api/skills/{name}
     skills.router,
     proactivity.router,
     voice.router,

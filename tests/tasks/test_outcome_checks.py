@@ -214,6 +214,9 @@ def test_result_problem_reads_the_usual_shapes():
     assert rp({"status": "failed", "to": "a@x.com", "reason": "blocked"}) == ("blocked (a@x.com)", ["a@x.com"])
     assert rp({"content": '{"sent": [], "failed": ["b@x.com"]}'}) == ("it couldn't do it for b@x.com", ["b@x.com"])
     assert rp({"content": "Error: SMTP 550"}) == ("Error: SMTP 550", [])
+    assert rp({"content": "Couldn't open the page"}) == ("Couldn't open the page", [])
+    couldnt = "Couldn\u2019t open the page"
+    assert rp({"content": couldnt}) == (couldnt, [])
     assert rp({"content": "Message sent"}) is None
     assert rp({"results": [{"to": "a", "status": "sent"}, {"to": "b", "status": "error", "error": "x"}]}) == (
         "x (b)", ["b"]

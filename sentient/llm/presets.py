@@ -35,6 +35,7 @@ from sentient.llm.provider import provider_config
 
 UNDO_META_KEY = "models.preset_undo"
 BUILTIN = (LOCAL_PRESET, CLOUD_PRESET, MIXED_PRESET)
+PLAN_PRESETS = {CLOUD_PRESET.lower(), MIXED_PRESET.lower()}  # the presets that can use a ChatGPT plan's models
 CLOUD_ORDER = (*PRESET_CLOUD_MODELS, chatgpt.PREFIX)
 PLAN_MODELS_META = chatgpt.MODELS_META  # the plan's model list from last time, for when it can't be loaded
 PLAN_MODELS_TIMEOUT_S = 5
@@ -223,7 +224,10 @@ async def apply(app: Any, name: str, *, local_only: bool = False) -> dict[str, A
     ``local_only`` also turns Local only on in the same save (#335; the window asks first), for a preset whose
     models all run on this computer."""
     before = app.config
-    preset = find(before, name, hardware(app), plan=await plan_models(app))
+    # only the cloud presets can use the ChatGPT plan's models: "Local only" and the user's own presets never load
+    # its list (#241). A preset of the user's can't take a built-in name, so the name decides.
+    uses_plan = name.strip().lower() in PLAN_PRESETS
+    preset = find(before, name, hardware(app), plan=await plan_models(app) if uses_plan else None)
     if not preset["available"]:
         raise PresetError(preset["reason"] or f"{preset['name']} can't be used yet.", 409)
     cfg = before.model_copy(deep=True)

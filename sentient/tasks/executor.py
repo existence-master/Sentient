@@ -29,13 +29,13 @@ from typing import TYPE_CHECKING, Any
 
 from sentient.agent import dry_run, outcomes, preview, rule_levels
 from sentient.agent.loop import ASK_FIRST_KEY, CAN_PAUSE_KEY, Budget, LoopResult, history_to_openai
-from sentient.agent.second_look import BRIEF_FROM_KEY
+from sentient.agent.second_look import BRIEF_FROM_KEY, TASK_REQUEST_KEY
 from sentient.agent.sources import AnswerSources
 from sentient.llm.events import TextDelta, ThinkingDelta, ToolCallEvent, ToolResultEvent, Usage
 from sentient.llm.provider import ToolCall
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.sources import MemorySources
-from sentient.tasks import ask, checklist, continuity, email_inbox, limits, stuck
+from sentient.tasks import ask, checklist, continuity, email_inbox, limits, mcp_tasks, stuck
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
@@ -44,6 +44,7 @@ from sentient.tasks.prompts import (
     RESULT_GENERATOR_SYSTEM_PROMPT,
     RESUME_NOTE,
     build_executor_prompt,
+    build_second_look_request,
 )
 from sentient.tasks.schedule import get_tz
 from sentient.tools.base import Risk, effective_risk
@@ -302,6 +303,8 @@ def _trigger_source(app: Any, task: dict, run: dict) -> str:
     from an email (#159) is started by that email, in every run."""
     if email_inbox.is_email_task(task):
         return email_inbox.app_name(task)
+    if mcp_tasks.is_mcp_task(task):  # an MCP app's task is started by that app, in every run (#443)
+        return mcp_tasks.app_name(task)
     if not run.get("trigger_data"):
         return ""
     source = str((task.get("schedule") or {}).get("source") or "")
@@ -425,6 +428,13 @@ async def execute_single(
                 ctx.extra[ASK_FIRST_KEY] = True
             if email_inbox.is_email_task(task):  # its brief was written from an email, not by the user (#159)
                 ctx.extra[BRIEF_FROM_KEY] = email_inbox.app_name(task)
+            elif mcp_tasks.is_mcp_task(task):  # its brief was written from an app's prompt, not by the user (#443)
+                ctx.extra[BRIEF_FROM_KEY] = mcp_tasks.app_name(task)
+            else:  # what the second look's model check compares a send or a code run with (#455)
+                ctx.extra[TASK_REQUEST_KEY] = build_second_look_request(
+                    name=task.get("name") or "", description=task.get("description") or "",
+                    original_prompt=task.get("original_prompt") or "", plan=plan, confirmed=checklist.prompt_lines(task),
+                )
             checkpoint = run.get("messages") if resume else None
             if isinstance(checkpoint, list) and checkpoint:
                 if svc.holding(run_id):  # paused before an approved call ran: it runs once the task is resumed

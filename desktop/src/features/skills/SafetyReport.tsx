@@ -8,7 +8,7 @@ import { api, errorMessage, isApiError } from '@/lib/api'
 import type { SkillVetting } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 
-const SOURCE: Record<string, string> = { link: 'Added from a link', hermes: 'Brought over from Hermes', learn: 'Learned from your docs' }
+const SOURCE: Record<string, string> = { link: 'Added from a link', hermes: 'Brought over from Hermes', learn: 'Learned from your docs', hub: 'From the Skills hub' }
 
 export function vetSourceLabel(v: SkillVetting): string {
   return SOURCE[v.source ?? ''] ?? 'Imported'

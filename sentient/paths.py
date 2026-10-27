@@ -30,6 +30,12 @@ def token_file() -> Path:
     return home() / "gateway.token"
 
 
+def discovery_file() -> Path:
+    """Where the running engine leaves its loopback port for `sentient mcp` to find (issue #443).
+    Port only, never a secret: the MCP token lives in the keychain."""
+    return home() / "engine-discovery.json"
+
+
 def workspace_dir() -> Path:
     """Human-readable markdown the user can open and edit: SOUL.md, USER.md, MEMORY.md, notes/."""
     return home() / "workspace"

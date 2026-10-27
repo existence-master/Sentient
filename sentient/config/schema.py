@@ -688,6 +688,20 @@ class IntegrationsConfig(BaseModel):
         description="Connections set to Read only, by app id (gmail, github, mcp_<server>). Sentient can look things "
         "up there but never change, send, delete or run anything: those tools are hidden and refused.",
     )
+    mcp_server_enabled: bool = Field(
+        False,
+        description="Let other AI apps on this computer (Claude Code, Cursor and other MCP clients) use Sentient "
+        "itself through the `sentient mcp` command: search and add memories, create and check tasks, send "
+        "notifications and ask Sentient a question. Off until turned on. There is no tool that sends, deletes "
+        "or runs anything, and the command only works on this computer, with a key of its own that opens "
+        "only what those tools need.",
+    )
+    mcp_server_memories_skip_review: bool = Field(
+        False,
+        description="Only with the MCP server above: save memories an MCP app adds straight away instead of "
+        "holding them for review first. Off is safer: a memory from another app waits in Review until the "
+        "user approves it (ADR 0021).",
+    )
 
     @field_validator("read_only", mode="before")
     @classmethod
@@ -1262,8 +1276,8 @@ class BackupsConfig(BaseModel):
     folder: str | None = Field(
         None,
         description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
-        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
-        "folder keeps them safe if this computer fails.",
+        "inside Sentient's data folder when Documents can't be used, and always for a data folder other than the "
+        "default ~/.sentient). A folder on another drive or a synced cloud folder keeps them safe if this computer fails.",
     )
     schedule: Literal["off", "daily", "weekly"] = Field(
         "off", description="Back up automatically every day or every week, while Sentient is running."

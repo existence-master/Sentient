@@ -47,6 +47,7 @@ from typing import Any
 from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
 from sentient.agent.prompt import mark_outside
+from sentient.app_names import code_span, framed_app_name
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.memory import scopes as memory_scopes
@@ -60,6 +61,7 @@ from sentient.tasks import (
     email_inbox,
     executor,
     limits,
+    mcp_tasks,
     scripts,
     stuck,
     swarm,
@@ -444,6 +446,40 @@ class TaskService(Service):
             "model": None,
             "memory_scope": memory_scopes.chat_scope(None),
             "original_context": dict(context),
+            "plan": [],
+            "chat_history": [],
+            "clarifying_questions": [],
+            "task_type": "single",
+            "schedule": None,
+            "created_at": now,
+            "updated_at": now,
+        })
+        data = await self.publish(task_id)
+        self._spawn(self._plan_job(task_id), f"plan:{task_id}")
+        assert data is not None
+        return data
+
+    async def create_from_mcp(self, prompt: str, app_name: str) -> dict:
+        """A task an MCP app asked for (``sentient/tasks/mcp_tasks.py``, #443).
+
+        No refining step (that would read the app's words as the user's): the name and description
+        are the app's prompt as it stands, and the plan always waits for approval."""
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("A prompt is required.")
+        now = self.now_iso()
+        task_id = await self.repo.insert_task({
+            "name": _title(prompt),
+            "description": prompt,
+            "status": "planning",
+            "priority": 1,
+            "assignee": "ai",
+            "original_prompt": prompt,
+            "source": mcp_tasks.SOURCE,
+            "enabled": True,
+            "model": None,
+            "memory_scope": memory_scopes.chat_scope(None),
+            "original_context": {"source": mcp_tasks.SOURCE, "app": app_name},
             "plan": [],
             "chat_history": [],
             "clarifying_questions": [],
@@ -1476,7 +1512,8 @@ class TaskService(Service):
         if task.get("task_type") == "swarm":
             self._spawn(self._orchestrate_swarm(task["id"]), f"swarm:{task['id']}")
         elif (task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions")
-              or email_inbox.is_email_task(task)):  # a task by email is never refined (#159)
+              or email_inbox.is_email_task(task)  # a task by email is never refined (#159)
+              or mcp_tasks.is_mcp_task(task)):  # nor one an MCP app asked for (#443)
             self._spawn(self._plan_job(task["id"]), f"plan:{task['id']}")
         else:
             self._spawn(self._refine_and_plan(task["id"]), f"plan:{task['id']}")
@@ -1749,8 +1786,8 @@ class TaskService(Service):
         if current is None or current["status"] != "planning":
             return  # deleted or changed while the model was thinking
         name = str(data.get("name") or "").strip()[:200] if not is_change else ""
-        if email_inbox.is_email_task(task):  # a task by email keeps the name code gave it, also in notifications
-            name = ""
+        if email_inbox.is_email_task(task) or mcp_tasks.is_mcp_task(task):
+            name = ""  # a task from outside content keeps the name code gave it, also in notifications
         display_name = name or task.get("name") or "Untitled task"
 
         if new_questions and (not answered or not plan):
@@ -1812,13 +1849,25 @@ class TaskService(Service):
         ):
             await self._planning_paused(task_id)
             return  # declined, archived, paused or edited while the planner was running
-        # a plan written from someone's email always waits for the user's approval (#159)
-        if (auto_approve or not cfg.tasks.require_plan_approval) and not email_inbox.is_email_task(task):
+        # a plan written from someone's email, or from an MCP app's prompt, always waits for the
+        # user's approval (#159, #443)
+        if (auto_approve or not cfg.tasks.require_plan_approval) and not email_inbox.is_email_task(task) \
+                and not mcp_tasks.is_mcp_task(task):
             await self.approve(task_id)
             return
         await self.publish(task_id)
         short = display_name[:50] + ("..." if len(display_name) > 50 else "")
-        await self._notify(task, f"I've created a new plan for you: '{short}'", "Plan ready for approval", "approval_needed")
+        message = f"I've created a new plan for you: '{short}'"
+        if mcp_tasks.is_mcp_task(task):
+            # the note names the app that asked for the task, framed as a name like the
+            # approval notes do: the name is the app's own text, cleaned where it came in,
+            # and, the note being rendered as Markdown, put in a code span so Markdown
+            # cannot parse it into a link. The plan's title is the app's prompt word for
+            # word, so it goes in a code span too
+            who = (task.get("original_context") or {}).get("app")
+            framed = framed_app_name(who, capital=False)
+            message = f"I've created a new plan for {framed}: {code_span(short)}"
+        await self._notify(task, message, "Plan ready for approval", "approval_needed")
 
     async def _planned_script(
         self, task: dict, data: dict, system: str, parts: list[str]
