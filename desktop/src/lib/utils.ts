@@ -104,13 +104,48 @@ export function safeJsonParse<T = unknown>(text: string | null | undefined, fall
   }
 }
 
-/** snake_case / kebab-case / camelCase -> "Sentence case". */
+/** Names and short forms that keep their own spelling inside a sentence-case label (#454). */
+const NAMES: Record<string, string> = {
+  ai: 'AI',
+  api: 'API',
+  chatgpt: 'ChatGPT',
+  claude: 'Claude',
+  cpu: 'CPU',
+  discord: 'Discord',
+  docker: 'Docker',
+  github: 'GitHub',
+  gmail: 'Gmail',
+  gpu: 'GPU',
+  id: 'ID',
+  kb: 'KB',
+  mb: 'MB',
+  mcp: 'MCP',
+  oauth: 'OAuth',
+  obsidian: 'Obsidian',
+  ollama: 'Ollama',
+  openai: 'OpenAI',
+  stt: 'STT',
+  telegram: 'Telegram',
+  ttl: 'TTL',
+  tts: 'TTS',
+  url: 'URL',
+  usd: 'USD',
+  whatsapp: 'WhatsApp'
+}
+const PHRASES: [RegExp, string][] = [
+  [/\bClaude code\b/g, 'Claude Code'],
+  [/\bhome assistant\b/gi, 'Home Assistant']
+]
+
+/** snake_case / kebab-case / camelCase -> "Sentence case", keeping names like Claude Code or GitHub as written. */
 export function humanize(key: string): string {
-  const words = key
+  let words = key
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/[_-]+/g, ' ')
     .trim()
     .toLowerCase()
+    .replace(/\b[a-z0-9]+\b/g, (w) => NAMES[w] ?? w)
+  for (const [phrase, name] of PHRASES) words = words.replace(phrase, name)
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
