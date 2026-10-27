@@ -498,7 +498,10 @@ _MEMORY_CLAIMS = [
     # "I'll remember that", "I will remember your wake-up time", "I'll note your wake-up time" (real qwen3:8b, no call)
     re.compile(
         r"\bi(?:'ll| will|'m going to| am going to)\s+(?:(?:always|definitely|now|make sure to|be sure to)\s+)?"
-        r"(?:(?:remember|memori[sz]e)\b|(?:note|save|store|jot)\s+(?:that|this|it|your|down)\b)",
+        r"(?:(?:remember|memori[sz]e)\b|(?:note|jot)\s+(?:that|this|it|your|down)\b"
+        # "save" and "store" only with a memory or the user named: "I'll save it once you confirm" is an offer
+        r"|(?:save|store)\s+(?:that\s+you\b|your\b|(?:that|this|it)\s+(?:as|in|into|to)\s+(?:(?:my|your|the|a)\s+)?"
+        r"memor(?:y|ies)\b))",
         re.I,
     ),
     # "I've saved that to my memory", "Saved to memory", "That's now in your memories"

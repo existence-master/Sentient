@@ -93,7 +93,7 @@ from sentient.llm.provider import (
 )
 from sentient.memory import review as memory_review
 from sentient.memory import scopes as memory_scopes
-from sentient.memory.facts import FactMemory, keyword_tokens
+from sentient.memory.facts import FactMemory, keyword_tokens, new_details
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
@@ -307,6 +307,8 @@ _MEMORY_CLAIM_WORDS = frozenset({
     "memorise", "logged", "kept", "added", "put", "written", "jotted", "down", "made", "note", "mental", "memory",
     "memories", "long", "term", "got", "sure", "okay", "fact", "now", "ll", "ve",
 })
+# capitalized words of a claim that are not names: "I", "I've", "AM" in "6:30 AM"
+_CLAIM_DETAIL_SKIP = frozenset({"i", "i've", "i'll", "i'm", "am", "pm", "yes", "got", "sure"})
 
 
 def browser_click_history(rows: list[dict]) -> list[dict]:
@@ -2045,11 +2047,11 @@ class Agent:
             self._turn_done(session_id)
             raise
         leftover = release()
-        if correction := await self._memory_correction(result, incognito):
-            result.text += correction
-            yield TextDelta(text=correction, **ev)
 
         try:  # the turn counts as busy until here, also when the caller stops reading at Done
+            if correction := await self._memory_correction(result, incognito):
+                result.text += correction
+                yield TextDelta(text=correction, **ev)
             if result.error and not result.text:
                 # the reply failed before it said anything: nothing is saved, but every turn still ends with one
                 # done (docs/API.md section 1, #334), so the window and the messaging apps know it is over
@@ -2374,8 +2376,12 @@ class Agent:
             return a == b or (min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)))
 
         for row in rows:
-            have = keyword_tokens(str(row["content"]), None)
-            if sum(any(same(w, h) for h in have) for w in words) * 2 >= len(words):
+            content = str(row["content"])
+            have = keyword_tokens(content, None)
+            # every name, place and number in the claim must be in the memory: "moved to London" never backs a claim
+            # that it saved "moved to Paris"
+            details = {d for d in new_details(claim, content) if d.lower() not in _CLAIM_DETAIL_SKIP}
+            if not details and sum(any(same(w, h) for h in have) for w in words) * 2 >= len(words):
                 return True
         return False
 

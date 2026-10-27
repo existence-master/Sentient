@@ -115,6 +115,8 @@ async def test_a_failed_memory_call_does_not_back_the_claim(config, isolated_hom
     "Want me to remember that?",
     "If you like, I'll remember that you wake up at 7.",
     "You saved that to your memory.",
+    "I'll save it once you confirm.",
+    "I'll save that for later.",
 ])
 async def test_replies_that_claim_no_memory_save_are_left_alone(config, isolated_home, reply):
     llm = FakeProvider(replies=[reply])
@@ -136,6 +138,20 @@ async def test_a_claim_about_a_memory_saved_before_this_turn_is_left_alone(confi
         sid = await s.store.create_session(channel="cli")
         text, _ = await _turn(s, sid, "did you save my wake-up time?")
         assert text == reply
+    finally:
+        await s.stop()
+
+
+async def test_a_memory_about_something_else_does_not_back_the_claim(config, isolated_home):
+    """A kept memory with the same verb but another place is no evidence: London never backs Paris."""
+    reply = "I've saved that you moved to Paris."
+    llm = FakeProvider(replies=[reply])
+    s = await _app(config, isolated_home, llm, "london")
+    try:
+        await s.memory.remember("Maya moved to London", use_llm=False)
+        sid = await s.store.create_session(channel="cli")
+        text, _ = await _turn(s, sid, "remember that I moved to Paris")
+        assert text == reply + NOTE
     finally:
         await s.stop()
 
@@ -172,6 +188,8 @@ def test_memory_claims_are_recognized_narrowly():
         "I've added that to my memory.",
         "Saved to memory.",
         "No problem, I've saved that you like tea.",
+        "I'll save your wake-up time.",
+        "I'll store that in my memory.",
         "I\u2019ll remember that.",
     ]
     for text in claims:
