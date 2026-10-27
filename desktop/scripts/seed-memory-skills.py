@@ -628,9 +628,11 @@ def main() -> None:
     args = ap.parse_args()
     if not args.home:
         ap.error("--home or SENTIENT_HOME is required")
-    home = Path(args.home).expanduser().resolve()
+    home = seed_safety.check_home(args.home)  # before anything is written or wiped, also with --keep-live
     if args.theme_only:
         set_theme(home, args.theme)
+        if not args.keep_live:
+            seed_safety.announce(seed_safety.quiet(home))
         return
     if home.exists() and any(home.iterdir()):
         if not args.reset:

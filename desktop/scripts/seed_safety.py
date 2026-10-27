@@ -53,16 +53,24 @@ def _settle_busy_tasks(db: sqlite3.Connection) -> None:
         db.execute("UPDATE tasks SET status = ?, next_execution_at = NULL WHERE id = ?", (status, task_id))
 
 
-def quiet(home: str | Path) -> dict:
-    """Pause the tasks and turn off channel deliveries in ``home``. Returns what changed."""
+def check_home(home: str | Path) -> Path:
+    """``home`` resolved, or exit if it is the default data folder (the real user's). Call it before writing."""
     home = Path(home).expanduser().resolve()
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
-    from sentient import paths, secrets
-    from sentient.config.loader import load_config, save_config
+    from sentient import secrets
 
     if secrets.is_default_home(home):
         raise SystemExit(f"seed_safety: {home} is the default data folder (the real one); refusing to change it.")
+    return home
+
+
+def quiet(home: str | Path) -> dict:
+    """Pause the tasks and turn off channel deliveries in ``home``. Returns what changed."""
+    home = check_home(home)
+    from sentient import paths
+    from sentient.config.loader import load_config, save_config
+
     os.environ["SENTIENT_HOME"] = str(home)  # paths.* read it on every call
     report = {"tasks_paused": 0, "plans_stopped": 0, "runs_stopped": 0, "chats_muted": 0, "channels_off": False}
     if paths.config_file().exists() or paths.db_file().exists():

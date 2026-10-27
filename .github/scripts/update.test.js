@@ -122,13 +122,34 @@ function context({ body = '/update', login = 'maya-rao', association = 'CONTRIBU
   };
 }
 
-function runWith(fake, ctx = context(), conflicts = []) {
-  const findConflicts = async () => {
+// conflicts: the conflicting files, or an Error for a merge check that fails. workflows: workflow files it changes.
+function runWith(fake, ctx = context(), conflicts = [], { workflows = [], log = core } = {}) {
+  const checkMerge = async () => {
     if (conflicts instanceof Error) throw conflicts;
-    return conflicts;
+    return { conflicts, workflows };
   };
-  return run({ github: fake.github, context: ctx, core, findConflicts, sleep: noSleep, poll });
+  return run({ github: fake.github, context: ctx, core: log, checkMerge, sleep: noSleep, poll });
 }
+
+/** A core that records its log lines and the job summary's rows. */
+function recordingCore() {
+  const lines = [];
+  const rows = [];
+  const summary = {
+    addHeading: () => summary,
+    addTable: (t) => (rows.push(...t.slice(1)), summary),
+    write: async () => summary,
+  };
+  return {
+    lines,
+    rows,
+    info: (m) => lines.push(['info', m]),
+    warning: (m) => lines.push(['warning', m]),
+    summary,
+  };
+}
+
+const FORK = { head: { sha: OLD, repo: { full_name: 'maya-rao/Sentient' } }, maintainer_can_modify: true };
 
 const reply = (fake) => fake.calls.filter((c) => c[0] === 'createComment').map((c) => c[1]);
 
@@ -279,6 +300,81 @@ test('a fork GitHub refuses to push to falls back to the button', async () => {
   assert.doesNotMatch(reply(fake)[0], /doesn't allow edits/);
 });
 
+// What GitHub answered on #499 and #521 (#473), as Octokit's RequestError carries it.
+function workflowRefusal(file) {
+  const msg = `refusing to allow a GitHub App to create or update workflow \`${file}\` without \`workflows\` permission`;
+  const err = httpError(403, `${msg} - https://docs.github.com/rest/pulls/pulls#update-a-pull-request-branch`);
+  err.response = { data: { message: msg }, headers: { 'x-github-request-id': 'E450:16DDE7' } };
+  err.request = { headers: { authorization: 'token ghs_secret' } };
+  return err;
+}
+
+test('a fork whose merge changes a workflow file is still tried, because a synced fork is updated fine', async () => {
+  const fake = fakeGithub({ pr: FORK });
+  await runWith(fake, context(), [], { workflows: ['.github/workflows/ci.yaml'] });
+  assert.ok(fake.names().includes('updateBranch'));
+  assert.match(reply(fake)[0], /^@maya-rao Merged the latest `main`/);
+});
+
+test('GitHub refusing a fork over workflow files: says why plainly, names the files, button and label', async () => {
+  const fake = fakeGithub({ update: workflowRefusal('.github/workflows/ci.yaml'), pr: FORK });
+  const log = recordingCore();
+  const files = ['.github/workflows/assign.yaml', '.github/workflows/ci.yaml'];
+  await runWith(fake, context(), [], { workflows: files, log });
+  assert.deepEqual(fake.calls.find((c) => c[0] === 'addLabels')[1], ['needs update']);
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.workflows('main', files, true)}`);
+  assert.match(
+    reply(fake)[0],
+    /^@maya-rao GitHub didn't let me merge `main` into this branch: `main` has changes to the repository's workflow files \(`\.github\/workflows\/assign\.yaml`, `\.github\/workflows\/ci\.yaml`\) that your fork doesn't have yet, and GitHub never lets a bot bring those into a fork\. It has no conflicts with `main`, so click \*\*Update branch\*\*/,
+  );
+  assert.doesNotMatch(reply(fake)[0], /refused the update for this fork/);
+  assert.deepEqual(log.rows.find((r) => r[0] === 'Result'), ['Result', 'workflows']);
+});
+
+test("GitHub's refusal is logged as a warning and in the summary, with the status, message and request id", async () => {
+  const fake = fakeGithub({ update: workflowRefusal('.github/workflows/ci.yaml'), pr: FORK });
+  const log = recordingCore();
+  // With the merge check failed, the file comes from GitHub's own message.
+  await runWith(fake, context(), new Error('fetch failed'), { log });
+  const want =
+    '403 refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yaml` without ' +
+    '`workflows` permission (request E450:16DDE7)';
+  assert.deepEqual(log.lines.find((l) => /update-branch/.test(l[1])), ['warning', `update-branch was refused. GitHub answered ${want}`]);
+  assert.deepEqual(log.rows.find((r) => r[0] === 'update-branch'), ['update-branch', `refused: ${want}`]);
+  assert.ok(!JSON.stringify([log.lines, log.rows]).includes('ghs_secret'));
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.workflows('main', ['.github/workflows/ci.yaml'], false)}`);
+  assert.match(reply(fake)[0], /\(`\.github\/workflows\/ci\.yaml`\) that your fork doesn't have yet.*Click \*\*Update branch\*\*/);
+  assert.ok(fake.names().includes('addLabels'));
+});
+
+test('a workflow refusal on a same-repo branch is not blamed on a fork', async () => {
+  const fake = fakeGithub({ update: workflowRefusal('.github/workflows/ci.yaml') });
+  await runWith(fake);
+  assert.equal(reply(fake)[0], `@maya-rao ${MESSAGES.failed('main')}`);
+});
+
+test('describeError copes with errors that have no response', () => {
+  assert.equal(run.describeError(httpError(500, 'boom')), '500 boom');
+  assert.equal(run.describeError(new Error('socket hang up')), 'no status socket hang up');
+  assert.equal(run.describeError(undefined), 'no status no message');
+});
+
+test('a successful update is in the summary too, and a summary that fails to write does not fail the run', async () => {
+  let fake = fakeGithub();
+  const log = recordingCore();
+  await runWith(fake, context(), [], { log });
+  assert.deepEqual(log.rows.find((r) => r[0] === 'update-branch'), ['update-branch', 'accepted']);
+  assert.deepEqual(log.rows.find((r) => r[0] === 'Result'), ['Result', 'updated, checks running']);
+  assert.deepEqual(log.rows.find((r) => r[0] === 'Maintainer edits'), ['Maintainer edits', 'not needed (same repository)']);
+  fake = fakeGithub();
+  const broken = recordingCore();
+  broken.summary.write = async () => {
+    throw new Error('GITHUB_STEP_SUMMARY is not set');
+  };
+  await runWith(fake, context(), [], { log: broken });
+  assert.equal(reply(fake).length, 1);
+});
+
 test('the button reply claims no conflicts only when they were checked', async () => {
   const fake = fakeGithub({ pr: { head: { sha: OLD, repo: { full_name: 'maya-rao/Sentient' } } } });
   await runWith(fake, context(), new Error('fetch failed'));
@@ -399,14 +495,16 @@ test('messages are plain: no em-dashes', () => {
     MESSAGES.updating('main'),
     MESSAGES.upToDate('main'), MESSAGES.conflicts('main', ['a'], true), MESSAGES.conflicts('main', null, false),
     MESSAGES.useButton('main', false, true), MESSAGES.useButton('main', true, false),
+    MESSAGES.workflows('main', ['.github/workflows/ci.yaml'], true), MESSAGES.workflows('main', null, false),
     MESSAGES.headMoved, MESSAGES.closed, MESSAGES.notAllowed, MESSAGES.failed('main'),
   ];
   for (const m of all) assert.ok(!m.includes('—'), m);
 });
 
-// The real conflict finder against a throwaway local repository (no network): a file both sides changed is
-// reported, a file only one side changed is not, and a clean merge gives [].
-test('gitConflicts lists exactly the conflicting files', (t) => {
+// The real merge check against a throwaway local repository (no network): a file both sides changed is a conflict,
+// a file only one side changed is not, a clean merge has none, and a workflow file is listed only when the merge
+// changes it on the pull request's branch.
+test('gitMergeCheck lists exactly the conflicting files and the workflow files the merge changes', (t) => {
   try {
     execFileSync('git', ['merge-tree', '-h'], { stdio: 'ignore' });
   } catch (err) {
@@ -429,9 +527,19 @@ test('gitConflicts lists exactly the conflicting files', (t) => {
   g('update-ref', 'refs/pull/8/head', 'main');
   g('switch', '--quiet', 'main');
   write('a.txt', 'main\n'); write('c.txt', 'main\n');
-  g('commit', '--quiet', '-am', 'main');
+  fs.mkdirSync(path.join(src, '.github', 'workflows'), { recursive: true });
+  write('.github/workflows/ci.yaml', 'name: CI\n');
+  g('add', '.'); g('commit', '--quiet', '-m', 'main');
+  // A branch that already has main's workflow file and changes something else.
+  g('switch', '--quiet', '-c', 'later');
+  write('b.txt', 'later\n');
+  g('commit', '--quiet', '-am', 'later');
+  g('update-ref', 'refs/pull/9/head', 'later');
+  g('switch', '--quiet', 'main');
+  write('c.txt', 'main again\n');
+  g('commit', '--quiet', '-am', 'main again');
 
-  // gitConflicts fetches from https://github.com/<owner>/<repo>.git; point that at the local repository.
+  // gitMergeCheck fetches from https://github.com/<owner>/<repo>.git; point that at the local repository.
   const prefix = 'https://github.com/';
   const key = 'GIT_CONFIG_COUNT';
   const saved = { [key]: process.env[key], k: process.env.GIT_CONFIG_KEY_0, v: process.env.GIT_CONFIG_VALUE_0 };
@@ -446,10 +554,13 @@ test('gitConflicts lists exactly the conflicting files', (t) => {
   });
   fs.mkdirSync(path.join(root, 'owner'));
   fs.renameSync(src, path.join(root, 'owner', 'repo.git'));
-  const conflicts = run.gitConflicts({ owner: 'owner', repo: 'repo', number: 7, base: 'main', dir: path.join(root, 'check') });
-  assert.deepEqual(conflicts, ['a.txt']);
-  assert.deepEqual(run.gitConflicts({ owner: 'owner', repo: 'repo', number: 8, base: 'main', dir: path.join(root, 'check') }), []);
-  assert.throws(() => run.gitConflicts({ owner: 'owner', repo: 'repo', number: '7; rm', base: 'main', dir: path.join(root, 'check') }));
+  const check = (number) =>
+    run.gitMergeCheck({ owner: 'owner', repo: 'repo', number, base: 'main', dir: path.join(root, 'check') });
+  const wf = ['.github/workflows/ci.yaml'];
+  assert.deepEqual(check(7), { conflicts: ['a.txt'], workflows: wf });
+  assert.deepEqual(check(8), { conflicts: [], workflows: wf });
+  assert.deepEqual(check(9), { conflicts: [], workflows: [] });
+  assert.throws(() => check('7; rm'));
 });
 
 function pathToUrl(p) {
