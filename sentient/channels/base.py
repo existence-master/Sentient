@@ -1054,6 +1054,10 @@ class Channel:
             return UNDO_OUTCOME[action]
         if kind == "ta":  # a task's approval request (#139)
             return await self.service.act_on_question(self, chat_id, message_id, ref, code, approval=True)
+        if kind == "na":  # a chat turn's approval note (#443)
+            if code not in {"a", "d"}:
+                return "Unknown button."
+            return await self.service.act_on_notification_approval(self, chat_id, message_id, ref, allow=code == "a")
         if kind == "tp":
             return await self.service.act_on_plan(self, chat_id, message_id, ref, approve=code == "a")
         if kind == "sg":

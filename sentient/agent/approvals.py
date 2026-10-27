@@ -285,3 +285,10 @@ class ApprovalBroker:
 
     def pending_ids(self) -> list[str]:
         return list(self._pending)
+
+    def is_waiting(self, approval_id: str) -> bool:
+        """True while an answer would still reach a waiter: created and not yet answered. (An answered
+        request leaves ``_pending`` only when its waiter's cleanup runs, so membership alone is not
+        proof an answer is still wanted.)"""
+        fut = self._pending.get(approval_id)
+        return fut is not None and not fut.done()

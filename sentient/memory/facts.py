@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from sentient.config.schema import SentientConfig
-from sentient.llm.provider import LLMProvider
+from sentient.llm.provider import LLMProvider, ModelRefused
 from sentient.memory import origins, prompts
 from sentient.memory import review as reviews
 from sentient.memory import scopes as memory_scopes
@@ -67,7 +67,17 @@ _UNKNOWN_RE = re.compile(
     r"not provided|unclear)\b",
     re.IGNORECASE,
 )
-_USER_REF_RE = re.compile(r"\b(the user|USERNAME)\b", re.IGNORECASE)
+# the USERNAME placeholder is matched in capitals only, so "my GitHub username" stays a username
+_USER_REF = r"(?<![\w-])((?i:the user)|USERNAME)"
+# "the user research team", "the user agent", "the user name": a kind of thing, not the user
+_USER_COMPOUND_NOUN = (
+    r"(?i:interfaces?|experiences?|research(?:ers?)?|manuals?|guides?|journeys?|stor(?:y|ies)|base|testing|personas?|"
+    r"agents?|names?|ids?|accounts?|profiles?)"
+)
+_USER_REF_RE = re.compile(rf"{_USER_REF}(?![\w-])(?!\s+{_USER_COMPOUND_NOUN}\b)")
+_USER_POSSESSIVE_RE = re.compile(rf"{_USER_REF}['\u2019]s\b")
+# bare "user's" only where it can't be another user's ("a user's account"): first, or after a comma
+_BARE_USER_POSSESSIVE_RE = re.compile(r"(^\s*|[,;:(]\s*)user['\u2019]s\b", re.IGNORECASE)
 # self-evident facts small models like to emit ("Maya's name is Maya.")
 _TAUTOLOGY_RE = re.compile(r"^\s*(?P<n>[\w .'-]+?)['\u2019]s name is (?P=n)\s*\.?\s*$", re.IGNORECASE)
 
@@ -216,6 +226,16 @@ TIME_WORDING_RE = re.compile(
     r"since|started|starting|moved|switched|new|anymore|no longer)\b",
     re.IGNORECASE,
 )
+
+
+def name_the_user(text: str, user_name: str) -> str:
+    """"Priya, the user's sister" is "Priya, Maya Rao's sister": a saved fact says the user's name (#475)."""
+    name = user_name.strip()
+    if not name:
+        return text
+    text = _BARE_USER_POSSESSIVE_RE.sub(lambda m: f"{m.group(1)}{name}'s", text)
+    text = _USER_POSSESSIVE_RE.sub(lambda _: f"{name}'s", text)
+    return _USER_REF_RE.sub(lambda _: name, text)
 
 
 def fact_subjects(text: str, user_name: str = "") -> set[str]:
@@ -750,9 +770,42 @@ class FactMemory:
         # set by the app: also scrub the words of erased memories from the workspace files and the user model's
         # caches (#152); called with an ``origins.Erased``: the texts that went, and which lines repeat them (#456)
         self.on_erase: Any = None
+        # set by the app: ``(title, message, job)`` -> a notification, which Activity shows too. Told once per job
+        # while no model can do it, again after it worked (#474)
+        self.on_no_model: Any = None
+        self._no_model_told: set[str] = set()
 
     async def ensure_schema(self) -> None:
         await ensure_memory_schema(self.store)
+
+    # ------------------------------------------------------------------ no model can do a memory job (#474)
+    async def _no_model(self, job: str, exc: ModelRefused, fact: str | None = None) -> None:
+        """Say plainly that no model can do ``job`` ("check": is a new memory a repeat or an update; "extract": pull
+        memories out of a chat), in the log every time and once in a notification (Activity shows it) until it works
+        again. ``exc`` says why and what to change (Claude Code only answers chats, Local only...)."""
+        why = str(exc).strip()
+        if job == "check":
+            # the checks made in code still run after this (a repeat, a new home), so the outcome isn't known yet
+            log.warning("no model could check %r against saved memories, so only the checks made in code decide "
+                        "whether it is new: %s", fact, why)
+            title = "Memories saved without a full check"
+            message = ("No model can check new memories against the ones Sentient already has, so some may be saved "
+                       f"as new memories that repeat or contradict older ones. {why}")
+        else:
+            log.warning("no model could pick out memories from the chat, so none were saved from it: %s", why)
+            title = "Memories not saved from your chats"
+            message = f"No model can pick out new memories from your chats right now, so none were saved. {why}"
+        if job in self._no_model_told or not callable(self.on_no_model):
+            return
+        self._no_model_told.add(job)
+        try:
+            await self.on_no_model(title, message.strip(), job)
+        except Exception:  # not told: try again next time
+            self._no_model_told.discard(job)
+            log.exception("could not tell the user that no model can do %s", job)
+
+    def _model_worked(self, job: str) -> None:
+        self._no_model_told.discard(job)
 
     # ------------------------------------------------------------------ events
     def publish(self, action: str, fid: int | None, content: str | None = None, **extra: Any) -> None:
@@ -1020,21 +1073,89 @@ class FactMemory:
             " OR fact_id IN (SELECT id FROM facts WHERE merged_into = ? AND status = 'merged')",
             (fid, fid),
         )
-        if not await self.forget(fid, notify=notify):
+        rows = [row, *copies]
+        texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
+        refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
+        ids = [int(r["id"]) for r in rows]
+        live_refs = [r for r in refs if r]
+        # Record the intended cleanup before the irreversible deletion (#462).
+        pending = None
+        try:
+            cur = await self.store.execute(
+                "INSERT INTO pending_erase(fact_id, payload, at) VALUES(?,?,?)",
+                (fid, json.dumps({"ids": ids, "texts": texts, "refs": live_refs}), now_iso()),
+            )
+            pending = int(cur.lastrowid)
+        except Exception:
+            log.exception("could not record pending cleanup for memory %s; aborting erase", fid)
             return False
+        if not await self.forget(fid, notify=notify):
+            with contextlib.suppress(Exception):
+                await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (pending,))
+            return False
+        try:
+            # Only now may upkeep replay this cleanup: while the delete was still
+            # running, a concurrent drain could strip a live memory's derived data
+            # before forget() had really removed the memory (#462).
+            await self.store.execute("UPDATE pending_erase SET complete = 1 WHERE id = ?", (pending,))
+        except Exception:
+            log.warning("could not mark memory %s's cleanup as ready to retry", fid)
         if row["state"] == "superseded" and row["superseded_by"] is not None:
             await self.store.execute(
                 "UPDATE facts SET previous_content = NULL WHERE id = ? AND previous_content = ?",
                 (row["superseded_by"], row["content"]),
             )
-        rows = [row, *copies]
-        texts = list(dict.fromkeys(t for r in rows for t in (r["content"], r["previous_content"]) if t))
-        refs = [_load_ref(r["source_ref"]) for r in rows] + [_load_ref(r["ref"]) for r in links]
         try:
-            await self._cascade([int(r["id"]) for r in rows], texts, [r for r in refs if r])
-        except Exception:  # the memory itself is gone; a leftover is logged, never a failed delete
-            log.exception("cleaning up after memory %s failed", fid)
+            await self._cascade(ids, texts, live_refs, pending=pending)
+        except Exception:
+            log.exception("cleaning up after memory %s failed; will retry later", fid)
+            return True
+        with contextlib.suppress(Exception):
+            await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (pending,))
         return True
+
+    async def drain_pending_erases(self) -> int:
+        """Cleanup steps an erase could not finish (#462), replayed by memory upkeep until they succeed, so
+        derived data never outlives its memory because one step failed once (a locked file, a transient
+        database error). Returns how many waits were cleared."""
+        await self.ensure_schema()
+        # Drop stale retries (>7 days) so erased text does not linger indefinitely.
+        cutoff = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+        stale = await self.store.fetchall("SELECT id, fact_id FROM pending_erase WHERE at < ?", (cutoff,))
+        for row in stale:
+            log.warning(
+                "dropping stale pending erase for memory %s after 7 days; some derived data may remain",
+                row["fact_id"],
+            )
+        if stale:
+            await self.store.execute("DELETE FROM pending_erase WHERE at < ?", (cutoff,))
+        # A crash between the delete and its "complete" mark (a forget() that raised
+        # after the fact row went) strands the wait at complete = 0; once the memory
+        # no longer exists the delete really happened, so the wait is safe to replay.
+        # The one-hour age keeps a drain from racing an erase that is still running.
+        settled = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        await self.store.execute(
+            "UPDATE pending_erase SET complete = 1 WHERE complete = 0 AND at < ?"
+            " AND fact_id NOT IN (SELECT id FROM facts)",
+            (settled,),
+        )
+        drained = 0
+        for row in await self.store.fetchall(
+            "SELECT id, fact_id, payload FROM pending_erase WHERE complete = 1 ORDER BY id"
+        ):
+            try:
+                data = json.loads(row["payload"])
+                await self._cascade(
+                    data["ids"], data["texts"], data["refs"],
+                    summary_vec_ids=data.get("summary_vec_ids") or (), pending=int(row["id"]),
+                )
+            except Exception:
+                log.exception("cleaning up after memory %s failed again", row["fact_id"])
+                continue
+            await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (row["id"],))
+            drained += 1
+            log.info("finished cleaning up after memory %s on retry", row["fact_id"])
+        return drained
 
     async def _erased(self, texts: list[str], ids: list[int]) -> origins.Erased:
         """What ``texts`` said, against every memory still in use (#456): what derived data repeats them goes,
@@ -1044,12 +1165,50 @@ class FactMemory:
         remaining = [(int(r["id"]), str(r["content"])) for r in rows if int(r["id"]) not in gone]
         return origins.Erased(texts, remaining, self.config.assistant.user_name)
 
-    async def _cascade(self, ids: list[int], texts: list[str], refs: list[dict]) -> None:
+    async def _note_summary_vecs(self, pending: int, vec_ids: list) -> None:
+        """Merge summary vector row IDs into a pending erase's payload (#462), so a retry can still reach the
+        vectors once their summary rows are gone. Each rowid is stored with its summary's TEXT id, so a retry
+        can tell an orphaned vector apart from a new summary that reused the freed rowid."""
+        row = await self.store.fetchone("SELECT payload FROM pending_erase WHERE id = ?", (pending,))
+        if row is None:
+            return
+        payload = json.loads(row["payload"])
+        merged: dict[int, str | None] = {}
+        for v in payload.get("summary_vec_ids") or []:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                merged[int(v[0])] = str(v[1])
+            else:
+                merged[int(v)] = None
+        for vid, sid in vec_ids:
+            if sid is not None:
+                merged[int(vid)] = str(sid)
+            else:
+                merged.setdefault(int(vid), None)
+        payload["summary_vec_ids"] = [
+            [vid, sid] if sid is not None else vid for vid, sid in sorted(merged.items())
+        ]
+        await self.store.execute(
+            "UPDATE pending_erase SET payload = ? WHERE id = ?", (json.dumps(payload), pending)
+        )
+
+    async def _cascade(
+        self, ids: list[int], texts: list[str], refs: list[dict],
+        summary_vec_ids: tuple[int, ...] | list[int] = (), pending: int | None = None,
+    ) -> None:
         store = self.store
         repeats = await self._erased(texts, ids)
 
         # chat summaries made of the messages it came from, that repeat it, and their vectors
         said_in = {str(r["message_id"]) for r in refs if r.get("message_id")}
+        # rowid -> the summary's TEXT id, so a retry can tell the original apart from a
+        # new summary SQLite handed the freed rowid (#462); a bare int (a payload from
+        # before ids were recorded next to rowids) keeps the old delete-both semantics.
+        vec_ids: dict[int, str | None] = {}
+        for v in summary_vec_ids:
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                vec_ids[int(v[0])] = str(v[1])
+            else:
+                vec_ids[int(v)] = None
         if said_in:
             for r in await store.fetchall("SELECT rowid, id, content, message_ids FROM summaries"):
                 try:
@@ -1057,8 +1216,24 @@ class FactMemory:
                 except ValueError:
                     continue
                 if made_of & said_in and repeats(r["content"]):
-                    await store.execute("DELETE FROM summaries WHERE id = ?", (r["id"],))
-                    await self.episodic.vec.delete(int(r["rowid"]))
+                    vec_ids[int(r["rowid"])] = str(r["id"])
+        if vec_ids and pending is not None:
+            # Note the vector row IDs (with their summary ids) before any summary
+            # row goes, so a retry can still delete the vectors once their rows are
+            # gone (#462) — and can leave a reused rowid alone.
+            with contextlib.suppress(Exception):
+                await self._note_summary_vecs(pending, sorted(vec_ids.items()))
+        for vid, sid in sorted(vec_ids.items()):
+            current = await store.fetchone("SELECT id FROM summaries WHERE rowid = ?", (vid,))
+            if current is not None and sid is not None and current["id"] != sid:
+                # SQLite handed the freed rowid to a new summary: the row and the
+                # vector at it are the newcomer's, not part of this cleanup (#462).
+                continue
+            # The vector goes first: a failure here leaves the summary row in place,
+            # so the next attempt finds both again.
+            await self.episodic.vec.delete(vid)
+            if current is not None:
+                await store.execute("DELETE FROM summaries WHERE rowid = ?", (vid,))
         # the nightly journal's lines about it
         for r in await store.fetchall("SELECT id, journal_md FROM dreams WHERE journal_md != ''"):
             lines = str(r["journal_md"]).splitlines()
@@ -1420,6 +1595,7 @@ class FactMemory:
         ``memory.updated`` event, so that chat can show "Remembered: ... Undo". Duplicates, updates and corrections
         only look at facts in ``scope`` and always: a save never changes a memory in another scope."""
         user = self.config.assistant.user_name
+        fact = name_the_user(fact, user)  # the memory tool and the Memory screen save words as given (#475)
         scope = memory_scopes.normalize(scope, memory_scopes.PERSONAL) or memory_scopes.PERSONAL
         refs: dict[str, dict] = {source: ref} if ref else {}
         if review is not None and own_words and reviews.grounded(fact, own_words, user):
@@ -1598,8 +1774,12 @@ class FactMemory:
                         fid = int(raw["fact_id"]) if raw.get("fact_id") is not None else None
                     except (TypeError, ValueError):
                         fid = None
-                    content = str(raw.get("content") or fact).strip()
+                    content = name_the_user(str(raw.get("content") or fact), user).strip()  # #475
                     topics, memory_type, duration = _analysis_from(raw)
+                    log.info("CUD for %r: the model says %s%s", fact, action, f" of fact {fid}" if fid else "")
+                self._model_worked("check")
+            except ModelRefused as exc:  # every model refused this job: say so instead of quietly adding (#474)
+                await self._no_model("check", exc, fact)
             except Exception as exc:
                 log.warning("CUD decision failed, defaulting to ADD: %s", exc)
 
@@ -1713,10 +1893,7 @@ class FactMemory:
         text = " ".join(str(fact).split()).strip(" -*•")
         if len(text) < 6:
             return None
-        name = username.strip()
-        if name:
-            text = re.sub(r"\b(the user|USERNAME)'s\b", f"{name}'s", text, flags=re.IGNORECASE)
-            text = _USER_REF_RE.sub(name, text)
+        text = name_the_user(text, username)
         text = text[:1].upper() + text[1:]
         if _REQUEST_RE.search(text) or _NOISE_RE.search(text) or _UNKNOWN_RE.search(text) or _TAUTOLOGY_RE.match(text):
             return None
@@ -1804,9 +1981,13 @@ class FactMemory:
                     {"role": "user", "content": prompts.FLUSH_USER.format(username=name, transcript=text)},
                 ],
             )
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("memory flush extraction failed: %s", exc)
             return []
+        self._model_worked("extract")
         results: list[dict] = []
         for fact in self._facts_from(raw, user_name)[: cfg.flush_max_facts]:
             try:
@@ -1828,6 +2009,10 @@ class FactMemory:
         turn), so a fact they fully back is saved even with ``review`` (#234, ``review.grounded``)."""
         try:
             facts = await self.extract_facts(text, username)
+            self._model_worked("extract")
+        except ModelRefused as exc:
+            await self._no_model("extract", exc)
+            return []
         except Exception as exc:
             log.warning("fact extraction failed: %s", exc)
             return []
@@ -2015,7 +2200,7 @@ class FactMemory:
             if r["state"] == "superseded":
                 await self.erase(int(r["id"]))
             else:
-                await self.forget(int(r["id"]))
+                await self.erase(int(r["id"]))
         if rows:
             self.publish("DELETE", None, None, reason="expired", count=len(rows))
         return len(rows) + await self.purge_superseded()

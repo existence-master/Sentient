@@ -20,6 +20,7 @@ from sentient import secrets
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
 from sentient.llm import chatgpt, presets
+from sentient.llm import checkup as checkup_mod
 from sentient.llm.provider import LiteLLMProvider, ProviderError
 from tests.conftest import FakeProvider
 
@@ -561,3 +562,52 @@ async def test_fast_jobs_use_the_lightest_listed_effort(config, keychain):
         for _ in range(2):
             await llm.complete_text("fast", [{"role": "user", "content": "Title?"}], model="chatgpt/gpt-6-astra")
     assert models.call_count == 1 and "reasoning" not in json.loads(route.calls.last.request.content)
+
+
+# ---------------------------------------------------------------------------- follow-ups from the #240 review (#241)
+@pytest.mark.parametrize(("status", "error", "fix"), [
+    (401, {"code": "invalid_token", "message": "expired"}, checkup_mod.CHATGPT_SIGN_IN_AGAIN),
+    (403, {"code": "forbidden", "message": "not allowed"}, checkup_mod.CHATGPT_SIGN_IN_AGAIN),
+    (403, {"code": "subscription_sharing_user_not_eligible", "message": "free plan"}, checkup_mod.CHATGPT_SIGN_IN_PLAN),
+    (429, {"code": "subscription_sharing_usage_limit_exceeded", "message": "limit"}, None),
+])
+async def test_checkup_fix_for_a_refused_plan_model_is_a_new_sign_in(config, keychain, status, error, fix):
+    _signed_in(keychain)
+    with respx.mock(assert_all_called=False) as router:
+        router.post(RESPONSES).mock(return_value=httpx.Response(status, json={"error": error}))
+        router.post(chatgpt.TOKEN_URL).mock(return_value=httpx.Response(400, json={"error": "invalid_grant"}))
+        router.get(MODELS).mock(return_value=httpx.Response(200, json={"models": []}))
+        done = await checkup_mod.checkup(config, LiteLLMProvider(config), {"primary": "chatgpt/gpt-test"})
+    reply = {c["id"]: c for c in done["roles"][0]["checks"]}["reply"]
+    assert reply["status"] == "fail"
+    assert reply.get("fix") == fix  # a usage limit's message already says what to do
+    assert "key" not in (reply.get("fix") or "")
+
+
+async def test_checkup_never_points_a_plan_model_at_a_provider_key(config, keychain):
+    """A 401 that reaches the check-up unwrapped (no plain message) still asks for a new sign-in, not a key."""
+    _signed_in(keychain)
+
+    class Refusing:
+        async def stream(self, role, messages, tools=None, *, model=None):
+            raise RuntimeError("Error code: 401 - Unauthorized")
+            yield  # pragma: no cover
+
+    done = await checkup_mod.checkup(config, Refusing(), {"primary": "chatgpt/gpt-test"})
+    reply = {c["id"]: c for c in done["roles"][0]["checks"]}["reply"]
+    assert reply["fix"] == "Sign in with ChatGPT again under Settings > Models > Use a plan you already have."
+
+
+async def test_local_and_own_presets_never_load_the_plan_list(app, keychain):
+    _signed_in(keychain)  # signed in, and no cloud key: the cloud presets would use the plan
+    listing = {"models": [{"slug": "gpt-test", "display_name": "GPT Test", "visibility": "list"}]}
+    presets.save_current(app, "Maya's laptop")
+    with respx.mock(assert_all_called=False) as router:
+        router.get("http://localhost:11434/api/tags").mock(return_value=httpx.Response(200, json={"models": []}))
+        models = router.get(MODELS).mock(return_value=httpx.Response(200, json=listing))
+        await presets.apply(app, "Local only")
+        await presets.apply(app, "maya's laptop")
+        assert models.call_count == 0
+        result = await presets.apply(app, "Cloud")
+        assert models.call_count == 1 and result["preset"] == "Cloud"
+    assert app.config.models.roles.primary == "chatgpt/gpt-test"
