@@ -8,11 +8,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from sentient.gateway.deps import AUTH, get_core
+from sentient.app_names import clean_app_name
+from sentient.gateway.deps import MCP_OK, get_core
 from sentient.llm.provider import PlainProviderError, ProviderError
 from sentient.tasks.service import TaskConflict, TaskNotFound
 
-router = APIRouter(prefix="/api/tasks", tags=["tasks"], dependencies=AUTH)
+router = APIRouter(prefix="/api/tasks", tags=["tasks"], dependencies=MCP_OK)
 
 
 class CreateTaskBody(BaseModel):
@@ -21,6 +22,8 @@ class CreateTaskBody(BaseModel):
     assignee: str | None = "ai"
     model: str | None = None
     browser_profile: str | None = None
+    memory_scope: str | None = None  # #155: personal (default), work or a project's name
+    app: str | None = None  # the MCP app asking, when the caller is one (#443): names the task's source
 
 
 class PreviewBody(BaseModel):
@@ -68,8 +71,15 @@ async def list_tasks(request: Request):
 
 @router.post("")
 async def create_task(request: Request, body: CreateTaskBody):
+    if getattr(request.state, "caller", "gateway") == "mcp":
+        # an outside app's task (issue #443): made in the app's name and marked as outside
+        # content, so its plan always waits for approval and every send asks, like a task by
+        # email (#159). Only the MCP token can be this caller; the app name is display only.
+        app_name = clean_app_name(body.app) or "An MCP app"  # the name is the app's own text: cleaned
+        return await _guard(_tasks(request).create_from_mcp(body.prompt, app_name))
     return await _guard(_tasks(request).create_task(
-        body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile
+        body.prompt, is_swarm=body.is_swarm, model=body.model, browser_profile=body.browser_profile,
+        memory_scope=body.memory_scope,
     ))
 
 
@@ -92,6 +102,12 @@ async def away_resume(request: Request):
 @router.post("/away/keep")
 async def away_keep(request: Request):
     return await _tasks(request).away.keep()
+
+
+@router.get("/email")
+async def email_status(request: Request, limit: int = 20):
+    """Tasks by email (#159): the address, who may send tasks and what happened to the latest emails."""
+    return await _tasks(request).inbox.status(limit=limit)
 
 
 @router.get("/{task_id}")

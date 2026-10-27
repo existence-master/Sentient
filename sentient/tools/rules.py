@@ -37,7 +37,7 @@ RULE_CHOICES = (ALLOW, IF_ASKED, ASK, HAND_OFF, NEVER)
 RULE_TITLES = {
     ALLOW: "Allow", IF_ASKED: "Only if I asked", ASK: "Always ask", HAND_OFF: "Hand it to me", NEVER: "Never",
 }
-# describe_fn label for money leaving the user (browser: buy, pay, order, subscribe, donate, transfer ...)
+# describe_fn label for money leaving the user (browser: buy, pay, order, a priced subscribe, donate, transfer ...)
 PURCHASE_LABEL = "Purchase"
 # describe_fn labels for a call that opens the user's home (#175, ADR 0028): unlocking a door, turning off the alarm,
 # opening a garage door, gate or door, or switching something that sounds like one. Like a purchase, it always asks.
@@ -133,6 +133,8 @@ def read_only_message(tool: Tool, registry: Any = None) -> str:
 
 # not a rule a user sets: why a call that opens the home is held (ADR 0028), for the hold and question wording
 OPENS_HOME = "opens_home"
+# not a rule either: a routine whose setup checklist says to ask before it sends, buys, deletes or runs anything (#161)
+TASK_ASKS = "task_asks"
 
 
 def _set_to(rule: str | None) -> str:
@@ -141,6 +143,8 @@ def _set_to(rule: str | None) -> str:
         return "set to \"Only if I asked\", which only the user's own chat message can ask for"
     if rule == OPENS_HOME:
         return "something that opens the user's home, which always asks first"
+    if rule == TASK_ASKS:
+        return "something this task is set to ask about first"
     return "set to Ask"
 
 
@@ -148,6 +152,15 @@ def unattended_ask_message(label: str, rule: str | None = ASK) -> str:
     """Why an unattended run (a subagent, a swarm worker) stopped: an "ask" (or "only if I asked") rule, and nobody to
     ask. Single task runs pause and ask instead (#139)."""
     return f"{label} is {_set_to(rule)}, and this work can't stop to ask. Change it in Settings > Approvals & safety."
+
+
+def pending_card_message(label: str) -> str:
+    """Why an unattended run (a subagent, a swarm worker) stopped on a pending rule suggestion: nothing is set to
+    Ask, a suggested-rule card in the chat is still waiting for the user's answer, and the main assistant can do
+    the call itself and ask once (#491)."""
+    return (f"Waiting for your answer on the suggested rule for {label} in this chat. It was not done, and nothing "
+            "in Settings is set to Ask. If it is still needed, do it in the main chat and ask the user about the "
+            "suggested rule once.")
 
 
 def approval_hold_message(label: str, rule: str | None = ASK) -> str:
@@ -164,6 +177,8 @@ def approval_question(label: str, arguments: dict, target: str | None = None, ru
         why = "You've set it to go ahead only when you ask for it in a chat."
     elif rule == OPENS_HOME:
         why = "It opens your home, so Sentient always asks first."
+    elif rule == TASK_ASKS:
+        why = "You set this task to ask you first."
     else:
         why = "You've set it to ask first."
     return f"This task wants to use {label}{f' ({detail})' if detail else ''}. {why} OK to go ahead?"
@@ -402,6 +417,22 @@ def attachment_source(name: str) -> str:
     if is_selection(name):
         return SELECTION_SOURCE
     return ""
+
+
+# A message someone other than the user wrote in a paired group chat (ADR 0029) is stored with this role and the
+# sender's name in ``messages.name``. The model reads it as outside content inside a user turn, never as the user's words.
+OTHER_ROLE = "other"
+# A chat's log of something the user did to it (``messages.role``), never sent to the model. ``trusted``: the user
+# cleared the chat's outside-content mark ("I've checked it, trust this chat again", ADR 0029).
+EVENT_ROLE = "event"
+TRUSTED_EVENT = "trusted"
+
+
+def group_source(sender: str) -> str:
+    """Where a group member's message came from, as the approval card and the chat's mark name it:
+    "another group member (Ravi)". The name is the member's own display name, so it is cleaned and kept short."""
+    name = " ".join(re.sub(r"[\[\]()\n\r]", " ", str(sender or "")).split())[:40]
+    return f"another group member ({name})" if name else "another group member"
 
 
 def untrusted_reason(source: str) -> str:

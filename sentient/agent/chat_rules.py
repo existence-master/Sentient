@@ -324,14 +324,17 @@ def narrow_app_keys(
 
 def candidate_tools(text: str, tools: Iterable[Tool], app_names: dict[str, str]) -> list[Tool]:
     """Tools sharing a word with ``text`` (names, app, description, a few synonyms), best first, at most
-    ``MAX_CANDIDATES``. Actions rank above look-ups on a tie."""
+    ``MAX_CANDIDATES``. A word that names the tool's app counts twice, so an app the user names ("never use Slack")
+    keeps its place however many tools another app has. Actions rank above look-ups on a tie."""
     terms = _terms(text)
     if not terms:
         return []
     scored: list[tuple[int, int, str, Tool]] = []
     for t in tools:
         tokens = _tokens(t, app_names.get(t.plugin, ""))
+        app = {_stem(w) for w in _WORD.findall(_plain(f"{t.plugin.replace('_', ' ')} {app_names.get(t.plugin, '')}"))}
         score = sum(1 for term in terms if any(_match(term, tok) for tok in tokens))
+        score += sum(1 for term in terms if any(_match(term, tok) for tok in app))
         if score:
             scored.append((score, int(Risk(t.risk)), t.name, t))
     scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
@@ -443,10 +446,27 @@ class ChatRules:
         running weighs ``tool``, else None."""
         if not session_id:
             return None
-        if any(tool.name in names for names in self._checking.get(session_id, ())):
+        if self.is_checking(tool, session_id):
             return "ask"
         pending = await self._session_pending(session_id)
         return "ask" if pending and (tool.name in pending or tool.plugin in pending) else None
+
+    def is_checking(self, tool: Tool, session_id: str | None) -> bool:
+        """True while a rule check that is still running weighs ``tool`` in this chat."""
+        if not session_id:
+            return False
+        return any(tool.name in names for names in self._checking.get(session_id, ()))
+
+    async def pending_rule(self, tool: Tool, session_id: str | None) -> str | None:
+        """The strictest still-undecided rule suggestion in this chat naming ``tool`` or its app (#130), or None.
+        Unlike ``chat_rule`` — which collapses every undecided proposal to "ask" — this keeps the suggestion's own
+        rule, so a pending "never" can be told apart from a pending "ask"."""
+        if not session_id:
+            return None
+        pending = await self._session_pending(session_id)
+        names = {tool.name, tool.plugin}
+        rules = [r for key, r in pending.items() if key in names]
+        return max(rules, key=lambda r: STRICTNESS.get(r, 1), default=None)
 
     def _target(self, key: str, names: dict[str, str]) -> dict:
         tool = self.app.registry.get(key)
@@ -517,7 +537,8 @@ class ChatRules:
         until ``deadline`` (event-loop time, before the reply stops waiting); a slower check ends with no card."""
         llm = self.app.llm
         try:
-            return await llm.complete_json("fast", messages)
+            with claude_code.without_stand_in():  # a fast role only on Claude Code refuses: the chat's model does it
+                return await llm.complete_json("fast", messages)
         except ModelRefused as exc:
             log.info("rule check: the fast model can't do it (%s), so the chat's model does", exc)
         agent = getattr(self.app, "agent", None)

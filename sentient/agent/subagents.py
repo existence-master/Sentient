@@ -10,6 +10,9 @@ those calls come back as refusals the model can relay.
   streamed to the chat as ``tool_progress`` (kind ``subagent``).
 - Background: the tool returns at once; when the subagent finishes, its summary
   is added to the chat as an assistant message and a notification is created.
+- Reader (``read``, the ``read_with_reader`` tool, #144, ADR 0031): no loop and no tools at all. One model call
+  reads an outside document and code keeps only the requested fields (``sentient.agent.reader``). Its row has
+  ``kind = "reader"``, ``tool_calls = 0`` and a trace of the fields asked for and the fields returned.
 
 Every state change is persisted in the ``subagents`` table and published as
 ``subagent.updated``.
@@ -23,9 +26,11 @@ import json
 import logging
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from sentient import paths
+from sentient.agent import reader
 from sentient.agent.loop import Budget, LoopResult
 from sentient.llm.events import Error, TextDelta, ToolCallEvent, ToolResultEvent
 from sentient.llm.jobs import detached
@@ -36,7 +41,6 @@ from sentient.tools.base import Risk, Tool
 log = logging.getLogger(__name__)
 
 MAX_EVENTS = 200
-MAX_FILES_SCANNED = 5000
 PLUGIN_ID = "subagents"
 UpdateFn = Callable[[str, str], Any]  # (subagent_id, message)
 
@@ -73,6 +77,7 @@ def _row(r: Any, *, events: bool = True) -> dict:
         "session_id": d.get("session_id"),
         "parent_call_id": d.get("parent_call_id"),
         "goal": d["goal"],
+        "kind": d.get("kind") or "worker",
         "status": d["status"],
         "background": bool(d.get("background")),
         "summary": d.get("summary"),
@@ -87,21 +92,19 @@ def _row(r: Any, *, events: bool = True) -> dict:
     return out
 
 
-def _snapshot_files() -> dict[str, float]:
-    root = paths.files_dir()
-    out: dict[str, float] = {}
-    if not root.exists():
-        return out
-    for i, p in enumerate(root.rglob("*")):
-        if i >= MAX_FILES_SCANNED:
-            break
-        if p.is_file():
-            rel = p.relative_to(root).as_posix()
-            if rel.startswith("outputs/tool-"):  # cut tool results are bookkeeping, not work products
-                continue
-            with contextlib.suppress(OSError):
-                out[rel] = p.stat().st_mtime
-    return out
+def _files_from(result: Any) -> list[str]:
+    """The files one of the subagent's own tool calls saved, relative to the files folder: any result whose ``path``
+    is inside the files folder, plus a script run's ``files_created``. Read from its results rather than by
+    comparing the folder before and after, so helpers running at once never report each other's files (#94)."""
+    if not isinstance(result, dict):
+        return []
+    names: list[str] = []
+    path = result.get("path")
+    if isinstance(path, str) and Path(path).is_absolute():
+        with contextlib.suppress(OSError, ValueError):
+            names.append(Path(path).resolve().relative_to(paths.files_dir().resolve()).as_posix())
+    names += [n for n in result.get("files_created") or [] if isinstance(n, str)]
+    return names
 
 
 def _short(value: Any, limit: int = 1000) -> str:
@@ -168,7 +171,7 @@ class SubagentManager(Service):
         if task is not None and not task.done():
             task.cancel()
             await asyncio.wait({task}, timeout=10)
-        else:
+        elif subagent_id not in self._tasks:  # still listed: it is saving its own result right now
             sub = await self.get(subagent_id, events=False)
             if sub and sub["status"] == "running":  # orphaned row: nothing is running it any more
                 await self._update(subagent_id, status="cancelled", finished_at=now_iso())
@@ -231,6 +234,63 @@ class SubagentManager(Service):
         if sub.get("error"):
             out["error"] = sub["error"]
         return out
+
+    async def read(
+        self,
+        document: str,
+        fields: list[reader.Field],
+        *,
+        source: str,
+        session_id: str | None = None,
+        parent_call_id: str | None = None,
+        attended: bool = False,
+    ) -> dict:
+        """The reader (#144): one tool-free model call reads ``document`` (outside content from ``source``) and only
+        the requested ``fields`` come back, checked in code. Recorded as a ``kind = "reader"`` subagent whose trace
+        shows the fields asked for and returned, and no tool calls. Returns ``{subagent_id, status, fields}`` or
+        ``{subagent_id, status: "error", error}``."""
+        sub_id = new_id()
+        names = ", ".join(f.name for f in fields)
+        goal = f"Read {source} for: {names}"[:500]
+        events: list[dict] = [{"timestamp": now_iso(), "message": {
+            "type": "info", "content": "Reader started with no tools. Fields asked for: "
+            + ", ".join(f"{f.name} ({f.describe()})" for f in fields)}}]
+        await self.app.store.execute(
+            "INSERT INTO subagents(id, session_id, parent_call_id, goal, kind, tools, status, background, events,"
+            " started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (sub_id, session_id, parent_call_id, goal, "reader", "[]", "running", 0, json.dumps(events), now_iso()),
+        )
+        self._publish(await self.get(sub_id, events=False))
+        status, error, values = "completed", None, None
+        # its own task, so ``cancel(sub_id)`` (POST /api/subagents/{id}/cancel) stops the model call too
+        task = asyncio.create_task(reader.read(self.app.llm, document, fields, source=source, attended=attended),
+                                   name=f"reader:{sub_id}")
+        self._tasks[sub_id] = task
+        try:
+            values = await task
+            events.append({"timestamp": now_iso(), "message": {
+                "type": "final_answer", "content": json.dumps(values, ensure_ascii=False)}})
+        except asyncio.CancelledError:
+            status, error = "cancelled", "The reader was stopped."
+            if not task.cancelled() or (asyncio.current_task() and asyncio.current_task().cancelling()):
+                task.cancel()
+                raise  # the parent was stopped: pass it on
+            events.append({"timestamp": now_iso(), "message": {"type": "info", "content": "Cancelled."}})
+        except reader.ReaderError as exc:
+            status, error = "error", str(exc)
+            events.append({"timestamp": now_iso(), "message": {"type": "error", "content": error}})
+        finally:
+            self._tasks.pop(sub_id, None)
+            await asyncio.shield(self._update(
+                sub_id, status=status, error=error, tool_calls=0, finished_at=now_iso(),
+                summary=json.dumps(values, ensure_ascii=False) if values is not None else None,
+                events=json.dumps(events, default=str),
+            ))
+            self._publish(await self.get(sub_id, events=False))
+        if values is None:
+            return {"subagent_id": sub_id, "status": status if status == "cancelled" else "error",
+                    "error": error or "The reader failed."}
+        return {"subagent_id": sub_id, "status": "completed", "fields": values}
 
     async def delegate_many(
         self,
@@ -362,7 +422,7 @@ class SubagentManager(Service):
         events: list[dict] = []
         result = LoopResult()
         status, error = "completed", None
-        before: dict[str, float] = {}
+        files: list[str] = []
 
         def note(message: dict, text: str | None = None) -> None:
             events.append({"timestamp": now_iso(), "message": message})
@@ -375,7 +435,6 @@ class SubagentManager(Service):
 
         try:
             async with self._slot():
-                before = await asyncio.to_thread(_snapshot_files)
                 note({"type": "info", "content": f"Started: {goal[:200]}"}, "Started")
                 incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
                 private = incognito and not self.app.config.chat.incognito_uses_memory
@@ -409,6 +468,8 @@ class SubagentManager(Service):
                                 f"Using {event.name}",
                             )
                         elif isinstance(event, ToolResultEvent):
+                            if not event.is_error:
+                                files.extend(_files_from(event.result))
                             note(
                                 {"type": "tool_result", "tool_name": event.name, "result": _short(event.result),
                                  "is_error": event.is_error},
@@ -425,12 +486,12 @@ class SubagentManager(Service):
             status, error = "error", f"Stopped after {cfg.timeout_minutes} minutes without finishing."
         except asyncio.CancelledError:
             status, error = "cancelled", None
-            await asyncio.shield(self._finish(sub_id, goal, session_id, background, status, error, result, events, before))
+            await asyncio.shield(self._finish(sub_id, goal, session_id, background, status, error, result, events, files))
             raise
         except Exception as exc:
             log.exception("subagent %s failed", sub_id)
             status, error = "error", f"{type(exc).__name__}: {exc}"
-        await self._finish(sub_id, goal, session_id, background, status, error, result, events, before)
+        await self._finish(sub_id, goal, session_id, background, status, error, result, events, files)
 
     async def _finish(
         self,
@@ -442,16 +503,12 @@ class SubagentManager(Service):
         error: str | None,
         result: LoopResult,
         events: list[dict],
-        before: dict[str, float],
+        files: list[str],
     ) -> None:
         summary = (result.text or "").strip()
         if result.hit_step_limit and summary.startswith("I reached the step limit"):
             summary = ""
-        try:
-            after = await asyncio.to_thread(_snapshot_files) if before is not None else {}
-        except Exception:
-            after = {}
-        files = sorted(n for n, m in after.items() if before and (n not in before or before[n] != m)) if before else []
+        files = sorted(set(files))
         if status == "completed":
             events.append({"timestamp": now_iso(), "message": {"type": "final_answer", "content": summary}})
         elif status == "error":

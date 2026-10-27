@@ -31,6 +31,7 @@ export function useMemoryParams() {
     [setParams]
   )
 
+  const scope = get('scope') // a memory scope (#155), '' for all
   const view = (['graph', 'list', 'timeline'].includes(get('view')) ? get('view') : 'graph') as MemoryView
   const tab = (['memories', 'review', 'conversations', 'profile'].includes(get('tab')) ? get('tab') : 'memories') as MemoryTab
   const type = (['long-term', 'short-term'].includes(get('type')) ? get('type') : 'all') as MemoryTypeFilter
@@ -41,6 +42,7 @@ export function useMemoryParams() {
     tab,
     type,
     topic: get('topic'),
+    scope,
     source: get('source'),
     q: get('q'),
     selected,
@@ -138,7 +140,42 @@ export function useOptimisticMemoryActions() {
     onSettled: settle
   })
 
-  return useMemo(() => ({ update, remove }), [update, remove])
+  const move = useMutation({
+    mutationFn: ({ id, scope }: { id: number; scope: string }) => api.memories.move(id, scope),
+    onMutate: async ({ id, scope }) => {
+      const snap = await snapshot()
+      patchLists((list) => list.map((m) => (m.id === id ? ({ ...m, scope } as Memory) : m)))
+      return snap
+    },
+    onError: (e, _v, snap) => {
+      restore(snap)
+      toast.error("Couldn't move that memory", { description: errorMessage(e) })
+    },
+    onSuccess: (m) => toast.success(m.scope === 'always' ? 'Every chat can use this memory now' : `Moved to ${scopeName(m.scope)}`),
+    onSettled: settle
+  })
+
+  const setState = useMutation({
+    mutationFn: ({ id, state }: { id: number; state: 'current' | 'disputed' }) => api.memories.setState(id, state),
+    onMutate: async ({ id, state }) => {
+      const snap = await snapshot()
+      patchLists((list) => list.map((m) => (m.id === id ? ({ ...m, state, ...(state === 'current' ? { confidence: 1 } : {}) } as Memory) : m)))
+      return snap
+    },
+    onError: (e, _v, snap) => {
+      restore(snap)
+      toast.error("Couldn't change that memory", { description: errorMessage(e) })
+    },
+    onSuccess: (m) =>
+      toast.success(m.state === 'disputed' ? 'Sentient will leave this out of chats and tasks' : 'Sentient will use this memory again'),
+    onSettled: settle
+  })
+
+  return useMemo(() => ({ update, remove, move, setState }), [update, remove, move, setState])
+}
+
+function scopeName(scope: string | undefined): string {
+  return !scope || scope === 'personal' ? 'Personal' : scope === 'work' ? 'Work' : scope
 }
 
 /** force-graph mutates link ends into node objects. */

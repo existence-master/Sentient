@@ -12,7 +12,10 @@
  *   engine does not have them yet; whenever the engine answers, its data is used.
  */
 import type {
+  ForgetCounts,
+  Forgotten,
   AwayStatus,
+  EmailTasksStatus,
   BackupEntry,
   BackupInspect,
   BackupOverview,
@@ -54,6 +57,8 @@ import type {
   ApprovalDecision,
   ApprovalGrant,
   Bootstrap,
+  SensorState,
+  SensorStopResult,
   StopResult,
   StopState,
   ChatRequest,
@@ -85,6 +90,7 @@ import type {
   MemoryImportResult,
   MemoryQuery,
   MemoryReviewInbox,
+  MemoryScope,
   MemorySummary,
   MemoryTopic,
   MemoryWriteResult,
@@ -121,6 +127,7 @@ import type {
   RoleName,
   Reminder,
   ReminderStatus,
+  SnoozedAlarm,
   RuleProposal,
   SecretStatus,
   SentientConfig,
@@ -131,6 +138,12 @@ import type {
   SkillDiff,
   SkillReviewResult,
   SkillsList,
+  HubInstall,
+  HubInstalled,
+  HubListing,
+  HubPreview,
+  HubSource,
+  HubUpdateResult,
   SkillUpdate,
   SuggestionActionResponse,
   Task,
@@ -211,6 +224,13 @@ export function isNotImplemented(e: unknown): boolean {
 /** React Query `retry`: give up at once when the endpoint is missing, otherwise retry twice. */
 export function noRetryWhenMissing(count: number, err: unknown): boolean {
   return !isNotImplemented(err) && count < 2
+}
+
+/** The extra yes a Skills hub install asks for (#210): a source the user added, or high-risk findings. */
+export function hubConfirmCode(e: unknown): 'confirm_source' | 'high_risk' | null {
+  if (!isApiError(e) || e.status !== 409 || !e.body || typeof e.body !== 'object') return null
+  const code = (e.body as { code?: unknown }).code
+  return code === 'confirm_source' || code === 'high_risk' ? code : null
 }
 
 export function errorMessage(e: unknown): string {
@@ -436,6 +456,12 @@ export const api = {
   /** The window is in use: resets the timer that pauses routines while you are away (#163). */
   activity: () => http.post<{ ok: boolean; last_active_at: string | null }>('/api/activity'),
 
+  // §24 live microphones and cameras (#170)
+  sensors: {
+    get: () => http.get<SensorState>('/api/sensors'),
+    stop: (id?: string) => http.post<SensorStopResult>('/api/sensors/stop', id ? { id } : {})
+  },
+
   // §17 stop everything
   stop: {
     get: () => http.get<StopState>('/api/stop'),
@@ -453,15 +479,34 @@ export const api = {
 
   sessions: {
     list: (limit = 100) => http.get<Session[]>('/api/sessions', { query: { limit } }),
-    create: (opts: { incognito?: boolean; model?: string | null } = {}) =>
+    create: (opts: { incognito?: boolean; model?: string | null; memory_scope?: string | null } = {}) =>
       http.post<{ session_id: string }>('/api/sessions', undefined, {
-        query: opts.incognito || opts.model ? { ...(opts.incognito ? { incognito: true } : {}), ...(opts.model ? { model: opts.model } : {}) } : undefined
+        query:
+          opts.incognito || opts.model || opts.memory_scope
+            ? {
+                ...(opts.incognito ? { incognito: true } : {}),
+                ...(opts.model ? { model: opts.model } : {}),
+                ...(opts.memory_scope ? { memory_scope: opts.memory_scope } : {})
+              }
+            : undefined
       }),
     rename: (id: string, title: string) => http.patch<OkResponse>(`/api/sessions/${enc(id)}`, { title }),
     /** The chat's own model (#312); null follows the default again. */
     setModel: (id: string, model: string | null) =>
       http.patch<OkResponse & { model: string | null }>(`/api/sessions/${enc(id)}`, { model }),
+    /** The memories this chat uses (#155); null goes back to the default (Personal, or its messaging app's). */
+    setScope: (id: string, memory_scope: string | null) =>
+      http.patch<OkResponse & { memory_scope: string }>(`/api/sessions/${enc(id)}`, { memory_scope }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
+    /**
+     * "I've checked it, trust this chat again" (ADR 0029), up to `upto`, the newest message the window has shown.
+     * `trusted: false` with `untrusted`/`writer` when outside content newer than that keeps the chat marked.
+     */
+    trust: (id: string, upto?: string | null) =>
+      http.post<OkResponse & { was: string; trusted: boolean; untrusted: string; writer: string }>(
+        `/api/sessions/${enc(id)}/trust`,
+        { upto: upto ?? null }
+      ),
     messages: (id: string, limit = 500) =>
       http.get<TranscriptMessage[]>(`/api/sessions/${enc(id)}/messages`, { query: { limit } }),
     search: (q: string) => http.get<MessageSearchHit[]>('/api/sessions/search', { query: { q } })
@@ -500,6 +545,16 @@ export const api = {
     list: () => http.get<FileEntry[]>('/api/files'),
     contentUrl: (name: string) => authedUrl(`/api/files/content/${encPath(name)}`),
     download: (name: string) => http.blob('GET', `/api/files/content/${encPath(name)}`),
+    /** False when the file is gone (deleted, or went with an incognito chat), so a chat never shows another file (#458). */
+    exists: async (name: string) => {
+      try {
+        await send('HEAD', `/api/files/content/${encPath(name)}`)
+        return true
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return false
+        throw err
+      }
+    },
     delete: (name: string) => http.delete<OkResponse>(`/api/files/${encPath(name)}`)
   },
 
@@ -551,7 +606,8 @@ export const api = {
     /** Model presets: switch every role at once, save your own, undo the last switch. */
     presets: {
       list: () => http.get<ModelPresetList>('/api/models/presets'),
-      apply: (name: string) => http.post<PresetApplyResult>(`/api/models/presets/${enc(name)}/apply`),
+      apply: (name: string, localOnly = false) =>
+        http.post<PresetApplyResult>(`/api/models/presets/${enc(name)}/apply`, localOnly ? { local_only: true } : undefined),
       undo: () => http.post<PresetApplyResult>('/api/models/presets/undo'),
       save: (name: string, overwrite = false) => http.post<ModelPreset>('/api/models/presets', { name, overwrite }),
       rename: (name: string, to: string) => http.patch<ModelPreset>(`/api/models/presets/${enc(name)}`, { name: to }),
@@ -571,6 +627,8 @@ export const api = {
     away: () => http.get<AwayStatus>('/api/tasks/away'),
     awayResume: () => http.post<{ resumed: number; status: AwayStatus }>('/api/tasks/away/resume'),
     awayKeep: () => http.post<AwayStatus>('/api/tasks/away/keep'),
+    /** Tasks by email (#159). */
+    email: (limit = 20) => http.get<EmailTasksStatus>(`/api/tasks/email?limit=${limit}`),
     get: (id: string) => http.get<Task>(`/api/tasks/${enc(id)}`),
     create: (body: TaskCreateRequest) => http.post<Task>('/api/tasks', body),
     preview: (prompt: string) => http.post<TaskPreview>('/api/tasks/preview', { prompt }),
@@ -604,13 +662,17 @@ export const api = {
 
   // §5 integrations ------------------------------------------------------------
   integrations: {
+    /** Replace the MCP-only key (#443): apps holding the old one stop working until they restart. */
+    replaceMcpKey: () => http.post<{ rotated: boolean }>('/api/mcp/token/rotate'),
     list: () => http.get<Integration[]>('/api/integrations'),
     get: (id: string) => http.get<Integration>(`/api/integrations/${enc(id)}`),
     connect: (id: string, fields: Record<string, string> = {}, access?: ConnectionAccess) =>
       http.post<ConnectResponse>(`/api/integrations/${enc(id)}/connect`, access ? { fields, access } : { fields }),
     /** Read only or Read and write (#141). Takes effect at once. */
     setAccess: (id: string, access: ConnectionAccess) => http.put<Integration>(`/api/integrations/${enc(id)}/access`, { access }),
-    disconnect: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/disconnect`),
+    /** ``forget``: also forget what Sentient learned from it (#153). */
+    disconnect: (id: string, forget = false) =>
+      http.post<Integration & Forgotten>(`/api/integrations/${enc(id)}/disconnect`, undefined, forget ? { query: { forget: true } } : undefined),
     /** Abandon a pending browser sign-in so the integration stops showing "connecting". */
     cancel: (id: string) => http.post<Integration>(`/api/integrations/${enc(id)}/cancel`),
     test: (id: string) => http.post<IntegrationTestResult>(`/api/integrations/${enc(id)}/test`),
@@ -623,7 +685,8 @@ export const api = {
     mcp: {
       list: () => http.get<McpServer[]>('/api/integrations/mcp'),
       add: (body: McpServerCreate) => http.post<McpServer>('/api/integrations/mcp', body),
-      remove: (name: string) => http.delete<OkResponse>(`/api/integrations/mcp/${enc(name)}`),
+      remove: (name: string, forget = false) =>
+        http.delete<OkResponse & Forgotten>(`/api/integrations/mcp/${enc(name)}`, forget ? { query: { forget: true } } : undefined),
       test: (name: string) => http.post<McpTestResult>(`/api/integrations/mcp/${enc(name)}/test`),
       signIn: (name: string) => http.post<McpSignInStart>(`/api/integrations/mcp/${enc(name)}/sign-in`),
       signOut: (name: string) => http.post<McpServer>(`/api/integrations/mcp/${enc(name)}/sign-out`),
@@ -677,10 +740,20 @@ export const api = {
     list: (query: MemoryQuery = {}) => http.get<Memory[]>('/api/memories', { query: { ...query } }),
     topics: () => http.get<MemoryTopic[]>('/api/memories/topics'),
     graph: () => http.get<MemoryGraph>('/api/memories/graph'),
-    create: (content: string, source?: string) => http.post<MemoryWriteResult>('/api/memories', { content, source }),
+    create: (content: string, source?: string, scope?: string) => http.post<MemoryWriteResult>('/api/memories', { content, source, scope }),
+    /** §7 memory scopes (#155): Always, Personal, Work and the user's projects, with counts. */
+    scopes: () => http.get<MemoryScope[]>('/api/memories/scopes'),
+    move: (id: number, scope: string) => http.patch<Memory>(`/api/memories/${id}`, { scope }),
+    /** #152: one memory with every source and exactly where it said it. */
+    get: (id: number) => http.get<Memory>(`/api/memories/${id}`),
+    /** #152: the user says a memory isn't right (`disputed`, kept out of chats and tasks) or is (`current`). */
+    setState: (id: number, state: 'current' | 'disputed') => http.patch<Memory>(`/api/memories/${id}`, { state }),
+    resetScope: (scope: string) => http.delete<{ deleted: number }>(`/api/memories/scope/${enc(scope)}`),
     update: (id: number, content: string) => http.put<Memory>(`/api/memories/${id}`, { content }),
     delete: (id: number) => http.delete<{ deleted: boolean }>(`/api/memories/${id}`),
-    deleteBySource: (source: string) => http.delete<{ deleted: number }>(`/api/memories/source/${enc(source)}`),
+    deleteBySource: (source: string) => http.delete<{ deleted: number; unlinked: number }>(`/api/memories/source/${enc(source)}`),
+    /** What disconnecting ``source`` with "Also forget" would delete (#153): app:<id>, channel:<id>, device:<id>, folder:<id>. */
+    forgetPreview: (source: string) => http.get<ForgetCounts>('/api/memories/forget-preview', { query: { source } }),
     export: (format: 'markdown' | 'sqlite') => http.post<MemoryExport>('/api/memories/export', { format }),
     import: (file: File, opts?: UploadOptions) =>
       upload<MemoryImportResult>('/api/memories/import', file, file.name, opts),
@@ -717,6 +790,8 @@ export const api = {
       http.post<Skill>(`/api/skills/${enc(name)}/approve`, acceptRisk ? { accept_risk: true } : undefined),
     /** Add a skill from a web address; it waits in pending with its safety check (#146). */
     importUrl: (url: string) => http.post<SkillDetail>('/api/skills/import', { url }),
+    /** `/learn` (#167): draft a skill from a web page, a file or a folder; it waits in pending. */
+    learn: (source: string) => http.post<SkillDetail>('/api/skills/learn', { source }),
     reject: (name: string) => http.post<OkResponse>(`/api/skills/${enc(name)}/reject`),
     archive: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/archive`),
     restore: (name: string) => http.post<Skill>(`/api/skills/${enc(name)}/restore`),
@@ -725,7 +800,19 @@ export const api = {
     diff: (name: string) => http.get<SkillDiff>(`/api/skills/${enc(name)}/diff`),
     reviewNow: (session_id?: string) => http.post<SkillReviewResult>('/api/skills/review-now', { session_id }),
     evolutionLog: (limit?: number) =>
-      http.get<EvolutionLogEntry[]>('/api/skills/evolution-log', { query: { limit } })
+      http.get<EvolutionLogEntry[]>('/api/skills/evolution-log', { query: { limit } }),
+    /** The Skills hub (#210): browse sources, preview, install into review, updates pinned in the lockfile. */
+    hub: {
+      sources: () => http.get<HubSource[]>('/api/skills/hub/sources'),
+      addSource: (url: string, name?: string) => http.post<HubSource>('/api/skills/hub/sources', { url, name }),
+      removeSource: (id: string) => http.delete<OkResponse>(`/api/skills/hub/sources/${enc(id)}`),
+      browse: (source: string, refresh = false) => http.get<HubListing>('/api/skills/hub/browse', { query: { source, refresh: refresh || undefined } }),
+      preview: (source: string, path: string) => http.get<HubPreview>('/api/skills/hub/preview', { query: { source, path } }),
+      /** 409 with `code` `confirm_source` or `high_risk` asks for the extra yes (`hubConfirmCode`). */
+      install: (body: HubInstall) => http.post<SkillDetail>('/api/skills/hub/install', body),
+      installed: (check = false) => http.get<{ skills: HubInstalled[] }>('/api/skills/hub/installed', { query: { check: check || undefined } }),
+      update: (name: string, acceptRisk = false) => http.post<HubUpdateResult>(`/api/skills/hub/update/${enc(name)}`, acceptRisk ? { accept_risk: true } : undefined)
+    }
   },
 
   // §9 voice ---------------------------------------------------------------------
@@ -788,10 +875,11 @@ export const api = {
     list: () => http.get<DeviceNode[]>('/api/nodes'),
     get: (id: string) => http.get<DeviceNode>(`/api/nodes/${enc(id)}`),
     rename: (id: string, name: string) => http.patch<DeviceNode>(`/api/nodes/${enc(id)}`, { name }),
-    remove: (id: string) => http.delete<OkResponse>(`/api/nodes/${enc(id)}`),
+    remove: (id: string, forget = false) => http.delete<OkResponse & Forgotten>(`/api/nodes/${enc(id)}`, forget ? { query: { forget: true } } : undefined),
     invoke: (id: string, capability: string, params: Record<string, unknown> = {}, timeout_ms?: number) =>
       http.post<DeviceInvokeResult>(`/api/nodes/${enc(id)}/invoke`, { capability, params, timeout_ms }),
-    pairing: () => http.post<DevicePairing>('/api/nodes/pairing'),
+    /** `replaces`: the code on screen, which stops working when the new one is made (#477). */
+    pairing: (replaces?: string) => http.post<DevicePairing>('/api/nodes/pairing', replaces ? { replaces } : undefined),
     lan: () => http.get<DeviceLanInfo>('/api/nodes/lan')
   },
 
@@ -799,7 +887,8 @@ export const api = {
   channels: {
     list: () => http.get<Channel[]>('/api/channels'),
     connect: (id: string, fields: Record<string, string>) => http.post<Channel>(`/api/channels/${enc(id)}/connect`, { fields }),
-    disconnect: (id: string) => http.post<Channel>(`/api/channels/${enc(id)}/disconnect`),
+    disconnect: (id: string, forget = false) =>
+      http.post<Channel & Forgotten>(`/api/channels/${enc(id)}/disconnect`, undefined, forget ? { query: { forget: true } } : undefined),
     pairing: (id: string) => http.post<ChannelPairing>(`/api/channels/${enc(id)}/pairing`),
     setDeliver: (id: string, chatId: string, deliver: boolean) =>
       http.patch<Channel>(`/api/channels/${enc(id)}/paired/${enc(chatId)}`, { deliver }),
@@ -858,7 +947,9 @@ export const api = {
     list: () => http.get<FoldersOverview>('/api/folders'),
     add: (path: string, ignore?: string[]) => http.post<WatchedFolder>('/api/folders', { path, ignore }),
     update: (id: string, ignore: string[]) => http.patch<WatchedFolder>(`/api/folders/${id}`, { ignore }),
-    remove: (id: string) => http.delete<{ removed: boolean }>(`/api/folders/${id}`),
+    setScope: (id: string, scope: string) => http.patch<WatchedFolder>(`/api/folders/${id}`, { scope }),
+    remove: (id: string, forget = false) =>
+      http.delete<{ removed: boolean } & Forgotten>(`/api/folders/${id}`, forget ? { query: { forget: true } } : undefined),
     rescan: (id: string) => http.post<{ queued: boolean }>(`/api/folders/${id}/rescan`, {})
   },
 
@@ -878,7 +969,11 @@ export const api = {
   // §23 timers and reminders (#150) -------------------------------------------------------------
   reminders: {
     list: (status: ReminderStatus | 'all' = 'scheduled') => http.get<{ reminders: Reminder[] }>('/api/reminders', { query: { status } }),
-    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`)
+    cancel: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/cancel`),
+    /** Stop a ringing alarm (#390). */
+    stop: (id: string) => http.post<Reminder>(`/api/reminders/${enc(id)}/stop`),
+    /** Snooze a ringing alarm (#390); minutes default to the snooze setting. */
+    snooze: (id: string, minutes?: number) => http.post<SnoozedAlarm>(`/api/reminders/${enc(id)}/snooze`, minutes ? { minutes } : {})
   },
 
   // §16 webhooks --------------------------------------------------------------------------

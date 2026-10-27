@@ -47,6 +47,8 @@ export const CLAUDE_PLAN_STEPS = `Claude Max and Team plans come with monthly AP
 3. In the Claude Console, create an API key: https://platform.claude.com/settings/keys
 4. Paste the key here and test it.`
 
+export const CLAUDE_KEYS_URL = 'https://platform.claude.com/settings/keys'
+
 export const NOUS_STEPS = `Nous Portal doesn't offer a sign-in for other apps yet, so Sentient uses an API key.
 
 1. Open Nous Portal and sign in: https://portal.nousresearch.com
@@ -112,7 +114,7 @@ function KeyPaste({ provider, label, placeholder }: { provider: string; label: s
 }
 
 /** "Key saved" with Test and Remove, or the paste field when there is no key yet. */
-function KeyStatus({
+export function KeyStatus({
   provider,
   label,
   placeholder,
@@ -172,8 +174,11 @@ function KeyStatus({
   )
 }
 
-/** The Claude Max or Team route: claim the included API credits, paste the key, test it, use Claude for the main roles. */
-export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: string, fast: string) => void }) {
+/**
+ * The Claude Max or Team route: claim the included API credits, paste the key, test it, use Claude for the main roles.
+ * Without `steps` it is the plain API key route (#444): a key from the Claude Console, billed per use.
+ */
+export function ClaudePlanGuide({ onUseModels, steps = true }: { onUseModels?: (primary: string, fast: string) => void; steps?: boolean }) {
   const providers = useProviders()
   const [works, setWorks] = useState(false)
   const anthropic = providers.data?.find((p) => p.id === 'anthropic')
@@ -190,7 +195,13 @@ export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: strin
 
   return (
     <div className="space-y-4">
-      <InstructionsGuide markdown={CLAUDE_PLAN_STEPS} />
+      {steps ? (
+        <InstructionsGuide markdown={CLAUDE_PLAN_STEPS} />
+      ) : (
+        <button type="button" onClick={() => openExternal(CLAUDE_KEYS_URL)} className="flex items-center gap-1 text-xs font-medium text-accent-text hover:underline">
+          Create a key in the Claude Console <IconExternalLink size={12} />
+        </button>
+      )}
       <KeyStatus provider="anthropic" label="Claude" placeholder="sk-ant-…" onChecked={(r) => setWorks(r.ok)} />
       {keySet && works && primary && onUseModels && (
         <div className="flex flex-wrap items-center gap-2">
@@ -200,11 +211,13 @@ export function ClaudePlanGuide({ onUseModels }: { onUseModels?: (primary: strin
           <span className="text-xs text-fg-subtle">You can still pick a model per job under Roles.</span>
         </div>
       )}
+      {steps && (
       <Alert tone="info" icon={<IconInfoCircle />}>
         Pro and Free plans don't include API credits, so a key bills your Claude Console account per use. Apps aren't allowed to sign in with your Claude
         account, which is why Sentient asks for a key. Credits arrive each billing month, don't roll over and don't cover Claude Code. When they run out, Claude
         stops answering until the next month unless you add credits in the Console.
       </Alert>
+      )}
     </div>
   )
 }
@@ -513,16 +526,15 @@ export function NousPortalGuide() {
   )
 }
 
-type Plan = 'claude' | 'chatgpt' | 'openrouter' | 'nous'
+type Plan = 'chatgpt' | 'openrouter' | 'nous'
 
-/** Settings > Models: "Use a plan you already have". */
-export function ConnectPlansSection() {
-  const [plan, setPlan] = useState<Plan>('claude')
+/** Use a plan's models in Settings: the built-in Cloud preset when it uses this provider, so it can be undone;
+ * otherwise the main and fast roles. */
+export function useApplyPlan() {
   const setRoles = useSetRoles()
   const presets = useModelPresets()
   const presetSwitch = usePresetSwitch()
-  // When the built-in Cloud preset uses this provider, switch to it so it can be undone; otherwise set the two roles.
-  const applyPlan = (provider: string, label: string) => (primary: string, fast: string) => {
+  return (provider: string, label: string) => (primary: string, fast: string) => {
     const preset = presets.data?.presets.find((p) => p.builtin && p.available && p.provider === provider)
     if (preset) return presetSwitch.apply(preset.name)
     setRoles.mutate(
@@ -539,6 +551,12 @@ export function ConnectPlansSection() {
       }
     )
   }
+}
+
+/** Settings > Models: "Use a plan you already have". Claude has its own card (ConnectClaude, #444). */
+export function ConnectPlansSection() {
+  const [plan, setPlan] = useState<Plan>('chatgpt')
+  const applyPlan = useApplyPlan()
   return (
     <section className="space-y-3">
       <div className="px-1">
@@ -546,7 +564,7 @@ export function ConnectPlansSection() {
           <IconPlugConnected size={15} /> Use a plan you already have
         </h3>
         <p className="mt-0.5 text-xs text-fg-subtle">
-          Claude Max credits, your ChatGPT plan, an OpenRouter account or Nous Portal. Keys and sign-ins stay in your system keychain.
+          Your ChatGPT plan, an OpenRouter account or Nous Portal. For Claude, see Connect Claude above. Keys and sign-ins stay in your system keychain.
         </p>
       </div>
       <Card className="space-y-4 p-4">
@@ -554,15 +572,12 @@ export function ConnectPlansSection() {
           value={plan}
           onChange={setPlan}
           options={[
-            { value: 'claude', label: 'Claude plan' },
             { value: 'chatgpt', label: 'ChatGPT plan' },
             { value: 'openrouter', label: 'OpenRouter' },
             { value: 'nous', label: 'Nous Portal' }
           ]}
         />
-        {plan === 'claude' ? (
-          <ClaudePlanGuide onUseModels={applyPlan('anthropic', 'Claude')} />
-        ) : plan === 'chatgpt' ? (
+        {plan === 'chatgpt' ? (
           <ChatGPTConnect onUseModels={applyPlan('chatgpt', 'your ChatGPT plan')} />
         ) : plan === 'openrouter' ? (
           <OpenRouterConnect />

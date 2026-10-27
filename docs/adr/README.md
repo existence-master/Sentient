@@ -14,7 +14,7 @@ proposing a change to one of them.
 | [0007](0007-one-agent-loop.md) | Use one agent loop for every surface | Accepted | 2026-09-15 |
 | [0008](0008-effective-risk-and-approvals.md) | Decide approvals by each call's effective risk | Accepted | 2026-09-15 |
 | [0009](0009-memory-pushed-into-the-prompt.md) | Push memory into every turn and consolidate it nightly | Accepted | 2026-09-15 |
-| [0010](0010-self-evolution-with-human-review.md) | Let Sentient write its own skills, with human review | Accepted | 2026-09-12 |
+| [0010](0010-self-evolution-with-human-review.md) | Let Sentient write its own skills, with human review (amended: skill checks, #386) | Accepted | 2026-09-12 |
 | [0011](0011-device-node-protocol.md) | Connect devices with a small JSON protocol over WebSockets | Accepted | 2026-09-15 |
 | [0012](0012-code-execution-sandbox.md) | Run model-written code in a sandbox that calls tools | Accepted | 2026-09-15 |
 | [0013](0013-push-before-poll.md) | Prefer change feeds and scripts over model calls | Accepted | 2026-09-15 |
@@ -33,6 +33,13 @@ proposing a change to one of them.
 | [0026](0026-undo-windows-and-reversible-defaults.md) | Hold sends in an undo window and prefer the trash | Accepted | 2026-10-14 |
 | [0027](0027-vet-skills-and-mcp-tools-from-outside.md) | Check skills and MCP tools from outside before the model sees them | Accepted | 2026-10-15 |
 | [0028](0028-quick-home-commands-are-their-own-yes.md) | Let a quick light command count as its own yes, and make opening the home always ask | Accepted | 2026-10-15 |
+| [0029](0029-group-chats-and-trusting-a-chat-again.md) | Treat other people in a group chat as outside content, and let the user trust a chat again | Accepted | 2026-10-15 |
+| [0030](0030-numbered-migration-files.md) | Change the database shape through numbered migration files | Accepted | 2026-10-17 |
+| [0031](0031-recipients-first-and-a-tool-less-reader.md) | Fix where a message goes before reading what it says, and read outside documents with a tool-less reader | Accepted | 2026-10-17 |
+| [0032](0032-claude-code-for-everything-as-an-opt-in.md) | Let people opt in to using their own Claude Code for everything | Accepted | 2026-10-17 |
+| [0033](0033-tasks-by-email.md) | Take tasks by email only from allowed real addresses, and treat the email as outside content | Accepted | 2026-10-18 |
+| [0034](0034-serve-sentient-to-other-agents-over-mcp.md) | Serve Sentient itself to other agents over MCP, off by default and read-mostly | Accepted | 2026-10-21 |
+| [0035](0035-skills-hub-installs-into-review-and-pins-versions.md) | Install skills from the hub into review, check them first, and pin the exact version | Accepted | 2026-10-23 |
 
 ## Adding a record
 

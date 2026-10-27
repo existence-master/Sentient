@@ -85,9 +85,10 @@ In Git Bash write smoke routes without a leading slash (`settings/models`), or M
 turns them into Windows paths. Set `SENTIENT_HOME` to a seeded profile to capture
 realistic screens. Demo data seeders live in `desktop/scripts/seed-*.py` (`seed-chats-devices-channels.py` for
 chat tool cards, devices, helpers and messaging channels; `seed-automations-usermodel.py` for About you, dreams,
-watcher jobs and webhooks). When they finish, the seeders pause every task in the home and turn off messaging apps
-and every paired chat's delivery (`desktop/scripts/seed_safety.py`), and `smoke.mjs` does the same before it starts
-the app on a `SENTIENT_HOME`, so a demo never runs a task or messages anyone. Pass `--keep-live` to either to keep
+watcher jobs and webhooks). When they finish, the seeders pause every task in the home, decline any task still
+being planned, cancel any run in progress (so resuming a seeded task never carries seeded work on with the model) and turn
+off messaging apps and every paired chat's delivery (`desktop/scripts/seed_safety.py`), and `smoke.mjs` does the
+same before it starts the app on a `SENTIENT_HOME`, so a demo never calls a model, runs a task or messages anyone. Pass `--keep-live` to either to keep
 them as seeded. `seed_safety.py` refuses the default `~/.sentient`.
 
 When several people build and capture screenshots at once, take `desktop/.build.lock`
@@ -122,6 +123,94 @@ machine run it per folder (`tests/test_*.py`, `tests/tasks`, `tests/memory` ...)
 The web device app is served at `http://127.0.0.1:<port>/node/` so it can be tried on the same computer
 (camera and microphone work on localhost). For a phone, turn on Devices → Allow devices on my Wi-Fi.
 
+### Changing the database
+
+Everything lives in one SQLite file ([ADR 0003](adr/0003-single-sqlite-database.md)). Two things describe its shape
+([ADR 0030](adr/0030-numbered-migration-files.md)):
+
+- the `schema.sql` files (`sentient/store/schema.sql` and one per package in `PACKAGE_SCHEMAS`): idempotent
+  `CREATE ... IF NOT EXISTS` statements for the **whole current shape**. A new database is made from them alone.
+- numbered steps in `sentient/store/migrations/`, one file per step, that bring a database made by an older build
+  up to date. The highest number is the schema version (`SCHEMA_VERSION`, stored in `PRAGMA user_version`).
+
+When Sentient opens an existing database with a lower version, it takes a snapshot (issue #151), runs every step
+above that version in order (stamping the version after each), and then runs the `schema.sql` files, which add any
+missing tables and indexes.
+
+**A new table or index.** Add it to your package's `schema.sql`. That is all: the file runs on every start, so older
+databases get it too. An index on a new column also goes there: the step below adds the column first.
+
+**A new column** (or a change to existing rows):
+
+1. Add the column to the `CREATE TABLE` in the `schema.sql`, so new databases have it.
+2. Add the next step: copy the newest file in `sentient/store/migrations/` to the next number with a short name, for
+   example `0014_task_colour.py`:
+
+   ```python
+   """Tasks remember their colour (#123)."""
+
+   from __future__ import annotations
+
+   from typing import Any
+
+
+   async def migrate(store: Any) -> None:
+       await store.ensure_column("tasks", "colour", "TEXT")
+   ```
+
+   Use the same type and default as in `schema.sql`. A step may also fix rows (`await store.db.execute("UPDATE ...")`).
+   A `.sql` file works too when plain SQL is enough, but only for statements that are safe to run twice
+   (`ALTER TABLE ... ADD COLUMN` is not, so columns go in a `.py` step).
+3. Run `pytest -q tests/test_migrations.py`. It fails when two steps share a number, a number is skipped, or a
+   database migrated from an old build differs from a new one (tables, columns, indexes and triggers).
+
+Never type the version anywhere, and never edit a step that is already on `main`: databases that ran it will not
+run it again. A step must work twice (a crash before its version is stamped runs it again) and on a table that is
+missing (a very old database), which `store.ensure_column` already handles.
+
+**When two pull requests both add a step.** Both pick the next free number, say `0014`, and git sees no conflict
+because the file names differ. Whoever merges second rebases on `main`, sees `tests/test_migrations.py` fail with
+"two migrations share a number", and renames their file to `0015_...`.
+
+### Where pytest's temporary files go
+
+Every test that uses `tmp_path` gets a folder under pytest's temp root, by default
+`%TEMP%\pytest-of-<you>` (Windows) or `/tmp/pytest-of-<you>`. Sentient's tests make a data folder each, so this
+once reached 5 GB on a C: drive. `pyproject.toml` now keeps only the folders of tests that failed
+(`tmp_path_retention_policy = "failed"`), and only from the last run (`tmp_path_retention_count = 1`); this works
+the same with `-n auto`, where each worker's folders sit in a `popen-gw<N>` subfolder of the run's folder.
+
+To keep them off your system drive, either give each checkout its own folder (pytest empties it at the start of
+every run; `.pytest-tmp/` is ignored by git):
+
+```bash
+.venv/Scripts/python.exe -m pytest -q -n auto --basetemp=.pytest-tmp
+```
+
+or move the whole temp root by setting `TMP` and `TEMP` (Windows) or `TMPDIR` (macOS/Linux) for the shell that
+runs pytest, for example `$env:TMP = "D:\tmp"; $env:TEMP = "D:\tmp"` in PowerShell. When several checkouts run
+tests at once, give each its own `--basetemp`: a run empties its basetemp when it starts, so two runs sharing one
+delete each other's files. The folder above the basetemp must already exist.
+
+### Flaky tests
+
+CI runs a failed test once more (`--reruns 1 --reruns-delay 2`, from pytest-rerunfailures) so one unlucky timing
+on a busy runner doesn't fail a pull request. A rerun is not a pass to ignore: the "Report tests that needed a
+rerun" step lists every such test in the job summary and as a warning on the run.
+
+- A test that needed a rerun gets an issue with the [`flaky`](https://github.com/existence-master/Sentient/labels/flaky)
+  label (search first): the test id, the run link, the error, and what you think the cause is.
+- A test known to be flaky can be marked until it is fixed, with a comment linking its issue:
+
+  ```python
+  @pytest.mark.flaky(reruns=2)  # 5 s wall-clock budget, timed out on Windows CI: #420
+  async def test_polling_backoff_recovery_and_revoked_token(tg): ...
+  ```
+
+- The fix is usually a wall-clock budget that is too tight for a loaded Windows runner with `-n auto`: wait on
+  the thing itself, or use a deadline of several seconds instead of a few short sleeps. Remove the marker in the
+  same pull request as the fix.
+
 ## Packaging
 
 The shipped app carries its own engine, so the person installing it needs neither
@@ -140,10 +229,16 @@ npm run package:win        # just the installer (reuses desktop/build/engine)
 ```
 
 Take `desktop/.build.lock` first: packaging rebuilds the shared `desktop/out`.
-The Windows result is `desktop/dist/Sentient-Setup-<version>.exe` (~216 MiB), a
+The Windows result is `desktop/dist/Sentient-Setup-<version>.exe` (~246 MiB), a
 per-user NSIS installer that needs no administrator rights and installs into
 `%LOCALAPPDATA%\Programs\Sentient`. `/S` installs and uninstalls silently.
 Uninstalling leaves `~/.sentient` alone: that is the user's memories and tasks.
+
+`packaging/build_engine.py` checks the frozen engine before staging it: `version`, then `selfcheck` (a hidden
+command that imports everything the engine needs at runtime, including litellm and numpy, and the database
+migrations), then a real `serve` on a throwaway data folder until `GET /api/health` answers. Before a release, also
+run the unpacked app (`desktop/dist/win-unpacked`) against a fresh `SENTIENT_HOME` and send one chat: the checks
+above can't see what only a model call or the Claude Code backend exercises.
 
 | File | What it is |
 |---|---|
@@ -172,10 +267,24 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 ## Checks, branches and releases
 
 - Every pull request runs [CI](../.github/workflows/ci.yaml): ruff, the engine tests on Linux and Windows, the
-  desktop typecheck and build, and a secret scan. It needs no secrets, so it runs the same on forks.
+  desktop typecheck and build, and a secret scan, plus the [changelog check](../.github/workflows/changelog.yaml).
+  They need no secrets, so they run the same on forks. The same checks, and CLAAssistant, also run on each merge
+  group when `main` uses GitHub's merge queue. There the changelog and CLA checks only report success without
+  checking again; that is safe because both are required checks on `main`, so a pull request has passed them before
+  it can join the queue. Keep "Changelog entry" and "CLAAssistant" required in the ruleset for this to hold.
+- **Changelog entries are files, not edits to CHANGELOG.md.** A pull request that changes what people get adds
+  `changes/<issue or PR number>.<type>.md` (type `added`, `changed`, `deprecated`, `removed`, `fixed` or
+  `security`; details in [changes/README.md](../changes/README.md)). The "Changelog entry" job fails when a pull
+  request changes `sentient/`, `desktop/src/` or `packaging/` without one, and its summary says which file to add.
+  Pull requests with the `no changelog` label and Dependabot's are skipped; adding or removing the label runs the
+  check again by itself.
 - `main` is the only long-lived branch. Contributors fork, branch from `main` and open pull requests back to it;
   maintainers squash-merge after one approval and green checks. See [CONTRIBUTING.md](../CONTRIBUTING.md).
-- Releases are tags on `main`. Pushing a tag such as `v3.0.0-alpha.1` runs the
+- Releases are tags on `main`. First turn the entries into the version's changelog section with
+  [towncrier](https://towncrier.readthedocs.io/) (a dev dependency): `python packaging/release_changelog.py
+  3.0.0-alpha.1 --draft` shows it, and without `--draft` it writes CHANGELOG.md, links the version and deletes the
+  entries. Entries written into CHANGELOG.md by hand before towncrier sit under the same headings and are kept, after
+  the new ones. Commit that, then tag. Pushing a tag such as `v3.0.0-alpha.1` runs the
   [release workflow](../.github/workflows/release.yaml), which builds the Windows, macOS and Linux installers and
   attaches them to a draft GitHub release for a maintainer to review and publish.
 - Sentient v2 lives on the `v2` branch and the `v2-final` tag. It is not developed any more.
@@ -185,6 +294,7 @@ cross-compile). macOS builds are unsigned and unnotarized so far.
 | You want to… | Go to |
 |---|---|
 | Change what the window and engine exchange | `docs/API.md` first, then both sides |
+| Add a table or a column | your package's `schema.sql`, plus a numbered step for a column ([Changing the database](#changing-the-database)) |
 | Add a config option | your package's section in `sentient/config/schema.py` (with a `description`; Settings renders it) |
 | Add a tool | a plugin in `sentient/integrations/plugins/` (integrations) or `sentient/tools/builtin/` (core); set `risk`, and `internal=True` if it only touches Sentient's own data |
 | Change how turns run | `sentient/agent/loop.py` (`run_loop`, `run_turn`) and `agent/toolselect.py` |

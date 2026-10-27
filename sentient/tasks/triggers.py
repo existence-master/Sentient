@@ -112,7 +112,10 @@ def event_matches_filter(event_data: dict[str, Any], task_filter: dict[str, Any]
         email_field = field == "from" and source == "gmail"
         if email_field:
             raw = event_data.get("from") or event_data.get("sender") or ""
-            value: Any = (event_data.get("sender_email") or extract_email(raw) or "").lower().strip()
+            # a mail app's item names its real sender (#159): "" when the From line is unclear, never the display name
+            real = event_data.get("sender_email")
+            real = extract_email(raw) if real is None else real
+            value: Any = str(real or "").lower().strip()
             text_value: Any = f"{raw} {value}".strip()
         else:
             value = _lookup(event_data, field)

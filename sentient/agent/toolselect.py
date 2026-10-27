@@ -31,6 +31,8 @@ import math
 import re
 from typing import Any
 
+from sentient.tools.rules import brings_untrusted
+
 log = logging.getLogger(__name__)
 
 ALWAYS_TOOLS = (
@@ -43,6 +45,9 @@ ALWAYS_TOOLS = (
 # Offered on every turn too, but only while their app is visible: folder_search exists once the user added folders
 # (#176), and their notes may answer anything.
 ALWAYS_WHEN_AVAILABLE = ("folder_search",)
+# Offered with any tool that reads outside content (email, the web, messages): the tool-less reader that returns only
+# the fields asked for (#144, ADR 0031).
+READER_TOOL = "read_with_reader"
 LOCAL_PREFIXES = ("ollama", "ollama_chat", "lm_studio", "llamafile", "vllm", "hosted_vllm")
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = {
@@ -325,4 +330,9 @@ class ToolSelector:
                 if n and reserve + n <= room - keep:
                     reserve += n
             chosen.extend(_best_tools(tools, scored, room - reserve))
+        if READER_TOOL in visible_names and READER_TOOL not in chosen and any(
+            (t := registry.get(n)) is not None and brings_untrusted(t)
+            for n in chosen if n not in ALWAYS_TOOLS and n not in ALWAYS_WHEN_AVAILABLE
+        ):
+            chosen.append(READER_TOOL)
         return chosen

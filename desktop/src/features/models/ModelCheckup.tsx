@@ -146,7 +146,12 @@ function RoleRow({ row, running, onUseModel }: { row: CheckupRow; running: boole
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-2">
             <span className="text-sm font-medium text-fg">{meta.label}</span>
-            {row.model && <span className="truncate font-mono text-2xs text-fg-subtle">{modelShortName(row.model)}</span>}
+            {row.model && (
+              <span className="truncate font-mono text-2xs text-fg-subtle">
+                {modelShortName(row.model)}
+                {r?.inherits ? ` (uses ${ROLE_META[r.inherits].label.toLowerCase()})` : ''}
+              </span>
+            )}
           </div>
           <div className={cn('text-xs', r && r.status !== 'skip' ? STATUS[r.status].className : 'text-fg-subtle')}>{summary}</div>
         </div>

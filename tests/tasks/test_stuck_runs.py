@@ -165,12 +165,26 @@ async def test_a_slow_model_that_keeps_thinking_and_writing_is_never_stuck(make_
     assert results and results[0]["result"] == "found a table at 8pm"  # the slow tool finished, it wasn't cut off
 
 
-async def test_a_silent_model_gets_stuck_and_cancel_ends_the_run(make_app, config):
-    config.tasks.stuck_after_minutes = 0.01
-    llm = GatedProvider(block_on_call=1)
+class SilentProvider(GatedProvider):
+    """A model that is asked and then says nothing for longer than the no-activity limit."""
+
+    def __init__(self, clock: SkipClock, *args, **kwargs):
+        super().__init__(*args, block_on_call=1, **kwargs)
+        self.clock = clock
+
+    async def stream(self, role, messages, tools=None, *, model=None):
+        # the limit passes only once the model was asked, so a slow start of the run can't time out first (#438)
+        await self.clock.sleep(STALL_MINUTES * 60 + 1)
+        async for chunk in super().stream(role, messages, tools, model=model):
+            yield chunk
+
+
+async def test_a_silent_model_gets_stuck_and_cancel_ends_the_run(make_app, config, skip_clock):
+    config.tasks.stuck_after_minutes = STALL_MINUTES
+    llm = SilentProvider(skip_clock)
     app = await make_app(llm)
     task_id = await start_task(app)
-    run_id = await stuck_run(app, task_id, "the AI model hasn't answered for 0.01 minutes")
+    run_id = await stuck_run(app, task_id, "the AI model hasn't answered for 0.5 minutes")
 
     task = await answer(app, task_id, run_id, "cancel")
     run = task["runs"][-1]

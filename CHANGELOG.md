@@ -5,10 +5,60 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+New entries wait in [`changes/`](changes/), one file per change, and are added here when a version is
+released.
+
+<!-- towncrier release notes start -->
+
+## [3.0.0-beta.1] - 2026-10-17
+
 ### Added
-- **Skills say what they need, return and ask before doing.** New skills now use the same six-part template whether
-  you write them or Sentient learns them: when to use the skill, its inputs and access, the procedure, how to verify
-  it, what to return, and which steps need approval. Older skills keep working as written (#186).
+- **Disconnecting can also mean forgetting.** When you disconnect Gmail, IMAP, Home Assistant or another app, remove an
+  MCP server, a device or a folder of notes, or disconnect Telegram, Discord or WhatsApp, you can tick "Also forget what
+  Sentient learned from it". The dialog says how much that is first, then the memories, chats, summaries, saved emails
+  and app results that came from it are deleted, and Activity notes it. A memory you also shared somewhere else stays.
+  Leave the box clear and Sentient keeps what it learned (#153).
+- **Skills can say how to check they work.** A skill can list a file that must exist or a few lines of Python with the
+  output they should print. Sentient checks a skill it drafted for itself before it shows it to you, and doesn't
+  propose one that fails. A check that runs code waits until you approve the skill (the button says "Approve and run
+  check"), then runs in the code sandbox without your keys, and the skill is only saved if it passes. The Skills
+  screen shows each check and how it went (#386).
+- **Home Assistant devices are checked after Sentient changes them.** A moment after it turns on a light, locks a
+  door, opens the blinds, arms the alarm or sets the thermostat, Sentient asks Home Assistant for the device's state
+  again, for a few seconds, and only calls it done when the device really changed. If it didn't, you see it plainly
+  ("Hallway light still reports off."), in chat, in quick commands and in task runs, and never a success. You can
+  change how long it waits in Settings (#386).
+- **Folders and chat apps follow your memory places too.** In Settings, Folders, each folder or Obsidian vault now has
+  a **Used in** choice: every chat (as before, and what your folders already have), Personal, Work or a project. A
+  folder kept for Work only comes up in work chats, so a personal chat never brings up your work notes unless you ask.
+  In Telegram, Discord and WhatsApp, send `/scope work`, `/scope personal` or `/scope` followed by a project's name to
+  pick which memories that chat uses, or `/scope` to see which it uses now. On the Memory page, where a memory is
+  kept now reads "Used in Work" next to its source, so it no longer looks like a topic such as "Work & Learning".
+- **Say "stop" or "snooze" to a ringing alarm.** While a Sentient alarm rings, typing or saying "stop", "stop the
+  alarm", "turn it off", "snooze" or "snooze for 5 minutes" in a chat, by voice or in Telegram, Discord or WhatsApp
+  stops or snoozes it at once, with no model ("Alarm stopped.", "Snoozed until 7:39 AM."). A snooze is 9 minutes
+  unless you say how long or change "Snooze length" in Settings. The banner has a Snooze button too, and after a
+  snooze it shows until when, with Turn off. When no alarm is ringing, these words go to the assistant as before, so
+  "turn off the alarm" can still mean your house alarm (#390).
+- **Sentient in group chats, safely.** You can now pair a Telegram group or a Discord server channel with the same
+  `/pair` code. Sentient answers only you there, when you mention it, reply to it or send a command. What other people
+  write is treated like an email from a stranger: Sentient can read it, but never takes orders from it, and after
+  someone else writes, anything it would send checks with you first, naming who wrote it ("That address came from
+  another group member (Ravi), not from you."). Only you can press its buttons, and task results stay out of a group
+  unless you turn them on.
+- **Trust a chat again after you've checked it.** A chat that read an email, a web page or a group member's message
+  shows a bar saying so above the message box. If you've looked at it and it's fine, click **I've checked it** (or
+  send `/trust`, then `/trust yes`, in Telegram, Discord or WhatsApp) and sending from that chat follows your usual approval settings
+  again. It covers only what you've seen: if someone writes while you decide, the chat keeps asking and says who
+  wrote. It's noted in the chat and in Activity, and anything new from outside makes it ask again.
+- **Keep work, personal and project memories apart.** Each memory is now kept for Personal, Work, a project you name,
+  or every chat (for things like your name or how you like answers). Pick a chat's memories from the button at the
+  top of the chat, or before you start one. A work chat then uses your work memories and the ones for every chat,
+  and leaves out your personal memories (like family or health) unless you ask about them; what Sentient learns
+  there is kept for work too. How you like things done (your answer style and other preferences it has picked up)
+  still applies in every chat. Tasks a chat creates keep its memories, and each messaging app can be set to one in
+  Settings. On the Memory page you can show one place at a time, move a memory to another place, and forget
+  everything kept for one place without touching the rest. Everything you had before is in Personal.
 - **Sentient checks what really happened, not what the model says happened.** After it writes a file, sends an
   email or a message, creates a calendar event or runs a Home Assistant action, Sentient checks the result itself: the app said it worked, and
   where it can, it reads it back (the file holds what was written, the email is in your Gmail Sent folder, the event
@@ -401,11 +451,33 @@ and versions follow [Semantic Versioning](https://semver.org/).
   skip. Nothing catches up while Stop everything is on; it happens when you resume.
 
 ### Changed
+- Database changes are now numbered files in `sentient/store/migrations/`, and the schema version is the highest of them, so two changes can no longer silently take the same version. The database moves to version 13, so the first start after updating takes a snapshot first, as with any database update. (#424)
 - **Incognito chats leave nothing behind:** when an incognito chat is deleted, the long results it saved
   while reading pages or files go with it. Files you asked it to write and tasks it created stay.
 - A task that repeats the same failing step three times now pauses as stuck and asks what to do, instead of failing.
 
 ### Fixed
+- **Pausing a task stops it now.** Before, pausing a task while it was working only stopped its next runs, and the
+  run already going carried on and could finish while the task showed Paused. Now the run stops before its next step
+  (a step already in progress finishes first, so nothing is cut off halfway), shows "Paused before it finished.
+  Resume the task to continue.", and Resume carries it on from where it stopped without redoing earlier steps. An
+  approval it was waiting on is withdrawn and asked again on Resume. A task whose agents work side by side, and a
+  one-step action that already started, can't be stopped part-way: the task page says so, and they finish (#408).
+- **Approval cards name browser clicks the way the engine sees them.** A browser tool's label reads the clicked
+  element, so clicking an ordinary button reads as a click and "Send feedback" reads as sending, while clicking
+  "Place order" still reads as a purchase.
+- **A paused task stays paused when Sentient restarts.** Before, a task you paused while it was working carried on
+  by itself the next time Sentient started, and one still being planned was planned. Now it waits: the task shows
+  "Paused before it finished. Resume the task to continue.", and nothing runs for it. An approval it was waiting on
+  is withdrawn the same way. When you resume the task, it carries on from where it stopped instead of starting
+  over, and asks for the approval again if it still needs it (#304).
+- **Approval cards no longer show Sentient's notes to itself.** When the browser (or another built-in app) asked
+  before clicking, the card's small print showed the instructions written for the model, cut off mid-word ("browser:
+  Click the element with this ref ..."). It now shows a short plain label when there is one, like "Purchase" or
+  "Unlocks a door", and otherwise the card's own line (#398).
+- **A page watch always checks the page.** "Track this page and tell me when a new event is added" could be set to
+  start only when something arrived in your calendar or smart home, so it never looked at the page. A check that reads
+  a page, a search or the news now runs on a timer: every hour, or as often as you asked (#389).
 - **Changing a rule while an email waits to go out now counts.** If you set an app or tool to **Ask** while one of
   its emails or messages waits the few seconds before it is sent, Sentient asks you before it goes out instead of
   sending it under the old rule. The same goes for **Only if I asked**, unless your message asked for that email.
@@ -413,6 +485,11 @@ and versions follow [Semantic Versioning](https://semver.org/).
   tell you when something happens, the plan no longer reports on every check, and its check no longer looks at only
   the page's heading or first line (so an event added at the bottom is noticed). If the plan does either, the planner
   is told why in plain words and writes it again. Asking for "a report every hour" or "the headline" still works.
+- **A free "Subscribe" button no longer reads as a purchase.** When Sentient asks before clicking a newsletter,
+  follow or "notify me" button with no price nearby, the card now says it wants to sign you up, instead of "Make a
+  purchase" with "Yes, buy it". It still asks under your usual rules. A button with a price, a plan, a trial, an
+  upgrade or "/month" on it or next to it, or a plain "Subscribe" with nothing saying it is free, still reads as a
+  purchase and always asks.
 - **Telling Sentient something changed updates the memory.** After "Mira starts school in June", saying "Mira's
   school now starts in July" replaces June with July instead of being ignored as something Sentient already knew. The
   same goes for a new place ("Ravi moved from Pune to Delhi"), a new number or a new name. Things that are only about
@@ -599,5 +676,6 @@ Sentient v3: a rewrite as a desktop app that runs on your own computer. No accou
 
 The cloud web app. Its history is on the [`v2` branch](https://github.com/existence-master/Sentient/tree/v2).
 
-[Unreleased]: https://github.com/existence-master/Sentient/compare/v2-final...main
+[Unreleased]: https://github.com/existence-master/Sentient/compare/v3.0.0-beta.1...main
+[3.0.0-beta.1]: https://github.com/existence-master/Sentient/releases/tag/v3.0.0-beta.1
 [3.0.0-alpha.0]: https://github.com/existence-master/Sentient/tree/main

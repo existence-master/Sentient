@@ -5,7 +5,9 @@
 
 Capabilities: ``display.text``, ``display.card``, ``notify.show`` (printed), ``speak`` (pyttsx3 when
 available, else printed), ``camera.photo`` (OpenCV webcam, with ``--camera``), ``button.events``
-(press Enter) and ``battery`` (simulated). The token is stored in ``~/.sentient-node/<name>.json``.
+(press Enter) and ``battery`` (simulated). ``--camera-off`` simulates the glasses' camera-off mode (#170): the
+camera is switched off on the device, photos are refused here and Sentient is told so; type ``c`` to switch it.
+The token is stored in ``~/.sentient-node/<name>.json``.
 Self-signed LAN certificates are accepted only when their SHA-256 fingerprint matches the one
 Sentient shows at pairing (remembered afterwards), or with ``--insecure`` for development.
 """
@@ -80,6 +82,7 @@ class ReferenceNode:
         name: str = "Reference node",
         kind: str = "glasses",
         camera: int | None = None,
+        camera_off: bool = False,
         fingerprint: str | None = None,
         insecure: bool = False,
         speech: bool = True,
@@ -92,6 +95,7 @@ class ReferenceNode:
         self.name = name
         self.kind = kind
         self.camera = camera
+        self.camera_off = camera_off  # switched off on the device: only the device (here, typing c) ends it
         self.fingerprint = normalize_fingerprint(fingerprint) if fingerprint else None
         self.insecure = insecure
         self.speech = speech
@@ -106,6 +110,7 @@ class ReferenceNode:
         self._send_lock = asyncio.Lock()
         self._lines: asyncio.Queue[str] | None = None
         self._answers: set[asyncio.Task] = set()
+        self._photo_stops = 0  # stop_sensor camera count: a photo asked for before the latest one is dropped
         self.saved: dict[str, Any] = self._load()
 
     # ------------------------------------------------------------------ state file
@@ -126,9 +131,15 @@ class ReferenceNode:
     @property
     def capabilities(self) -> list[str]:
         caps = ["display.text", "display.card", "notify.show", "speak", "button.events", "battery"]
-        if self.camera is not None:
+        if self.camera is not None or self.camera_off:
             caps.append("camera.photo")
         return caps
+
+    def device_state(self) -> dict[str, Any]:
+        state: dict[str, Any] = {"battery": round(self.battery), "charging": self.charging}
+        if "camera.photo" in self.capabilities:
+            state["camera_off"] = self.camera_off
+        return state
 
     def hello(self) -> dict:
         msg: dict[str, Any] = {
@@ -139,7 +150,7 @@ class ReferenceNode:
             "platform": f"{platform.system()} (reference node)",
             "app_version": __version__,
             "capabilities": self.capabilities,
-            "state": {"battery": round(self.battery), "charging": self.charging},
+            "state": self.device_state(),
         }
         token = self.saved.get("token") if self.saved.get("url") in (None, self.url) else None
         if token:
@@ -156,6 +167,10 @@ class ReferenceNode:
             if cap not in self.capabilities:
                 return {"type": "result", "id": call_id, "ok": False,
                         "error": {"code": "unsupported", "message": f"{self.name} cannot do {cap}."}}  # fmt: skip
+            if cap == "camera.photo" and self.camera_off:  # the device refuses too, whatever the engine sends
+                self.out("[camera] refused: camera-off mode is on")
+                return {"type": "result", "id": call_id, "ok": False,
+                        "error": {"code": "camera_off", "message": "The camera is switched off on the device."}}  # fmt: skip
             data = await self._run(cap, params)
             return {"type": "result", "id": call_id, "ok": True, "data": data}
         except Exception as exc:
@@ -181,6 +196,8 @@ class ReferenceNode:
         if cap == "battery":
             return {"battery": round(self.battery), "charging": self.charging}
         if cap == "camera.photo":
+            if self.camera is None:
+                raise RuntimeError("This device has no webcam to use (start it with --camera N).")
             self.out("[camera] taking a photo...")
             return await asyncio.to_thread(self._photo, params)
         return {}
@@ -292,6 +309,12 @@ class ReferenceNode:
             if line.lower() in {"q", "quit", "exit"}:
                 await ws.close()
                 raise NodeFatal("Bye.")
+            if line.lower() == "c":
+                self.camera_off = not self.camera_off
+                await self._send(ws, {"type": "hello", "capabilities": self.capabilities})
+                await self._send(ws, {"type": "state", **self.device_state(), "camera_off": self.camera_off})
+                self.out(f"[camera] camera-off mode {'on' if self.camera_off else 'off'}")
+                continue
             if line.lower().startswith("b "):
                 with contextlib.suppress(ValueError):
                     self.battery = float(line.split()[1])
@@ -351,12 +374,17 @@ class ReferenceNode:
                     msg = json.loads(raw)
                     kind = msg.get("type")
                     if kind == "invoke":
-                        answer = asyncio.create_task(self._answer(ws, msg))
+                        # the stop count when the request arrived: a stop that comes before the task runs counts too
+                        answer = asyncio.create_task(self._answer(ws, msg, self._photo_stops))
                         self._answers.add(answer)
                         answer.add_done_callback(self._answers.discard)
                     elif kind == "error":
                         self._on_auth_error(msg)
                         self.out(f"[error] {msg.get('message')}")
+                    elif kind == "stop_sensor":
+                        self.out(f"[sentient] asked to turn off the {msg.get('sensor')}")
+                        if msg.get("sensor") == "camera":
+                            self._photo_stops += 1  # photos asked for before now are dropped, never sent
             finally:
                 for t in helpers:
                     t.cancel()
@@ -366,10 +394,30 @@ class ReferenceNode:
                     if t.done() and not t.cancelled() and isinstance(t.exception(), NodeFatal):
                         raise t.exception()  # type: ignore[misc]
 
-    async def _answer(self, ws: Any, msg: dict) -> None:
-        result = await self.handle_invoke(msg)
-        with contextlib.suppress(Exception):
-            await self._send(ws, result)
+    async def _answer(self, ws: Any, msg: dict, stops: int | None = None) -> None:
+        photo = msg.get("capability") == "camera.photo" and self.camera is not None and not self.camera_off
+        stops = self._photo_stops if stops is None else stops
+        if photo and self._photo_stops != stops:  # turned off in Sentient before the photo started: never taken
+            self.out("[camera] photo not taken: turned off in Sentient")
+            with contextlib.suppress(Exception):
+                await self._send(ws, {"type": "result", "id": msg.get("id"), "ok": False,
+                                      "error": {"code": "stopped", "message": "The camera was turned off in Sentient."}})  # fmt: skip
+            return
+        if photo:  # tell Sentient the camera is on while the photo is taken (#170)
+            with contextlib.suppress(Exception):
+                await self._send(ws, {"type": "state", "camera": True, "camera_for": "Taking a photo"})
+        try:
+            result = await self.handle_invoke(msg)
+            if photo and self._photo_stops != stops:  # turned off in Sentient meanwhile: drop the photo
+                self.out("[camera] photo dropped: turned off in Sentient")
+                result = {"type": "result", "id": msg.get("id"), "ok": False,
+                          "error": {"code": "stopped", "message": "The camera was turned off in Sentient."}}  # fmt: skip
+            with contextlib.suppress(Exception):
+                await self._send(ws, result)
+        finally:
+            if photo:
+                with contextlib.suppress(Exception):
+                    await self._send(ws, {"type": "state", "camera": False})
 
     def _on_auth_error(self, msg: dict) -> None:
         code = msg.get("code")
@@ -412,13 +460,15 @@ def main(
     fingerprint: str | None = None,
     insecure: bool = False,
     speech: bool = True,
+    camera_off: bool = False,
 ) -> None:
     if url.startswith("sentient://"):
         url, link_code, link_fp = parse_pair_link(url)
         code = code or link_code
         fingerprint = fingerprint or link_fp
     node = ReferenceNode(
-        url, code=code, name=name, kind=kind, camera=camera, fingerprint=fingerprint, insecure=insecure, speech=speech
+        url, code=code, name=name, kind=kind, camera=camera, fingerprint=fingerprint, insecure=insecure, speech=speech,
+        camera_off=camera_off,
     )
     try:
         rc = asyncio.run(node.run())

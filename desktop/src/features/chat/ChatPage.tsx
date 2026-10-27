@@ -1,4 +1,5 @@
 import { IconArrowDown, IconFileUpload, IconMessageOff, IconSpy, IconWorldWww } from '@tabler/icons-react'
+import { ChatNote, OtherMessage, OutsideContentBar } from './OutsideContent'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router'
@@ -7,7 +8,7 @@ import { Button, EmptyState, IconButton, Skeleton } from '@/components/ui'
 import { useBrowserView } from '@/features/browser/state'
 import { ChannelBadge } from '@/features/channels/meta'
 import { HelpersTray } from './HelpersTray'
-import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions, useSetChatModel } from '@/hooks/core'
+import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions, useSetChatModel, useSetChatScope } from '@/hooks/core'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage, isApiError } from '@/lib/api'
 import { foldTranscript, type AttachmentView, type TimelineItem } from '@/lib/chatFold'
@@ -17,6 +18,8 @@ import type { ApprovalDecision, Session } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { liveItems, useChat } from '@/stores/chat'
 import { AssistantTurn } from './AssistantTurn'
+import { scopeLabel } from '@/features/memory/bits'
+import { ChatScopeMenu } from './ChatScopeMenu'
 import { Composer } from './Composer'
 import { useMemorySaveToasts } from './memoryToasts'
 import { RuleProposalCard } from './RuleProposalCard'
@@ -109,6 +112,28 @@ function ChatView({
     [sessionId, setModel]
   )
 
+  // The memories this chat uses (#155). A new chat keeps the pick here until its first message creates it.
+  const [newChatScope, setNewChatScope] = useState<string>('personal')
+  const setScope = useSetChatScope()
+  const chatScope = sessionId ? ((session?.memory_scope as string | undefined) ?? 'personal') : newChatScope
+  const onChatScopeChange = useCallback(
+    (scope: string) => {
+      if (!sessionId) {
+        setNewChatScope(scope)
+        return
+      }
+      setScope.mutate(
+        { id: sessionId, scope },
+        {
+          onSuccess: () => toast.success(`This chat now uses your ${scopeLabel(scope)} memories`),
+          onError: (e) => toast.error("Couldn't change this chat's memories", { description: errorMessage(e) })
+        }
+      )
+    },
+    [sessionId, setScope]
+  )
+  const newChatOwnScope = newChatScope !== 'personal' ? newChatScope : null
+
   // A brand-new chat navigates to its session once the engine assigns an id.
   useEffect(() => {
     if (!sessionId && resolvedId) navigate(`/chat/${resolvedId}`, { replace: true })
@@ -120,18 +145,39 @@ function ChatView({
     return [...history, ...liveItems(liveSession)]
   }, [messages.data, liveSession])
 
+  // ?message=<id> (a memory's source, #152): scroll to that message once it is on screen, and mark it a moment
+  const focusId = new URLSearchParams(useLocation().search).get("message")
+  const loadedAll = !messages.isFetching
+  const focused = useRef<string | null>(null) // done once per link, not again when the chat refetches
+  useEffect(() => {
+    if (!focusId || items.length === 0 || !loadedAll || focused.current === focusId) return
+    const t = window.setTimeout(() => {
+      focused.current = focusId
+      const el = document.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(focusId)}"]`)
+      if (!el) {
+        // this view shows a chat's newest 500 messages: say so rather than leave the user guessing
+        if (!(messages.data ?? []).some((m) => m.id === focusId)) toast.info('That message is further back in this chat than Sentient shows here.')
+        return
+      }
+      el.scrollIntoView({ block: 'center' })
+      el.classList.add('ring-2', 'ring-accent/60')
+      window.setTimeout(() => el.classList.remove('ring-2', 'ring-accent/60'), 2400)
+    }, 350)
+    return () => window.clearTimeout(t)
+  }, [focusId, items.length, loadedAll])
+
   const streaming = !!liveSession?.streaming
   const lastAssistantIndex = items.map((i) => i.kind).lastIndexOf('assistant')
 
   const onSend = useCallback(
     async (text: string, files: AttachmentView[]) => {
-      if (!sessionId && newChatModel) {
-        // a new chat with its own model: create it first so even its first reply uses that model (#312)
+      if (!sessionId && (newChatModel || newChatOwnScope)) {
+        // a new chat with its own model (#312) or memories (#155): create it first so even its first reply uses them
         if (creating) return
         let id: string
         setCreating(true) // until this view moves to the new chat, so a second message can't start another one
         try {
-          id = (await api.sessions.create({ incognito: newIncognito, model: newChatModel })).session_id
+          id = (await api.sessions.create({ incognito: newIncognito, model: newChatModel, memory_scope: newChatOwnScope })).session_id
         } catch (err) {
           setCreating(false)
           setInject({ text, nonce: Date.now() }) // the message box was cleared: put the text back
@@ -140,7 +186,16 @@ function ChatView({
         }
         useChat.getState().adopt(id, { incognito: newIncognito })
         const now = new Date().toISOString()
-        const row: Session = { id, title: null, channel: 'desktop', created_at: now, updated_at: now, incognito: newIncognito, model: newChatModel }
+        const row: Session = {
+          id,
+          title: null,
+          channel: 'desktop',
+          created_at: now,
+          updated_at: now,
+          incognito: newIncognito,
+          model: newChatModel,
+          memory_scope: newChatScope
+        }
         queryClient.setQueryData<Session[]>(qk.sessions, (old) => [row, ...(old ?? []).filter((s) => s.id !== id)])
         await send(id, { text, attachments: files })
         navigate(`/chat/${id}`, { replace: true })
@@ -149,7 +204,7 @@ function ChatView({
       const key = await send(sessionId ?? null, { text, attachments: files, incognito: !sessionId && newIncognito })
       if (!sessionId) setPendingKey(key)
     },
-    [send, sessionId, newIncognito, newChatModel, navigate, creating]
+    [send, sessionId, newIncognito, newChatModel, newChatOwnScope, newChatScope, navigate, creating]
   )
 
   const onPick = (s: Pick<Suggestion, 'prompt' | 'autoSend'>) => {
@@ -224,6 +279,7 @@ function ChatView({
           {incognito ? <IncognitoBadge /> : <ChannelBadge channel={session?.channel} withLabel />}
           <span className="flex-1" />
           {streaming && <span className="text-xs text-fg-subtle">{assistantName} is replying…</span>}
+          {sessionId && <ChatScopeMenu value={chatScope} onChange={onChatScopeChange} />}
           <HelpersTray sessionId={sessionId} />
           <IconButton size="sm" label="Browser live view" icon={<IconWorldWww size={16} />} onClick={toggleBrowser} active={browserOpen} />
         </div>
@@ -238,6 +294,10 @@ function ChatView({
               <EmptyChat userName={bootstrap.data?.assistant.user_name} onPick={onPick} />
             )}
             <div className="mt-8">
+              <div className="mb-1.5 flex items-center justify-end gap-1.5 text-xs text-fg-subtle">
+                <span>Memories</span>
+                <ChatScopeMenu value={newChatScope} onChange={onChatScopeChange} />
+              </div>
               <Composer
                 draftKey="new"
                 assistantName={assistantName}
@@ -271,7 +331,11 @@ function ChatView({
         <>
           <Timeline items={items} streaming={streaming} loading={loadingHistory}>
             {items.map((item, i) =>
-              item.kind === 'user' ? (
+              item.kind === 'other' ? (
+                <OtherMessage key={item.id} message={item} />
+              ) : item.kind === 'note' ? (
+                <ChatNote key={item.id} note={item} />
+              ) : item.kind === 'user' ? (
                 <UserMessage key={item.id} message={item} onRestore={(text) => setInject({ text, nonce: Date.now() })} />
               ) : (
                 <AssistantTurn
@@ -293,6 +357,9 @@ function ChatView({
           </Timeline>
           <div className="shrink-0 px-6 pb-4 pt-2">
             <div className="mx-auto w-full max-w-[760px]">
+              {sessionId && session?.untrusted ? (
+                <OutsideContentBar sessionId={sessionId} source={session.untrusted} lastSeenId={messages.data?.[messages.data.length - 1]?.id ?? null} />
+              ) : null}
               {incognito && (
                 <p className="mb-2 flex items-center justify-center gap-1.5 text-xs text-fg-subtle">
                   <IconSpy size={13} className="text-incognito" aria-hidden />
@@ -351,8 +418,9 @@ function Timeline({ items, streaming, loading, children }: { items: TimelineItem
     el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
   }, [])
 
-  // `?at=top` keeps the first message in view (deep links from search, screenshots).
-  const atTop = useRef(/(^|[?&])at=top\b/.test(useLocation().search))
+  // `?at=top` keeps the first message in view (deep links from search, screenshots); `?message=` (a memory's source,
+  // #152) doesn't jump to the bottom either, so the page can scroll to that message.
+  const atTop = useRef(/(^|[?&])(at=top\b|message=)/.test(useLocation().search))
   if (atTop.current) stick.current = false
 
   useLayoutEffect(() => {

@@ -18,7 +18,7 @@ const SOURCE_OPTIONS = [
   { value: 'all', label: 'Any source' },
   ...(Object.keys(SOURCE_META) as TaskSource[]).map((s) => {
     const I = SOURCE_META[s].icon
-    return { value: s, label: s === 'you' ? 'Created by you' : s === 'chat' ? 'From chat' : 'Proactive', icon: <I size={14} /> }
+    return { value: s, label: s === 'you' ? 'Created by you' : s === 'chat' ? 'From chat' : s === 'email' ? 'From email' : 'Proactive', icon: <I size={14} /> }
   })
 ]
 

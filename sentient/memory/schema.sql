@@ -64,3 +64,42 @@ CREATE TABLE IF NOT EXISTS memory_import_seen (
     imported_at TEXT NOT NULL,
     PRIMARY KEY (app, item)
 );
+
+-- Every other place a fact came from (#153). A fact's own ``facts.source`` is its first source; a fact learned again
+-- somewhere else (a duplicate skipped, an update, a merge) gets that place here, so forgetting one source keeps a fact
+-- another source still backs. Sources: conversation | manual | file:<name> | channel:<id> | device:<node id> |
+-- app:<plugin id> | folder:<folder id> | ...
+CREATE TABLE IF NOT EXISTS fact_sources (
+    fact_id    INTEGER NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    source     TEXT NOT NULL,
+    linked_at  TEXT NOT NULL,
+    merged_from INTEGER,                  -- the fact whose merge brought this link (#353): undoing that merge removes it
+    ref        TEXT,                      -- JSON: exactly where this source said it (#152), as facts.source_ref
+    PRIMARY KEY (fact_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_fact_sources_source ON fact_sources(source);
+
+-- "Also forget what Sentient learned from it" (#153): one row per source forgotten when it was disconnected, for the
+-- Activity timeline. ``counts`` is JSON {memories, shared, chats, messages, summaries, items, results}.
+CREATE TABLE IF NOT EXISTS memory_forgets (
+    id         TEXT PRIMARY KEY,
+    source     TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    counts     TEXT NOT NULL,
+    at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_forgets_at ON memory_forgets(at);
+
+-- Cleanup an erase could not finish (#462): the memory row is gone but one derived step failed once (a locked
+-- file, a transient database error). One row per unfinished erase, replayed by memory upkeep until it succeeds.
+-- ``payload`` is JSON {ids, texts, refs} exactly as erase() computed them.
+CREATE TABLE IF NOT EXISTS pending_erase (
+    id      INTEGER PRIMARY KEY,
+    fact_id INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    at      TEXT NOT NULL,
+    -- 0 until the memory row itself is confirmed gone: upkeep only replays
+    -- completed erases, so a concurrent drain can never strip a live memory's
+    -- derived data while its delete is still running (#462).
+    complete INTEGER NOT NULL DEFAULT 0
+);

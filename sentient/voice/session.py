@@ -32,6 +32,7 @@ import asyncio
 import contextlib
 import logging
 import re
+import secrets
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -49,8 +50,11 @@ log = logging.getLogger(__name__)
 
 SendJSON = Callable[[dict[str, Any]], Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
+Abort = Callable[[], Awaitable[None]]
 
 BARGE_IN_MS = 300  # sustained voiced audio needed to cut the assistant off
+# The microphone counts as live (#170) from the first audio frame until this long without one, end_utterance or close
+MIC_IDLE_S = 1.5
 STATES = ("idle", "standby", "listening", "transcribing", "thinking", "speaking")
 SPOKEN_CHANNELS = ("voice", "glasses", "phone")
 # Channel name handed to Agent.run_turn: it picks the voice role for "voice" and "glasses".
@@ -88,6 +92,7 @@ class VoiceSession:
         send_bytes: SendBytes,
         *,
         node: dict[str, Any] | None = None,
+        abort: Abort | None = None,
     ):
         self.service = service
         self.app = service.app
@@ -95,6 +100,11 @@ class VoiceSession:
         self._send_bytes = send_bytes
         self._send_lock = asyncio.Lock()
         self.node = node  # set when a device authenticated with node_token
+        self._abort = abort  # closes the socket (the mic indicator's Turn off, #170)
+        self.mic_use_id = f"voice:{secrets.token_hex(6)}"
+        self._mic_live = False
+        self._mic_last = 0.0
+        self._mic_watch: asyncio.Task | None = None
         self.session_id: str | None = None
         self.sample_rate = 16000
         self.channel = "voice"
@@ -167,9 +177,12 @@ class VoiceSession:
     async def set_state(self, state: str) -> None:
         if state == self.state or self.closed:  # a closed session's leftover turn must not flip idle back
             return
+        was_standby = self.state == "standby"
         self.state = state
         await self.send({"type": "state", "state": state, "session_id": self.session_id})
         self.service.publish_state(self.session_id, state)
+        if self._mic_live and was_standby != (state == "standby"):
+            self.service.mic_on(self)  # listening for the wake word <-> talking: what the mic is for changed
         if self.mode == "wake":
             if state == "listening":
                 self._arm_follow_up()
@@ -254,7 +267,8 @@ class VoiceSession:
         if sid and await store.get_session(str(sid)) is None:
             await self.send({"type": "error", "message": f"unknown session {sid}; starting a new one", "recoverable": True})
             sid = None
-        self.session_id = str(sid) if sid else await store.create_session(channel=self.channel)
+        node_id = str((self.node or {}).get("node_id") or "") or None  # a device's chats can be forgotten with it (#153)
+        self.session_id = str(sid) if sid else await store.create_session(channel=self.channel, node_id=node_id)
         self.vad = self.service.make_vad(rate)
         ready: dict[str, Any] = {
             "type": "ready",
@@ -306,8 +320,9 @@ class VoiceSession:
         return False
 
     async def handle_audio(self, pcm16: bytes) -> None:
-        if not await self._require_started():
+        if self.closed or not await self._require_started():
             return
+        self._mic_heard()
         assert self.vad is not None
         events = self.vad.feed(pcm16)
         if self.state == "standby":
@@ -330,6 +345,7 @@ class VoiceSession:
         if not await self._require_started():
             return
         assert self.vad is not None
+        self._mic_quiet()  # push to talk released: the device stops sending audio
         ev = self.vad.flush()
         if ev is None:
             if self.state != "standby" and (self._turn is None or self._turn.done()):
@@ -691,6 +707,7 @@ class VoiceSession:
 
     # ------------------------------------------------------------------ shutdown
     async def close(self, *, cancel_turn: bool = True) -> None:
+        self._mic_quiet()
         if self.closed:
             return
         if cancel_turn:
@@ -706,3 +723,49 @@ class VoiceSession:
         await self.set_state("idle")
         self._close_wake()
         self.closed = True
+
+    # ------------------------------------------------------------------ the microphone indicator (#170)
+    def _mic_heard(self) -> None:
+        """An audio frame arrived, so the client's microphone is live."""
+        self._mic_last = time.monotonic()
+        if self._mic_live:
+            return
+        self._mic_live = True
+        self.service.mic_on(self)
+        self._mic_watch = asyncio.get_running_loop().create_task(self._mic_idle(), name=f"voice-mic:{self.session_id}")
+        self.service.track(self._mic_watch)
+
+    async def _mic_idle(self) -> None:
+        while True:
+            wait = self._mic_last + MIC_IDLE_S - time.monotonic()
+            if wait <= 0:
+                break
+            await asyncio.sleep(wait)
+        self._mic_watch = None
+        self._mic_quiet()
+
+    def _mic_quiet(self) -> None:
+        """No more audio: the microphone is off (or no longer heard by Sentient)."""
+        watch, self._mic_watch = self._mic_watch, None
+        if watch is not None and not watch.done() and watch is not asyncio.current_task():
+            watch.cancel()
+        if self._mic_live:
+            self._mic_live = False
+            self.service.mic_off(self)
+
+    @property
+    def mic_live(self) -> bool:
+        return self._mic_live
+
+    async def stop_mic(self) -> bool:
+        """Turn off from the indicator: tell the client, end the session and close its socket. The reply in
+        progress still finishes and is saved, as when a socket drops."""
+        await self.send({"type": "error", "code": "mic_stopped", "recoverable": False,
+                         "message": "The microphone was turned off in Sentient.", "session_id": self.session_id})  # fmt: skip
+        await self.service.close_session(self, cancel_turn=False)
+        if self._abort is not None:
+            try:
+                await self._abort()
+            except Exception as exc:
+                log.debug("voice socket close failed: %s", exc)
+        return True

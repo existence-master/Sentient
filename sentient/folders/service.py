@@ -20,6 +20,11 @@ embedding model can't be used, keyword search still works and the pieces are emb
 (ADR 0018). A note that is a web page clipped into the vault (a source link in its front matter, a clippings tag
 or a Clippings folder) was written by someone else: with ``folders.clippings_are_outside`` (default on) a result
 that includes one carries ``outside_content`` first, and the agent loop treats it like a web page (ADR 0025).
+
+**Scopes (#392).** A folder has a memory scope like a memory (``sentient.memory.scopes``): ``always`` (the default, and
+what folders added before scopes got), ``personal``, ``work`` or a project. Its notes come up only in runs of a
+matching scope (that scope plus ``always``): note pieces in a chat's prompt, ``folder_search`` and ``folder_read``.
+Work not tied to a chat or task searches every folder, and ``everywhere=true`` does too when the user asks.
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ from typing import Any
 from sentient import paths
 from sentient.folders import notes as notes_mod
 from sentient.folders.scan import MARKDOWN, Ignore, is_obsidian, obsidian_excluded, supported, walk
+from sentient.memory import scopes as memory_scopes
+from sentient.memory.forget import forget as forget_learned
 from sentient.memory.vectors import VecTable, pack
 from sentient.services import Service
 from sentient.store.db import new_id, now_iso
@@ -49,6 +56,7 @@ EMBED_BATCH = 32
 EMBED_EVERY_FILES = 25  # embed what is waiting after this many files, so search by meaning improves during a long scan
 PUBLISH_EVERY_S = 1.0
 CANDIDATES = 60  # pieces each search method proposes before they are merged
+MAX_NEIGHBOURS = 4096  # the most neighbours one look in the vector index asks for (sqlite-vec's limit for k)
 RRF_K = 60
 PER_FILE = 2  # most pieces of one file in one search's results
 MIN_SIMILARITY = 0.3
@@ -196,7 +204,7 @@ class FolderService(Service):
             status = "waiting"
         return {
             "id": fid, "path": row["path"], "name": row["name"], "kind": row["kind"],
-            "ignore": json.loads(row.get("ignore") or "[]"), "status": status,
+            "ignore": json.loads(row.get("ignore") or "[]"), "scope": folder_scope(row.get("scope")), "status": status,
             "progress": self._progress.get(fid), "added_at": row["added_at"],
             "last_scan_at": row.get("last_scan_at"), "last_scan_ms": row.get("last_scan_ms"),
             "skipped": int(row.get("skipped") or 0), "error": row.get("error"), **stats,
@@ -240,13 +248,14 @@ class FolderService(Service):
                 raise FolderError(f"That folder holds {f['name']}, which is already added. Remove it first.")
         return p
 
-    async def add(self, path: str, ignore: list[str] | None = None) -> dict:
+    async def add(self, path: str, ignore: list[str] | None = None, scope: str | None = None) -> dict:
         p = self._check_new(path, await self._rows())
         fid = new_id()
         kind = "obsidian" if is_obsidian(p) else "folder"
+        scope = await memory_scopes.resolve(self.app, scope, memory_scopes.ALWAYS)  # an existing project's spelling
         await self.app.store.execute(
-            "INSERT INTO folders(id, path, name, kind, ignore, added_at) VALUES(?,?,?,?,?,?)",
-            (fid, str(p), p.name or str(p), kind, json.dumps(_clean_patterns(ignore)), now_iso()),
+            "INSERT INTO folders(id, path, name, kind, ignore, added_at, scope) VALUES(?,?,?,?,?,?,?)",
+            (fid, str(p), p.name or str(p), kind, json.dumps(_clean_patterns(ignore)), now_iso(), folder_scope(scope)),
         )
         await self._apply_visibility()
         self._watch_changed.set()  # watch it too
@@ -254,9 +263,17 @@ class FolderService(Service):
         log.info("folder added: %s (%s)", p, kind)
         return await self.get(fid) or {"id": fid}
 
-    async def update(self, folder_id: str, ignore: list[str] | None) -> dict | None:
-        if await self._row(folder_id) is None:
+    async def update(self, folder_id: str, ignore: list[str] | None, scope: str | None = None) -> dict | None:
+        """New ignore patterns (the folder is read again) and/or a new scope (#392; nothing to read again)."""
+        row = await self._row(folder_id)
+        if row is None:
             return None
+        if scope is not None:
+            scope = await memory_scopes.resolve(self.app, scope, memory_scopes.ALWAYS)  # an existing project's spelling
+        if scope is not None and folder_scope(scope) != folder_scope(row.get("scope")):
+            await self.app.store.execute("UPDATE folders SET scope = ? WHERE id = ?", (folder_scope(scope), folder_id))
+            log.info("folder %s is now used in %s chats", row["path"], folder_scope(scope))
+            self._publish(folder_id, force=True)
         if ignore is not None:
             await self.app.store.execute(
                 "UPDATE folders SET ignore = ? WHERE id = ?", (json.dumps(_clean_patterns(ignore)), folder_id)
@@ -265,8 +282,9 @@ class FolderService(Service):
             self.enqueue(folder_id)
         return await self.get(folder_id)
 
-    async def remove(self, folder_id: str) -> bool:
-        """Forget a folder and its whole index. The folder itself is not touched."""
+    async def remove(self, folder_id: str, *, forget: bool = False) -> bool | dict:
+        """Forget a folder and its whole index. The folder itself is not touched. ``forget``: also forget the facts
+        learned from its notes (#153); returns what was deleted instead of True."""
         row = await self._row(folder_id)
         if row is None:
             return False
@@ -279,6 +297,8 @@ class FolderService(Service):
         self._watch_changed.set()
         self._publish(folder_id, force=True, removed=True)
         log.info("folder removed: %s", row["path"])
+        if forget:
+            return await forget_learned(self.app, f"folder:{folder_id}", str(row["name"] or "the folder"))
         return True
 
     def enqueue(self, folder_id: str) -> bool:
@@ -576,36 +596,60 @@ class FolderService(Service):
             await db.commit()
 
     # ------------------------------------------------------------------ search
-    async def search(self, query: str, *, limit: int | None = None, folder: str = "") -> dict:
-        """The pieces of the user's notes that best match ``query``, best first, at most ``PER_FILE`` per file."""
-        return (await self._search(query, limit=limit, folder=folder))[0]
+    async def search(
+        self, query: str, *, limit: int | None = None, folder: str = "", scope: str | None = None,
+        everywhere: bool = False,
+    ) -> dict:
+        """The pieces of the user's notes that best match ``query``, best first, at most ``PER_FILE`` per file. Only
+        folders a run in ``scope`` reads (#392; None: every folder), unless ``everywhere``: a result from a folder kept
+        for another scope then says which (``kept_for``)."""
+        return (await self._search(query, limit=limit, folder=folder, scope=scope, everywhere=everywhere))[0]
 
     async def _search(
-        self, query: str, *, limit: int | None = None, folder: str = "", window: bool = True
+        self, query: str, *, limit: int | None = None, folder: str = "", window: bool = True,
+        scope: str | None = None, everywhere: bool = False,
     ) -> tuple[dict, bool]:
         """``(search result, whether search by meaning ran)``. Without ``window`` every piece close enough in meaning
         counts, not only those near the best one, and carries its similarity."""
         query = str(query or "").strip()
         limit = max(1, min(int(limit or self.app.config.folders.results), 20))
-        rows = await self._rows()
+        every = await self._rows()
+        rows = every if everywhere else [r for r in every if in_scope(r, scope)]
         if folder:
             want = folder.strip().lower()
             rows = [r for r in rows if r["id"] == folder or r["name"].lower() == want] or rows
+        searched = {r["id"] for r in rows}
+        # folders kept for other chats (#392): named in a note when nothing here matches, never their content
+        other = ", ".join(sorted({memory_scopes.label(folder_scope(r.get("scope"))) for r in every
+                                  if r["id"] not in searched}))
         if not rows:
+            if every:
+                return {"results": [], "note": (
+                    f"The user's folders are kept for other chats ({other}). Search with everywhere=true only when the "
+                    "user asks about those notes."
+                )}, False
             return {"results": [], "note": "No folders are added yet. The user can add them in Settings > Folders."}, False
         if not query:
             return {"error": "Say what to look for."}, False
         allowed = {r["id"]: r for r in rows}
+        # only some folders (a scope, #392, or one folder by name): drop the others' pieces before ranking, so a
+        # better match in a folder that isn't searched never pushes this one's out of the results or the window
+        only = set(allowed) if len(allowed) < len(every) else None
         scores: dict[int, float] = {}
         similarity: dict[int, float] = {}
         keyword_rank: dict[int, int] = {}
         words = content_words(query)  # the same words prompt_pieces checks, each once
         if words:
             match = " OR ".join('"' + w.replace('"', "") + '"' for w in words)
+            within, params = "", [match]
+            if only:  # only pieces of the folders searched, before the limit
+                within = (" AND rowid IN (SELECT id FROM folder_chunks WHERE folder_id IN"
+                          f" ({','.join('?' * len(only))}))")
+                params += sorted(only)
             try:
                 fts = await self.app.store.fetchall(
                     "SELECT rowid, bm25(folder_fts, 4.0, 2.0, 1.0) AS b FROM folder_fts WHERE folder_fts MATCH ?"
-                    " ORDER BY b LIMIT ?", (match, CANDIDATES),
+                    f"{within} ORDER BY b LIMIT ?", (*params, CANDIDATES),
                 )
             except Exception as exc:
                 log.debug("keyword search failed: %s", exc)
@@ -620,7 +664,7 @@ class FolderService(Service):
         if await self._vec_ready():
             try:
                 qv = (await self.app.llm.embed([query]))[0]
-                hits = await self.vec.knn(qv, CANDIDATES)
+                hits = await self._nearest(qv, only)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -632,8 +676,13 @@ class FolderService(Service):
             for rank, (cid, sim) in enumerate(h for h in hits if h[1] >= floor):
                 scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_K + rank)
                 similarity[cid] = sim
+        nothing = {"results": [], "note": (
+            f"Nothing in the folders this chat uses matches that. Folders kept for {other} chats weren't searched. If "
+            "they could hold the answer, say so and offer to look; search them with everywhere=true when the user wants."
+            if other else "Nothing in the user's folders matches that."
+        )}
         if not scores:
-            return {"results": [], "note": "Nothing in the user's folders matches that."}, by_meaning
+            return nothing, by_meaning
         # best fused score first; on a tie the better keyword match wins (names and exact words are precise)
         ranked = sorted(scores, key=lambda c: (-round(scores[c], 9), keyword_rank.get(c, CANDIDATES)))
         marks = ",".join("?" * len(ranked))
@@ -653,9 +702,14 @@ class FolderService(Service):
             if per_file.get(key, 0) >= PER_FILE:
                 continue
             per_file[key] = per_file.get(key, 0) + 1
-            out.append(self._result(allowed[c["folder_id"]], c, similarity.get(cid)))
+            item = self._result(allowed[c["folder_id"]], c, similarity.get(cid))
+            if everywhere and scope is not None and not in_scope(allowed[c["folder_id"]], scope):
+                item["kept_for"] = memory_scopes.label(folder_scope(allowed[c["folder_id"]].get("scope")))
+            out.append(item)
             if len(out) >= limit:
                 break
+        if not out:
+            return nothing, by_meaning
         result: dict = {}
         clipped = [r for r in out if r.get("clipped_from")]
         if clipped and self.app.config.folders.clippings_are_outside:
@@ -663,21 +717,46 @@ class FolderService(Service):
         result["results"] = out
         return result, by_meaning
 
-    async def prompt_pieces(self, query: str) -> list[dict]:
+    async def _nearest(self, qv: list[float], only: set[str] | None) -> list[tuple[int, float]]:
+        """The ``CANDIDATES`` pieces closest in meaning, of the folders in ``only`` (None: every folder). The vector
+        index can't filter by folder, so it asks for more neighbours until enough of them are in those folders, or
+        there are no more (at most ``MAX_NEIGHBOURS``)."""
+        if only is None:
+            return await self.vec.knn(qv, CANDIDATES)
+        k = CANDIDATES * 4
+        while True:
+            hits = await self.vec.knn(qv, k)
+            keep = await self._in_folders([cid for cid, _ in hits], only)
+            mine = [h for h in hits if h[0] in keep]
+            if len(mine) >= CANDIDATES or len(hits) < k or k >= MAX_NEIGHBOURS:
+                return mine[:CANDIDATES]
+            k = min(k * 4, MAX_NEIGHBOURS)
+
+    async def _in_folders(self, chunk_ids: list[int], folder_ids: set[str]) -> set[int]:
+        """The pieces of ``chunk_ids`` that belong to one of ``folder_ids``."""
+        if not chunk_ids or not folder_ids:
+            return set()
+        rows = await self.app.store.fetchall(
+            f"SELECT id FROM folder_chunks WHERE id IN ({','.join('?' * len(chunk_ids))})"
+            f" AND folder_id IN ({','.join('?' * len(folder_ids))})", [*chunk_ids, *folder_ids],
+        )
+        return {int(r[0]) for r in rows}
+
+    async def prompt_pieces(self, query: str, scope: str | None = None) -> list[dict]:
         """Up to ``folders.prompt_notes`` short pieces of the user's notes that clearly match ``query``, one per note,
         best first, to go with a chat message (#354): small models rarely search notes on their own. A piece counts
         when it is close in meaning (``folders.prompt_min_similarity``) and holds at least half of the message's
         words, or is very close in meaning (``STRONG_MARGIN`` more); without search by meaning, when it holds most of
         the message's words. Clipped web pages never go in (they are outside content, ADR 0025: ``folder_search``
         still finds them). Each is ``{title, folder, path, file, link?, heading?, text}`` with ``text`` cut to
-        ``folders.prompt_note_chars`` around the words that matched."""
+        ``folders.prompt_note_chars`` around the words that matched. Only folders the chat's ``scope`` reads (#392)."""
         cfg = self.app.config.folders
         query = str(query or "").strip()
-        if cfg.prompt_notes <= 0 or len(query) < 3 or not await self._rows():
+        if cfg.prompt_notes <= 0 or len(query) < 3 or not any(in_scope(r, scope) for r in await self._rows()):
             return []
         # every close piece with its similarity: a clipped page that matches best must not hide the user's own note
         # the most results a search gives, so clipped pages and pieces that don't qualify can't crowd out one that does
-        found, by_meaning = await self._search(query, limit=20, window=False)
+        found, by_meaning = await self._search(query, limit=20, window=False, scope=scope)
         words = content_words(query)
         out: list[dict] = []
         files: set[str] = set()
@@ -724,13 +803,14 @@ class FolderService(Service):
         return {k: v for k, v in item.items() if v is not None}
 
     # ------------------------------------------------------------------ reading one file
-    async def resolve(self, path: str) -> tuple[dict, dict] | None:
+    async def resolve(self, path: str, scope: str | None = None) -> tuple[dict, dict] | None:
         """``(folder, file row)`` of an indexed file named by its full path, its path inside a folder, or
-        "<folder name>/<path inside>". Only files Sentient indexed can be read (never hidden or ignored ones)."""
+        "<folder name>/<path inside>". Only files Sentient indexed can be read (never hidden or ignored ones), in a
+        folder a run in ``scope`` reads (#392; None: any folder)."""
         raw = str(path or "").strip().strip('"').replace("\\", "/")
         if not raw:
             return None
-        rows = await self._rows()
+        rows = [r for r in await self._rows() if in_scope(r, scope)]
         candidates: list[tuple[dict, str]] = []
         for f in rows:
             if os.path.isabs(raw.replace("/", os.sep)) or raw.startswith("/"):
@@ -750,9 +830,10 @@ class FolderService(Service):
                     return f, dict(row)  # a file the current rules leave out can't be read, even before a rescan
         return None
 
-    async def read(self, path: str) -> tuple[dict, dict, str] | None:
-        """``(folder, file row, text)`` of an indexed file, read now from disk. None when it isn't one."""
-        found = await self.resolve(path)
+    async def read(self, path: str, scope: str | None = None) -> tuple[dict, dict, str] | None:
+        """``(folder, file row, text)`` of an indexed file in a folder a run in ``scope`` reads, read now from disk.
+        None when it isn't one."""
+        found = await self.resolve(path, scope)
         if found is None:
             return None
         folder, row = found
@@ -849,6 +930,17 @@ def real_file(root: Path, rel: str) -> Path:
     if not _inside(real, base) or _norm(real) == _norm(base):
         raise ValueError("this file leads outside the folder")
     return path
+
+
+def folder_scope(raw: Any) -> str:
+    """A folder's scope as stored: ``always`` when empty, else a scope name (``sentient.memory.scopes.normalize``)."""
+    return memory_scopes.normalize(raw, memory_scopes.ALWAYS) or memory_scopes.ALWAYS
+
+
+def in_scope(row: dict, scope: str | None) -> bool:
+    """Whether a run in ``scope`` (None: not tied to a chat or task) reads this folder's notes."""
+    wanted = memory_scopes.recall_scopes(scope)
+    return wanted is None or folder_scope(row.get("scope")) in wanted
 
 
 def _clean_patterns(patterns: list[str] | None) -> list[str]:

@@ -13,7 +13,7 @@ class below and may add fields to it. Do not edit another package's section.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -74,6 +74,8 @@ PRESET_CLOUD_MODELS: dict[str, dict[str, str]] = {
 
 # Models offered for Claude through the user's own Claude Code (#206, ADR 0022): Claude Code's model aliases.
 CLAUDE_CODE_MODELS: tuple[str, ...] = ("claude-code/sonnet", "claude-code/opus")
+# The quick-jobs model when Claude Code does everything (models.claude_code_everywhere, #444, ADR 0032).
+CLAUDE_CODE_FAST_MODEL = "claude-code/haiku"
 
 # Local model sizing for this computer (#131), used by onboarding, the "Local only" preset and the model check-up.
 # Rows are tried in order and the first one the computer meets is recommended. ``min_vram_gb`` is graphics memory a
@@ -211,8 +213,22 @@ class ModelsConfig(BaseModel):
         False,
         description="Experimental. Uses your own Claude Code install and login. Anthropic may change how this is "
         "counted or allowed. When on, models named claude-code/<model> (claude-code/sonnet, claude-code/opus) answer "
-        "your chats through the claude program on this computer, with Sentient's tools and approvals. Never used for "
-        "work that runs in the background, and it can't make embeddings. Sentient never reads your Claude login.",
+        "your chats through the claude program on this computer, with Sentient's tools and approvals. Not used for "
+        "work that runs in the background unless claude_code_everywhere is on, and it can't make embeddings. Sentient "
+        "never reads your Claude login.",
+    )
+    claude_code_everywhere: bool = Field(
+        False,
+        description="Only with experimental_claude_code on. Lets your Claude Code do everything, not just chats: "
+        "tasks, memory, suggestions, background checks and briefs, including while you're away. Anthropic says Claude "
+        "plans are for its own apps, and other apps running work on your plan may be limited, charged as extra usage "
+        "or not allowed, and this uses your plan limits much faster. Turned on from Settings > Models after a warning. "
+        "Memory search still needs another model.",
+    )
+    claude_code_max_concurrent: int = Field(
+        2, ge=1, le=8,
+        description="Most Claude Code runs at once. More wait their turn, your chats first, so background work can't "
+        "flood this computer or your plan.",
     )
     chatgpt_client_id: str = Field(
         "dynamic_agent_client",
@@ -280,6 +296,11 @@ class ChatConfig(BaseModel):
         description="Do simple timer, reminder and alarm requests (\"set a timer for 10 minutes\", \"remind me at 6 pm "
         "to call Ravi\", \"wake me at 7\") and \"what's next on my calendar\" at once, without asking the model. "
         "Anything else still goes to the model. English for now.",
+    )
+    alarm_snooze_minutes: int = Field(
+        9, ge=1, le=60,
+        description="How long \"snooze\" puts off a ringing alarm, in minutes, unless you say how long "
+        "(\"snooze for 5 minutes\").",
     )
     tool_selection: Literal["auto", "all"] = Field(
         "auto",
@@ -525,9 +546,55 @@ class MemoryConfig(BaseModel):
         description="Memories waiting for your review (from emails, web pages, imports or work Sentient did on its "
         "own) are let go after this many days without an answer.",
     )
+    keep_superseded_days: int = Field(
+        180, ge=0, le=3650,
+        description="When a newer memory replaces an older one, the older one is kept as history for this many days, "
+        "then deleted for good. Your current memories are never deleted by this. 0 keeps the history forever.",
+    )
 
 
 # ----------------------------------------------------------------------------- tasks (owner: tasks agent)
+class EmailTasksConfig(BaseModel):
+    """Tasks by email (#159): an email forwarded or copied to the user's Sentient address becomes a task."""
+
+    enabled: bool = Field(
+        False,
+        description="Forward or copy an email to your Sentient address and Sentient makes a task from it. Off until "
+        "you turn it on.",
+    )
+    address: str = Field(
+        "",
+        description="Your Sentient address, for example you+sentient@gmail.com. Email sent or copied to it becomes a "
+        "task. Most email services deliver an address with +something to your normal inbox.",
+    )
+    label: str = Field(
+        "",
+        description="Optional. A Gmail label or email folder: email that lands there becomes a task too. Over IMAP, "
+        "also add the folder to the folders the account watches.",
+    )
+    allowed_senders: list[str] = Field(
+        default_factory=list,
+        description="Other people who may give Sentient tasks by email, by their real address. Your own addresses "
+        "(the email accounts you connected) can always send tasks. The name shown next to an address never counts.",
+    )
+
+    @field_validator("address", "label")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        return str(value or "").strip()
+
+    @field_validator("allowed_senders")
+    @classmethod
+    def _senders(cls, value: list[str]) -> list[str]:
+        seen: dict[str, None] = {}
+        for item in value or []:
+            for part in str(item).replace(";", ",").split(","):
+                address = part.strip().lower()
+                if address:
+                    seen.setdefault(address, None)
+        return list(seen)
+
+
 class TasksConfig(BaseModel):
     tick_seconds: int = Field(30, ge=5, description="Scheduler poll interval.")
     max_concurrent_runs: int = Field(2, ge=1, le=16, description="Task runs allowed at the same time.")
@@ -567,6 +634,14 @@ class TasksConfig(BaseModel):
         "when Sentient is back if it is less than this many hours late. Later ones are skipped and you're told. "
         "A task never runs more than once to catch up. 0 always skips.",
     )
+    source_retry_minutes: int = Field(
+        15, ge=1, le=1440, description="When a routine is set to try again later and the page, app or folder it reads "
+        "isn't there, it tries again after this many minutes.",
+    )
+    source_retries: int = Field(
+        3, ge=1, le=10, description="How many times a routine set to try again later tries before it tells you the "
+        "page, app or folder it reads is still missing.",
+    )
     away_pause_days: int = Field(
         7, ge=0, le=365, description="Pause recurring tasks and briefs after you haven't used Sentient (the app or a "
         "chat) for this many days. Tasks set to keep running are never paused. 0 never pauses for this.",
@@ -578,6 +653,10 @@ class TasksConfig(BaseModel):
     away_ask_hours: int = Field(
         24, ge=0, le=168, description="Before pausing, ask once and wait this many hours for any sign of you. "
         "0 pauses without asking.",
+    )
+    email: EmailTasksConfig = Field(
+        default_factory=EmailTasksConfig,
+        description="Tasks by email: forward or copy an email to your Sentient address to give it a task (#159).",
     )
 
 
@@ -609,6 +688,20 @@ class IntegrationsConfig(BaseModel):
         description="Connections set to Read only, by app id (gmail, github, mcp_<server>). Sentient can look things "
         "up there but never change, send, delete or run anything: those tools are hidden and refused.",
     )
+    mcp_server_enabled: bool = Field(
+        False,
+        description="Let other AI apps on this computer (Claude Code, Cursor and other MCP clients) use Sentient "
+        "itself through the `sentient mcp` command: search and add memories, create and check tasks, send "
+        "notifications and ask Sentient a question. Off until turned on. There is no tool that sends, deletes "
+        "or runs anything, and the command only works on this computer, with a key of its own that opens "
+        "only what those tools need.",
+    )
+    mcp_server_memories_skip_review: bool = Field(
+        False,
+        description="Only with the MCP server above: save memories an MCP app adds straight away instead of "
+        "holding them for review first. Off is safer: a memory from another app waits in Review until the "
+        "user approves it (ADR 0021).",
+    )
 
     @field_validator("read_only", mode="before")
     @classmethod
@@ -631,6 +724,12 @@ class IntegrationsConfig(BaseModel):
         True,
         description="Listen to Home Assistant for changes (a door opening, a light turning on) so tasks can start "
         "when they happen. Uses no model calls.",
+    )
+    home_assistant_check_s: float = Field(
+        4.0, ge=0, le=10,
+        description="After Sentient turns on a light, locks a door or changes another device in Home Assistant, how "
+        "many seconds it waits for the device to report its new state, so it never says done when the device didn't "
+        "change. 0 turns this check off.",
     )
     fast_sync_seconds: int = Field(
         60, ge=0, le=3600,
@@ -1014,10 +1113,24 @@ class NodesConfig(BaseModel):
         False, description="Accept devices on your local network (encrypted, pairing code required)."
     )
     lan_port: int = Field(7778, ge=1024, le=65535, description="Port devices on your network connect to.")
+    lan_bind_all: bool = Field(
+        False,
+        description="Bind the device listener to every network interface (0.0.0.0) instead of this computer only "
+        "(loopback). Off by default: enable it only if devices cannot reach Sentient, and keep pairing on.",
+    )
     mdns_enabled: bool = Field(
         True,
         description="Announce Sentient on your network (mDNS) so glasses and phones find it without typing an address.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_lan_bind_all(cls, data: Any) -> Any:
+        # Configs saved before nodes.lan_bind_all existed bound the LAN listener to every
+        # interface, so an existing lan_enabled opt-in keeps working until the user chooses otherwise.
+        if isinstance(data, dict) and "lan_bind_all" not in data and data.get("lan_enabled") is True:
+            data = {**data, "lan_bind_all": True}
+        return data
     camera_requires_approval: bool = Field(
         True, description="Ask before the assistant takes a photo or captures a screen with one of your devices."
     )
@@ -1053,6 +1166,10 @@ class ChannelAppConfig(BaseModel):
     )
     show_tool_activity: bool = Field(
         True, description="Briefly show what the assistant is doing (for example 'Searching the web...')."
+    )
+    memory_scope: str = Field(
+        "personal",
+        description="Which memories chats in this app use and save new ones to: personal, work, or a project's name.",
     )
 
 
@@ -1159,8 +1276,8 @@ class BackupsConfig(BaseModel):
     folder: str | None = Field(
         None,
         description="Folder for backups. Empty uses Sentient Backups in your Documents folder (or the backups folder "
-        "inside Sentient's data folder when Documents can't be used). A folder on another drive or a synced cloud "
-        "folder keeps them safe if this computer fails.",
+        "inside Sentient's data folder when Documents can't be used, and always for a data folder other than the "
+        "default ~/.sentient). A folder on another drive or a synced cloud folder keeps them safe if this computer fails.",
     )
     schedule: Literal["off", "daily", "weekly"] = Field(
         "off", description="Back up automatically every day or every week, while Sentient is running."

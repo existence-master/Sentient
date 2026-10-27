@@ -11,6 +11,7 @@ import { getBridge } from '@/lib/bridge'
 import type { DevicePairing } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { deviceKeys, useDeviceActions, useDevices, useLanInfo } from './hooks'
+import { lanPollMs, pairingFreshness } from './pairingFreshness'
 import { previewMode } from './preview'
 
 function useNow(ms = 1000) {
@@ -45,16 +46,19 @@ function AddDeviceBody({ close }: { close: () => void }) {
   const qc = useQueryClient()
   const { pairing } = useDeviceActions()
   const devices = useDevices()
-  const lan = useLanInfo()
+  const lan = useLanInfo(true, lanPollMs)
   const [info, setInfo] = useState<DevicePairing | null>(null)
-  const [qr, setQr] = useState<string | null>(null)
+  const [qr, setQr] = useState<{ code: string; src: string } | null>(null)
   const [kind, setKind] = useState<'phone' | 'other'>('phone')
   const [savingLan, setSavingLan] = useState(false)
   const known = useRef<Set<string> | null>(null)
   const now = useNow()
 
+  // A new code replaces the one on screen, so an old code never stays valid in the background (#477).
+  const shownCode = useRef<string | undefined>(undefined)
+  shownCode.current = info?.code
   const newCode = () =>
-    pairing.mutate(undefined, {
+    pairing.mutate(shownCode.current, {
       onSuccess: (p) => setInfo(p),
       onError: (e) => toast.error("Couldn't make a pairing code", { description: errorMessage(e) })
     })
@@ -68,30 +72,53 @@ function AddDeviceBody({ close }: { close: () => void }) {
     if (!info) return
     // A phone camera opens `web_url` directly in the browser; the sentient:// link is for native apps.
     void QRCode.toDataURL(info.web_url || info.qr, { margin: 1, width: 440, errorCorrectionLevel: 'M', color: { dark: '#111114', light: '#ffffff' } })
-      .then(setQr)
+      .then((src) => setQr({ code: info.code, src }))
       .catch(() => setQr(null))
   }, [info])
+
+  // The code's links are fixed when it is made. When the Wi-Fi listener starts, stops or moves, make a new code
+  // so the QR and link point where a phone can reach this computer (#477). Retry once per address, never in a loop.
+  const fresh = pairingFreshness(info, lan.data)
+  const triedFor = useRef<{ target: string; code: string } | null>(null)
+  useEffect(() => {
+    if (!fresh.stale) {
+      triedFor.current = null
+      return
+    }
+    if (!info || pairing.isPending || savingLan || triedFor.current?.target === fresh.target) return
+    triedFor.current = { target: fresh.target, code: info.code }
+    newCode()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fresh.stale, fresh.target, pairing.isPending, savingLan])
+  // Only show a code whose links work now; otherwise "Getting ready…". If a new code came back and still doesn't
+  // match (the network keeps changing), show it rather than wait forever. If making it failed, never show the stale
+  // code: offer to try again instead.
+  const tried = fresh.stale && !pairing.isPending && triedFor.current?.target === fresh.target ? triedFor.current : null
+  const gaveUp = !!tried && tried.code !== info?.code
+  const refreshFailed = !!tried && tried.code === info?.code
+  const ready = !!info && !fresh.starting && (!fresh.stale || gaveUp)
+  const shown = ready ? info : null
 
   // Remember which devices existed when the dialog opened, to notice the new one arriving (node.updated).
   if (known.current === null && devices.data) known.current = new Set(devices.data.map((d) => d.node_id))
   const arrived = useMemo(() => devices.data?.find((d) => known.current && !known.current.has(d.node_id)), [devices.data])
 
-  const lanEnabled = info?.lan_enabled ?? lan.data?.enabled ?? false
+  const lanEnabled = lan.data?.enabled ?? info?.lan_enabled ?? false
   const lanRunning = lan.data?.running ?? lanEnabled
-  const urls = (info?.urls.length ? info.urls : (lan.data?.urls ?? [])).map(httpsBase)
+  const urls = (shown?.urls.length ? shown.urls : (lan.data?.urls ?? [])).map(httpsBase)
   const base = urls[0]
-  const phoneLink = info?.web_url || (base ? `${base}/node/` : undefined)
-  const fingerprint = info?.fingerprint ?? lan.data?.fingerprint ?? null
+  const phoneLink = shown?.web_url || (base ? `${base}/node/` : undefined)
+  const fingerprint = shown?.fingerprint ?? lan.data?.fingerprint ?? null
   const onLan = !!phoneLink && /^https:/.test(phoneLink)
-  const remaining = info ? Math.max(0, new Date(info.expires_at).getTime() - now) : 0
-  const expired = !!info && remaining <= 0
+  const remaining = shown ? Math.max(0, new Date(shown.expires_at).getTime() - now) : 0
+  const expired = !!shown && remaining <= 0
   const mm = Math.floor(remaining / 60000)
   const ss = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0')
 
   const setLan = async (enabled: boolean) => {
     setSavingLan(true)
     try {
-      if (!previewMode()) await api.config.patch({ nodes: { lan_enabled: enabled } })
+      if (!previewMode()) await api.config.patch({ nodes: { lan_enabled: enabled, lan_bind_all: enabled } })
       await qc.invalidateQueries({ queryKey: deviceKeys.lan })
       newCode()
     } catch (e) {
@@ -121,7 +148,27 @@ function AddDeviceBody({ close }: { close: () => void }) {
       <div className="grid gap-5 sm:grid-cols-[220px_1fr]">
         <div className="flex flex-col items-center">
           <div className="relative size-[220px] overflow-hidden rounded-2xl border border-border bg-white p-2.5 shadow-soft">
-            {qr ? <img src={qr} alt="Pairing QR code" className={cn('size-full', expired && 'opacity-15 blur-[2px]')} /> : <Skeleton className="size-full" />}
+            {shown && qr?.code === shown.code ? (
+              <img src={qr.src} alt="Pairing QR code" className={cn('size-full', expired && 'opacity-15 blur-[2px]')} />
+            ) : info ? (
+              <div role="status" className="flex size-full flex-col items-center justify-center gap-2 text-xs text-[#6b6b73]">
+                {refreshFailed ? (
+                  <>
+                    Couldn&apos;t make a new code.
+                    <Button size="sm" variant="primary" leftIcon={<IconRefresh size={14} />} onClick={newCode}>
+                      Try again
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Spinner size={18} />
+                    Getting ready…
+                  </>
+                )}
+              </div>
+            ) : (
+              <Skeleton className="size-full" />
+            )}
             {expired && (
               <div className="absolute inset-0 flex items-center justify-center">
                 <Button size="sm" variant="primary" leftIcon={<IconRefresh size={14} />} onClick={newCode} loading={pairing.isPending}>
@@ -130,8 +177,8 @@ function AddDeviceBody({ close }: { close: () => void }) {
               </div>
             )}
           </div>
-          <div className="mt-3 flex gap-1.5" aria-label={info ? `Pairing code ${info.code}` : 'Pairing code'}>
-            {(info?.code ?? '      ').split('').map((d, i) => (
+          <div className="mt-3 flex gap-1.5" aria-label={shown ? `Pairing code ${shown.code}` : 'Pairing code'}>
+            {(shown?.code ?? '      ').split('').map((d, i) => (
               <span
                 key={i}
                 className={cn(
@@ -144,10 +191,10 @@ function AddDeviceBody({ close }: { close: () => void }) {
               </span>
             ))}
           </div>
-          <div className={cn('mt-2 text-xs tabular-nums', expired ? 'text-danger' : remaining < 60_000 ? 'text-warning' : 'text-fg-subtle')}>
-            {!info ? 'Making a code…' : expired ? 'This code expired' : `Expires in ${mm}:${ss}`}
+          <div className={cn('mt-2 text-xs tabular-nums', expired ? 'text-danger' : shown && remaining < 60_000 ? 'text-warning' : 'text-fg-subtle')}>
+            {!info ? 'Making a code…' : !shown ? (refreshFailed ? 'No code right now' : 'Getting ready…') : expired ? 'This code expired' : `Expires in ${mm}:${ss}`}
           </div>
-          {info && !expired && (
+          {shown && !expired && (
             <button type="button" onClick={newCode} className="mt-0.5 text-2xs text-fg-subtle hover:text-fg">
               Get a new code
             </button>
@@ -171,7 +218,11 @@ function AddDeviceBody({ close }: { close: () => void }) {
               <Step n={2}>Point your phone&apos;s camera at the code, and open the link it shows.</Step>
               <Step n={3}>
                 Or type this address into your phone&apos;s browser:{' '}
-                {onLan && phoneLink ? <CopyChip value={phoneLink.replace(/#.*$/, '')} /> : <span className="text-fg-subtle">(turn on Wi-Fi pairing below)</span>}
+                {onLan && phoneLink ? (
+                  <CopyChip value={phoneLink.replace(/#.*$/, '')} />
+                ) : (
+                  <span className="text-fg-subtle">{info && !shown ? '(getting ready…)' : '(turn on Wi-Fi pairing below)'}</span>
+                )}
               </Step>
               <Step n={4}>Enter the 6-digit code when asked. That&apos;s it.</Step>
               {phoneLink && !onLan && (
@@ -188,7 +239,7 @@ function AddDeviceBody({ close }: { close: () => void }) {
               <Step n={2}>
                 On that computer, with Sentient installed, run:
                 <div className="mt-1.5">
-                  <CopyChip className="px-2 py-1" value={info ? `sentient node --url "${info.qr}"` : 'sentient node --url ...'} />
+                  <CopyChip className="px-2 py-1" value={shown ? `sentient node --url "${shown.qr}"` : 'sentient node --url ...'} />
                 </div>
               </Step>
               <Step n={3}>It uses that computer&apos;s webcam, speaker and keyboard as a device. Glasses apps that support Sentient ask for the same address and code.</Step>

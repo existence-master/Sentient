@@ -33,6 +33,7 @@ import { getBridge } from '@/lib/bridge'
 import type { DeviceInvokeResult, DeviceNode } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { DesktopPrivacy } from './DesktopPrivacy'
+import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
 import { useDeviceActions } from './hooks'
 import { BatteryPill, capabilityChips, DeviceTile, platformLabel, presence } from './meta'
 
@@ -85,6 +86,7 @@ export function DeviceCard({ node }: { node: DeviceNode }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(node.name)
   const [confirm, setConfirm] = useState(false)
+  const forget = useForgetChoice()
   const [busy, setBusy] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<Outcome | null>(null)
   const [zoom, setZoom] = useState(false)
@@ -147,6 +149,13 @@ export function DeviceCard({ node }: { node: DeviceNode }) {
             <div className="flex min-w-0 items-center gap-2">
               <span className="truncate text-md font-medium text-fg">{node.name}</span>
               {isDesktop && <Badge size="xs">This computer</Badge>}
+              {node.online && node.camera_off && (
+                <Tooltip content="The camera is switched off on the device. Only the device itself can turn it back on.">
+                  <span>
+                    <Badge size="xs">Camera off</Badge>
+                  </span>
+                </Tooltip>
+              )}
             </div>
           )}
           <div className="mt-0.5 flex items-center gap-1.5 text-xs text-fg-subtle">
@@ -187,7 +196,14 @@ export function DeviceCard({ node }: { node: DeviceNode }) {
             {!isDesktop && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem icon={<IconTrash />} danger onSelect={() => setConfirm(true)}>
+                <DropdownMenuItem
+                  icon={<IconTrash />}
+                  danger
+                  onSelect={() => {
+                    forget.reset()
+                    setConfirm(true)
+                  }}
+                >
                   Remove
                 </DropdownMenuItem>
               </>
@@ -297,16 +313,18 @@ export function DeviceCard({ node }: { node: DeviceNode }) {
         onOpenChange={setConfirm}
         title={`Remove ${node.name}?`}
         description="Sentient won't be able to reach it any more. To use it again, you'll need to pair it with a new code."
-        confirmLabel="Remove device"
+        confirmLabel={forget.forget ? 'Remove and forget' : 'Remove device'}
         onConfirm={async () => {
           try {
-            await actions.remove.mutateAsync(node.node_id)
-            toast.success(`${node.name} was removed`)
+            const res = await actions.remove.mutateAsync({ id: node.node_id, forget: forget.forget })
+            toast.success(`${node.name} was removed`, { description: forgottenMessage(res.forgotten) })
           } catch (e) {
             toast.error("Couldn't remove the device", { description: errorMessage(e) })
           }
         }}
-      />
+      >
+        <ForgetLearned source={`device:${node.node_id}`} open={confirm} checked={forget.forget} onCheckedChange={forget.setForget} />
+      </ConfirmDialog>
       <Dialog open={zoom && outcome?.kind === 'image'} onOpenChange={setZoom} size="xl" title={outcome?.kind === 'image' ? `${outcome.label} from ${node.name}` : ''}>
         {outcome?.kind === 'image' && <img src={outcome.src} alt="" className="max-h-[70vh] w-full rounded-lg object-contain" />}
       </Dialog>

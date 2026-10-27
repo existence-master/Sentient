@@ -48,6 +48,7 @@ from sentient.integrations.common import (
 from sentient.integrations.feeds import FeedEngine
 from sentient.integrations.hooks import HookStore
 from sentient.integrations.plugins import PLUGIN_MODULES
+from sentient.memory.forget import forget as forget_learned
 from sentient.services import Service
 from sentient.store.db import now_iso
 
@@ -102,9 +103,6 @@ class IntegrationManager(Service):
     async def start(self) -> None:
         _base._CURRENT_MANAGER = self
         store = self.app.store
-        await store.ensure_column("integrations", "status", "TEXT")
-        await store.ensure_column("integrations", "error", "TEXT")
-        await store.db.commit()
         self._load_plugins()
         for row in await store.fetchall("SELECT * FROM integrations"):
             self._state[row["id"]] = self._row_to_state(dict(row))
@@ -369,7 +367,9 @@ class IntegrationManager(Service):
         if getattr(self.app, "enable_background", False):
             self.feeds.start_watch(plugin_id)
 
-    async def disconnect(self, plugin_id: str) -> dict:
+    async def disconnect(self, plugin_id: str, *, forget: bool = False) -> dict:
+        """Sign out of an app. ``forget``: also forget what Sentient learned from it (#153); the result then carries
+        ``forgotten``, what was deleted."""
         p = self.plugin(plugin_id)
         if p is None:
             raise KeyError(plugin_id)
@@ -391,8 +391,10 @@ class IntegrationManager(Service):
                 await disable(plugin_id)
             except Exception:
                 log.exception("disabling tasks for %s failed", plugin_id)
+        forgotten = await forget_learned(self.app, f"app:{plugin_id}", p.display_name) if forget else None
         await self.publish(plugin_id)
-        return await self.integration(plugin_id)
+        out = await self.integration(plugin_id)
+        return {**out, "forgotten": forgotten} if forgotten is not None else out
 
     async def cancel_connect(self, plugin_id: str) -> dict:
         """Abandon a pending browser sign-in (the user closed the dialog or gave up)."""

@@ -58,6 +58,7 @@ from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
 from sentient.agent.prompt import build_system_prompt, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
+from sentient.app_names import clean_app_name, framed_app_name
 from sentient.config.schema import SentientConfig
 from sentient.files.extract import extract_text, is_image
 from sentient.integrations.base import IntegrationPlugin
@@ -84,12 +85,14 @@ from sentient.llm.locality import usage_source
 from sentient.llm.meter import measure
 from sentient.llm.provider import (
     LLMProvider,
+    ModelRefused,
     PlainProviderError,
     ProviderError,
     StreamChunk,
     ToolCall,
 )
 from sentient.memory import review as memory_review
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.facts import FactMemory
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
@@ -101,6 +104,7 @@ from sentient.tools.base import (
     Risk,
     Tool,
     ToolContext,
+    approval_reason,
     bind_call,
     describe_call,
     effective_risk,
@@ -110,11 +114,16 @@ from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
     ASK,
+    EVENT_ROLE,
     HAND_OFF,
     IF_ASKED,
+    NEVER,
     OPENS_HOME,
+    OTHER_ROLE,
     PURCHASE_LABEL,
     SELECTION_SOURCE,
+    TASK_ASKS,
+    TRUSTED_EVENT,
     address_carries_data,
     address_host,
     applied_rule,
@@ -123,6 +132,7 @@ from sentient.tools.rules import (
     attachment_source,
     brings_untrusted,
     call_address,
+    group_source,
     hands_off,
     is_purchase,
     is_screen_capture,
@@ -130,6 +140,7 @@ from sentient.tools.rules import (
     never_message,
     opens_home,
     outside_source,
+    pending_card_message,
     result_outside_source,
     rule_label,
     saved_outside_source,
@@ -148,6 +159,9 @@ log = logging.getLogger(__name__)
 # ``ToolContext.extra`` flag: this run can pause and ask the user (a single task run), so an "ask" rule holds the
 # call and the run asks instead of stopping (#139)
 CAN_PAUSE_KEY = "can_pause_for_approval"
+# ``ToolContext.extra`` flag: a routine set to ask first (its setup checklist, #161), so a call that sends, posts, buys,
+# deletes or runs something is held like an "ask" rule, unless a rule or a grant already says yes
+ASK_FIRST_KEY = "task_asks_first"
 MAX_ATTACHMENT_CHARS = 60_000
 # A tool result may fill at most ``chat.tool_result_context_share`` of the model's context (#264). Characters per
 # token is cautious: JSON, ids and escaped text take more tokens per character than prose.
@@ -245,6 +259,12 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
                     "content": r.get("content") or "",
                 }
             )
+        elif role == OTHER_ROLE:
+            # someone else in a paired group chat (ADR 0029): always marked, since inside a user turn the marker is the
+            # only thing that tells it apart from the user's own words (the second look reads it that way too)
+            sender = " ".join(str(r.get("name") or "").split())[:40] or "Someone"
+            body = f"{sender} wrote in the group:\n{r.get('content') or ''}"
+            out.append({"role": "user", "content": mark_outside(body, group_source(sender))})
         elif role in {"user", "system"}:
             content = r.get("content") or ""
             if r.get("attachments"):
@@ -279,6 +299,52 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
         fixed.append(m)
         i += 1
     return fixed
+
+
+def browser_click_history(rows: list[dict]) -> list[dict]:
+    """Completed browser-click outcomes in stored chat history, oldest first (#402)."""
+    calls: dict[str, dict] = {}
+    out: list[dict] = []
+    for row in rows:
+        if row.get("role") == "assistant":
+            for call in _normalize_tool_calls(row.get("tool_calls")):
+                if call["function"]["name"] == "browser_click":
+                    calls[call["id"]] = {
+                        "name": "browser_click",
+                        "target": _arguments(call["function"].get("arguments")).get("ref", ""),
+                    }
+            continue
+        if row.get("role") != "tool":
+            continue
+        call = calls.pop(str(row.get("tool_call_id") or ""), None)
+        if call is None:
+            continue
+        approval = row.get("approval")
+        if isinstance(approval, dict) and approval.get("target"):
+            call["target"] = str(approval["target"])
+        try:
+            res = json.loads(str(row.get("content") or ""))
+        except (TypeError, ValueError):
+            # A short result may end after the stable leading fields.  Preserve
+            # those fields rather than treating a recorded success as a failed
+            # click solely because its trailing URL was cut for model context.
+            content = str(row.get("content") or "")
+            res = {"ok": True} if re.search(r'"ok"\s*:\s*true\b', content) else {}
+            clicked = re.search(r'"clicked"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+            if clicked is not None:
+                with contextlib.suppress(ValueError):
+                    res["clicked"] = json.loads(f'"{clicked.group(1)}"')
+        declined = isinstance(res, dict) and bool(res.get("declined"))
+        err = _error_text(res)
+        call.update(
+            declined=declined,
+            ok=isinstance(res, dict) and res.get("ok") is True and not err and outcomes.result_problem(res) is None,
+            uncertain=not declined and bool(err),
+        )
+        if isinstance(res, dict) and res.get("clicked"):
+            call["target"] = str(res["clicked"])
+        out.append(call)
+    return out
 
 
 def is_tool_format_error(exc: Exception) -> bool:
@@ -352,6 +418,8 @@ class LoopResult:
     skills_viewed: list[str] = field(default_factory=list)  # names passed to skill_view
     interjections: list[str] = field(default_factory=list)  # steer messages the model received
     paused: bool = False  # ``stop`` ended the loop after a round of tool results (a task run asked the user)
+    # ``interrupt`` ended the loop at a safe point, before a model call or a tool call (a task the user paused, #408)
+    interrupted: bool = False
     # set when an "ask" rule stopped an unattended run (also copied to ``error``); plain words for the user
     stopped_by_rule: str | None = None
     # set when the loop breaker ended the loop (unattended runs also copy it to ``error``); plain words
@@ -374,6 +442,10 @@ class LoopResult:
     handed_off: list[dict] = field(default_factory=list)
     # the outcome checks of the calls that ran (#165, ``sentient.agent.outcomes``), in order; written by code only
     checks: list[dict] = field(default_factory=list)
+    # browser clicks attempted in this run, recorded by code so a final reply cannot invent one (#402)
+    browser_clicks: list[dict] = field(default_factory=list)
+    # completed browser clicks from earlier chat turns, consulted only for an explicit reference to one (#402)
+    browser_click_history: list[dict] = field(default_factory=list)
 
 
 def _hosts(raw: Any) -> set[str]:
@@ -390,6 +462,16 @@ def repeat_message(name: str, times: int) -> str:
         f"Stopped because the same step kept repeating: {name} ran {times} times with the same details "
         "and got the same result each time."
     )
+
+
+@dataclass
+class TrustResult:
+    """What trusting a chat again did (ADR 0029)."""
+
+    was: str  # what the chat had read, "" when it was clean
+    trusted: bool  # the mark was cleared
+    still: str = ""  # the chat's mark when outside content newer than what the user checked keeps it marked
+    writer: str = ""  # the group member who wrote that newer message, "" when it came from elsewhere
 
 
 @dataclass
@@ -489,6 +571,7 @@ class _CallPlan:
     level: str | None = None  # the lasting rule the call was planned under ("if_asked" before it is applied)
     handed_off: bool = False  # a "Hand it to me" rule: prepared for the user, never run (#140)
     undo: str = ""  # how its undo window ended, when it waited in one (#142)
+    destinations: list[str] = field(default_factory=list)  # who a reply goes to, from its thread's headers (#144)
 
 
 class Agent:
@@ -520,6 +603,9 @@ class Agent:
         self._turn_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()  # tasks running a chat reply
         # session id -> chat turns not finished yet, counted until their last write (incognito cleanup waits, #154)
         self._busy: dict[str, int] = {}
+        # one at a time per chat: trusting it again and a group member's new message (ADR 0029), so a message that
+        # arrives while the user trusts the chat always leaves it marked
+        self._mark_locks: dict[str, asyncio.Lock] = {}
         self._session_tasks: dict[str, set[asyncio.Task]] = {}  # session id -> tasks running its chat turns
 
     # ------------------------------------------------------------------ steering
@@ -583,14 +669,17 @@ class Agent:
             },
         )
 
-    async def _user_model_context(self, user_text: str) -> tuple[str, list[dict]]:
-        """(prompt block, insights in it). Uses ``context_with_sources`` when the user model has it."""
+    async def _user_model_context(self, user_text: str, scope: str | None = None) -> tuple[str, list[dict]]:
+        """(prompt block, insights in it). Uses ``context_with_sources`` when the user model has it. A work or project
+        chat (#155) leaves out what it knows about family and friends."""
         um = getattr(self.app, "user_model", None) if self.app is not None else None
         fn = getattr(um, "context_with_sources", None) or getattr(um, "context_for", None)
         if not callable(fn):
             return "", []
+        personal = memory_scopes.is_personal(scope)
         try:
-            out = await asyncio.wait_for(fn(user_text), timeout=USER_MODEL_TIMEOUT_S)
+            call = fn(user_text) if personal else fn(user_text, leave_out=memory_scopes.PERSONAL_DIMENSIONS)
+            out = await asyncio.wait_for(call, timeout=USER_MODEL_TIMEOUT_S)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # includes the timeout: the user model must never slow a turn down much
@@ -600,27 +689,29 @@ class Agent:
         text = text.strip() if isinstance(text, str) else ""
         return text, (insights if text and isinstance(insights, list) else [])
 
-    async def _recall(self, user_text: str) -> list[dict]:
+    async def _recall(self, user_text: str, scope: str | None = None) -> list[dict]:
+        """Facts for the prompt: in the chat's scope plus always (#155)."""
         if self.memory is None or self.config.memory.facts_top_k <= 0 or not user_text.strip():
             return []
         try:
-            return await self.memory.recall(user_text)
+            return await self.memory.recall(user_text, scopes=memory_scopes.recall_scopes(scope))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("recall failed: %s", exc)
             return []
 
-    async def _prompt_notes(self, user_text: str) -> list[dict]:
+    async def _prompt_notes(self, user_text: str, scope: str | None = None) -> list[dict]:
         """Short pieces of the user's notes that clearly match the message (#354), while a folder is added and
-        folder_search is offered. Never slows a turn down much or breaks it."""
+        folder_search is offered, from the folders the chat's scope reads (#392). Never slows a turn down much or
+        breaks it."""
         folders = getattr(self.app, "folders", None) if self.app is not None else None
         if folders is None or self.config.folders.prompt_notes <= 0 or not user_text.strip():
             return []
         if not any(t.name == "folder_search" for t in self.registry.tools()):
             return []
         try:
-            pieces = await asyncio.wait_for(folders.prompt_pieces(user_text), timeout=NOTES_TIMEOUT_S)
+            pieces = await asyncio.wait_for(folders.prompt_pieces(user_text, scope), timeout=NOTES_TIMEOUT_S)
             log.info("note pieces in the prompt: %s", ", ".join(str(p.get("path")) for p in pieces) or "none matched")
             return pieces
         except asyncio.CancelledError:
@@ -637,12 +728,16 @@ class Agent:
     ) -> tuple[str, MemorySources, list[dict]]:
         """The system prompt, the memories put into it (recalled facts, user-model insights) and the pieces of the
         user's notes put into it (#354). An incognito chat (#154) reads memory and notes only while
-        ``chat.incognito_uses_memory`` is on, and is told nothing will be kept."""
+        ``chat.incognito_uses_memory`` is on, and is told nothing will be kept. The chat's memory scope (#155) decides
+        which facts are recalled; a work or project chat also leaves out the personal profile files."""
         incognito = bool((session or {}).get("incognito"))
         reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        scope = memory_scopes.of_session(self.config, session)
+        personal = memory_scopes.is_personal(scope)
         if reads_memory:
             facts, (user_context, insights), notes = await asyncio.gather(
-                self._recall(user_text), self._user_model_context(user_text), self._prompt_notes(user_text)
+                self._recall(user_text, scope), self._user_model_context(user_text, scope),
+                self._prompt_notes(user_text, scope),
             )
         else:
             facts, user_context, insights, notes = [], "", [], []
@@ -652,6 +747,11 @@ class Agent:
         snapshot = self.workspace.snapshot()
         if not reads_memory:  # only the persona: no profile, memory file or daily notes
             snapshot = {k: (v if k == "soul" else "") for k, v in snapshot.items()}
+        elif not personal:  # MEMORY.md, daily notes and USER.md's learned facts come from personal memories (#155)
+            snapshot = {
+                **snapshot, "memory": "", "today": "", "yesterday": "",
+                "user": memory_scopes.without_learned(snapshot.get("user") or ""),
+            }
         prompt = build_system_prompt(
             snapshot=snapshot,
             facts=facts,
@@ -668,6 +768,8 @@ class Agent:
         )
         if session and session.get("context_summary"):
             prompt += "\n\n## Earlier in this conversation\n" + session["context_summary"]
+        if reads_memory and not personal:
+            prompt += "\n\n" + memory_scopes.prompt_note(scope)
         if incognito:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources, notes
@@ -711,6 +813,7 @@ class Agent:
         budget: Budget | None = None,
         repeat_nudge: bool = False,
         fallback: bool = False,
+        interrupt: Callable[[], bool] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Stream a tool-calling conversation. Mutates ``messages`` and fills ``result``.
 
@@ -725,6 +828,10 @@ class Agent:
         ``stop()`` is checked after each round of tool results; when it returns True the loop ends without
         another model call and sets ``result.paused`` (task runs use it to wait for the user's answer). ``budget`` is checked
         before each model call; when it has run out the loop ends with ``result.stopped_by_budget``.
+        ``interrupt()`` is checked at every safe point: before each model call, and before each tool call (never during
+        one). When it returns True the loop ends there and sets ``result.interrupted``; tool calls of the last answer
+        that did not run are left without a result (``history_to_openai`` drops them), so a run that carries on from
+        the transcript makes them again (a task the user paused, #408).
 
         Loop breaker (``tools.repeated_call_limit``): when the same tool with the same arguments gets
         the same result that many times, the loop ends with ``result.stopped_by_repeat`` (and ``error``).
@@ -749,8 +856,18 @@ class Agent:
         tools_disabled = False
         empty_nudged = False
         round_no = 0
+        def interrupted() -> bool:
+            if interrupt is None or not interrupt():
+                return False
+            result.interrupted = True
+            result.text = ""
+            result.messages = messages
+            return True
+
         while round_no < rounds:
             round_no += 1
+            if interrupted():  # before the model call
+                return
             over = budget.exceeded() if budget is not None else None
             if over:
                 result.stopped_by_budget = result.error = over
@@ -859,10 +976,20 @@ class Agent:
                     result.from_findings = True
                     log.info("%s: the model gave no answer after its tool calls; answering from the results", source)
                     yield TextDelta(text=text_acc, **ev)
+                note = outcomes.unmade_browser_click_note(
+                    text_acc, result.browser_clicks, result.browser_click_history
+                )
+                # the model may copy an earlier correction from the chat into its reply: one is enough
+                if note and f"Correction: {note}" not in text_acc:
+                    correction = f"\n\nCorrection: {note}"
+                    text_acc += correction
+                    yield TextDelta(text=correction, **ev)
                 result.text = text_acc
                 result.messages = messages
                 return
 
+            if interrupted():  # before any of this answer's calls (and their second look) start: it is asked again
+                return
             # a delete for good becomes its app's trash version unless the user asked for it to be permanent (#142);
             # swapped before the call is saved, so the transcript, approvals and second look all see the trash call
             swapped = self._prefer_trash(tool_calls, messages, ctx)
@@ -900,7 +1027,7 @@ class Agent:
                     "tool": waiting.tc.name, "arguments": waiting.tc.arguments, "call_id": waiting.tc.id,
                     "question": question,
                     "preview": preview.build(waiting.tc.name, waiting.tc.arguments, purchase=await is_purchase(
-                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk)),
+                        waiting.tool, waiting.tc.arguments, ctx, waiting.risk), to=waiting.destinations),
                 }
                 if waiting.ask_rule:  # an "ask" rule in a task run: pause and ask, with how wide a yes may be (#139)
                     purchase = await is_purchase(waiting.tool, waiting.tc.arguments, ctx, waiting.risk)
@@ -911,6 +1038,8 @@ class Agent:
                         question=approval_question(label, waiting.tc.arguments, wording["target"], waiting.level),
                     )
             for group in self._groups(plans):
+                if interrupted():  # between calls: the ones that ran keep their results, the rest are made again
+                    return
                 for p in group:
                     yield ToolCallEvent(call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments, **ev)
                 runnable: list[_CallPlan] = []
@@ -987,6 +1116,11 @@ class Agent:
 
         result.hit_step_limit = True
         result.text = text_acc or "I reached the step limit before finishing. Tell me how to continue."
+        note = outcomes.unmade_browser_click_note(result.text, result.browser_clicks, result.browser_click_history)
+        if note and f"Correction: {note}" not in result.text:
+            correction = f"\n\nCorrection: {note}"
+            result.text += correction
+            yield TextDelta(text=correction, **ev)
         result.messages = messages
 
     async def _model_stream(
@@ -1051,6 +1185,10 @@ class Agent:
             tool, ctx.user_words, self._app_name(tool), plan.risk, self._other_apps(tool)
         )
         rule = applied_rule(rule, asked=asked, risk=plan.risk)
+        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)  # send or exec, or a write that carries data out
+        if rule is None and ctx.extra.get(ASK_FIRST_KEY) and outgoing and not tool.internal:
+            rule = ASK  # this routine asks first (#161); a lasting rule the user set wins either way
+            plan.level = TASK_ASKS  # the hold and the task's question say why it asks
         if chat_rule == "ask" and pending_asks(self.approvals.config.mode, plan.risk):
             # ask first while the user hasn't answered the proposal, whatever else says yes; with approvals off
             # only for calls that change something, so look-ups never wait on a guess from the chat (#306)
@@ -1070,7 +1208,6 @@ class Agent:
             if refusal:
                 plan.preset = ({"error": str(refusal)}, True, 0)
                 return plan
-        outgoing = sends_out(tool, plan.risk, tc.arguments, ctx)
         tried = ctx.extra.get(dry_run.KEY) if ctx.extra else None
         if isinstance(tried, dry_run.DryRun) and dry_run.simulates(tool, plan.risk, outgoing=outgoing):
             # a try run (#142): anything above a look-up, or that can send data out, is noted instead of done, decided
@@ -1102,6 +1239,11 @@ class Agent:
             reason = untrusted_reason(ctx.untrusted)
         elif ctx.untrusted and plan.host and plan.host not in ctx.visited and address_carries_data(address):
             reason = untrusted_address_reason(ctx.untrusted, plan.host)  # the address itself could carry data out
+        if not reason and ctx.channel == "mcp" and preview.action_kind(tool.name, tc.arguments) in {"delete", "trash"}:
+            # a delete an MCP app steered this chat into always asks (issue #443), including one the
+            # trash preference would quietly swap for a move to the trash: deletes sit below send
+            # level, so the outside-content gate above never sees them on its own
+            reason = "An app asked Sentient to delete this through MCP, so Sentient checks with you first."
         if reason:
             # the run read outside content: anything that can send data out needs the user's own yes, whatever the
             # mode, Allow rules or "Allow for this chat" say (ADR 0018). Nothing a model says can clear it.
@@ -1137,8 +1279,17 @@ class Agent:
             elif ctx.extra.get(CAN_PAUSE_KEY):  # a task run: hold the call, pause and ask (#139)
                 plan.preset = ({"error": approval_hold_message(label, said)}, True, 0)
                 plan.wants_ok = plan.ask_rule = True
+            elif (guess := await self._pending_guess(tool, tc, ctx, rule, chat_rule, plan)) == "go":
+                # a pending Ask card (#130) stops nothing a helper does inside Sentient's own things: a guess only
+                # ever adds a question, and this run has nobody to ask, so the call goes ahead (#491)
+                pass
             else:  # subagents, swarm workers and other unattended loops cannot stop to ask: the run stops here
-                plan.preset = ({"error": unattended_ask_message(label, said)}, True, 0)
+                if guess == "pending":
+                    # the stop is the chat's undecided rule card, not a rule the user set: name whose answer it
+                    # waits for, so the main assistant can do the call itself and ask once
+                    plan.preset = ({"error": pending_card_message(label)}, True, 0)
+                else:
+                    plan.preset = ({"error": unattended_ask_message(label, said)}, True, 0)
                 plan.rule_stop = True
         unasked = not plan.needs_approval if use_approvals else plan.preset is None
         if look is not None and not plan.warning and unasked:
@@ -1176,7 +1327,10 @@ class Agent:
             if args is None:
                 continue
             if request is None:
-                request = second_look.gather(messages, self.registry, task=bool(ctx.extra.get("task_id"))).request
+                request = second_look.gather(
+                    messages, self.registry, task=bool(ctx.extra.get("task_id")),
+                    brief_from=str(ctx.extra.get(second_look.BRIEF_FROM_KEY) or ""),
+                ).request
             if reversible.asks_for_good(request):
                 return swapped
             log.info("moving to the trash with %s instead of %s", twin.name, tc.name)
@@ -1198,7 +1352,7 @@ class Agent:
         hold = broker.open(undo_id, call_id=p.tc.id, name=p.tc.name, session_id=ctx.session_id, channel=ctx.channel,
                            seconds=seconds)
         yield UndoWindow(undo_id=undo_id, call_id=p.tc.id, name=p.tc.name, seconds=seconds, until=hold.until,
-                         preview=preview.build(p.tc.name, p.tc.arguments), **ev)
+                         preview=preview.build(p.tc.name, p.tc.arguments, to=p.destinations), **ev)
         outcome = await broker.wait(undo_id)
         log.info("undo window for %s ended: %s", p.tc.name, outcome)
         p.undo = outcome
@@ -1221,16 +1375,58 @@ class Agent:
             remember_session=self.approvals.config.remember_session,
         )
         self.approvals.create(approval_id, offered)
-        yield ApprovalRequest(
-            approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
-            risk=p.risk.name, reason=f"{p.tool.plugin}: {p.tool.description[:160]}",
-            risk_label=wording["risk_label"], target=wording["target"],
-            untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
-            grant_minutes=self.approvals.config.grant_minutes,
-            preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase), **ev,
-        )
+        note: dict | None = None
+        if ctx.channel == "mcp" and self.app is not None:
+            # an MCP client cannot show this question (it drops the event and waits), so the approval
+            # also lands as a notification the user can answer in the app or on their phone (#443);
+            # the answer reaches this same approval_id through the broker, whichever surface sends it
+            label = wording.get("risk_label") or "Changes something"
+            target = wording.get("target")
+            # the note names the app that is asking (the turn's mark on this channel), framed
+            # as a name rather than a sentence the app could speak as Sentient: the name is
+            # the client's own handshake text, cleaned where the turn was marked, and, the
+            # note being rendered as Markdown, put in a code span so Markdown cannot parse
+            # it into a link or emphasis
+            who = ctx.untrusted
+            framed = framed_app_name(who)
+            message = f"{framed} wants to: {label}: {target}" if target else f"{framed} wants to: {label}"
+            try:
+                note = await self.app.notify(
+                    "approval", message, title="Approval needed",
+                    payload={
+                        "approval_id": approval_id, "name": p.tc.name, "risk": p.risk.name,
+                        "arguments": p.tc.arguments, "session_id": ctx.session_id, "channel": "mcp",
+                        "untrusted": p.untrusted or None,
+                        "reason": p.untrusted or approval_reason(wording, p.risk) or None,
+                    },
+                )
+            except Exception:
+                log.exception("could not post the approval notification")
         asked_at = now_iso()
-        decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
+        decision: str = "expired"  # if the wait never completes (the asker went away), the note settles as expired
+        try:
+            # the yield is inside the try: if whoever is consuming this generator closes it while
+            # the request is on screen, the finally below still settles the notification
+            yield ApprovalRequest(
+                approval_id=approval_id, call_id=p.tc.id, name=p.tc.name, arguments=p.tc.arguments,
+                risk=p.risk.name, reason=approval_reason(wording, p.risk),
+                risk_label=wording["risk_label"], target=wording["target"],
+                untrusted=p.untrusted or None, warning=p.warning or None, choices=offered,
+                grant_minutes=self.approvals.config.grant_minutes,
+                preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase, to=p.destinations), **ev,
+            )
+            decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
+        finally:
+            if note is not None:
+                # settle the notification with the answer, whoever gave it, so it never waits forever:
+                # in a finally, so a turn cancelled while it waits still settles its note
+                try:
+                    await self.app.notifications.update_payload(
+                        note["id"], {**(note.get("payload") or {}), "status": decision}
+                    )
+                    await self.app.notifications.mark_read(note["id"])
+                except Exception:
+                    log.exception("could not settle the approval notification")
         p.approval = {
             "decision": decision, "asked_at": asked_at, "answered_at": now_iso(),
             "target": wording["target"], "risk_label": wording["risk_label"],
@@ -1284,6 +1480,41 @@ class Agent:
         if chat_rules is None or not session_id:
             return None
         return await chat_rules.chat_rule(tool, session_id)
+
+    async def _pending_guess(
+        self, tool: Tool, tc: ToolCall, ctx: ToolContext, rule: str | None, chat_rule: str | None, plan: _CallPlan,
+    ) -> str:
+        """How a pending rule guess from the chat (#130) is treated for this unattended call: "go" when only a
+        pending Ask suggestion stands between the call and running, and the call is an internal write — a helper
+        writing inside Sentient's own things (#491: a guess only ever adds a question, and this run has nobody to
+        ask); "pending" when the pending suggestion stops the call, with a message that names the rule card waiting
+        for the user's answer in the chat, when a rule check is still running for the tool (an older Ask proposal
+        must not let the call through while a matching Never check is still being decided), or when approvals mode
+        is "always" (the user asked to approve every write); "rule" when a rule the user set, a call that opens the
+        home (ADR 0028) or a routine set to ask first (#161) stops it."""
+        if rule != ASK or chat_rule != ASK:
+            return "rule"
+        if self.approvals.rule(tool) in (ASK, IF_ASKED, HAND_OFF):
+            return "rule"  # a rule the user set still stops a run nobody can ask in
+        if plan.level in (OPENS_HOME, TASK_ASKS):
+            return "rule"
+        # a call that opens the home always asks first, whatever the rules say (ADR 0028)
+        if await opens_home(tool, tc.arguments, ctx, plan.risk):
+            return "rule"
+        chat_rules = getattr(self.app, "chat_rules", None) if self.app is not None else None
+        if chat_rules is not None and chat_rules.is_checking(tool, ctx.session_id):
+            return "pending"  # a running check may still become Never: never let an older Ask proposal through it
+        pending = await chat_rules.pending_rule(tool, ctx.session_id) if chat_rules is not None else None
+        if pending == NEVER:
+            return "pending"  # a pending Never card stops helpers, exactly as main does
+        if (
+            pending == ASK
+            and tool.internal
+            and Risk(plan.risk) == Risk.write
+            and self.approvals.config.mode != "always"
+        ):
+            return "go"  # #491: a pending Ask card lets a helper write inside Sentient's own things
+        return "pending"
 
     def _start_rule_check(self, session_id: str, message_id: str | None, text: str) -> asyncio.Task | None:
         """Start checking ``text`` for a standing "never" or "ask me first" (#130), or None when the cheap
@@ -1393,6 +1624,17 @@ class Agent:
         if ran and p.host:
             ctx.visited.add(p.host)
         err = _error_text(res)
+        if tc.name == "browser_click":
+            approval = p.approval or {}
+            result.browser_clicks.append({
+                "name": tc.name,
+                "declined": declined,
+                "ok": ran and not is_error and not err and outcomes.result_problem(res) is None,
+                "uncertain": ran and is_error,
+                "target": str(
+                    res.get("clicked") or approval.get("target") or tc.arguments.get("ref", "")
+                ) if isinstance(res, dict) else tc.arguments.get("ref", ""),
+            })
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):
                 ctx.untrusted = untrusted_source(p.tool, self.registry)
@@ -1420,6 +1662,8 @@ class Agent:
         folder = incognito_outputs.outputs_folder(ctx.session_id) if ctx.incognito and ctx.session_id else "outputs"
         content = await self._tool_content(res, tc.id, tool=p.tool, limit=result.tool_result_limit, folder=folder)
         model_content = self.outside_content(content, p.tool, tc.arguments) if p.tool is not None else content
+        if note := outcomes.model_note(check):  # the result said done, reading it back says not (#386)
+            content, model_content = f"{content}\n{note}", f"{model_content}\n{note}"
         messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.name, "content": model_content})
         if persist:  # stored as it is; marked again when the transcript is read back (mark_outside_messages)
             extra = {"approval": p.approval} if p.approval else {}
@@ -1595,10 +1839,13 @@ class Agent:
         attachments: list[str] | None = None,
         model: str | None = None,
         on_stopped: Callable[[dict], Any] | None = None,
+        app_name: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """One chat turn. ``on_stopped`` is called with ``{message_id, memory_sources}`` of the reply kept when the
         turn is stopped, so the caller can send them with its own ``done`` event."""
-        quick = await self._quick_plan(session_id, user_text, attachments or [])
+        # an MCP app's turn never takes the quick-command path (#443): those commands run at once on
+        # "the message named this change", which is only ever true of the user's own words
+        quick = await self._quick_plan(session_id, user_text, attachments or []) if channel != "mcp" else None
         if quick is not None:  # a plain timer or reminder command: done now, without the model (#150)
             async for event in self._quick_turn(session_id, user_text, quick, channel=channel):
                 yield event
@@ -1641,9 +1888,13 @@ class Agent:
         notes: list[dict] = []  # pieces of the user's notes put into the prompt (#354)
         try:
             user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
-            if self.app is not None and hasattr(self.app, "user_seen"):
-                await self.app.user_seen(channel)  # a chat message on any surface means the user is around (#163)
-            rule_check = self._start_rule_check(session_id, user_message_id, user_text)
+            if self.app is not None and hasattr(self.app, "user_seen") and channel != "mcp":
+                # a chat message on any of the user's surfaces means the user is around (#163); an MCP
+                # app's activity says nothing about the user, so it never resets the away timer (#443)
+                await self.app.user_seen(channel)
+            # an MCP turn's text is the app's, not the user's: it never proposes standing rules
+            # from it (#443), the way quick commands are skipped here
+            rule_check = None if channel == "mcp" else self._start_rule_check(session_id, user_message_id, user_text)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
@@ -1651,6 +1902,7 @@ class Agent:
             system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
+            result.browser_click_history.extend(browser_click_history(history))
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the
@@ -1683,15 +1935,29 @@ class Agent:
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = incognito
-            ctx.user_words = [user_text]  # what the user typed or said, never attachments (#140)
+            ctx.memory_scope = memory_scopes.of_session(self.config, session)  # recall and saving use it (#155)
+            # a turn an MCP app steers is outside content from the start (issue #443): its text is not
+            # the user's words, so it never fills user_words, and the chat is marked before anything
+            # runs, like one that begins with someone else's text attached below
+            from_mcp = channel == "mcp"
+            ctx.user_words = [] if from_mcp else [user_text]  # what the user typed or said, never attachments (#140)
             # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
             ctx.untrusted = await self._chat_untrusted(session_id, session)
+            if from_mcp and not ctx.untrusted:
+                # the app's name, when it gave one, so the user sees who is asking; it is the
+                # app's own text, so it is cleaned (capped, no control characters) first
+                ctx.untrusted = clean_app_name(app_name) or "an MCP app"
+                await self.store.execute(
+                    "UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id)
+                )
+                self._publish_mark(session_id, ctx.untrusted)
             brought = next((src for a in attachments if (src := attachment_source(a))), "")
             if not ctx.untrusted and brought:
                 # a shared window or region, or text selected in another app, can hold text someone else wrote: it
                 # marks the chat from the start
                 ctx.untrusted = brought
                 await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id))
+                self._publish_mark(session_id, ctx.untrusted)
             marked = bool(ctx.untrusted)
             ctx.visited = _hosts((session or {}).get("visited_hosts"))
             seen_hosts = len(ctx.visited)
@@ -1714,7 +1980,7 @@ class Agent:
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
                 if role_ == "user" and content:  # a steer message can be a standing instruction too (#130)
-                    check = self._start_rule_check(session_id, mid, content)
+                    check = None if channel == "mcp" else self._start_rule_check(session_id, mid, content)
                     if check is not None:
                         await asyncio.wait({check}, timeout=RULE_CHECK_WAIT_S)
 
@@ -1739,6 +2005,7 @@ class Agent:
                         await self.store.execute(
                             "UPDATE sessions SET untrusted = ? WHERE id = ?", (ctx.untrusted, session_id)
                         )
+                        self._publish_mark(session_id, ctx.untrusted)  # the window shows the chat's mark (ADR 0029)
                     if len(ctx.visited) != seen_hosts:  # sites this chat loaded never ask for carrying data
                         seen_hosts = len(ctx.visited)
                         await self.store.execute(
@@ -1788,9 +2055,16 @@ class Agent:
                 # nothing is learned from an incognito chat (#154): no fact extraction, no memory flush, and no
                 # chat.turn_completed, so skills, the user model and dreaming never see it
                 if self.memory is not None and self.config.memory.extract_after_turn and not incognito:
-                    # a chat that read outside content holds what it learns for the user's review (ADR 0021)
+                    # a chat that read outside content holds what it learns for the user's review (ADR 0021);
+                    # in an MCP app's chat the words are the app's, never the user's, so nothing in them can
+                    # clear the review as the user's own words would (#443)
                     log.info("chat %s: fact extraction started for this turn", session_id)
-                    self._spawn(self._extract(said, memory_review.for_context(ctx), session_id), "memory")
+                    self._spawn(
+                        self._extract(
+                            said, memory_review.for_context(ctx), session_id, ctx.memory_scope,
+                            own=not from_mcp,
+                        ), "memory"
+                    )
                 if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
                     self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
                 self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
@@ -1859,24 +2133,36 @@ class Agent:
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = bool((session or {}).get("incognito"))
             ctx.extra = {**ctx.extra, "quick": True, "quick_language": plan.language.code}
-            outcomes: list[tuple[Any, bool]] = []
+            results: list[tuple[Any, bool]] = []
+            checks: list[dict] = []
             if plan.calls:
                 await self.store.add_message(session_id, "assistant", None, tool_calls=[c.to_openai() for c in plan.calls])
             for call in plan.calls:
                 yield ToolCallEvent(call_id=call.id, name=call.name, arguments=call.arguments, **ev)
                 res, is_error, ms = await self._run_tool(call, ctx)
-                content = await self._tool_content(res, call.id, tool=self.registry.get(call.name))
+                tool = self.registry.get(call.name)
+                content = await self._tool_content(res, call.id, tool=tool)
+                # what the device really did, read back (#386): a light that stayed off is never "Turned on"
+                check = await self.check_outcome(tool, call.arguments, res, is_error, ctx) if tool is not None else None
+                if check is not None:
+                    checks.append(check)
+                if note := outcomes.model_note(check):
+                    content = f"{content}\n{note}"
                 await self.store.add_message(session_id, "tool", content, tool_call_id=call.id, name=call.name)
-                outcomes.append((res, is_error))
-                yield ToolResultEvent(call_id=call.id, name=call.name, result=res, is_error=is_error, duration_ms=ms, **ev)
-            reply = plan.answer(outcomes)
+                results.append((res, is_error))
+                yield ToolResultEvent(
+                    call_id=call.id, name=call.name, result=res, is_error=is_error, duration_ms=ms, check=check, **ev
+                )
+            missed = [c for c in checks if c.get("ok") is False and c.get("how") == "read_back"]
+            reply = plan.language.unconfirmed(str(missed[0].get("detail") or "")) if missed else plan.answer(results)
+            checks = outcomes.finalize(checks, reply)
             yield TextDelta(text=reply, **ev)
-            message_id = await self.store.add_message(session_id, "assistant", reply)
+            message_id = await self.store.add_message(session_id, "assistant", reply, checks=checks or None)
             log.info(
                 "quick command: %s (%s) done in %d ms with no model call", plan.command.action, plan.language.code,
                 int((time.perf_counter() - started) * 1000),
             )
-            yield Done(content=reply, message_id=message_id, **ev)
+            yield Done(content=reply, message_id=message_id, checks=checks, **ev)
         except Exception as exc:  # every turn still ends with an error and one done (docs/API.md section 1, #334)
             log.exception("quick command %s failed", plan.command.action)
             yield Error(message=plan.language.failed(""), recoverable=False, **ev)
@@ -1900,11 +2186,12 @@ class Agent:
 
     async def helper_model(self, session_id: str | None, role: str) -> str | None:
         """The model a helper started from a chat (a subagent) uses instead of ``role``'s: the chat's own model, where
-        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it."""
+        the helper would use the primary model. Claude Code only answers chats, so a helper never gets it, unless it
+        does everything (ADR 0032)."""
         if role != "primary" or not session_id:
             return None
         picked, _ = await self.chat_model(await self.store.get_session(session_id), role)
-        if picked and picked.split("/", 1)[0] == claude_code.PREFIX:
+        if picked and picked.split("/", 1)[0] == claude_code.PREFIX and not claude_code.everywhere(self.config):
             return None
         return picked
 
@@ -1941,6 +2228,101 @@ class Agent:
         source = untrusted_in(transcript, self.registry)
         await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         return source
+
+    async def chat_mark(self, session_id: str) -> str:
+        """The app or person whose content a chat read (``sessions.untrusted``), "" when it is clean."""
+        session = await self.store.get_session(session_id)
+        return await self._chat_untrusted(session_id, session) if session is not None else ""
+
+    def _publish_mark(self, session_id: str, source: str) -> None:
+        bus = getattr(self.app, "bus", None)
+        if bus is not None:
+            bus.publish("session.updated", {"session_id": session_id, "untrusted": source})
+
+    async def add_group_messages(self, session_id: str, messages: list[tuple[str, str]]) -> str:
+        """Keep messages other people wrote in a paired group chat (ADR 0029): one ``other`` row each (the sender in
+        ``name``), read by the model as marked outside content, never as the user's words. They mark the chat like any
+        outside content, also when the user had trusted it again. Returns the chat's mark."""
+        messages = [(str(s or ""), str(t or "")) for s, t in messages if str(t or "").strip()]
+        if not messages:
+            return ""
+        for sender, text in messages:
+            await self.store.add_message(session_id, OTHER_ROLE, text, name=" ".join(sender.split())[:80] or None)
+        return await self.mark_group_chat(session_id, messages[0][0])
+
+    async def mark_group_chat(self, session_id: str, sender: str) -> str:
+        """Mark a chat because a group member wrote in it (ADR 0029), unless it is marked already. Done as soon as the
+        message arrives, also while it waits for a reply to end. Returns the chat's mark."""
+        async with self._mark_locks.setdefault(session_id, asyncio.Lock()):
+            session = await self.store.get_session(session_id)
+            current = (session or {}).get("untrusted")
+            if current:
+                return str(current)
+            source = group_source(sender)
+            await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
+        self._publish_mark(session_id, source)
+        return source
+
+    async def last_message_id(self, session_id: str) -> str | None:
+        """The id of the newest message stored in a chat, None when it has none."""
+        row = await self.store.fetchone(
+            "SELECT id FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT 1", (session_id,)
+        )
+        return str(row["id"]) if row else None
+
+    async def _newer_outside(self, session_id: str, upto: str) -> tuple[str, str] | None:
+        """(source, writer) of the newest outside content stored after message ``upto``: a group member's message or
+        a tool result that brought outside content in. None when there is none. ValueError for a message that isn't
+        in this chat."""
+        row = await self.store.fetchone("SELECT rowid FROM messages WHERE id = ? AND session_id = ?", (upto, session_id))
+        if row is None:
+            raise ValueError("that message isn't in this chat")
+        rows = await self.store.fetchall(
+            "SELECT role, name, content FROM messages WHERE session_id = ? AND rowid > ? AND role IN (?, 'tool')"
+            " ORDER BY rowid DESC",
+            (session_id, row[0], OTHER_ROLE),
+        )
+        for r in rows:
+            if r["role"] == OTHER_ROLE:
+                return group_source(str(r["name"] or "")), " ".join(str(r["name"] or "").split())[:40] or "Someone"
+            if source := outside_source(dict(r), self.registry):
+                return source, ""
+        return None
+
+    async def trust_chat(self, session_id: str, *, via: str = "desktop", upto: str | None = None) -> TrustResult | None:
+        """The user's "I've checked it, trust this chat again" (ADR 0029): clear the chat's outside-content mark, so
+        sends there stop asking just because of what it read. Only the user can do this (the window, or /trust in a
+        paired chat from the person who paired it); no tool does it. Logged in the chat as an ``event`` row, which the
+        Activity timeline lists.
+
+        ``upto``: the newest message the user had in front of them. Outside content stored after it (a group member's
+        new message, a page read since) is not covered: the chat stays marked, now naming that newer source. None for
+        no chat; ValueError when ``upto`` isn't a message of this chat."""
+        async with self._mark_locks.setdefault(session_id, asyncio.Lock()):
+            session = await self.store.get_session(session_id)
+            if session is None:
+                return None
+            was = await self._chat_untrusted(session_id, session)
+            if not was:
+                return TrustResult(was="", trusted=False)
+            newer = await self._newer_outside(session_id, upto) if upto else None
+            if newer is not None:
+                still, writer = newer
+                if still != was:
+                    await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (still, session_id))
+            else:
+                await self.store.execute("UPDATE sessions SET untrusted = '' WHERE id = ?", (session_id,))
+                await self.store.add_message(
+                    session_id, EVENT_ROLE,
+                    json.dumps({"event": TRUSTED_EVENT, "was": was, "via": via, "upto": upto}, ensure_ascii=False),
+                    name=TRUSTED_EVENT,
+                )
+        if newer is not None:
+            if still != was:
+                self._publish_mark(session_id, still)
+            return TrustResult(was=was, trusted=False, still=still, writer=writer)
+        self._publish_mark(session_id, "")
+        return TrustResult(was=was, trusted=True)
 
     async def _persist_stopped(
         self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None,
@@ -2049,18 +2431,24 @@ class Agent:
                     "memory.updated", {"action": r["action"], "id": r.get("id"), "content": r.get("content"), **extra}
                 )
 
-    async def _extract(self, user_text: str, review: dict | None = None, session_id: str | None = None) -> None:
+    async def _extract(
+        self, user_text: str, review: dict | None = None, session_id: str | None = None, scope: str | None = None,
+        *, own: bool = True,
+    ) -> None:
         """Only the user's own words are mined for facts; the assistant's reply is
         mostly restated context (dates, tool output) and produced junk memories.
         With ``review`` (the chat read outside content) a fact is held for the user's review unless the user's own
-        words back all of it (#234); instruction-shaped ones are always held."""
+        words back all of it (#234); instruction-shaped ones are always held. New facts go in the chat's ``scope``.
+        ``own=False`` when the words are not the user's at all (an MCP app's chat, #443): facts are still mined,
+        but nothing in them counts as the user's own backing, so the review always holds."""
         assert self.memory is not None
         if len(user_text.split()) < 4:
             return
         try:
             results = await self.memory.extract_and_store(
-                user_text, self.config.assistant.user_name, own=True, session_id=session_id,
+                user_text, self.config.assistant.user_name, own=own, session_id=session_id,
                 **({"review": review} if review else {}),
+                **({"scope": scope} if scope and scope != memory_scopes.PERSONAL else {}),
             )
             self._publish_memory(results, session_id)
         except Exception as exc:
@@ -2080,16 +2468,22 @@ class Agent:
                 await self.store.rename_session(session_id, title)
                 if self.app is not None:
                     self.app.bus.publish("session.updated", {"session_id": session_id, "title": title})
+        except ModelRefused as exc:  # no model may write it (Claude Code only answers chats): said plainly (#474)
+            log.info("no model could title the chat, so it keeps its current title: %s", exc)
         except Exception as exc:
             log.debug("auto title failed: %s", exc)
 
-    async def _flush_memory(self, transcript: str, untrusted: str = "", session_id: str | None = None) -> None:
+    async def _flush_memory(
+        self, transcript: str, untrusted: str = "", session_id: str | None = None, scope: str | None = None
+    ) -> None:
         """Let the memory package keep durable facts from turns about to be folded into a summary. In a chat that
         read outside content they are held for the user's review (ADR 0021)."""
         flush = getattr(self.memory, "flush_conversation", None) if self.memory is not None else None
         if not callable(flush):
             return
         held = {"review": memory_review.note(untrusted, session_id=session_id)} if untrusted else {}
+        if scope and scope != memory_scopes.PERSONAL:
+            held["scope"] = scope  # the chat's memory scope (#155)
         try:  # publishes its own memory.updated, with the chat so it can offer Undo (#234)
             await flush(transcript, self.config.assistant.user_name, session_id=session_id, **held)
         except Exception as exc:
@@ -2117,7 +2511,10 @@ class Agent:
                 return
             transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
             if flush:
-                await self._flush_memory(transcript, (session or {}).get("untrusted") or "", session_id)
+                await self._flush_memory(
+                    transcript, (session or {}).get("untrusted") or "", session_id,
+                    memory_scopes.of_session(self.config, session),
+                )
             prev = (session or {}).get("context_summary") or ""
             summary = await self.llm.complete_text(
                 "fast",
@@ -2130,6 +2527,8 @@ class Agent:
                 "UPDATE sessions SET context_summary = ?, context_upto = ? WHERE id = ?",
                 (summary.strip(), next_watermark(upto, older, "created_at", "rowid"), session_id),
             )
+        except ModelRefused as exc:  # #474: the older turns drop out of the chat's history without a summary
+            log.warning("no model could summarise the older part of the chat, so it is left out unsummarised: %s", exc)
         except Exception as exc:
             log.debug("context compression skipped: %s", exc)
 

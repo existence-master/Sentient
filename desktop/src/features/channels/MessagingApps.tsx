@@ -10,7 +10,7 @@ import {
 } from '@tabler/icons-react'
 import { motion } from 'motion/react'
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, IconButton, Input, Skeleton, Spinner, Switch, type Tone } from '@/components/ui'
 import { CopyChip, InstructionsGuide } from '@/features/integrations/InstructionsGuide'
@@ -19,6 +19,7 @@ import type { Channel, ChannelPairing, PairedChat } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 import { previewMode } from '@/features/devices/preview'
 import { SchemaForm } from '@/features/settings/SchemaForm'
+import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
 import { useChannelActions, useChannels } from './hooks'
 import { ChannelTile } from './meta'
 import { WhatsAppLinkDialog } from './WhatsAppLink'
@@ -96,6 +97,16 @@ export function MessagingApps() {
 function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConnect: () => void; onPair: () => void }) {
   const actions = useChannelActions()
   const [confirm, setConfirm] = useState(false)
+  const forget = useForgetChoice()
+  // deep link (also for screenshots): ?disconnect=<id>[&forget=1] opens the disconnect question (#153)
+  const [params] = useSearchParams()
+  const linked = useRef(false)
+  useEffect(() => {
+    if (linked.current || params.get('disconnect') !== channel.id || channel.status !== 'connected') return
+    linked.current = true
+    forget.setForget(params.get('forget') === '1')
+    setConfirm(true)
+  }, [params, channel.id, channel.status, forget])
   const status = STATUS[channel.status] ?? STATUS.disconnected
   const connected = channel.status === 'connected'
   const whatsapp = channel.id === 'whatsapp'
@@ -115,7 +126,14 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
           <div className="mt-0.5 text-sm text-fg-subtle">{connected && channel.account_label ? account : BLURB[channel.id] ?? ''}</div>
         </div>
         {connected ? (
-          <Button size="sm" variant="ghost" onClick={() => setConfirm(true)}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              forget.reset()
+              setConfirm(true)
+            }}
+          >
             Disconnect
           </Button>
         ) : (
@@ -163,19 +181,26 @@ function ChannelCard({ channel, onConnect, onPair }: { channel: Channel; onConne
         onOpenChange={setConfirm}
         title={`Disconnect ${channel.display_name}?`}
         description={
-          whatsapp
-            ? 'Sentient is removed from Linked devices on your phone and stops answering. Your chats and their history stay here. To use WhatsApp again, scan a new code.'
-            : 'Sentient stops answering messages there. Your paired chats and their history stay, and come back if you reconnect the same bot.'
+          forget.forget
+            ? whatsapp
+              ? 'Sentient is removed from Linked devices on your phone and stops answering. To use WhatsApp again, scan a new code.'
+              : 'Sentient stops answering messages there. Your paired chats stay paired if you reconnect the same bot.'
+            : whatsapp
+              ? 'Sentient is removed from Linked devices on your phone and stops answering. Your chats and their history stay here. To use WhatsApp again, scan a new code.'
+              : 'Sentient stops answering messages there. Your paired chats and their history stay, and come back if you reconnect the same bot.'
         }
-        confirmLabel="Disconnect"
+        confirmLabel={forget.forget ? 'Disconnect and forget' : 'Disconnect'}
         onConfirm={async () => {
           try {
-            await actions.disconnect.mutateAsync(channel.id)
+            const res = await actions.disconnect.mutateAsync({ id: channel.id, forget: forget.forget })
+            if (res.forgotten) toast.success(`${channel.display_name} disconnected`, { description: forgottenMessage(res.forgotten) })
           } catch (e) {
             toast.error("Couldn't disconnect", { description: errorMessage(e) })
           }
         }}
-      />
+      >
+        <ForgetLearned source={`channel:${channel.id}`} open={confirm} checked={forget.forget} onCheckedChange={forget.setForget} />
+      </ConfirmDialog>
     </motion.div>
   )
 }
@@ -189,7 +214,9 @@ function PairedRow({ channel, chat }: { channel: Channel; chat: PairedChat }) {
     <div className="flex items-center gap-3 px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium text-fg">{chat.label}</div>
-        <div className="text-xs text-fg-subtle">Paired {relativeTime(chat.paired_at)}</div>
+        <div className="text-xs text-fg-subtle">
+          {chat.is_group ? 'Group: only you can talk to Sentient here. ' : ''}Paired {relativeTime(chat.paired_at)}
+        </div>
       </div>
       <label className="flex cursor-pointer items-center gap-2 text-xs text-fg-muted" title="Task results, plans waiting for approval and suggestions are also sent here">
         Send updates here

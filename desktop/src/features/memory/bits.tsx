@@ -1,4 +1,4 @@
-import { IconHourglassHigh } from '@tabler/icons-react'
+import { IconBriefcase, IconFolder, IconHome, IconHourglassHigh, IconInfinity } from '@tabler/icons-react'
 import { cn } from '@/lib/utils'
 import type { Memory } from '@/lib/types'
 import { countdown, EXPIRING_SOON_MS, expiresInMs, sourceMeta, topicMeta, topicText, topicTint } from './meta'
@@ -45,6 +45,45 @@ export function ExpiryBadge({ memory, now, className }: { memory: Memory; now: n
     >
       <IconHourglassHigh size={11} />
       {ms > 0 ? countdown(ms) : 'expiring'}
+    </span>
+  )
+}
+
+/** The plain name of a memory scope (#155): Personal, Work, Every chat, or a project's own name. */
+export function scopeLabel(scope: string | null | undefined): string {
+  if (!scope || scope === 'personal') return 'Personal'
+  if (scope === 'work') return 'Work'
+  if (scope === 'always') return 'Every chat'
+  return scope
+}
+
+export function ScopeIcon({ scope, size = 15, className }: { scope: string | null | undefined; size?: number; className?: string }) {
+  if (!scope || scope === 'personal') return <IconHome size={size} className={className} />
+  if (scope === 'work') return <IconBriefcase size={size} className={className} />
+  if (scope === 'always') return <IconInfinity size={size} className={className} />
+  return <IconFolder size={size} className={className} />
+}
+
+/**
+ * Where a memory is kept, shown unless it is the default (Personal). It reads "Used in Work" in a dashed, square
+ * outline next to the source, so it never looks like a topic pill such as "Work & Learning" (#392).
+ */
+export function ScopeBadge({ scope, className }: { scope: string | null | undefined; className?: string }) {
+  if (!scope || scope === 'personal') return null
+  const where = scope === 'always' ? 'every chat' : scopeLabel(scope)
+  return (
+    <span
+      title={scope === 'always' ? 'Every chat uses this memory' : `Only ${scopeLabel(scope)} chats use this memory`}
+      data-scope-badge={scope}
+      className={cn(
+        'inline-flex h-5 min-w-0 max-w-44 shrink items-center gap-1 rounded-md border border-dashed border-border-strong px-1.5 text-2xs text-fg-subtle',
+        className
+      )}
+    >
+      <ScopeIcon scope={scope} size={11} className="shrink-0" />
+      <span className="truncate">
+        Used in <span className="font-medium text-fg-muted">{where}</span>
+      </span>
     </span>
   )
 }

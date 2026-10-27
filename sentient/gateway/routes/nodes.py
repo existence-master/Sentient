@@ -104,9 +104,13 @@ async def list_nodes(request: Request):
     return await get_core(request).nodes.list_nodes()
 
 
+class PairingBody(BaseModel):
+    replaces: str | None = Field(None, max_length=16)
+
+
 @router.post("/api/nodes/pairing", dependencies=AUTH)
-async def create_pairing(request: Request):
-    return get_core(request).nodes.create_pairing(str(request.base_url))
+async def create_pairing(request: Request, body: PairingBody | None = None):
+    return get_core(request).nodes.create_pairing(str(request.base_url), replaces=body.replaces if body else None)
 
 
 @router.get("/api/nodes/lan", dependencies=AUTH)
@@ -131,14 +135,15 @@ async def rename_node(request: Request, node_id: str, body: RenameBody):
 
 
 @router.delete("/api/nodes/{node_id}", dependencies=AUTH)
-async def delete_node(request: Request, node_id: str):
+async def delete_node(request: Request, node_id: str, forget: bool = False):
+    """``?forget=true``: also forget what Sentient learned from the device (#153)."""
     try:
-        ok = await get_core(request).nodes.delete(node_id)
+        ok = await get_core(request).nodes.delete(node_id, forget=forget)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not ok:
         raise HTTPException(404, "device not found")
-    return {"ok": True}
+    return {"ok": True, "forgotten": ok} if isinstance(ok, dict) else {"ok": True}
 
 
 @router.post("/api/nodes/{node_id}/invoke", dependencies=AUTH)

@@ -4,6 +4,8 @@
     ~/.sentient/skills/pending/<name>/SKILL.md    waiting for review (new skill, or a proposed
                                                   update of the active skill with the same name)
     ~/.sentient/skills/archived/<name>/SKILL.md   retired by the curator or the user
+    ~/.sentient/skills/<name>/references/*.md     optional reference files (a skill learned from long docs, #167):
+                                                  ``skill_view`` reads one only when the skill is used
     ---
     name: weekly-review
     description: How to compile the user's weekly review from calendar and notes.
@@ -12,6 +14,9 @@
     tags: [productivity]
     requires_tools: [gcalendar]     # optional: skill is hidden if a tool plugin is missing
     browser_profile: x-growth       # optional: browser tools use this profile once the skill is read
+    validate:                       # optional: how to check it works (sentient/skills/checks.py, #386)
+      - file: notes/weekly-review.md
+        expect: "## Next week"
     created_by_review: false
     ---
     # Weekly review
@@ -30,6 +35,7 @@ Usage counters and lifecycle state live in the ``skill_stats`` table.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -40,6 +46,7 @@ from typing import Any
 import yaml
 
 from sentient import paths
+from sentient.skills import checks as skill_checks
 from sentient.skills.lint import lint_file
 from sentient.store.db import now_iso
 
@@ -47,6 +54,11 @@ _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 _FENCE_OPEN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 RESERVED = {"pending", "archived"}
+REFERENCE_SUFFIXES = {".md", ".markdown", ".txt", ".rst", ".csv", ".json", ".yaml", ".yml"}
+# folders whose text files skill_view can read: Sentient's references/, and the examples/, templates/ and assets/ that
+# Agent Skills from elsewhere use (anthropics/skills keeps its guides in examples/, #210)
+REFERENCE_DIRS = ("references", "examples", "templates", "assets")
+MAX_REFERENCE_FILES = 50
 _UNSET: Any = object()
 SKILL_SECTIONS = (
     "When to use",
@@ -131,10 +143,39 @@ class Skill:
     state: str = "active"     # active | pending_review | archived  (stale comes from skill_stats)
     created_by_review: bool = False
     browser_profile: str | None = None
+    # how to check that it works (``validate`` in the header, ``sentient.skills.checks``)
+    validate: list[dict] = field(default_factory=list)
 
     @property
     def dir(self) -> Path:
         return self.path.parent
+
+    @property
+    def references(self) -> list[str]:
+        """The skill's reference files (``references/setup.md``, #167): the text files in its ``references`` folder
+        (and ``examples``, ``templates`` and ``assets``, which Agent Skills from elsewhere use), which ``skill_view``
+        reads one at a time when the skill is used. Dotfiles and links are left out."""
+        out: list[str] = []
+        root = self.dir.resolve()
+        for folder in REFERENCE_DIRS:
+            base = self.dir / folder
+            if not base.is_dir() or base.is_symlink():
+                continue
+            for f in sorted(base.rglob("*")):
+                rel = f.relative_to(self.dir)
+                if any(part.startswith(".") for part in rel.parts) or f.suffix.lower() not in REFERENCE_SUFFIXES:
+                    continue
+                if f.is_file() and not f.is_symlink() and f.resolve().is_relative_to(root):
+                    out.append(rel.as_posix())
+        return out[:MAX_REFERENCE_FILES]
+
+    def reference_path(self, rel: str) -> Path | None:
+        """The reference file ``rel`` names, or None when it isn't one of the skill's reference files."""
+        want = str(rel or "").strip().replace("\\", "/").removeprefix("./")
+        refs = self.references
+        if want and "/" not in want:  # just the file name: the first folder that has it
+            want = next((f"{d}/{want}" for d in REFERENCE_DIRS if f"{d}/{want}" in refs), f"references/{want}")
+        return self.dir / want if want in refs else None
 
     def summary_line(self) -> str:
         return f"- {self.name}: {self.description}"
@@ -168,6 +209,9 @@ class Skill:
             "last_failure_at": stats.get("last_failure_at"),
             "created_by_review": self.created_by_review,
             "browser_profile": self.browser_profile,
+            "validate": self.validate,
+            "references": self.references,
+            "check": SkillLibrary.check_of(stats, pending=self.state == "pending_review") if self.validate else None,
         }
         if body:
             d["body"] = self.body
@@ -202,7 +246,20 @@ def parse_skill_file(path: Path) -> Skill | None:
         state=state,
         created_by_review=bool(meta.get("created_by_review", False)),
         browser_profile=str(meta.get("browser_profile") or "").strip() or None,
+        validate=skill_checks.parse(meta.get("validate"))[0],
     )
+
+
+class _Dumper(yaml.SafeDumper):
+    """Writes a multi-line value (a check's code) as a readable ``|`` block."""
+
+
+def _str(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    style = "|" if "\n" in value.strip() else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_Dumper.add_representer(str, _str)
 
 
 def render_skill(
@@ -216,6 +273,7 @@ def render_skill(
     requires_tools: list[str] | None,
     created_by_review: bool = False,
     browser_profile: str | None = None,
+    validate: list[dict] | None = None,
 ) -> str:
     meta: dict[str, Any] = {
         "name": name,
@@ -229,7 +287,9 @@ def render_skill(
         meta["browser_profile"] = browser_profile
     if created_by_review:
         meta["created_by_review"] = True
-    front = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True).strip()
+    if validate:
+        meta["validate"] = validate
+    front = yaml.dump(meta, Dumper=_Dumper, sort_keys=False, allow_unicode=True).strip()
     return f"---\n{front}\n---\n\n{ensure_skill_sections(body)}\n"
 
 
@@ -239,7 +299,6 @@ class SkillLibrary:
         self.store = store  # set by the evolution service; used for skill_stats
         self._skills: dict[str, Skill] = {}
         self._available: set[str] | None = None
-        self._stats_ready = False
 
     # ------------------------------------------------------------------ layout
     @property
@@ -331,9 +390,10 @@ class SkillLibrary:
         pending: bool = False,
         created_by_review: bool = False,
         version: int | None = None,
+        validate: list[dict] | None = None,
     ) -> Path:
         """Create a skill. With ``pending`` and an active skill of the same name, this stores a
-        proposed update next to it (see ``diff``)."""
+        proposed update next to it (see ``diff``). ``validate``: its checks (None keeps the active skill's)."""
         name = name.strip().lower()
         if not valid_name(name):
             raise ValueError("skill name must be lowercase letters, digits and dashes (2-64 chars)")
@@ -348,18 +408,28 @@ class SkillLibrary:
                 name, description, body, author=author, version=version, tags=tags,
                 requires_tools=requires_tools, created_by_review=created_by_review,
                 browser_profile=current.browser_profile if current else None,
+                validate=validate if validate is not None else (current.validate if current else None),
             ),
             encoding="utf-8",
         )
         return path
 
-    def approve_pending(self, name: str) -> Path:
+    def approve_pending(self, name: str, *, keep_files: bool = True) -> Path:
+        """Make the pending copy active. ``keep_files=False``: the pending folder is the whole new version (an update
+        from the Skills hub), so files it no longer has are not carried over from the active copy."""
         name = name.strip().lower()
         src = self.pending_dir / name
         dst = self.root / name
         if not (src / "SKILL.md").exists():
             raise FileNotFoundError(name)
+        if dst.exists() and not keep_files:
+            shutil.rmtree(dst)
         if dst.exists():
+            # a proposal holds only its SKILL.md: keep the skill's other files (scripts, references) with it
+            for f in dst.rglob("*"):
+                if f.is_file() and not (src / f.relative_to(dst)).exists():
+                    (src / f.relative_to(dst)).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(f, src / f.relative_to(dst))
             shutil.rmtree(dst)
         shutil.move(str(src), str(dst))
         return dst
@@ -411,6 +481,7 @@ class SkillLibrary:
                 requires_tools=requires_tools if requires_tools is not None else skill.requires_tools,
                 created_by_review=skill.created_by_review,
                 browser_profile=skill.browser_profile,
+                validate=skill.validate,
             ),
             encoding="utf-8",
         )
@@ -465,27 +536,10 @@ class SkillLibrary:
         }
 
     # ------------------------------------------------------------------ stats (skill_stats table)
-    async def _ensure_stats(self, store: Any) -> None:
-        if self._stats_ready:
-            return
-        await store.ensure_column("skill_stats", "created_at", "TEXT")
-        # usage outcomes recorded by self-evolution (skill repair) so the curator can prefer reliable skills
-        await store.ensure_column("skill_stats", "success_count", "INTEGER NOT NULL DEFAULT 0")
-        await store.ensure_column("skill_stats", "failure_count", "INTEGER NOT NULL DEFAULT 0")
-        await store.ensure_column("skill_stats", "last_failure_at", "TEXT")
-        # edit protection (#164): the SKILL.md as Sentient last wrote it (or as first seen), so a hand edit shows up
-        # as a different hash and reset can put the original back; and the active hash a proposal was drafted from
-        await store.ensure_column("skill_stats", "origin_hash", "TEXT")
-        await store.ensure_column("skill_stats", "origin_text", "TEXT")
-        await store.ensure_column("skill_stats", "proposal_base_hash", "TEXT")
-        await store.db.commit()
-        self._stats_ready = True
-
     async def stats(self, store: Any = None) -> dict[str, dict]:
         store = store or self.store
         if store is None:
             return {}
-        await self._ensure_stats(store)
         rows = await store.fetchall("SELECT * FROM skill_stats")
         return {r["name"]: dict(r) for r in rows}
 
@@ -494,7 +548,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         existing = await self.stats(store)
         on_disk: dict[str, str] = {}
         for s in self.list_archived():
@@ -531,7 +584,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         ts = (when or datetime.now(UTC)).isoformat()
         await store.execute(
             "INSERT INTO skill_stats(name, use_count, view_count, last_used_at, state, created_at) VALUES(?, 1, ?, ?, 'active', ?)"
@@ -549,7 +601,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         name = name.strip().lower()
         ts = (when or datetime.now(UTC)).isoformat()
         await store.execute(
@@ -577,7 +628,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         await store.execute(
             "INSERT INTO skill_stats(name, state, created_at) VALUES(?,?,?)"
             " ON CONFLICT(name) DO UPDATE SET state = excluded.state",
@@ -588,7 +638,6 @@ class SkillLibrary:
         store = store or self.store
         if store is None:
             return
-        await self._ensure_stats(store)
         await store.execute(
             "INSERT INTO skill_stats(name, patch_count, state, created_at) VALUES(?, 1, ?, ?)"
             " ON CONFLICT(name) DO UPDATE SET patch_count = patch_count + 1,"
@@ -600,6 +649,29 @@ class SkillLibrary:
             active = self._file(self.root, name.strip().lower())
             base = content_hash(active.read_text(encoding="utf-8", errors="replace")) if active.exists() else None
             await store.execute("UPDATE skill_stats SET proposal_base_hash = ? WHERE name = ?", (base, name.strip().lower()))
+
+    async def record_check(self, name: str, report: dict | None, store: Any = None, *, pending: bool = False) -> None:
+        """Keep the last report of the skill's checks (None: it declares none) for the Skills screen: the pending
+        proposal's with ``pending``, else the active skill's."""
+        store = store or self.store
+        if store is None:
+            return
+        column = "pending_check_report" if pending else "check_report"
+        await store.execute(
+            f"INSERT INTO skill_stats(name, state, created_at, {column}) VALUES(?, 'pending_review', ?, ?)"
+            f" ON CONFLICT(name) DO UPDATE SET {column} = excluded.{column}",
+            (name.strip().lower(), now_iso(), json.dumps(report) if report else None),
+        )
+
+    @staticmethod
+    def check_of(stats: dict | None, *, pending: bool = False) -> dict | None:
+        """The last check report kept in a ``skill_stats`` row (the pending proposal's with ``pending``), or None."""
+        raw = (stats or {}).get("pending_check_report" if pending else "check_report")
+        try:
+            report = json.loads(raw) if raw else None
+        except ValueError:
+            return None
+        return report if isinstance(report, dict) else None
 
     # ------------------------------------------------------------------ edit protection (#164)
     async def record_origin(self, name: str, store: Any = None, *, text: str | None = None) -> None:
@@ -614,7 +686,6 @@ class SkillLibrary:
             if not f.exists():
                 return
             text = f.read_text(encoding="utf-8", errors="replace")
-        await self._ensure_stats(store)
         await store.execute(
             "INSERT INTO skill_stats(name, state, created_at, origin_hash, origin_text) VALUES(?, 'active', ?, ?, ?)"
             " ON CONFLICT(name) DO UPDATE SET origin_hash = excluded.origin_hash, origin_text = excluded.origin_text",
@@ -631,7 +702,6 @@ class SkillLibrary:
         if store is None or not f.exists():
             return {"user_edited": False, "can_reset": False, "protected": False}
         text = f.read_text(encoding="utf-8", errors="replace")
-        await self._ensure_stats(store)
         row = await store.fetchone("SELECT origin_hash, origin_text FROM skill_stats WHERE name = ?", (name,))
         if row is None or not row["origin_hash"]:
             await self.record_origin(name, store, text=text)  # first sight: this is the baseline

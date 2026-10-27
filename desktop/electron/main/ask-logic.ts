@@ -101,6 +101,20 @@ export function parseCapture(line: string): CaptureReport {
   }
 }
 
+/** What `forget` reported: how many clipboard history entries it took out, `off` when Windows keeps no clipboard
+ *  history, `failed` when it couldn't look. */
+export function parseForget(line: string): { result: 'forgot'; count: number } | { result: 'off' | 'failed' } {
+  const words = String(line ?? '').trim().toLowerCase().split(/\s+/)
+  if (words[0] === 'off') return { result: 'off' }
+  if (words[0] === 'forgot' && /^\d+$/.test(words[1] ?? '')) return { result: 'forgot', count: Number(words[1]) }
+  return { result: 'failed' }
+}
+
+/** The `forget` command for the Windows helper: entries holding `text` added since `since` (ms) leave clipboard history. */
+export function forgetCommand(text: string, since: number): string {
+  return `forget ${Math.max(0, Math.floor(since))} ${Buffer.from(String(text ?? ''), 'utf8').toString('base64')}`
+}
+
 /** What a paste-back command reported. */
 export function parsePaste(line: string): 'pasted' | 'password' | 'failed' {
   const word = String(line ?? '').trim().toLowerCase().split(/\s+/).pop() ?? ''
@@ -112,6 +126,9 @@ export function parsePaste(line: string): 'pasted' | 'password' | 'failed' {
  *   capture <vk> <pid> -> {"result", "window", "pid", "process", "description"} (vk: the shortcut's key, 0 for none;
  *                         pid: Sentient's own process, whose windows are never copied from)
  *   paste <hwnd>  -> pasted | password | failed
+ *   forget <since ms> <base64 utf-8 text> -> forgot <n> | off | failed (#332: the copy Ctrl+C made, or the answer
+ *                         Sentient pasted, leaves Windows clipboard history (Win+V); only entries added since `since`
+ *                         with exactly that text, so the user's own older copies stay)
  * It waits for the shortcut's keys to be let go before pressing Ctrl+C or Ctrl+V, so the app doesn't see
  * Ctrl+Alt+Shift+C, and never copies from or pastes into a password box.
  */
@@ -193,6 +210,51 @@ function Test-Password {
   if (-not $uia) { return $false }
   try { $f = [System.Windows.Automation.AutomationElement]::FocusedElement; return [bool]($f -and $f.Current.IsPassword) } catch { return $false }
 }
+$winrt = $null
+$asTask = $null
+function Initialize-History {
+  if ($null -ne $script:winrt) { return $script:winrt }
+  try {
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $script:asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -match '^IAsyncOperation.1$' } | Select-Object -First 1
+    $null = [Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime]
+    $null = [Windows.ApplicationModel.DataTransfer.ClipboardHistoryItemsResult, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime]
+    $script:winrt = $null -ne $script:asTask
+  } catch { $script:winrt = $false }
+  return $script:winrt
+}
+function Wait-WinRT($op, [type]$type) {
+  $task = $script:asTask.MakeGenericMethod($type).Invoke($null, @($op))
+  if (-not $task.Wait(3000)) { throw 'timed out' }
+  return $task.Result
+}
+function Remove-FromHistory([long]$since, [string]$encoded) {
+  if (-not (Initialize-History)) { return 'failed' }
+  $nl = [string][char]10
+  $crlf = [string][char]13 + $nl
+  $want = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)).Replace($crlf, $nl)
+  $clip = [Windows.ApplicationModel.DataTransfer.Clipboard]
+  if (-not $clip::IsHistoryEnabled()) { return 'off' }
+  $from = [DateTimeOffset]::FromUnixTimeMilliseconds($since)
+  $text = [Windows.ApplicationModel.DataTransfer.StandardDataFormats]::Text
+  $n = 0
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  # Windows adds a copy to its history a moment after it lands on the clipboard, so look again for a little while
+  do {
+    $res = Wait-WinRT ($clip::GetHistoryItemsAsync()) ([Windows.ApplicationModel.DataTransfer.ClipboardHistoryItemsResult])
+    if ([string]$res.Status -ne 'Success') { return 'off' }
+    foreach ($item in @($res.Items)) {
+      try {
+        if ($item.Timestamp -lt $from -or -not $item.Content.Contains($text)) { continue }
+        $got = Wait-WinRT ($item.Content.GetTextAsync()) ([string])
+        if ($got -and $got.Replace($crlf, $nl) -ceq $want -and $clip::DeleteItemFromHistory($item)) { $n++ }
+      } catch {}
+    }
+    if ($n -gt 0) { break }
+    Start-Sleep -Milliseconds 150
+  } while ($sw.ElapsedMilliseconds -lt 2500)
+  return "forgot $n"
+}
 [Console]::Out.WriteLine('ready')
 [Console]::Out.Flush()
 while ($null -ne ($line = [Console]::In.ReadLine())) {
@@ -222,6 +284,8 @@ while ($null -ne ($line = [Console]::In.ReadLine())) {
         Start-Sleep -Milliseconds 60
         if (Test-Password) { $out = 'password' } else { [SentientAsk]::Paste(); $out = 'pasted' }
       }
+    } elseif ($parts[0] -eq 'forget' -and $parts.Length -gt 2) {
+      $out = Remove-FromHistory ([long]$parts[1]) $parts[2]
     } else { $out = 'failed' }
   } catch {
     $out = @{ result = 'failed'; error = $_.Exception.Message } | ConvertTo-Json -Compress

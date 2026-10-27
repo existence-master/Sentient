@@ -14,6 +14,7 @@ SKILL_BODY = """# Weekly inbox digest
 1. Call `gmail_search` with `is:unread newer_than:7d`.
 2. Read the top threads with `gmail_read`.
 3. Summarize by sender and urgency.
+4. Skip newsletters.
 ## Verification
 - Every thread in the digest links back to Gmail.
 ## Output

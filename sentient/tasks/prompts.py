@@ -405,6 +405,12 @@ RETRY_NOTE = (
     "the remaining steps, then give your final answer."
 )
 
+PAUSE_RESUMED_NOTE = (
+    "The user paused this task while you were executing this plan and has now resumed it. Everything above this "
+    "message already happened. Continue from where you left off: do not repeat steps whose tool results are "
+    "already shown, finish the remaining steps, then give your final answer."
+)
+
 RESUME_NOTE = (
     "The application was restarted while you were executing this plan. Everything above this message "
     "already happened. Continue from where you left off: do not repeat steps whose tool results are "
@@ -440,8 +446,10 @@ def build_executor_prompt(
     earlier: str = "",
     mark_outside_content: bool = False,
     trigger_source: str = "",
+    confirmed: str = "",
 ) -> str:
-    """``earlier``: what the last runs of a recurring task found and its notepad (``tasks/continuity.py``)."""
+    """``earlier``: what the last runs of a recurring task found and its notepad (``tasks/continuity.py``).
+    ``confirmed``: what the user confirmed in a routine's setup checklist (``tasks/checklist.py``, #161)."""
     trigger_section = ""
     if trigger_event_data:
         data = json.dumps(trigger_event_data, indent=2, default=str)[:12000]
@@ -467,6 +475,7 @@ def build_executor_prompt(
         f"Your task ID is '{task_id}' and the current run ID is '{run_id}'.\n\n"
         f"The original context that triggered this plan is:\n---BEGIN CONTEXT---\n{context_str}\n---END CONTEXT---\n\n"
         f"**Primary Objective:** '{objective}'\n\n"
+        f"{confirmed}"
         f"**The Plan to Execute:**\n{_plan_lines(plan)}\n\n"
         f"**Plan tools and the functions you can call for them:**\n{tools_section}\n\n"
         f"{earlier}"
@@ -484,6 +493,38 @@ def build_executor_prompt(
         f"{outside_rule}"
         "\nNow, begin your work. Start executing the plan, beginning with Step 1."
     )
+
+
+def _one_line(text: Any, limit: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def build_second_look_request(
+    *, name: str, description: str, original_prompt: str = "", plan: list[dict], confirmed: str = "",
+    limit: int = 1500,
+) -> str:
+    """What the user asked a task to do, in their voice and plain words, for the second look's model check (#455).
+
+    The rest of the executor's system prompt is Sentient's own instructions ("If a tool fails, analyze the error"),
+    so read as the user's words it gave reasons like "the user asked to analyze an error". The objective comes
+    first, then what the user confirmed, then as many whole plan steps as fit under ``limit``."""
+    objective = name if not description or description == name else f"{name} - {description}"
+    lines = [f"My task: {_one_line(objective, 500)}"]
+    said = _one_line(original_prompt, 500)
+    if said and said.lower() not in objective.lower():  # the words the user typed, when the task was reworded
+        lines.append(f"In my words: {said}")
+    # what the user confirmed in a routine's checklist, without the executor prompt's heading
+    lines += [_one_line(line, 200) for line in confirmed.splitlines() if line.strip().startswith("- ")]
+    steps = [s for s in plan or [] if isinstance(s, dict) and str(s.get("description") or "").strip()]
+    if steps:
+        lines.append("The plan I approved:")
+    for i, step in enumerate(steps[:8], 1):
+        line = f"{i}. {_one_line(step['description'], 200)}" + (f" (with {step['tool']})" if step.get("tool") else "")
+        if len("\n".join([*lines, line])) > limit:
+            break
+        lines.append(line)
+    return "\n".join(lines)[:limit]
 
 
 async def build_tool_catalog(app: SentientApp) -> dict[str, str]:
