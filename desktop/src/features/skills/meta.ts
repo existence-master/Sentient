@@ -47,27 +47,7 @@ export function splitFrontmatter(md: string): { front: string; body: string } {
   return m ? { front: m[1], body: m[2].trim() } : { front: '', body: md.trim() }
 }
 
-export interface SkillSection {
-  title: string
-  content: string
-}
-
-/** Split a SKILL.md body into its `##` sections (text before the first one is the intro). */
-export function parseSections(body: string): { title: string; intro: string; sections: SkillSection[] } {
-  const lines = body.split(/\r?\n/)
-  let title = ''
-  const intro: string[] = []
-  const sections: SkillSection[] = []
-  for (const line of lines) {
-    const h1 = /^#\s+(.+)$/.exec(line)
-    const h2 = /^##\s+(.+)$/.exec(line)
-    if (h1 && !title && !sections.length) title = h1[1].trim()
-    else if (h2) sections.push({ title: h2[1].trim(), content: '' })
-    else if (sections.length) sections[sections.length - 1].content += `${line}\n`
-    else intro.push(line)
-  }
-  return { title, intro: intro.join('\n').trim(), sections: sections.map((s) => ({ ...s, content: s.content.trim() })) }
-}
+export { parseSections, type SkillSection } from './sections'
 
 export const SKILL_TEMPLATE = `# New skill
 
