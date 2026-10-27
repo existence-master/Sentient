@@ -747,10 +747,13 @@ async def seed(app: SentientApp) -> dict[str, str]:
 
 
 async def main() -> None:
+    seed_safety.check_home(paths.home())  # before anything is written or wiped, also with --keep-live
     paths.ensure_layout()
     cfg = configure()
     if ARGS.config_only:
         print(f"Updated {paths.config_file()}")
+        if not ARGS.keep_live:
+            seed_safety.announce(seed_safety.quiet(paths.home()))
         return
     app =SentientApp(cfg, llm=OfflineProvider(), db_path=paths.db_file(), enable_background=False)  # type: ignore[arg-type]
     await app.start()
