@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sentient.memory import scopes as memory_scopes
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 
 
@@ -79,7 +80,12 @@ async def create_task_from_prompt(ctx: ToolContext, prompt: str, is_swarm: bool 
     context = {"source": "chat"}
     if ctx.session_id:
         context["session_id"] = ctx.session_id
-    task = await svc.create_task(prompt, is_swarm=is_swarm, source="chat", original_context=context)
+    # a task made in a work chat uses work memories (#155); personal ones stay the default
+    scope = await memory_scopes.for_context(ctx)
+    task = await svc.create_task(
+        prompt, is_swarm=is_swarm, source="chat", original_context=context,
+        memory_scope=None if scope in (None, memory_scopes.PERSONAL, memory_scopes.ALWAYS) else scope,
+    )
     short = prompt[:50] + "..." if len(prompt) > 50 else prompt
     return {
         "status": "success",

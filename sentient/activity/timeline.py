@@ -217,8 +217,8 @@ class Timeline:
         limit = max(1, min(int(limit or 50), MAX_LIMIT))
         cur = decode_cursor(before)
         sources: list[Source] = [
-            self._chat_tools, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
-            self._reminders_past, self._facts, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
+            self._chat_tools, self._chat_events, self._channel_replies, self._channel_deliveries, self._task_runs, self._script_checks, self._notifications,
+            self._reminders_past, self._facts, self._forgets, self._dreams, self._skills, self._backups_past, self._always_allowed, self._cost,
             self._file_snapshots,
         ]
         results = await asyncio.gather(*(src(cur, limit, query) for src in sources))
@@ -335,10 +335,12 @@ class Timeline:
                     app_label=label, ref=ref, undo=undo, _args=args, _apps=also)
 
     async def _call_arguments(self, session_id: str, call_id: str, at: str) -> dict | None:
-        """The arguments a chat tool call was given, read from the assistant message that made it."""
+        """The arguments a chat tool call was given, read from the assistant message that made it. Found by the call's
+        id: Windows' clock can give a tool result and the next call the same ``created_at`` (#485)."""
         row = await self.store.fetchone(
             "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant' AND created_at <= ?"
-            " AND tool_calls IS NOT NULL ORDER BY created_at DESC LIMIT 1", (session_id, at),
+            " AND tool_calls IS NOT NULL AND instr(tool_calls, ?) > 0 ORDER BY created_at DESC LIMIT 1",
+            (session_id, at, json.dumps(call_id)),  # quoted and escaped as stored; the loop below checks the id
         )
         calls = _loads(row["tool_calls"]) if row else None
         for call in calls if isinstance(calls, list) else []:
@@ -471,6 +473,44 @@ class Timeline:
                     detail=words.short(detail, 240) or None, status=status, app=app, app_label=label, ref=ref,
                     undo=undo)
 
+    # -- chats the user trusted again after checking what they read (ADR 0029)
+    async def _chat_events(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("approvals"):
+            return [], None
+        where = ["m.role = 'event'", "m.name = 'trusted'", "s.incognito = 0"]
+        params: list = []
+        if query.app:
+            if query.app not in CHANNELS:
+                return [], None
+            where.append("s.channel = ?")
+            params.append(query.app)
+        if query.q:
+            where.append("(s.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\')")
+            params += [query.like()] * 2
+
+        def build(row: Any) -> Item:
+            data = _loads(row["content"])
+            data = data if isinstance(data, dict) else {}
+            was = str(data.get("was") or "").strip()
+            via = str(data.get("via") or "desktop")
+            chat = (row["title"] or "").strip()
+            title = f'You trusted the chat "{words.short(chat, 60)}" again' if chat else "You trusted a chat again"
+            read = f"It had read content from {words.short(was, 80)}. " if was else ""
+            how = "in Sentient" if via == "desktop" else f"with /trust on {words.app_label(via)}"
+            also = frozenset({row["channel"]}) if row["channel"] in CHANNELS else frozenset()
+            return Item(id=row["_key"], kind="approvals", at=row["_at"], title=title,
+                        why=f"{read}You said you checked it ({how}), so sending from it stops asking just because of "
+                            "what it read. New outside content asks again.",
+                        status="done", ref={"type": "chat", "id": row["session_id"], "message_id": row["id"]},
+                        _apps=also)
+
+        return await self._sql(
+            select="SELECT m.created_at AS _at, ('trust:' || m.id) AS _key, m.id, m.session_id, m.content, s.title,"
+                   " s.channel FROM messages m JOIN sessions s ON s.id = m.session_id",
+            where=where, params=params, ts="m.created_at", key="('trust:' || m.id)", build=build,
+            cur=cur, n=n, query=query, filtered=False,
+        )
+
     # -- messaging apps: Sentient's replies in Telegram, Discord and WhatsApp chats
     async def _channel_replies(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
         if not query.wants("channels"):
@@ -564,6 +604,7 @@ class Timeline:
             select="SELECT r.created_at AS _at, ('run:' || r.id) AS _key, r.id, r.task_id, r.status, r.trigger_data,"
                    " r.result, r.error, r.retry_of, r.pending_question, r.started_at, r.finished_at, t.name,"
                    " COALESCE(r.dry_run, 0) AS dry_run,"
+                   " (SELECT p.status FROM task_runs p WHERE p.id = r.retry_of) AS retried_status,"
                    " t.task_type, t.schedule, t.original_context, t.source AS task_source"
                    " FROM task_runs r JOIN tasks t ON t.id = r.task_id",
             where=where, params=params, ts="r.created_at", key="('run:' || r.id)",
@@ -597,11 +638,15 @@ class Timeline:
             "completed": (done, "done"), "completed_with_errors": (f"{done}, but it needs your attention", "done"),
             "error": (fail, "failed"), "waiting_for_user": (wait, "waiting"), "processing": (run, "running"),
             "cancelled": (f"Stopped {name}", "stopped"),
+            # what it reads wasn't there, so the run was skipped (#161)
+            "skipped": (f"Skipped {name}: what it reads wasn't there", "stopped"),
         }.get(status, (f"{name}: {status.replace('_', ' ')}", None))
         # why it ran
         trigger_data = _loads(row["trigger_data"])
         if tried:
             why = "You chose Try it first, so it only noted what it would send, change or run"
+        elif row["retry_of"] and row["retried_status"] == "skipped":
+            why = "It tried again because what it reads wasn't there last time"  # its own retry (#161)
         elif row["retry_of"]:
             why = "You chose Retry"
         elif isinstance(trigger_data, dict) and "script_result" in trigger_data:
@@ -615,7 +660,7 @@ class Timeline:
         else:
             why = words.schedule_why(schedule, tz, registry=self.app.registry)
         detail = None
-        if status == "error" and row["error"]:
+        if status in {"error", "skipped"} and row["error"]:
             detail = words.short(row["error"], 200)
         elif status == "waiting_for_user":
             question = _loads(row["pending_question"]) or {}
@@ -662,6 +707,7 @@ class Timeline:
                     "alert": (f"{name} found something. You were told", "done"),
                     "reported": (f"Checked {name} and told you the result", "done"),
                     "failed": (f"Couldn't check {name}", "failed"),
+                    "skipped": (f"Skipped checking {name}: what it reads wasn't there", "stopped"),
                 }.get(outcome, (f"Checked {name}", "done"))
                 if count > 1:
                     title += f" ({count} checks)"
@@ -682,7 +728,7 @@ class Timeline:
             "kind NOT IN ('brief', 'skill', 'reminder')",
             # a finished run or a check is shown from the run or the check itself
             f"COALESCE({_json('payload', '$.event')}, '') NOT IN ('run_completed', 'run_failed', 'script_alert',"
-            " 'dry_run_finished')",
+            " 'dry_run_finished', 'source_missing')",
             f"{_json('payload', '$.dream_id')} IS NULL",  # the dream itself
         ]
         params: list = []
@@ -886,6 +932,14 @@ class Timeline:
                 why = "A task found it"
             elif source.startswith("import"):
                 why = "Imported from another assistant"
+            elif source.startswith("channel:"):
+                why = f"You mentioned it in {words.app_label(source[8:], self.app.registry) or source[8:]}"
+            elif source.startswith("device:"):
+                why = "You mentioned it on one of your devices"
+            elif source.startswith("app:"):
+                why = f"From {words.app_label(source[4:], self.app.registry) or source[4:]}"
+            elif source.startswith("folder:"):
+                why = "From your notes"
             else:
                 why = "Sentient learned it"
             pending = row["status"] == "pending"
@@ -899,6 +953,37 @@ class Timeline:
             where=where, params=params, ts="created_at", key="('fact:' || id)", build=build, cur=cur, n=n,
             query=query, filtered=False,
         )
+
+    # -- what was forgotten when a source was disconnected (#153)
+    async def _forgets(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
+        if not query.wants("memory"):
+            return [], None
+        where = ["1"]
+        params: list = []
+        if query.app:
+            where.append("source IN (?, ?)")
+            params += [f"app:{query.app}", f"channel:{query.app}"]
+        if query.q:
+            where.append("label LIKE ? ESCAPE '\\'")
+            params.append(query.like())
+
+        def build(row: Any) -> Item:
+            kind, _, ident = str(row["source"]).partition(":")
+            counts = _loads(row["counts"]) or {}
+            return Item(id=row["_key"], kind="memory", at=row["_at"],
+                        title=f"Forgot what Sentient learned from {row['label']}",
+                        why="You asked for it when you disconnected it", detail=forgot_detail(counts) or None,
+                        status="done", app=ident if kind in {"app", "channel"} else None,
+                        app_label=row["label"] if kind in {"app", "channel"} else None)
+
+        try:
+            return await self._sql(
+                select="SELECT at AS _at, ('forget:' || id) AS _key, * FROM memory_forgets",
+                where=where, params=params, ts="at", key="('forget:' || id)", build=build, cur=cur, n=n,
+                query=query, filtered=False,
+            )
+        except sqlite3.OperationalError:  # no memory_forgets table yet: nothing forgotten
+            return [], None
 
     # -- dreams (nightly memory tidy-up)
     async def _dreams(self, cur: Cursor | None, n: int, query: Query) -> tuple[list[Item], Cursor | None]:
@@ -1307,6 +1392,39 @@ class Timeline:
         found -= {"memory", "files", "time", "tasks", "skills"}
         return sorted(({"id": a, "label": words.app_label(a, self.app.registry)} for a in found),
                       key=lambda a: str(a["label"]).lower())
+
+
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def forgot_detail(counts: dict) -> str:
+    """"12 memories, 3 chats (40 messages) and 120 saved emails" from a ``memory_forgets`` row's counts."""
+    parts = []
+    n = int(counts.get("memories") or 0)
+    if n:
+        parts.append(_count(n, "memory", "memories"))
+    n = int(counts.get("chats") or 0)
+    if n:
+        parts.append(f"{_count(n, 'chat', 'chats')} ({_count(int(counts.get('messages') or 0), 'message', 'messages')})")
+    n = int(counts.get("items") or 0)
+    if n:
+        noun = "emails" if counts.get("item_noun") == "emails" else "items"
+        parts.append(_count(n, f"saved {noun[:-1]}", f"saved {noun}"))
+    n = int(counts.get("results") or 0)
+    if n:
+        parts.append(_count(n, "result in your chats", "results in your chats"))
+    n = int(counts.get("summaries") or 0)
+    if n:
+        parts.append(_count(n, "chat summary", "chat summaries"))
+    n = int(counts.get("insights") or 0)
+    if n:
+        parts.append(_count(n, "thing it noticed about you", "things it noticed about you"))
+    text = ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1] if parts else "Nothing was saved from it"
+    n = int(counts.get("shared") or 0)
+    if n:
+        text += f". {_count(n, 'memory', 'memories')} you also shared elsewhere stayed"
+    return text
 
 
 def _brief(arguments: Any) -> str:

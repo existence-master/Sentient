@@ -3,6 +3,10 @@ gets its own service, and SENTIENT_KEYCHAIN_NAMESPACE overrides it. Uses a fake 
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -190,7 +194,7 @@ async def test_seed_safety_pauses_tasks_and_channel_deliveries(config, isolated_
         await app.stop()
 
     report = _seed_safety().quiet(isolated_home)
-    assert report == {"tasks_paused": 1, "chats_muted": 1, "channels_off": True}
+    assert report == {"tasks_paused": 1, "plans_stopped": 0, "runs_stopped": 0, "chats_muted": 1, "channels_off": True}
     assert load_config().channels.enabled is False
     app = await SentientApp(load_config(), llm=FakeProvider(), enable_background=False).start()
     try:
@@ -200,6 +204,175 @@ async def test_seed_safety_pauses_tasks_and_channel_deliveries(config, isolated_
         await app.stop()
 
 
+class NoModel(FakeProvider):
+    """A model that must never be called: every call is recorded and fails."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.used: list[str] = []
+
+    async def stream(self, role, messages, tools=None, *, model=None):
+        self.used.append(f"stream:{role}")
+        raise RuntimeError("seed_safety let a model call through")
+        yield  # pragma: no cover
+
+    async def complete_text(self, role, messages, *, model=None):
+        self.used.append(f"text:{role}")
+        raise RuntimeError("seed_safety let a model call through")
+
+    async def complete_json(self, role, messages, *, model=None):
+        self.used.append(f"json:{role}")
+        raise RuntimeError("seed_safety let a model call through")
+
+    async def embed(self, texts, *, model=None):
+        self.used.append("embed")
+        raise RuntimeError("seed_safety let a model call through")
+
+
+async def test_seed_safety_keeps_planning_tasks_and_live_runs_from_calling_the_model(config, isolated_home, user_home):
+    """#388: the engine plans 'planning' tasks and resumes 'processing' runs on start even when they are paused."""
+    from sentient.config.loader import load_config, save_config
+
+    save_config(config)
+    now = "2026-10-01T00:00:00+00:00"
+    app = await SentientApp(config, llm=FakeProvider(), enable_background=False).start()
+    try:
+        repo = app.tasks.repo
+        await repo.insert_task({"id": "demo-planning", "name": "Find gift ideas for Anika", "status": "planning",
+                                "enabled": True, "plan": [], "original_prompt": "Find gift ideas for Anika",
+                                "created_at": now, "updated_at": now})
+        await repo.insert_task({"id": "demo-running", "name": "Collect onboarding examples", "status": "processing",
+                                "enabled": True, "plan": [{"tool": "web", "description": "Read the pages"}],
+                                "schedule": {"type": "once", "run_at": None, "timezone": "UTC"},
+                                "created_at": now, "updated_at": now})
+        run_id = await repo.insert_run("demo-running", now=now, plan=[{"tool": "web", "description": "Read the pages"}])
+        # finished but never settled, with no result: the engine would ask the model to write one on start
+        await repo.insert_task({"id": "demo-unsettled", "name": "Sort the inbox", "status": "processing",
+                                "enabled": True, "plan": [{"tool": "gmail", "description": "Sort it"}],
+                                "schedule": {"type": "recurring", "frequency": "daily", "time": "09:00"},
+                                "created_at": now, "updated_at": now})
+        done = await repo.insert_run("demo-unsettled", now=now, plan=[])
+        await repo.update_run(done, {"status": "completed", "finished_at": now})
+    finally:
+        await app.stop()
+
+    report = _seed_safety().quiet(isolated_home)
+    assert report["plans_stopped"] == 1 and report["runs_stopped"] == 1
+    llm = NoModel()
+    app = await SentientApp(load_config(), llm=llm, enable_background=True).start()
+    try:
+        await app.tasks.drain(timeout=10)
+        assert llm.used == []
+        planning = await app.tasks.repo.get_task("demo-planning")
+        assert (planning["status"], planning["enabled"]) == ("declined", False)
+        assert (await app.tasks.repo.get_task("demo-running"))["status"] == "cancelled"
+        run = await app.tasks.repo.get_run(run_id)
+        assert run["status"] == "cancelled" and run["finished_at"]
+        assert (await app.tasks.repo.get_task("demo-unsettled"))["status"] == "active"
+    finally:
+        await app.stop()
+
+
 def test_seed_safety_refuses_the_default_home(user_home):
     with pytest.raises(SystemExit):
         _seed_safety().quiet(user_home / ".sentient")
+
+
+@pytest.mark.parametrize("keep_live", [False, True], ids=["quiet", "keep-live"])
+@pytest.mark.parametrize("command", [
+    ["seed-memory-skills.py", "--theme", "light", "--theme-only"],
+    ["seed-tasks.py", "--config-only"],
+], ids=["theme-only", "config-only"])
+async def test_seed_shortcuts_quiet_the_home_unless_kept_live(config, isolated_home, user_home, command, keep_live):
+    """--theme-only and --config-only change an already seeded home, so they quiet it too (issue #426)."""
+    from sentient.config.loader import load_config, save_config
+
+    save_config(config)
+    app = await SentientApp(config, llm=FakeProvider(), enable_background=False).start()
+    try:
+        await app.tasks.repo.insert_task({"id": "demo-daily", "name": "Daily digest", "status": "active",
+                                          "enabled": True, "plan": [], "created_at": "2026-10-01T00:00:00Z",
+                                          "updated_at": "2026-10-01T00:00:00Z"})
+        await app.channels.store.add_chat("telegram", "100200301", "Maya Rao", deliver=True, session_id=None)
+    finally:
+        await app.stop()
+
+    script = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / command[0]
+    argv = [sys.executable, str(script), *command[1:], *(["--keep-live"] if keep_live else [])]
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+
+    app = await SentientApp(load_config(), llm=FakeProvider(), enable_background=False).start()
+    try:
+        enabled = (await app.tasks.repo.get_task("demo-daily"))["enabled"]
+        deliver = (await app.channels.store.chat("telegram", "100200301"))["deliver"]
+    finally:
+        await app.stop()
+    live = (enabled, deliver, load_config().channels.enabled)
+    assert live == ((True, True, True) if keep_live else (False, False, False))
+    assert ("quiet demo home:" in done.stdout) is not keep_live
+
+
+def _run_seed_script(name: str, *args: str, user: Path) -> subprocess.CompletedProcess:
+    """Run a seed script with ``user`` standing in for the user's own folder, so ``~/.sentient`` is inside it."""
+    script = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / name
+    env = {**os.environ, "HOME": str(user), "USERPROFILE": str(user), "SENTIENT_HOME": str(user / ".sentient")}
+    return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True, timeout=120,
+                          check=False, env=env)
+
+
+@pytest.mark.parametrize("keep_live", [False, True], ids=["quiet", "keep-live"])
+@pytest.mark.parametrize("command", [
+    ["seed-memory-skills.py", "--theme", "light", "--theme-only"],
+    ["seed-tasks.py", "--config-only"],
+], ids=["theme-only", "config-only"])
+def test_seed_shortcuts_refuse_the_default_home_before_writing(tmp_path, command, keep_live):
+    """Pointed at ~/.sentient, a shortcut exits before it changes anything there, with --keep-live too."""
+    user = tmp_path / "user"
+    default = user / ".sentient"
+    default.mkdir(parents=True)
+    (default / "config.yaml").write_text("ui:\n  theme: dark\n", encoding="utf-8")
+
+    done = _run_seed_script(*command, *(["--keep-live"] if keep_live else []), user=user)
+    assert done.returncode != 0 and "default data folder" in done.stderr
+    assert (default / "config.yaml").read_text(encoding="utf-8") == "ui:\n  theme: dark\n"
+    assert [p.name for p in default.iterdir()] == ["config.yaml"]
+
+
+@pytest.mark.parametrize("keep_live", [False, True], ids=["quiet", "keep-live"])
+@pytest.mark.parametrize("command", [
+    ["seed-tasks.py"],
+    ["seed-integrations-notifications.py"],
+    ["seed-automations-usermodel.py", "--reset"],
+    ["seed-memory-skills.py", "--reset"],
+    ["seed-chats-devices-channels.py", "--reset"],
+], ids=["tasks", "integrations", "automations-reset", "memory-skills-reset", "chats-reset"])
+async def test_a_seed_run_refuses_the_default_home_before_wiping_it(config, isolated_home, monkeypatch, tmp_path,
+                                                                   command, keep_live):
+    """These runs used to delete ~/.sentient's tasks and notifications, its database or the whole folder before
+    quiet() refused it."""
+    from sentient.config.loader import save_config
+
+    user = tmp_path / "user"
+    default = user / ".sentient"
+    monkeypatch.setenv("SENTIENT_HOME", str(default))
+    save_config(config)
+    app = await SentientApp(config, llm=FakeProvider(), enable_background=False).start()
+    try:
+        await app.tasks.repo.insert_task({"id": "owner-real", "name": "Renew passport", "status": "active",
+                                          "enabled": True, "plan": [], "created_at": "2026-10-01T00:00:00Z",
+                                          "updated_at": "2026-10-01T00:00:00Z"})
+        await app.notify("task", "Your passport renewal is due next week.", title="Renew passport")
+    finally:
+        await app.stop()
+    (default / ".seeded-demo").write_text("left by an earlier seed run\n", encoding="utf-8")  # lets --reset wipe
+
+    done = _run_seed_script(*command, *(["--keep-live"] if keep_live else []), user=user)
+    assert done.returncode != 0 and "default data folder" in done.stderr
+    assert (default / "sentient.db").exists()
+    db = sqlite3.connect(default / "sentient.db")
+    try:
+        assert [row[0] for row in db.execute("SELECT id FROM tasks")] == ["owner-real"]
+        assert [row[0] for row in db.execute("SELECT title FROM notifications")] == ["Renew passport"]
+    finally:
+        db.close()

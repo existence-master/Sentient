@@ -15,10 +15,12 @@ router = APIRouter(prefix="/api/folders", tags=["folders"], dependencies=AUTH)
 class AddBody(BaseModel):
     path: str
     ignore: list[str] | None = None
+    scope: str | None = None  # the chats its notes are used in (#392); always when left out
 
 
 class PatchBody(BaseModel):
     ignore: list[str] | None = None
+    scope: str | None = None
 
 
 class SearchBody(BaseModel):
@@ -35,24 +37,26 @@ async def list_folders(request: Request):
 @router.post("")
 async def add_folder(request: Request, body: AddBody):
     try:
-        return await get_core(request).folders.add(body.path, body.ignore)
+        return await get_core(request).folders.add(body.path, body.ignore, body.scope)
     except FolderError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @router.patch("/{folder_id}")
 async def update_folder(request: Request, folder_id: str, body: PatchBody):
-    folder = await get_core(request).folders.update(folder_id, body.ignore)
+    folder = await get_core(request).folders.update(folder_id, body.ignore, body.scope)
     if folder is None:
         raise HTTPException(404, "no such folder")
     return folder
 
 
 @router.delete("/{folder_id}")
-async def remove_folder(request: Request, folder_id: str):
-    if not await get_core(request).folders.remove(folder_id):
+async def remove_folder(request: Request, folder_id: str, forget: bool = False):
+    """``?forget=true``: also forget the memories learned from its notes (#153)."""
+    done = await get_core(request).folders.remove(folder_id, forget=forget)
+    if not done:
         raise HTTPException(404, "no such folder")
-    return {"removed": True}
+    return {"removed": True, "forgotten": done} if isinstance(done, dict) else {"removed": True}
 
 
 @router.post("/{folder_id}/rescan", status_code=202)

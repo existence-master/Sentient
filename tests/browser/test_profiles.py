@@ -1601,7 +1601,9 @@ async def test_stalled_download_cancel_is_bounded_and_partial_file_is_removed(tm
     monkeypatch.setattr(browser_service, "DOWNLOAD_CANCEL_TIMEOUT_S", 0.01)
 
     with pytest.raises(BrowserError, match=r"Browser cancellation failed: timed out after 0.01 seconds"):
-        await asyncio.wait_for(svc._save_download(StalledDownload()), timeout=0.5)
+        # The 0.01 s limits above are what this checks; the outer guard only stops a hang, so it allows for a
+        # loaded runner.
+        await asyncio.wait_for(svc._save_download(StalledDownload()), timeout=10)
 
     assert cancel_started.is_set()
     assert not (tmp_path / "downloads" / "stalled.pdf").exists()
@@ -2001,3 +2003,73 @@ async def test_candidate_pages_scoped_to_download_page_when_valid(tmp_path, monk
 
     assert rel == "downloads/scoped.txt"
     assert queried_pages == [dl_page]
+
+
+async def test_a_click_that_only_opened_a_download_tab_stays_on_the_page(monkeypatch):
+    """#307: the blank tab a file link opens, or Edge's downloads hub, is not a page to keep working in."""
+    import sentient.browser.service as service
+
+    monkeypatch.setattr(service, "DOWNLOAD_TAB_WAIT_S", 0.3)
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url, closed=False):
+            self.url, self.closed = url, closed
+
+        def is_closed(self):
+            return self.closed
+
+    before: set = set()
+    assert await svc._download_only_tab(Page("", closed=True), before)  # the blank tab closed once the file came
+    assert await svc._download_only_tab(Page("edge://downloads-hub/"), before)
+    assert not await svc._download_only_tab(Page("https://example.com/help"), before)  # a real new page
+    assert not await svc._download_only_tab(Page("about:blank"), before)  # stays blank, no download: kept
+
+    async def save():
+        return "downloads/x.txt"
+
+    task = asyncio.create_task(save())
+    svc._download_tasks.add(task)
+    assert await svc._download_only_tab(Page("about:blank"), before)  # a download started from it
+    await task
+
+
+def test_a_closed_or_hub_tab_goes_back_to_the_tab_it_came_from():
+    """#307: with several tabs open, a blank download tab that closes, or a new tab that turns out to be Edge's
+    downloads hub, hands back to the tab that was active when it opened, not to the last tab."""
+    svc = BrowserService(make_app())
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+
+        @property
+        def main_frame(self):
+            return self
+
+        def is_closed(self):
+            return False
+
+        def on(self, *_):
+            return None
+
+    clicked, other = Page("https://example.com/reports"), Page("https://example.com/help")
+    context = type("Context", (), {"pages": [clicked, other]})()
+    svc._context = context
+    svc._closing = True  # no status publishing in this unit test
+    svc._active = clicked
+
+    blank = Page("")
+    context.pages.append(blank)
+    svc._on_page(blank)
+    assert svc._active is blank
+    context.pages.remove(blank)
+    svc._on_page_closed(blank)
+    assert svc._active is clicked
+
+    hub = Page("")
+    context.pages.append(hub)
+    svc._on_page(hub)
+    hub.url = "edge://downloads-hub/"
+    svc._on_navigated(hub, hub)
+    assert svc._active is clicked

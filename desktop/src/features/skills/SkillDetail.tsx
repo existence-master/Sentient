@@ -28,6 +28,8 @@ import { errorMessage } from '@/lib/api'
 import type { SkillDetail as SkillDetailType, SkillsList } from '@/lib/types'
 import { formatDateTime, relativeTime } from '@/lib/utils'
 import { LintList } from './LintList'
+import { SkillChecks } from './SkillChecks'
+import { HubOrigin } from './HubPage'
 import { SafetyReport } from './SafetyReport'
 import { AuthorBadge, SkillStat } from './SkillCard'
 import { SkillEditor, splitList, type SkillDraft } from './SkillEditor'
@@ -251,8 +253,10 @@ export function SkillDetailSheet({
                   Sentient never overwrites your changes. When it has a better idea, it shows you the change to approve first.
                 </Alert>
               )}
+              {s.hub && <HubOrigin hub={s.hub} />}
               {s.vetting && (s.vetting.verdict !== 'clear' || s.vetting.changed_since_approval) && <SafetyReport vetting={s.vetting} />}
               <LintList findings={s.vetting ? s.lint?.filter((f) => !['danger', 'hidden', 'outbound'].includes(f.rule)) : s.lint} />
+              <SkillChecks skill={s} />
 
               {hasPendingUpdate && (
                 <Alert

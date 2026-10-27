@@ -10,6 +10,11 @@ Everything here is deterministic. The service (``ProactiveEngine.run_followups``
 the threads that survive ``classify``, and the draft is sent only when the user clicks Send on the suggestion: that
 creates an already approved task that makes exactly one tool call with the draft unchanged (``send_call``). This
 module never sends anything.
+
+Recipients first (#144, ADR 0031): who a follow-up goes to is fixed by ``classify`` from the thread's headers before
+the model reads any message text, and the model only writes the draft. The thread reaches the model marked as outside
+content, and a draft that copies an email address or a link only the other person's messages have is dropped
+(``copied_from_them``), like a draft with a blank.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from datetime import UTC, datetime
 from email.utils import getaddresses, parseaddr
 from typing import Any
 
+from sentient.agent.prompt import mark_outside
 from sentient.llm.provider import parse_json_loose
 from sentient.proactivity.prefilter import _BULK_LABELS, _CAL_SUBJECTS, _FLUFF
 
@@ -51,6 +57,10 @@ _PLACEHOLDER_RE = re.compile(
     re.IGNORECASE,
 )
 _SUBJECT_PREFIX_RE =re.compile(r"^\s*((re|fwd?|aw|wg|sv)\s*:\s*)+", re.IGNORECASE)
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}")
+_LINK_RE = re.compile(r"\bhttps?://[^\s<>\"')\]]+|\bwww\.[^\s<>\"')\]]+", re.IGNORECASE)
+_BARE_LINK_RE = re.compile(r"(?<![@\w.\-/])[a-z0-9\-]+(?:\.[a-z0-9\-]+)+/[^\s<>\"')\]]*", re.IGNORECASE)
+SOURCE_NAMES = {"gmail": "Gmail", "email_imap": "Email (IMAP)"}
 
 
 @dataclass
@@ -204,13 +214,54 @@ def thread_text(c: Candidate, *, max_messages: int = 3) -> str:
 
 
 def build_messages(c: Candidate, user_name: str, system: str, you_tpl: str, them_tpl: str) -> list[dict]:
+    """The draft prompt. The thread is marked as outside content (ADR 0023): the model reads it as data."""
     user = (user_name or "").strip() or "the user"
     first = user.split()[0] if user != "the user" else "me"
     tpl = you_tpl if c.kind == WAITING_ON_YOU else them_tpl
+    thread = mark_outside(thread_text(c), f"the email conversation ({SOURCE_NAMES.get(c.source, c.source)})")
     return [
         {"role": "system", "content": system.format(user=user, first=first)},
-        {"role": "user", "content": tpl.format(user=user, person=c.person_full, days=_days(c.days), thread=thread_text(c))},
+        {"role": "user", "content": tpl.format(user=user, person=c.person_full, days=_days(c.days), thread=thread)},
     ]
+
+
+def copied_from_them(c: Candidate, draft: str) -> str:
+    """An email address or link in the draft that only the other person's messages have (not the user's own messages
+    or anyone's headers), else "". Such a draft is dropped: what a follow-up says and where it points must not come
+    from text someone else wrote."""
+    theirs, ours = [], []
+    for m in c.thread.get("messages") or []:
+        text = f"{m.get('subject') or ''}\n{m.get('body') or m.get('snippet') or ''}"
+        (ours if m.get("from_me") else theirs).append(text)
+        # only the parsed addresses of the headers: a display name is text the sender chose
+        ours.append(" ".join(addresses(" , ".join(str(m.get(k) or "") for k in ("from", "to", "cc")))))
+    their_text, our_text = "\n".join(theirs), "\n".join(ours)
+    for address in _EMAIL_RE.findall(draft or ""):
+        if _has_address(their_text, address) and not _has_address(our_text, address):
+            return address.lower()
+    # a link counts in any written form: "https://www.x.example/a", "www.x.example/a" and "x.example/a" are one link
+    their_links, our_links = _link_forms(their_text), _link_forms(our_text)
+    for link in _LINK_RE.findall(draft or "") + _BARE_LINK_RE.findall(draft or ""):
+        key = _link_key(link)
+        if key and key in their_links and key not in our_links:
+            return link.rstrip(".,;:!?").lower()
+    return ""
+
+
+def _has_address(text: str, address: str) -> bool:
+    """``address`` written as a whole in ``text`` ("a@b.example" is not in "aa@b.example")."""
+    return any(a.lower() == address.lower() for a in _EMAIL_RE.findall(text or ""))
+
+
+def _link_key(link: str) -> str:
+    key = re.sub(r"^(?:https?://)?(?:www\.)?", "", link.strip().lower())
+    return key.rstrip(".,;:!?").rstrip("/")
+
+
+def _link_forms(text: str) -> set[str]:
+    """Every link in ``text`` (with a scheme, with www., or a bare host with a path), as one comparable form."""
+    found = _LINK_RE.findall(text or "") + _BARE_LINK_RE.findall(text or "")
+    return {k for k in (_link_key(u) for u in found) if k}
 
 
 @dataclass

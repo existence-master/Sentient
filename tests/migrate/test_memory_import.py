@@ -489,10 +489,8 @@ def test_routes(app, chatgpt_zip, openclaw_home, monkeypatch):
         assert c.post("/api/import/chatgpt/apply", json={"path": str(chatgpt_zip), "parts": []}).status_code == 400
         job = c.post("/api/import/chatgpt/apply", json={"path": str(chatgpt_zip), "parts": ["memories"]}).json()
         assert job["app"] == "chatgpt" and job["status"] == "running" and job["export"] == chatgpt_zip.name
-        for _ in range(200):
-            now = c.get("/api/import/memory/job").json()
-            if now["status"] != "running":
-                break
+        deadline = time.monotonic() + 30  # a busy Windows runner can take far longer than a few seconds: #422
+        while (now := c.get("/api/import/memory/job").json())["status"] == "running" and time.monotonic() < deadline:
             time.sleep(0.02)
         assert now["id"] == job["id"] and now["status"] == "done" and now["facts"] == 3
         items = c.get("/api/memories/review").json()["items"]

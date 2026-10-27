@@ -40,6 +40,7 @@ interface ToolIdentity {
 
 const PLUGINS: Record<string, ToolIdentity> = {
   gmail: { icon: IconMail, label: 'Gmail', tint: 'text-[#ea4335]' },
+  email_imap: { icon: IconMail, label: 'Email (IMAP)' },
   gcalendar: { icon: IconCalendarEvent, label: 'Google Calendar', tint: 'text-[#4285f4]' },
   gdrive: { icon: IconBrandGoogleDrive, label: 'Google Drive', tint: 'text-[#1fa463]' },
   gdocs: { icon: IconFileText, label: 'Google Docs', tint: 'text-[#4285f4]' },
@@ -71,6 +72,7 @@ const PLUGINS: Record<string, ToolIdentity> = {
 }
 
 const PREFIXES: Array<[RegExp, string]> = [
+  [/^email_imap/, 'email_imap'], // before the gmail rule: an IMAP plan step is not Gmail (#159)
   [/^(gmail|mail|email)/, 'gmail'],
   [/^(gcal|gcalendar|calendar)/, 'gcalendar'],
   [/^gdrive/, 'gdrive'],

@@ -1,6 +1,6 @@
 """English quick commands (#150, #359): timers, one-off reminders and alarms, listing or cancelling them, and what's
 next on the calendar; with Home Assistant connected, also lights and switches (#175): "turn off the living room
-lights", "dim the bedroom lamp to 30%".
+lights", "dim the bedroom lamp to 30%". While an alarm rings, "stop", "turn it off" and "snooze" (#390).
 
 The grammar is deliberately narrow. A message must be *only* the command (with "please", "hey Sentient" and the
 like around it); anything else, or anything that could mean two things, is left to the model:
@@ -531,6 +531,61 @@ def _home(s: str) -> Command | None:
     return None
 
 
+# ---------------------------------------------------------------------------- a ringing alarm (#390)
+_RING_LEAD = r"(?:(?:ok(?:ay)?|alright|all\s+right|oh|ugh|yes|yeah|fine)\s+)*"
+_RING_IT = r"(?:it|that|this|alarm|(?:the|my|that|this)\s+(?:(?P<which>[a-z0-9:' ]{1,30}?)\s+)?alarm)"
+_RING_STOP = [
+    re.compile(rf"^{_RING_LEAD}(?:stop|silence|dismiss|cancel|mute)(?:\s+{_RING_IT})?(?:\s+now)?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:turn|switch|shut)\s+off\s+{_RING_IT}(?:\s+now)?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:turn|switch|shut)\s+{_RING_IT}\s+off(?:\s+now)?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:the\s+|my\s+)?alarm\s+off$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:shut\s+up|quiet|be\s+quiet|enough|that's\s+enough|i'?m\s+(?:up|awake)|"
+               r"i\s+am\s+(?:up|awake))(?:\s+now)?$", re.I),
+]
+_RING_SNOOZE = [
+    re.compile(rf"^{_RING_LEAD}snooze(?:\s+{_RING_IT})?(?:\s+(?:for\s+)?(?:another\s+)?(?P<dur>.+?))?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:give\s+me\s+)?(?:another\s+)?(?P<n>\S+)\s+more\s+(?P<unit>minutes?|mins?)$", re.I),
+]
+SNOOZE_MAX_S = 180 * 60
+
+
+def _ring_which(m: re.Match) -> str:
+    return _clean_message(m.groupdict().get("which") or "").lower()
+
+
+def _snooze_length(words: str) -> float | None:
+    """Seconds in "5 minutes", "5 more minutes", "10" (minutes); None when unclear or not 1 minute to 3 hours."""
+    w = " ".join(re.sub(r"\bmore\b", " ", words.lower()).split())
+    if re.fullmatch(r"\d{1,3}", w):
+        w += " minutes"
+    seconds = parse_duration(w, days=False)
+    return seconds if seconds is not None and 60 <= seconds <= SNOOZE_MAX_S else None
+
+
+def ringing(text: str, names: Sequence[str] = ()) -> Command | None:
+    """ "stop", "stop the alarm", "turn it off", "I'm up" -> ``alarm_stop``; "snooze", "snooze for 5 minutes",
+    "5 more minutes" -> ``alarm_snooze``. Only asked while an alarm rings."""
+    s = _strip_polite(_normalize(text), names)
+    s = re.sub(r"\b(\w+)(?:\s+\1\b)+", r"\1", s, flags=re.I)  # "stop stop stop"
+    if not s or len(s) > 80 or "\n" in (text or "").strip():
+        return None
+    for pat in _RING_STOP:
+        m = pat.match(s)
+        if m:
+            return Command("alarm_stop", which=_ring_which(m))
+    for pat in _RING_SNOOZE:
+        m = pat.match(s)
+        if m is None:
+            continue
+        found = m.groupdict()
+        words = f"{found['n']} {found['unit']}" if found.get("unit") else (found.get("dur") or "")
+        seconds = _snooze_length(words) if words else None
+        if words and seconds is None:
+            return None  # "snooze for a bit", "snooze notifications": the model
+        return Command("alarm_snooze", seconds=seconds, which=_ring_which(m))
+    return None
+
+
 def parse(text: str, now: datetime, names: Sequence[str] = ()) -> Command | None:
     s = _strip_polite(_normalize(text), names)
     if not s or len(s) > 300 or "\n" in (text or "").strip():
@@ -726,6 +781,14 @@ def alarm_set(reminder: dict, now: datetime) -> str:
     return f"{head} set for {_alarm_day(at, now)}."
 
 
+def alarm_stopped(reminders: list[dict]) -> str:
+    return "Alarms stopped." if len(reminders) > 1 else "Alarm stopped."
+
+
+def alarm_snoozed(reminder: dict, now: datetime) -> str:
+    return f"Snoozed until {_clock_text(_local(reminder, now))}."
+
+
 def alarm_due(reminder: dict, at: datetime, late: bool) -> tuple[str, str]:
     label = str(reminder.get("label") or "")
     title = f"Alarm: {label}" if label else "Alarm"
@@ -809,6 +872,11 @@ def calendar_next(events: list[dict], now: datetime, days: int) -> str:
 
 def failed(error: str) -> str:
     return f"I couldn't do that: {error}" if error else "I couldn't do that."
+
+
+def unconfirmed(detail: str) -> str:
+    detail = detail.strip().rstrip(".")
+    return f"I tried, but {detail}." if detail else "I tried, but it didn't seem to work."
 
 
 def timer_done(reminder: dict) -> tuple[str, str]:

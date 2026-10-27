@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from sentient.evolution.log import log_event, read_log
 from sentient.gateway.deps import AUTH, get_core
+from sentient.skills import checks as skill_checks
 from sentient.skills import vet
 from sentient.skills.loader import slugify, valid_name
 
@@ -18,8 +19,9 @@ async def _changed(s, name: str, state: str) -> None:
     s.bus.publish("skill.updated", {"name": name, "state": state})
 
 
-async def _skill(s, name: str) -> dict:
-    skill = s.skills.get_any(name)
+async def _skill(s, name: str, *, pending: bool = False) -> dict:
+    """A skill for the window. ``pending``: the copy waiting for review, even when an active one exists."""
+    skill = (s.skills.get_pending(name) if pending else None) or s.skills.get_any(name)
     if skill is None:
         raise HTTPException(404, f"no skill named {name}")
     stats = await s.skills.stats(s.store)
@@ -29,6 +31,7 @@ async def _skill(s, name: str) -> dict:
         out.update(user_edited=edit["user_edited"], can_reset=edit["can_reset"])
     out["lint"] = s.skills.lint(skill)
     out["vetting"] = await vet.report_for(s.store, skill.name, skill.dir)
+    out["hub"] = s.skills_hub.summary(skill.name)
     return out
 
 
@@ -56,6 +59,10 @@ async def list_skills(request: Request):
             item["proposed_at"] = (d or {}).get("ts")
     for item in catalog.get("pending") or []:  # skills from outside wait with their safety check (#146)
         item["vetting"] = await vet.report_for(s.store, item["name"], s.skills.pending_dir / item["name"])
+    locked = s.skills_hub.lock.all()  # where a skill from the Skills hub came from, and what an update changes (#210)
+    for key in ("active", "pending", "archived"):
+        for item in catalog.get(key) or []:
+            item["hub"] = s.skills_hub.summary(item["name"], locked.get(item["name"])) if item["name"] in locked else None
     return catalog
 
 
@@ -88,6 +95,24 @@ async def import_skill(request: Request, body: dict):
     await log_event(s.store, "skill_imported", {"name": name, "source": "link", "origin": url,
                                                 "verdict": report["verdict"], "pending": True})
     return await _skill(s, name)
+
+
+@router.post("/learn")
+async def learn_skill(request: Request, body: dict):
+    """``/learn``: draft a skill from a web page, a document or a folder of notes (#167). It waits in pending with the
+    safety check of skills from outside until the user approves it."""
+    from sentient.skills.learn import LearnError
+
+    s = get_core(request)
+    source = str(body.get("source") or "").strip()
+    if not source:
+        raise HTTPException(400, "Give a web address, a file or a folder to learn from.")
+    try:
+        res = await s.evolution.learn_skill(source, via="app")
+    except LearnError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    s.skills.reload(s._available_tools())
+    return await _skill(s, res["name"])
 
 
 @router.get("/evolution-log")
@@ -164,12 +189,30 @@ async def approve_skill(request: Request, name: str, body: dict | None = None):
         # high-risk findings default to declined: approving needs an explicit "approve anyway" (#146)
         raise HTTPException(409, "The safety check found high-risk problems in this skill. Approve it anyway only if "
                                  "you trust where it came from.")
+    pending = s.skills.get_pending(name)
+    report = None
+    if pending is not None and pending.validate:
+        # the skill's own checks run before it is saved (#386); approving is the user's yes for a code check
+        current = s.skills.get_active_file(name)
+        folders = [pending.dir, *([current.dir] if current else [])]
+        report = await skill_checks.run(s, pending.name, pending.validate, folders, run_code=True,
+                                        outside=imported is not None)
+        await s.skills.record_check(pending.name, report, s.store, pending=True)
+        if reason := skill_checks.failure(report):
+            s.bus.publish("skill.updated", {"name": pending.name, "state": "pending_review"})
+            await log_event(s.store, "skill_check_failed", {"name": pending.name, "reason": reason, "by": "user"})
+            raise HTTPException(409, f"The skill's check failed: {reason}. It is still waiting for your review.")
+    hub_bundle = s.skills_hub.is_pending_bundle(name)
     try:
-        s.skills.approve_pending(name)
+        s.skills.approve_pending(name, keep_files=not hub_bundle)
     except FileNotFoundError as exc:
         raise HTTPException(404, f"no pending skill named {name}") from exc
+    if hub_bundle:
+        s.skills_hub.approved(name)  # the lockfile now pins this version as the one in use
     await s.skills.set_state(name, "active", s.store)
     await s.skills.record_origin(name, s.store)  # the accepted version is the new original
+    await s.skills.record_check(name, report, s.store)  # its check report is now the active skill's
+    await s.skills.record_check(name, None, s.store, pending=True)
     if imported is not None:
         await vet.mark_approved(s.store, name, s.skills.root / name.strip().lower())
     await _changed(s, name, "active")
@@ -203,10 +246,18 @@ async def reject_skill(request: Request, name: str):
         s.skills.reject_pending(name)
     except FileNotFoundError as exc:
         raise HTTPException(404, f"no pending skill named {name}") from exc
+    await s.skills.record_check(name, None, s.store, pending=True)
+    hub_left = s.skills_hub.lock.declined(name) if s.skills_hub.is_pending_bundle(name) else None
     if imported is not None and imported.get("decision") != "approved":
-        await vet.forget(s.store, name)
         await log_event(s.store, "skill_import_declined", {"name": name, "source": imported["source"],
                                                             "verdict": imported["verdict"]})
+        active = s.skills.root / name.strip().lower()
+        if hub_left is not None and (active / "SKILL.md").exists():
+            # a declined hub update: the approved version stays in use, with its own safety record
+            await vet.record_import(s.store, name, vet.vet_folder(active, source="hub", origin=hub_left.get("url")))
+            await vet.mark_approved(s.store, name, active)
+        else:
+            await vet.forget(s.store, name)
     state = "active" if s.skills.get_active_file(name) else "rejected"
     await _changed(s, name, state)
     return {"ok": True}
@@ -245,6 +296,7 @@ async def delete_skill(request: Request, name: str):
     if not s.skills.delete(name):
         raise HTTPException(404, f"no skill named {name}")
     await vet.forget(s.store, name)
+    s.skills_hub.deleted(name)
     await _changed(s, name, "deleted")
     return {"ok": True}
 

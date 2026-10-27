@@ -34,6 +34,7 @@ def api_base() -> str:
     """Where Bot API calls go: ``SENTIENT_TELEGRAM_API`` when it is an http(s) address, else Telegram's own."""
     custom = os.environ.get(API_ENV, "").strip().rstrip("/")
     return custom if custom.startswith(("http://", "https://")) else API
+GROUP_TYPES = {"group", "supergroup"}
 TOKEN_RE = re.compile(r"^\d{5,}:[A-Za-z0-9_-]{30,}$")
 
 INSTRUCTIONS = """\
@@ -52,7 +53,12 @@ for the bot to answer.
 
 Now just message your bot to talk to Sentient. You can send text, voice notes, photos and files.
 Commands: `/new` starts a fresh chat, `/stop` stops a reply, `/stopall` stops everything Sentient is doing
-(`/resume` starts it again), `/model` switches between local and cloud models, `/help` shows help.
+(`/resume` starts it again), `/model` switches between local and cloud models, `/scope work` or `/scope personal`
+keeps this chat to those memories, `/help` shows help.
+
+**In a group:** add your bot to the group and send `/pair` with a new code there. Sentient then answers only you, when
+you mention it (`@maya_sentient_bot`) or reply to it. Messages from other people are treated as outside content, so it
+checks with you before sending anything after them. `/trust` explains this and lets you trust the chat again.
 
 **Keep the token private.** Anyone who has it can use your bot. If it leaks, send `/revoke` to BotFather,
 then connect again here with the new token.
@@ -119,6 +125,7 @@ class TelegramChannel(Channel):
         self.http: httpx.AsyncClient | None = None
         self.offset: int | None = None
         self.bot_username: str | None = None
+        self.bot_id: str | None = None
 
     # ------------------------------------------------------------------ HTTP
     @staticmethod
@@ -217,6 +224,7 @@ class TelegramChannel(Channel):
                 if not ready:
                     me = await self.call("getMe")
                     self.bot_username = me.get("username")
+                    self.bot_id = str(me.get("id") or "") or None
                     await self.service.set_status(self.id, "connected", error=None, account_label=f"@{self.bot_username}")
                     ready = True
                 started = asyncio.get_running_loop().time()
@@ -283,9 +291,19 @@ class TelegramChannel(Channel):
         if not isinstance(message, dict):
             return
         chat = message.get("chat") or {}
-        if chat.get("type") != "private" or (message.get("from") or {}).get("is_bot"):
-            return  # direct chats only: a bot in a group would see other people's messages
+        if chat.get("type") not in GROUP_TYPES | {"private"} or (message.get("from") or {}).get("is_bot"):
+            return  # direct chats and groups (ADR 0029); never channels or other bots
         self.spawn(self.handle_incoming(self.to_incoming(message)))
+
+    def addressed(self, m: dict) -> bool:
+        """In a group: a command, a mention of this bot, or a reply to one of its messages is meant for Sentient."""
+        text = m.get("text") or m.get("caption") or ""
+        if text.lstrip().startswith("/"):
+            return True
+        if self.bot_username and f"@{self.bot_username}".lower() in text.lower():
+            return True
+        replied = ((m.get("reply_to_message") or {}).get("from") or {})
+        return bool(self.bot_id) and str(replied.get("id") or "") == self.bot_id
 
     def to_incoming(self, m: dict) -> Incoming:
         sender = m.get("from") or {}
@@ -293,6 +311,11 @@ class TelegramChannel(Channel):
         if sender.get("username"):
             label = f"{label} (@{sender['username']})".strip()
         text = m.get("text") or m.get("caption") or ""
+        chat = m.get("chat") or {}
+        group = chat.get("type") in GROUP_TYPES
+        addressed = self.addressed(m) if group else True
+        if group and self.bot_username:  # "@maya_sentient_bot what's on today" -> "what's on today"
+            text = re.sub(rf"@{re.escape(self.bot_username)}(?!\w)", "", text, flags=re.IGNORECASE).strip()
         reply = m.get("reply_to_message")
         audio: FileFetcher | None = None
         files: list[FileFetcher] = []
@@ -312,13 +335,17 @@ class TelegramChannel(Channel):
             ext = mimetypes.guess_extension(doc.get("mime_type") or "") or ""
             files.append(self._fetcher(doc, doc.get("file_name") or f"telegram-file-{doc.get('file_unique_id', 'file')}{ext}"))
         return Incoming(
-            chat_id=str((m.get("chat") or {}).get("id")),
-            label=label or str((m.get("chat") or {}).get("id")),
+            chat_id=str(chat.get("id")),
+            label=(chat.get("title") or label or str(chat.get("id"))) if group else (label or str(chat.get("id"))),
             text=text,
             audio=audio,
             files=files,
             unsupported=not (text or audio or files),
             reply_to=str(reply["message_id"]) if isinstance(reply, dict) and reply.get("message_id") is not None else None,
+            group=group,
+            sender_id=str(sender.get("id") or ""),
+            sender_name=label,
+            addressed=addressed,
         )
 
     def _fetcher(self, obj: dict, name: str) -> FileFetcher:
@@ -350,7 +377,8 @@ class TelegramChannel(Channel):
         toast = "This button has expired."
         try:
             if chat_id and message_id:
-                toast = await self.handle_button(chat_id, message_id, str(cq.get("data") or ""))
+                toast = await self.handle_button(chat_id, message_id, str(cq.get("data") or ""),
+                                                 user_id=str((cq.get("from") or {}).get("id") or ""))
         finally:
             try:
                 await self.send_call("answerCallbackQuery", callback_query_id=cq.get("id"), text=toast[:190])

@@ -66,7 +66,11 @@ export function ShortcutSettings() {
             label="Ask about selected text"
             description={
               askKeys
-                ? `Press ${askKeys} with text selected. Sentient copies only that text, puts your clipboard back, and shows you what it copied. The text is treated as outside content, so Sentient asks before sending anything.`
+                ? `Press ${askKeys} with text selected. Sentient copies only that text, puts your clipboard back, and shows you what it copied. The text is treated as outside content, so Sentient asks before sending anything.${
+                    bridge.platform === 'win32'
+                      ? ' The copy is taken out of your clipboard history (Win+V) right away. If clipboard sync across your devices is on, Windows may sync it first.'
+                      : ''
+                  } What you select is kept with its chat and deleted with it.`
                 : 'Turned off. Turn it on to use it with its shortcut.'
             }
             error={errors.askSelection}

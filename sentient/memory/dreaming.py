@@ -304,7 +304,7 @@ class DreamingService(Service):
         cfg = self.cfg
         stats = {
             "facts_reviewed": 0, "merged": 0, "contradictions_resolved": 0, "promoted": 0, "expired": 0,
-            "insights_updated": 0, "languages_merged": 0,
+            "insights_updated": 0, "languages_merged": 0, "erase_retries": 0,
         }
         notes: dict[str, Any] = {"merged": [], "languages": [], "contradictions": [], "promoted": [], "insights": None}
         errors: list[str] = []
@@ -334,6 +334,10 @@ class DreamingService(Service):
                     stats["expired"] = await mem.purge_expired()
                 except Exception as exc:
                     errors.append(f"purge: {exc}")
+                try:
+                    stats["erase_retries"] = await mem.drain_pending_erases()
+                except Exception as exc:
+                    errors.append(f"erase retries: {exc}")
             if cfg.refresh_user_model and self.app.config.user_model.enabled:
                 try:
                     res = await self.app.user_model.refresh(trigger="dream")
@@ -383,6 +387,8 @@ class DreamingService(Service):
             return x
 
         for i, j, _sim in similar_pairs(facts, cfg.merge_similarity):
+            if facts[i].get("scope") != facts[j].get("scope"):
+                continue  # memory scopes stay apart (#155): a work memory never folds into a personal one
             a, b = facts[i]["content"], facts[j]["content"]
             if word_overlap(a, b) < cfg.merge_min_overlap:
                 continue
@@ -474,7 +480,7 @@ class DreamingService(Service):
             if budget[0] <= 0 or calls <= 0:
                 break
             hindi, other = facts[i], facts[j]
-            if hindi["id"] in gone or other["id"] in gone:
+            if hindi["id"] in gone or other["id"] in gone or hindi.get("scope") != other.get("scope"):
                 continue
             ids = tuple(sorted((hindi["id"], other["id"])))
             if ids in kept_apart:
@@ -598,7 +604,7 @@ class DreamingService(Service):
             if budget[0] <= 0:
                 break
             older, newer = sorted((facts[i], facts[j]), key=lambda f: (f["updated_at"], f["id"]))
-            if older["id"] in gone or newer["id"] in gone:
+            if older["id"] in gone or newer["id"] in gone or older.get("scope") != newer.get("scope"):
                 continue
             pair_key = f"{older['id']}@{older['updated_at']}|{newer['id']}@{newer['updated_at']}"
             if pair_key in checked:
@@ -657,6 +663,8 @@ class DreamingService(Service):
             did.append(f"kept {stats['promoted']} short-term memor{'ies' if stats['promoted'] != 1 else 'y'} for the long run")
         if stats["expired"]:
             did.append(f"let go of {stats['expired']} expired memor{'ies' if stats['expired'] != 1 else 'y'}")
+        if stats.get("erase_retries"):
+            did.append(f"retried cleanup for {stats['erase_retries']} erased memor{'ies' if stats['erase_retries'] != 1 else 'y'}")
         if stats["insights_updated"]:
             did.append(f"updated {stats['insights_updated']} things I understand about {name}")
         if did:

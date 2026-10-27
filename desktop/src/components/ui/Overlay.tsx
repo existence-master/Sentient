@@ -81,6 +81,8 @@ export interface ConfirmDialogProps {
   cancelLabel?: string
   tone?: 'danger' | 'primary'
   onConfirm: () => void | Promise<void>
+  /** Extra content between the description and the buttons (an option such as "Also forget..."). */
+  children?: ReactNode
 }
 
 export function ConfirmDialog({
@@ -91,7 +93,8 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   tone = 'danger',
-  onConfirm
+  onConfirm,
+  children
 }: ConfirmDialogProps) {
   const [busy, setBusy] = useState(false)
   return (
@@ -102,6 +105,7 @@ export function ConfirmDialog({
       description={description}
       size="sm"
       hideClose
+      children={children}
       footer={
         <>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>

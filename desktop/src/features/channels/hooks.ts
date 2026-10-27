@@ -1,7 +1,8 @@
 /** React Query hooks for §14 messaging channels. Live updates arrive via `channel.updated` (lib/events.ts). */
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import type { Channel, ChannelPairing } from '@/lib/types'
+import type { Channel, ChannelPairing, Forgotten } from '@/lib/types'
+import { invalidateForgotten } from '@/hooks/memory'
 import { previewChannels, previewOr } from '@/features/devices/preview'
 
 export const channelKeys = {
@@ -39,10 +40,18 @@ export function useChannelActions() {
         ),
       onSuccess
     }),
+    /** ``forget``: also forget what Sentient learned there (#153). */
     disconnect: useMutation({
-      mutationFn: (id: string) =>
-        previewOr(() => api.channels.disconnect(id), () => ({ ...current(qc, id), status: 'disconnected' as const, account_label: null })),
-      onSuccess
+      mutationFn: ({ id, forget = false }: { id: string; forget?: boolean }) =>
+        previewOr<Channel & Forgotten>(
+          () => api.channels.disconnect(id, forget),
+          () => ({ ...current(qc, id), status: 'disconnected' as const, account_label: null })
+        ),
+      onSuccess: (res) => {
+        const { forgotten, ...channel } = res
+        onSuccess(channel)
+        if (forgotten) invalidateForgotten(qc)
+      }
     }),
     pairing: useMutation({
       mutationFn: (id: string) =>

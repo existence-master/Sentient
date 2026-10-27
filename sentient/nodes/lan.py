@@ -167,7 +167,7 @@ class LanListener:
             self.error = f"Could not listen on port {port}. Another program may be using it."
             return
         self.running = True
-        log.info("LAN device listener on https://0.0.0.0:%s (sha256 %s)", port, cert.fingerprint)
+        log.info("LAN device listener on https://%s:%s (sha256 %s)", host, port, cert.fingerprint)
         if mdns:
             await self._advertise()
 
