@@ -784,7 +784,7 @@ def main() -> None:
     args = ap.parse_args()
     if not args.home:
         ap.error("--home or SENTIENT_HOME is required")
-    home = Path(args.home).expanduser().resolve()
+    home = seed_safety.check_home(args.home)  # before anything is written or wiped, also with --keep-live
     if args.add:
         home.mkdir(parents=True, exist_ok=True)
         os.environ["SENTIENT_HOME"] = str(home)

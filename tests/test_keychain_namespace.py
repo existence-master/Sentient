@@ -3,6 +3,10 @@ gets its own service, and SENTIENT_KEYCHAIN_NAMESPACE overrides it. Uses a fake 
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -272,3 +276,103 @@ async def test_seed_safety_keeps_planning_tasks_and_live_runs_from_calling_the_m
 def test_seed_safety_refuses_the_default_home(user_home):
     with pytest.raises(SystemExit):
         _seed_safety().quiet(user_home / ".sentient")
+
+
+@pytest.mark.parametrize("keep_live", [False, True], ids=["quiet", "keep-live"])
+@pytest.mark.parametrize("command", [
+    ["seed-memory-skills.py", "--theme", "light", "--theme-only"],
+    ["seed-tasks.py", "--config-only"],
+], ids=["theme-only", "config-only"])
+async def test_seed_shortcuts_quiet_the_home_unless_kept_live(config, isolated_home, user_home, command, keep_live):
+    """--theme-only and --config-only change an already seeded home, so they quiet it too (issue #426)."""
+    from sentient.config.loader import load_config, save_config
+
+    save_config(config)
+    app = await SentientApp(config, llm=FakeProvider(), enable_background=False).start()
+    try:
+        await app.tasks.repo.insert_task({"id": "demo-daily", "name": "Daily digest", "status": "active",
+                                          "enabled": True, "plan": [], "created_at": "2026-10-01T00:00:00Z",
+                                          "updated_at": "2026-10-01T00:00:00Z"})
+        await app.channels.store.add_chat("telegram", "100200301", "Maya Rao", deliver=True, session_id=None)
+    finally:
+        await app.stop()
+
+    script = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / command[0]
+    argv = [sys.executable, str(script), *command[1:], *(["--keep-live"] if keep_live else [])]
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+
+    app = await SentientApp(load_config(), llm=FakeProvider(), enable_background=False).start()
+    try:
+        enabled = (await app.tasks.repo.get_task("demo-daily"))["enabled"]
+        deliver = (await app.channels.store.chat("telegram", "100200301"))["deliver"]
+    finally:
+        await app.stop()
+    live = (enabled, deliver, load_config().channels.enabled)
+    assert live == ((True, True, True) if keep_live else (False, False, False))
+    assert ("quiet demo home:" in done.stdout) is not keep_live
+
+
+def _run_seed_script(name: str, *args: str, user: Path) -> subprocess.CompletedProcess:
+    """Run a seed script with ``user`` standing in for the user's own folder, so ``~/.sentient`` is inside it."""
+    script = Path(__file__).resolve().parents[1] / "desktop" / "scripts" / name
+    env = {**os.environ, "HOME": str(user), "USERPROFILE": str(user), "SENTIENT_HOME": str(user / ".sentient")}
+    return subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True, timeout=120,
+                          check=False, env=env)
+
+
+@pytest.mark.parametrize("keep_live", [False, True], ids=["quiet", "keep-live"])
+@pytest.mark.parametrize("command", [
+    ["seed-memory-skills.py", "--theme", "light", "--theme-only"],
+    ["seed-tasks.py", "--config-only"],
+], ids=["theme-only", "config-only"])
+def test_seed_shortcuts_refuse_the_default_home_before_writing(tmp_path, command, keep_live):
+    """Pointed at ~/.sentient, a shortcut exits before it changes anything there, with --keep-live too."""
+    user = tmp_path / "user"
+    default = user / ".sentient"
+    default.mkdir(parents=True)
+    (default / "config.yaml").write_text("ui:\n  theme: dark\n", encoding="utf-8")
+
+    done = _run_seed_script(*command, *(["--keep-live"] if keep_live else []), user=user)
+    assert done.returncode != 0 and "default data folder" in done.stderr
+    assert (default / "config.yaml").read_text(encoding="utf-8") == "ui:\n  theme: dark\n"
+    assert [p.name for p in default.iterdir()] == ["config.yaml"]
+
+
+@pytest.mark.parametrize("keep_live", [False, True], ids=["quiet", "keep-live"])
+@pytest.mark.parametrize("command", [
+    ["seed-tasks.py"],
+    ["seed-integrations-notifications.py"],
+    ["seed-automations-usermodel.py", "--reset"],
+    ["seed-memory-skills.py", "--reset"],
+    ["seed-chats-devices-channels.py", "--reset"],
+], ids=["tasks", "integrations", "automations-reset", "memory-skills-reset", "chats-reset"])
+async def test_a_seed_run_refuses_the_default_home_before_wiping_it(config, isolated_home, monkeypatch, tmp_path,
+                                                                   command, keep_live):
+    """These runs used to delete ~/.sentient's tasks and notifications, its database or the whole folder before
+    quiet() refused it."""
+    from sentient.config.loader import save_config
+
+    user = tmp_path / "user"
+    default = user / ".sentient"
+    monkeypatch.setenv("SENTIENT_HOME", str(default))
+    save_config(config)
+    app = await SentientApp(config, llm=FakeProvider(), enable_background=False).start()
+    try:
+        await app.tasks.repo.insert_task({"id": "owner-real", "name": "Renew passport", "status": "active",
+                                          "enabled": True, "plan": [], "created_at": "2026-10-01T00:00:00Z",
+                                          "updated_at": "2026-10-01T00:00:00Z"})
+        await app.notify("task", "Your passport renewal is due next week.", title="Renew passport")
+    finally:
+        await app.stop()
+    (default / ".seeded-demo").write_text("left by an earlier seed run\n", encoding="utf-8")  # lets --reset wipe
+
+    done = _run_seed_script(*command, *(["--keep-live"] if keep_live else []), user=user)
+    assert done.returncode != 0 and "default data folder" in done.stderr
+    assert (default / "sentient.db").exists()
+    db = sqlite3.connect(default / "sentient.db")
+    try:
+        assert [row[0] for row in db.execute("SELECT id FROM tasks")] == ["owner-real"]
+        assert [row[0] for row in db.execute("SELECT title FROM notifications")] == ["Renew passport"]
+    finally:
+        db.close()

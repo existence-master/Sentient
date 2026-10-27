@@ -209,8 +209,18 @@ class EvolutionService(Service):
             await self.review_due(now)
         if self.app.memory is not None:
             if await self._due("memory.purge_last_run", timedelta(minutes=cfg.memory.purge_interval_minutes), now):
-                await self.app.memory.purge_expired()
-                await memory_review.expire(self.app, now)
+                try:
+                    await self.app.memory.purge_expired()
+                finally:
+                    # A purge failure must not block the pending-erase retries (#462):
+                    # the drain still runs — its own failure is logged rather than
+                    # raised, so review expiry still happens — then the purge error
+                    # keeps propagating.
+                    try:
+                        await self.app.memory.drain_pending_erases()
+                    except Exception:
+                        log.exception("pending-erase retry failed during upkeep")
+                    await memory_review.expire(self.app, now)
             if cfg.memory.summaries_enabled and await self._due(
                 "memory.summaries_last_run", timedelta(minutes=cfg.memory.summarize_interval_minutes), now
             ):
