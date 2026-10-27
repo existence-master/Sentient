@@ -95,7 +95,8 @@ def _row(r: Any, *, events: bool = True) -> dict:
 def _files_from(result: Any) -> list[str]:
     """The files one of the subagent's own tool calls saved, relative to the files folder: any result whose ``path``
     is inside the files folder, plus a script run's ``files_created``. Read from its results rather than by
-    comparing the folder before and after, so helpers running at once never report each other's files (#94)."""
+    comparing the folder before and after, so helpers running at once never report each other's files (#94).
+    It also includes browser screenshots and downloaded files if their paths are provided as relative paths."""
     if not isinstance(result, dict):
         return []
     names: list[str] = []
@@ -103,7 +104,17 @@ def _files_from(result: Any) -> list[str]:
     if not path and isinstance(result.get("file"), str):
         file_path = Path(result["file"])
         if not file_path.is_absolute() and ".." not in file_path.parts:
-            names.append(file_path.as_posix())
+            resolved_path = (paths.files_dir() / file_path).resolve()
+            if resolved_path.exists() and resolved_path.is_relative_to(paths.files_dir().resolve()):
+                names.append(resolved_path.relative_to(paths.files_dir().resolve()).as_posix())
+    # Process browser downloads
+    if "downloads" in result:
+        for dl in result["downloads"]:
+            dl_path = Path(dl) if isinstance(dl, str) else None
+            if dl_path and not dl_path.is_absolute() and ".." not in dl_path.parts:
+                resolved_dl = (paths.files_dir() / dl_path).resolve()
+                if resolved_dl.exists() and resolved_dl.is_relative_to(paths.files_dir().resolve()):
+                    names.append(resolved_dl.relative_to(paths.files_dir().resolve()).as_posix())
     if isinstance(path, str) and Path(path).is_absolute():
         with contextlib.suppress(OSError, ValueError):
             names.append(Path(path).resolve().relative_to(paths.files_dir().resolve()).as_posix())
@@ -212,13 +223,31 @@ class SubagentManager(Service):
             "INSERT INTO subagents(id, session_id, parent_call_id, goal, context, tools, status, background, events, started_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
-                sub_id, session_id, parent_call_id, goal, context or None, json.dumps(tools) if tools else None,
-                "running", int(bool(background)), "[]", now_iso(),
+                sub_id,
+                session_id,
+                parent_call_id,
+                goal,
+                context or None,
+                json.dumps(tools) if tools else None,
+                "running",
+                int(bool(background)),
+                "[]",
+                now_iso(),
             ),
         )
         self._publish(await self.get(sub_id, events=False))
         task = asyncio.create_task(
-            self._run(sub_id, goal, context or "", tools, session_id, bool(background), on_update, origin, untrusted),
+            self._run(
+                sub_id,
+                goal,
+                context or "",
+                tools,
+                session_id,
+                bool(background),
+                on_update,
+                origin,
+                untrusted,
+            ),
             name=f"subagent:{sub_id}",
             # a foreground helper is part of whatever waits on it (a chat reply); a background one is task work (#149)
             context=detached("task") if background else None,
@@ -256,44 +285,84 @@ class SubagentManager(Service):
         sub_id = new_id()
         names = ", ".join(f.name for f in fields)
         goal = f"Read {source} for: {names}"[:500]
-        events: list[dict] = [{"timestamp": now_iso(), "message": {
-            "type": "info", "content": "Reader started with no tools. Fields asked for: "
-            + ", ".join(f"{f.name} ({f.describe()})" for f in fields)}}]
+        events: list[dict] = [
+            {
+                "timestamp": now_iso(),
+                "message": {
+                    "type": "info",
+                    "content": "Reader started with no tools. Fields asked for: "
+                    + ", ".join(f"{f.name} ({f.describe()})" for f in fields),
+                },
+            }
+        ]
         await self.app.store.execute(
             "INSERT INTO subagents(id, session_id, parent_call_id, goal, kind, tools, status, background, events,"
             " started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (sub_id, session_id, parent_call_id, goal, "reader", "[]", "running", 0, json.dumps(events), now_iso()),
+            (
+                sub_id,
+                session_id,
+                parent_call_id,
+                goal,
+                "reader",
+                "[]",
+                "running",
+                0,
+                json.dumps(events),
+                now_iso(),
+            ),
         )
         self._publish(await self.get(sub_id, events=False))
         status, error, values = "completed", None, None
         # its own task, so ``cancel(sub_id)`` (POST /api/subagents/{id}/cancel) stops the model call too
-        task = asyncio.create_task(reader.read(self.app.llm, document, fields, source=source, attended=attended),
-                                   name=f"reader:{sub_id}")
+        task = asyncio.create_task(
+            reader.read(self.app.llm, document, fields, source=source, attended=attended),
+            name=f"reader:{sub_id}",
+        )
         self._tasks[sub_id] = task
         try:
             values = await task
-            events.append({"timestamp": now_iso(), "message": {
-                "type": "final_answer", "content": json.dumps(values, ensure_ascii=False)}})
+            events.append(
+                {
+                    "timestamp": now_iso(),
+                    "message": {
+                        "type": "final_answer",
+                        "content": json.dumps(values, ensure_ascii=False),
+                    },
+                }
+            )
         except asyncio.CancelledError:
             status, error = "cancelled", "The reader was stopped."
-            if not task.cancelled() or (asyncio.current_task() and asyncio.current_task().cancelling()):
+            if not task.cancelled() or (
+                asyncio.current_task() and asyncio.current_task().cancelling()
+            ):
                 task.cancel()
                 raise  # the parent was stopped: pass it on
-            events.append({"timestamp": now_iso(), "message": {"type": "info", "content": "Cancelled."}})
+            events.append(
+                {"timestamp": now_iso(), "message": {"type": "info", "content": "Cancelled."}}
+            )
         except reader.ReaderError as exc:
             status, error = "error", str(exc)
             events.append({"timestamp": now_iso(), "message": {"type": "error", "content": error}})
         finally:
             self._tasks.pop(sub_id, None)
-            await asyncio.shield(self._update(
-                sub_id, status=status, error=error, tool_calls=0, finished_at=now_iso(),
-                summary=json.dumps(values, ensure_ascii=False) if values is not None else None,
-                events=json.dumps(events, default=str),
-            ))
+            await asyncio.shield(
+                self._update(
+                    sub_id,
+                    status=status,
+                    error=error,
+                    tool_calls=0,
+                    finished_at=now_iso(),
+                    summary=json.dumps(values, ensure_ascii=False) if values is not None else None,
+                    events=json.dumps(events, default=str),
+                )
+            )
             self._publish(await self.get(sub_id, events=False))
         if values is None:
-            return {"subagent_id": sub_id, "status": status if status == "cancelled" else "error",
-                    "error": error or "The reader failed."}
+            return {
+                "subagent_id": sub_id,
+                "status": status if status == "cancelled" else "error",
+                "error": error or "The reader failed.",
+            }
         return {"subagent_id": sub_id, "status": "completed", "fields": values}
 
     async def delegate_many(
@@ -332,14 +401,18 @@ class SubagentManager(Service):
         if not fields:
             return
         cols = ", ".join(f"{k} = ?" for k in fields)
-        await self.app.store.execute(f"UPDATE subagents SET {cols} WHERE id = ?", (*fields.values(), subagent_id))
+        await self.app.store.execute(
+            f"UPDATE subagents SET {cols} WHERE id = ?", (*fields.values(), subagent_id)
+        )
 
     @contextlib.asynccontextmanager
     async def _slot(self):
         if self._slot_free is None:
             self._slot_free = asyncio.Condition()
         async with self._slot_free:
-            await self._slot_free.wait_for(lambda: self._active < self.app.config.subagents.max_concurrent)
+            await self._slot_free.wait_for(
+                lambda: self._active < self.app.config.subagents.max_concurrent
+            )
             self._active += 1
         try:
             yield
@@ -373,7 +446,8 @@ class SubagentManager(Service):
     ) -> list[str]:
         reg = self.app.registry
         usable = [
-            t for t in reg.tools()
+            t
+            for t in reg.tools()
             if t.plugin != PLUGIN_ID and not (t.risk >= Risk.send and t.risk_fn is None)
         ]
         usable_names = {t.name for t in usable}
@@ -440,11 +514,17 @@ class SubagentManager(Service):
         try:
             async with self._slot():
                 note({"type": "info", "content": f"Started: {goal[:200]}"}, "Started")
-                incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
+                incognito = await self.app.store.is_incognito(
+                    session_id
+                )  # kept if the chat is deleted (#154)
                 private = incognito and not self.app.config.chat.incognito_uses_memory
                 messages = [
                     {"role": "system", "content": self._system_prompt(private=private)},
-                    {"role": "user", "content": f"Goal: {goal}" + (f"\n\nContext:\n{context}" if context else "")},
+                    {
+                        "role": "user",
+                        "content": f"Goal: {goal}"
+                        + (f"\n\nContext:\n{context}" if context else ""),
+                    },
                 ]
                 ctx = agent.tool_context(session_id, "subagent", origin=origin)
                 ctx.incognito = incognito
@@ -456,9 +536,16 @@ class SubagentManager(Service):
                 narration = ""
                 async with asyncio.timeout(cfg.timeout_minutes * 60):
                     async for event in agent.run_loop(
-                        messages, ctx, result=result, role=cfg.role, model=model, tool_names=names,
+                        messages,
+                        ctx,
+                        result=result,
+                        role=cfg.role,
+                        model=model,
+                        tool_names=names,
                         max_rounds=cfg.max_rounds,
-                        use_approvals=False, policy=self.policy(session_id), source="subagent",
+                        use_approvals=False,
+                        policy=self.policy(session_id),
+                        source="subagent",
                         budget=Budget(max_tokens=cfg.max_tokens, max_cost_usd=cfg.max_cost_usd),
                     ):
                         if isinstance(event, TextDelta):
@@ -468,18 +555,32 @@ class SubagentManager(Service):
                                 note({"type": "thought", "content": narration.strip()[:1000]})
                             narration = ""
                             note(
-                                {"type": "tool_call", "tool_name": event.name, "parameters": event.arguments},
+                                {
+                                    "type": "tool_call",
+                                    "tool_name": event.name,
+                                    "parameters": event.arguments,
+                                },
                                 f"Using {event.name}",
                             )
                         elif isinstance(event, ToolResultEvent):
                             if not event.is_error:
                                 files.extend(_files_from(event.result))
                             note(
-                                {"type": "tool_result", "tool_name": event.name, "result": _short(event.result),
-                                 "is_error": event.is_error},
-                                f"{event.name} failed" if event.is_error else f"{event.name} finished",
+                                {
+                                    "type": "tool_result",
+                                    "tool_name": event.name,
+                                    "result": _short(event.result),
+                                    "is_error": event.is_error,
+                                },
+                                f"{event.name} failed"
+                                if event.is_error
+                                else f"{event.name} finished",
                             )
-                            await self._update(sub_id, events=json.dumps(events, default=str), tool_calls=result.tool_calls)
+                            await self._update(
+                                sub_id,
+                                events=json.dumps(events, default=str),
+                                tool_calls=result.tool_calls,
+                            )
                         elif isinstance(event, Error):
                             note({"type": "error", "content": event.message})
             if result.error:
@@ -487,15 +588,24 @@ class SubagentManager(Service):
             elif result.hit_step_limit:
                 status, error = "error", f"Stopped after {cfg.max_rounds} steps without finishing."
         except TimeoutError:
-            status, error = "error", f"Stopped after {cfg.timeout_minutes} minutes without finishing."
+            status, error = (
+                "error",
+                f"Stopped after {cfg.timeout_minutes} minutes without finishing.",
+            )
         except asyncio.CancelledError:
             status, error = "cancelled", None
-            await asyncio.shield(self._finish(sub_id, goal, session_id, background, status, error, result, events, files))
+            await asyncio.shield(
+                self._finish(
+                    sub_id, goal, session_id, background, status, error, result, events, files
+                )
+            )
             raise
         except Exception as exc:
             log.exception("subagent %s failed", sub_id)
             status, error = "error", f"{type(exc).__name__}: {exc}"
-        await self._finish(sub_id, goal, session_id, background, status, error, result, events, files)
+        await self._finish(
+            sub_id, goal, session_id, background, status, error, result, events, files
+        )
 
     async def _finish(
         self,
@@ -514,11 +624,17 @@ class SubagentManager(Service):
             summary = ""
         files = sorted(set(files))
         if status == "completed":
-            events.append({"timestamp": now_iso(), "message": {"type": "final_answer", "content": summary}})
+            events.append(
+                {"timestamp": now_iso(), "message": {"type": "final_answer", "content": summary}}
+            )
         elif status == "error":
-            events.append({"timestamp": now_iso(), "message": {"type": "error", "content": error or "failed"}})
+            events.append(
+                {"timestamp": now_iso(), "message": {"type": "error", "content": error or "failed"}}
+            )
         else:
-            events.append({"timestamp": now_iso(), "message": {"type": "info", "content": "Cancelled."}})
+            events.append(
+                {"timestamp": now_iso(), "message": {"type": "info", "content": "Cancelled."}}
+            )
         try:
             await self._update(
                 sub_id,
@@ -538,7 +654,14 @@ class SubagentManager(Service):
             log.exception("could not record the end of subagent %s", sub_id)
 
     async def _report_to_chat(
-        self, sub_id: str, goal: str, session_id: str, status: str, summary: str, error: str | None, files: list[str]
+        self,
+        sub_id: str,
+        goal: str,
+        session_id: str,
+        status: str,
+        summary: str,
+        error: str | None,
+        files: list[str],
     ) -> None:
         short_goal = goal if len(goal) <= 120 else goal[:117] + "..."
         if status == "completed":
