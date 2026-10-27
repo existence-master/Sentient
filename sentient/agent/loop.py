@@ -193,7 +193,7 @@ REPEAT_NUDGE = (
 )
 # Incognito chats (#154): tools that would keep something from the chat are never offered or run, and the model is
 # told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory tools go too: that is the
-# turn's ``memory_allowed`` decision (#525), which ``run_loop`` and everything the turn starts apply.
+# turn's ``memory_allowed`` decision (#525). ``run_loop`` leaves both out of every run of the chat, helpers included.
 INCOGNITO_LEARNING_TOOLS = frozenset({"memory_remember", "skill_save"})
 INCOGNITO_NOTE = (
     "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
@@ -781,12 +781,6 @@ class Agent:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources, notes
 
-    def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
-        """``tool_names`` (None: every offered tool) without the tools that would keep something from an incognito
-        chat (#154). The memory tools follow the turn's ``memory_allowed`` instead (``run_loop``, #525)."""
-        names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
-        return [n for n in names if n not in INCOGNITO_LEARNING_TOOLS]
-
     def _read_only_apps(self) -> list[str]:
         """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
         can say why instead of looking for another way."""
@@ -853,12 +847,14 @@ class Agent:
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
-        if not ctx.memory_allowed:
-            # a run without memory (#525) is never offered the memory tools, whoever built its list (a chat turn, a
-            # helper, a task); a call made anyway is refused as not offered, and ``Tool.call`` refuses it too
-            tool_names = without_memory_tools(
-                tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
-            )
+        if ctx.incognito or not ctx.memory_allowed:
+            # whoever built the list (a chat turn, a helper, a task), a run is never offered more than its turn
+            # (#525): nothing that would keep something from an incognito chat (#154), and no memory tools without
+            # memory. A call made anyway is refused as not offered, and the tools themselves refuse too.
+            names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
+            if ctx.incognito:
+                names = [n for n in names if n not in INCOGNITO_LEARNING_TOOLS]
+            tool_names = names if ctx.memory_allowed else without_memory_tools(names)
         tools = self.registry.openai_schemas(tool_names) or None
         result.tool_result_limit = await self.tool_result_limit(role, model)
         rounds = max_rounds or self.config.models.max_tool_rounds
@@ -1991,8 +1987,6 @@ class Agent:
             except Exception as exc:  # selection must never break a turn
                 log.warning("tool selection failed, offering all tools: %s", exc)
                 tool_names = None
-            if incognito:
-                tool_names = self._incognito_tools(tool_names)
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)

@@ -405,8 +405,8 @@ accept or loosen a rule.
   - nothing is learned from it: no fact extraction after a turn, no memory flush when it is compressed, and no
     `chat.turn_completed` event, so skill review and repair, the user model and dreaming never see it. Its skill
     views don't count as skill use.
-  - `memory_remember` and `skill_save` are not offered, and refuse with an error when called in it (also from a
-    helper it started). Nothing is stored, not even held for review.
+  - `memory_remember` and `skill_save` are not offered to it or to a helper it started, and refuse with an error
+    when called anyway. Nothing is stored, not even held for review.
   - keyword search (`GET /api/sessions/search`, `memory_search_history`), conversation summaries,
     `history_time_search`, the user model's evidence and skill review leave it out.
   - reading memory follows `chat.incognito_uses_memory` (default `true`): recalled facts, user-model insights and

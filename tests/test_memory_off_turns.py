@@ -78,6 +78,7 @@ async def test_a_helper_of_a_chat_without_memory_gets_no_memory_tools_or_context
     assert len(helpers) == 2
     for helper in helpers:
         assert not MEMORY_TOOLS & _offered(helper)  # the helper's list is never wider than the turn's
+        assert not {"memory_remember", "skill_save"} & _offered(helper)  # nor does it save anything (#154)
         assert "Maya" not in helper["messages"][0]["content"]  # no name, profile or memories in its prompt
     subs = await app.subagents.list_for_session(sid)
     [recall] = [e["message"] for e in subs[0]["events"] if e["message"].get("tool_name") == "memory_recall"
@@ -109,6 +110,15 @@ async def test_parallel_and_background_helpers_inherit_the_turn(app):
     later = _helper_calls(app)[-2:]
     assert all(not MEMORY_TOOLS & _offered(c) for c in later)
     assert "Anika" not in _said(app)
+
+
+async def test_a_helper_of_an_incognito_chat_with_memory_reads_but_never_saves(app):
+    app.config.chat.incognito_uses_memory = True
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    app.fake.replies.extend([[tool_call("delegate_task", goal="Recall Maya's family")], "Done.", "Done."])
+    await _turn(app, sid, "Ask a helper about my family")
+    [helper] = _helper_calls(app)
+    assert "memory_recall" in _offered(helper) and not {"memory_remember", "skill_save"} & _offered(helper)
 
 
 async def test_the_reader_refuses_a_memory_tool_in_a_chat_without_memory(app):
