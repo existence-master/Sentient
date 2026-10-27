@@ -11,14 +11,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sentient import secrets
-from sentient.agent.loop import API_NO_MEMORY_NOTE, API_NO_MEMORY_TOOLS
+from sentient.agent.loop import API_NO_MEMORY_NOTE
 from sentient.agent.prompt import API_REQUEST_NOTE
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
 from sentient.gateway.routes.openai_api import TURN_FAILED
 from sentient.llm.events import ApprovalRequest
 from sentient.llm.provider import ProviderFailed
-from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
+from sentient.tools.base import MEMORY_TOOLS, Risk, ToolContext, ToolPlugin, tool
 from sentient.tools.rules import API_SOURCE
 from tests.conftest import FakeProvider, tool_call
 
@@ -409,7 +409,7 @@ def test_connected_apps_get_memories_only_when_allowed(client, allow):
     offered = {t["function"]["name"] for t in call["tools"] or []}
     assert ("Mumbai" in system) is allow
     assert (API_NO_MEMORY_NOTE in system) is not allow
-    assert bool(offered & API_NO_MEMORY_TOOLS) is allow
+    assert bool(offered & MEMORY_TOOLS) is allow
     assert "memory_remember" in offered  # facts from an API chat still go to Review either way
 
 
@@ -420,6 +420,48 @@ def test_a_memory_tool_the_app_was_not_offered_is_refused(client):
     assert _ask(client, user="Notes app", messages=[{"role": "user", "content": "Where does Priya live?"}]).status_code == 200
     [result] = [m["content"] for m in client.llm.calls[-1]["messages"] if m["role"] == "tool"]
     assert "unknown tool memory_recall" in result and "Mumbai" not in result
+
+
+def _helper_calls(llm) -> list[dict]:
+    return [c for c in llm.calls if "You are a subagent" in str((c.get("messages") or [{}])[0].get("content"))]
+
+
+@pytest.mark.parametrize("allow", [False, True], ids=["memory-off", "memory-on"])
+def test_what_an_api_turn_starts_follows_allow_memory(client, allow):
+    """The /v1 switch is the turn's one memory decision (``Agent.memory_allowed``, #525): off, a helper the turn starts
+    gets no memory tools and the reader refuses memory_recall; on, both use what Sentient knows (#479)."""
+    core = client.app.state.sentient
+    core.config.openai_api.allow_memory = allow
+    core.config.memory.min_similarity = 0.0
+    assert client.post("/api/memories", json={"content": SISTER}, headers=WIN).status_code == 200
+    llm = client.llm
+    del llm.calls[:]  # saving the memory above asked the model about it: only this turn's calls count
+    llm.replies[:] = [
+        [tool_call("delegate_task", goal="Find what Sentient knows about Maya's sister Priya")],  # the API turn
+        [tool_call("memory_recall", query="Priya sister")],  # the helper tries memory
+        "Done.",  # the helper's report
+        [tool_call("read_with_reader", tool="memory_recall", arguments={"query": "Priya sister"},
+                   fields={"where_she_lives": "text"})],
+        "That's all I have.",
+    ]
+    llm.json_replies[:] = [{"where_she_lives": "Mumbai"}]
+    asking = [{"role": "user", "content": "Use a helper and the reader to find where my sister Priya lives"}]
+    assert _ask(client, user="Notes app", messages=asking).status_code == 200
+
+    helpers = _helper_calls(llm)
+    assert helpers and all(bool(MEMORY_TOOLS & {t["function"]["name"] for t in c.get("tools") or []}) is allow
+                           for c in helpers if c.get("tools"))
+    report = json.dumps(helpers[-1]["messages"], default=str)
+    assert ("Mumbai" in report) is allow  # the helper's own memory_recall found the fact only when allowed
+    final = llm.calls[-1]["messages"]
+    [read] = [str(m["content"]) for m in final if m["role"] == "tool" and (
+        "where_she_lives" in str(m["content"]) or "isn't available in this chat" in str(m["content"]))]
+    readers = [c for c in llm.calls if c.get("json")]
+    if allow:
+        assert "Mumbai" in read and readers and "Mumbai" in json.dumps(readers[-1]["messages"], default=str)
+    else:
+        assert "isn't available in this chat" in read and not readers
+        assert "Mumbai" not in json.dumps(llm.calls, default=str)  # the stored fact reached no model
 
 
 def _code_request(client, pool, *, stream: bool, rule: str = "allow", timeout: float = 20):

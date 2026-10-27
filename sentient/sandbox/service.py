@@ -235,8 +235,12 @@ class SandboxService(Service):
             rules=self.app.config.tools.approvals.rules,
             rules_source=lambda: self.app.config.tools.approvals.rules,
             read_only_apps_source=lambda: self.app.config.integrations.read_only,
+            memory_allowed=call_ctx is None or call_ctx.memory_allowed,
         )
         ctx = self._tool_context(session_id, channel)
+        if call_ctx is not None:  # the script's calls are never wider than the run that started it (#525)
+            ctx.memory_allowed = call_ctx.memory_allowed
+            ctx.incognito = call_ctx.incognito
         transport = self._transport_for(backend)
         bind = "0.0.0.0" if backend == "docker" and sys.platform.startswith("linux") else "127.0.0.1"
         bridge = ToolBridge(self.app.registry, policy, ctx, run_dir=run_dir, transport=transport, host=bind)
