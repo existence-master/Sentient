@@ -438,7 +438,10 @@ def stand_ins(config: SentientConfig, role: str, chain: list[str]) -> list[str]:
     Code (and Claude Code not doing everything) they were refused, so a memory was always added, never updated or
     skipped. They go to the other models the user set up instead, tried in turn: the main model's fallbacks, the
     executor, the planner, the main model. Never the chat's own model: these jobs are background work (ADR 0022). Not inside a
-    reply someone waits for (``attended``: the second look asks Claude Code then) or ``without_stand_in``."""
+    reply someone waits for (``attended``: the second look asks Claude Code then) or ``without_stand_in``.
+
+    Settings names the same model in its Claude Code warning (``fastStandIns`` in ``desktop/src/lib/claudeCode.ts``); change
+    the two together (#510)."""
     if role not in STAND_IN_ROLES or not chain or any(m.split("/", 1)[0] != PREFIX for m in chain):
         return []
     if is_attended() or _no_stand_in.get():  # part of a reply Claude Code may answer, or a check with its own way on
