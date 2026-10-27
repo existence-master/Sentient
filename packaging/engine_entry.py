@@ -24,7 +24,7 @@ import sys
 # first build turned that into `serve claude-code-tools` because it was missing here.
 _COMMANDS = {
     "serve", "node", "doctor", "config", "version",
-    "claude-code-tools", "backup", "restore", "selfcheck",
+    "claude-code-tools", "backup", "restore", "selfcheck", "mcp",
 }
 
 

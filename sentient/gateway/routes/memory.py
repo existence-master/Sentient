@@ -8,7 +8,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
-from sentient.gateway.deps import AUTH, get_core
+from sentient.app_names import clean_app_name
+from sentient.gateway.deps import MCP_OK, get_core
 from sentient.memory import export as memory_export
 from sentient.memory import forget as memory_forget
 from sentient.memory import review as memory_review
@@ -17,7 +18,7 @@ from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.personas import PERSONAS, render_persona
 from sentient.memory.topics import TOPICS
 
-router = APIRouter(prefix="/api/memories", tags=["memory"], dependencies=AUTH)
+router = APIRouter(prefix="/api/memories", tags=["memory"], dependencies=MCP_OK)
 
 IMPORT_SUFFIXES = {".pdf", ".txt", ".md", ".markdown", ".docx"}
 PROFILE_SCOPES = (memory_scopes.PERSONAL, memory_scopes.ALWAYS)  # what USER.md and MEMORY.md are built from
@@ -244,7 +245,20 @@ async def create_memory(request: Request, body: dict):
     if not content:
         raise HTTPException(400, "content is required")
     scope = memory_scopes.normalize(body.get("scope"), memory_scopes.PERSONAL)  # #155
-    return await mem.remember(content, source=str(body.get("source") or "manual"), notify=True, scope=scope)
+    # An outside app saving through `sentient mcp` is outside content (ADR 0018, ADR 0034): its memories wait
+    # in Review like an import's do (ADR 0021), unless the user turned the wait off in Settings. The engine
+    # decides that from the caller and the setting, never from the request body: a token holder asking
+    # directly cannot skip the wait, pick a trusted-looking source, or name who the memory is "from".
+    review = None
+    if getattr(request.state, "caller", "gateway") == "mcp":
+        source = "mcp"
+        if not get_core(request).config.integrations.mcp_server_memories_skip_review:
+            review = memory_review.note(clean_app_name(body.get("app")) or "an MCP app", snippet=content)
+    else:
+        source = str(body.get("source") or "manual")
+        if body.get("hold_for_review"):
+            review = memory_review.note(str(body.get("review_from") or "an MCP app"), snippet=content)
+    return await mem.remember(content, source=source, notify=True, scope=scope, review=review)
 
 
 @router.put("/{memory_id}")
