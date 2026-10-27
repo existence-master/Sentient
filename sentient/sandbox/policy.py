@@ -13,6 +13,8 @@ own words (#140), and a "hand it to me" tool's calls that would change something
 hand anything to the user (its look-ups run as usual). An "allow" rule changes nothing:
 scripts still only read (ADR 0012, docs/PRIVACY.md). A connection set to Read only (#141) takes away the same way,
 even with approvals mode ``off``: its tools that can change things are not listed and calls above ``read`` are refused.
+A script never gets more than the chat turn that ran it (#525): in a turn without memory the memory and history
+tools (``MEMORY_TOOLS``) are not listed and are refused.
 """
 
 from __future__ import annotations
@@ -20,7 +22,14 @@ from __future__ import annotations
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 
-from sentient.tools.base import Risk, Tool, ToolContext, effective_risk
+from sentient.tools.base import (
+    MEMORY_OFF_ERROR,
+    MEMORY_TOOLS,
+    Risk,
+    Tool,
+    ToolContext,
+    effective_risk,
+)
 from sentient.tools.rules import (
     HAND_OFF,
     IF_ASKED,
@@ -54,6 +63,8 @@ class BridgePolicy:
     rules_source: Callable[[], Mapping[str, str] | None] | None = None
     # app ids of Read only connections (``integrations.read_only``), read on every call like the rules
     read_only_apps_source: Callable[[], Collection[str] | None] | None = None
+    # tools the run that started the script may not use (its turn has no memory, #525): never listed, always refused
+    withheld: frozenset[str] = frozenset()
 
     @classmethod
     def build(
@@ -66,7 +77,9 @@ class BridgePolicy:
         rules: Mapping[str, str] | None = None,
         rules_source: Callable[[], Mapping[str, str] | None] | None = None,
         read_only_apps_source: Callable[[], Collection[str] | None] | None = None,
+        memory_allowed: bool = True,
     ) -> BridgePolicy:
+        """``memory_allowed``: the starting run's ``ToolContext.memory_allowed`` (#525)."""
         return cls(
             approvals_mode=approvals_mode,
             allowed_tools=None if allowed_tools is None else frozenset(allowed_tools),
@@ -75,6 +88,7 @@ class BridgePolicy:
             rules=dict(rules or {}),
             rules_source=rules_source,
             read_only_apps_source=read_only_apps_source,
+            withheld=frozenset() if memory_allowed else MEMORY_TOOLS,
         )
 
     def current_rules(self) -> Mapping[str, str]:
@@ -87,7 +101,7 @@ class BridgePolicy:
 
     def is_available(self, tool: Tool) -> bool:
         """Tools a script can see at all (listed in the generated sentient_tools module)."""
-        if tool.plugin in BLOCKED_PLUGINS or tool.name in BLOCKED_TOOLS:
+        if tool.plugin in BLOCKED_PLUGINS or tool.name in BLOCKED_TOOLS or tool.name in self.withheld:
             return False
         if rule_for(self.current_rules(), tool) == "never" or read_only_hides(self.read_only_apps(), tool):
             return False
@@ -99,6 +113,8 @@ class BridgePolicy:
             raise Refused(f"There is no tool named '{name}'. Use tools.available() to list the tools you can call.")
         if tool.plugin in BLOCKED_PLUGINS or tool.name in BLOCKED_TOOLS:
             raise Refused(f"'{name}' is not available inside scripts. Call it directly as a normal tool call instead.")
+        if tool.name in self.withheld:
+            raise Refused(MEMORY_OFF_ERROR)
         rules = self.current_rules()
         rule = rule_for(rules, tool)
         label = rule_label(tool, rules, (getattr(ctx, "extra", None) or {}).get("registry"))

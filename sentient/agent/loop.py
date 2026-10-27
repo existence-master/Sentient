@@ -109,6 +109,7 @@ from sentient.tools.base import (
     describe_call,
     effective_risk,
     is_unprompted,
+    without_memory_tools,
 )
 from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
@@ -191,12 +192,9 @@ REPEAT_NUDGE = (
     "Do not call it again with these arguments. Try something different, or answer the user with what you have."
 )
 # Incognito chats (#154): tools that would keep something from the chat are never offered or run, and the model is
-# told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory look-ups go too.
+# told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory tools go too: that is the
+# turn's ``memory_allowed`` decision (#525). ``run_loop`` leaves both out of every run of the chat, helpers included.
 INCOGNITO_LEARNING_TOOLS = frozenset({"memory_remember", "skill_save"})
-INCOGNITO_MEMORY_TOOLS = frozenset({
-    "memory_recall", "memory_search_by_source", "memory_search_history", "history_semantic_search",
-    "history_time_search", "user_model_ask",
-})
 INCOGNITO_NOTE = (
     "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
     "user closes it. Never say you will remember something from it."
@@ -723,15 +721,24 @@ class Agent:
     async def system_prompt(self, user_text: str, channel: str, session: dict | None = None) -> str:
         return (await self._system_prompt_with_sources(user_text, channel, session))[0]
 
+    def memory_allowed(self, session: dict | None, channel: str) -> bool:
+        """Whether a chat turn may use what Sentient knows about the user (#525): memories, the profile, the user
+        model and other chats. Decided once per turn, here only; the turn puts it in ``ToolContext.memory_allowed``
+        so its prompt, its tools and everything it starts (helpers, the reader, scripts) follow the same answer.
+        False in an incognito chat while ``chat.incognito_uses_memory`` is off. Another kind of turn without memory
+        (an app's turn the user hasn't allowed to read memories, #479) adds its condition here."""
+        incognito = bool((session or {}).get("incognito"))
+        return not incognito or self.config.chat.incognito_uses_memory
+
     async def _system_prompt_with_sources(
-        self, user_text: str, channel: str, session: dict | None = None
+        self, user_text: str, channel: str, session: dict | None = None, *, memory_allowed: bool | None = None
     ) -> tuple[str, MemorySources, list[dict]]:
         """The system prompt, the memories put into it (recalled facts, user-model insights) and the pieces of the
         user's notes put into it (#354). An incognito chat (#154) reads memory and notes only while
         ``chat.incognito_uses_memory`` is on, and is told nothing will be kept. The chat's memory scope (#155) decides
         which facts are recalled; a work or project chat also leaves out the personal profile files."""
         incognito = bool((session or {}).get("incognito"))
-        reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        reads_memory = self.memory_allowed(session, channel) if memory_allowed is None else memory_allowed
         scope = memory_scopes.of_session(self.config, session)
         personal = memory_scopes.is_personal(scope)
         if reads_memory:
@@ -773,12 +780,6 @@ class Agent:
         if incognito:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources, notes
-
-    def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
-        """``tool_names`` (None: every offered tool) without the tools an incognito chat must not use (#154)."""
-        names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
-        left_out = INCOGNITO_LEARNING_TOOLS | (frozenset() if self.config.chat.incognito_uses_memory else INCOGNITO_MEMORY_TOOLS)
-        return [n for n in names if n not in left_out]
 
     def _read_only_apps(self) -> list[str]:
         """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
@@ -846,6 +847,14 @@ class Agent:
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
+        if ctx.incognito or not ctx.memory_allowed:
+            # whoever built the list (a chat turn, a helper, a task), a run is never offered more than its turn
+            # (#525): nothing that would keep something from an incognito chat (#154), and no memory tools without
+            # memory. A call made anyway is refused as not offered, and the tools themselves refuse too.
+            names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
+            if ctx.incognito:
+                names = [n for n in names if n not in INCOGNITO_LEARNING_TOOLS]
+            tool_names = names if ctx.memory_allowed else without_memory_tools(names)
         tools = self.registry.openai_schemas(tool_names) or None
         result.tool_result_limit = await self.tool_result_limit(role, model)
         rounds = max_rounds or self.config.models.max_tool_rounds
@@ -1899,7 +1908,10 @@ class Agent:
 
             session = await self.store.get_session(session_id)
             incognito = bool((session or {}).get("incognito"))
-            system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
+            memory_allowed = self.memory_allowed(session, channel)  # once per turn (#525)
+            system, sources, notes = await self._system_prompt_with_sources(
+                user_text, channel, session, memory_allowed=memory_allowed
+            )
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
             result.browser_click_history.extend(browser_click_history(history))
@@ -1935,6 +1947,7 @@ class Agent:
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = incognito
+            ctx.memory_allowed = memory_allowed  # helpers, the reader and scripts it starts copy it (#525)
             ctx.memory_scope = memory_scopes.of_session(self.config, session)  # recall and saving use it (#155)
             # a turn an MCP app steers is outside content from the start (issue #443): its text is not
             # the user's words, so it never fills user_words, and the chat is marked before anything
@@ -1974,8 +1987,6 @@ class Agent:
             except Exception as exc:  # selection must never break a turn
                 log.warning("tool selection failed, offering all tools: %s", exc)
                 tool_names = None
-            if incognito:
-                tool_names = self._incognito_tools(tool_names)
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
@@ -2132,6 +2143,7 @@ class Agent:
             session = await self.store.get_session(session_id)
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = bool((session or {}).get("incognito"))
+            ctx.memory_allowed = self.memory_allowed(session, channel)
             ctx.extra = {**ctx.extra, "quick": True, "quick_language": plan.language.code}
             results: list[tuple[Any, bool]] = []
             checks: list[dict] = []

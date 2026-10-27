@@ -405,13 +405,14 @@ accept or loosen a rule.
   - nothing is learned from it: no fact extraction after a turn, no memory flush when it is compressed, and no
     `chat.turn_completed` event, so skill review and repair, the user model and dreaming never see it. Its skill
     views don't count as skill use.
-  - `memory_remember` and `skill_save` are not offered, and refuse with an error when called in it (also from a
-    helper it started). Nothing is stored, not even held for review.
+  - `memory_remember` and `skill_save` are not offered to it or to a helper it started, and refuse with an error
+    when called anyway. Nothing is stored, not even held for review.
   - keyword search (`GET /api/sessions/search`, `memory_search_history`), conversation summaries,
     `history_time_search`, the user model's evidence and skill review leave it out.
   - reading memory follows `chat.incognito_uses_memory` (default `true`): recalled facts, user-model insights and
     the memory tools work as usual, and the reply's `memory_sources` list them. Off, its prompt has no profile,
-    memory file, daily notes, facts or insights, and the memory look-up tools are not offered and return nothing.
+    memory file, daily notes, facts or insights, and the memory tools are not offered and refuse to run, also in the
+    helpers, reader and scripts it starts (section 10, "Turns without memory").
     The prompt also tells the model the chat is incognito.
   - it is deleted: the window deletes it when the user leaves it; the engine deletes every incognito chat at start
     and shutdown (after replies and background work have finished), and one with no new message for
@@ -2705,8 +2706,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
     content and a `text`, `email` or `url` value came back (the run is then marked, ADR 0018); a result of only dates,
     numbers, yes or no, ids and choices does not mark it. Refused (`{error}`) for tools that aren't look-ups, that
     could send data out, whose rule is Ask, Only if I asked or Hand it to me, that are hidden, the subagent tools, and
-    an address that could carry data to a site a marked run hasn't visited. Tool selection offers it with any tool
-    that reads outside content.
+    an address that could carry data to a site a marked run hasn't visited, and, in a turn without memory (below), the
+    memory and history tools. Tool selection offers it with any tool that reads outside content.
 - **Subagent** `{subagent_id, session_id, parent_call_id, goal, kind: "worker"|"reader", status: "running"|"completed"|"error"|"cancelled", background, summary, error, tool_calls, started_at, finished_at, events: [ProgressUpdate]}`.
   A reader (`kind: "reader"`) has `tool_calls: 0`, `goal` `"Read <source> for: <field names>"`, `summary` the JSON of
   the fields returned, and two events: `info` (the fields asked for, with their kinds) and `final_answer` (the fields
@@ -2716,6 +2717,14 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - While a foreground subagent runs, the parent emits `tool_progress` with `kind: "subagent"` and `data: {subagent_id, message}`.
 - Subagents cannot spawn subagents, use the voice role, or run tools of effective risk `send` or `exec`; those calls are
   denied with an explanation the parent can relay.
+- **Turns without memory** (#525). Each chat turn decides once whether it may use what Sentient knows about the user
+  (`Agent.memory_allowed(session, channel)`: false in an incognito chat while `chat.incognito_uses_memory` is off)
+  and carries the answer in `ToolContext.memory_allowed`. Everything the turn starts copies it: helpers
+  (`delegate_task`, `delegate_tasks`, background ones too), the reader and `execute_code` scripts. Without memory,
+  the memory tools (`memory_recall`, `memory_search_by_source`, `memory_search_history`, `history_semantic_search`,
+  `history_time_search`, `user_model_ask`, `memory_forget`) are not offered by `run_loop` whoever built the list,
+  are not listed to scripts, and refuse to run (`{error}`) however they are called. A helper's prompt then leaves out
+  the user's name too.
 - Limits: `subagents.max_rounds` steps (default 24), `subagents.timeout_minutes` (20), and on cloud models
   `subagents.max_tokens` (1000000) and `subagents.max_cost_usd` (2.0, when the price is known; `0` = no limit). The
   repeated-call breaker applies too. Reaching one ends the subagent with `status: "error"` and a plain `error`
