@@ -154,6 +154,15 @@ def unattended_ask_message(label: str, rule: str | None = ASK) -> str:
     return f"{label} is {_set_to(rule)}, and this work can't stop to ask. Change it in Settings > Approvals & safety."
 
 
+def pending_card_message(label: str) -> str:
+    """Why an unattended run (a subagent, a swarm worker) stopped on a pending rule suggestion: nothing is set to
+    Ask, a suggested-rule card in the chat is still waiting for the user's answer, and the main assistant can do
+    the call itself and ask once (#491)."""
+    return (f"Waiting for your answer on the suggested rule for {label} in this chat. It was not done, and nothing "
+            "in Settings is set to Ask. If it is still needed, do it in the main chat and ask the user about the "
+            "suggested rule once.")
+
+
 def approval_hold_message(label: str, rule: str | None = ASK) -> str:
     """What the model is told when a task run holds a call for an "ask" (or "only if I asked") rule; the run then
     pauses and asks (#139)."""
