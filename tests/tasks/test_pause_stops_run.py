@@ -443,3 +443,68 @@ async def test_paused_check_early_exit_error_does_not_notify(make_app):
     assert "Endpoint 500 error" in task["script"]["last_error"]
     notes = [n for n in await app.notifications.list() if (n.get("payload") or {}).get("event") == "script_failed"]
     assert notes == []
+
+
+async def test_pause_during_recovery_notification_does_not_start_a_run(make_app):
+    """If a task is paused while its 'working again' recovery notification is in flight,
+    it must not start a run or send alerts on the paused task."""
+    llm = FakeProvider(replies=["Logged price."], json_replies=[dict(RESULT)])
+    app = await make_app(llm)
+
+    orig_notify = app.tasks._notify
+
+    async def notify_with_pause(task, message, title, event, *args, **kwargs):
+        if event == "script_recovered":
+            # Simulate user pausing during the recovery notification
+            await app.tasks.update(task["id"], {"enabled": False})
+        return await orig_notify(task, message, title, event, *args, **kwargs)
+
+    app.tasks._notify = notify_with_pause
+
+    async def fast_sandbox(*args, **kwargs):
+        return {"ok": True, "result": {"price": 90}}
+
+    app.sandbox.run = fast_sandbox
+    script = normalize_script({"code": "result({'price': 90})", "condition": "changed", "then": "run"})
+    schedule = {"type": "recurring", "frequency": "interval", "interval_minutes": 60, "timezone": "UTC"}
+    now = app.tasks.now_iso()
+    task_id = await app.tasks.repo.insert_task({
+        "name": "Price watch", "description": "Watch price", "status": "active",
+        "task_type": "script", "script": {**script, "last_result": {"price": 100}, "last_error": "failed previously"},
+        "schedule": schedule, "plan": [{"tool": "files", "description": "Log price"}],
+        "created_at": now, "updated_at": now, "enabled": True,
+    })
+
+    task = await app.tasks.repo.get_task(task_id)
+    await app.tasks._start_script(task)
+    await app.tasks.drain()
+
+    task = await app.tasks.get(task_id)
+    assert not task["enabled"]
+    assert task["runs"] == []
+    assert llm.calls == []
+
+
+async def test_pause_before_refine_leaves_task_in_planning(make_app):
+    """If a task is paused right as refinement starts, checking enabled on the fetched task
+    prevents model calls, leaving the task in planning with PLAN_PAUSED_NOTE."""
+    llm = FakeProvider(json_replies=[REFINE_ONCE, PLAN_FILES])
+    app = await make_app(llm)
+
+    orig_get_task = app.tasks.repo.get_task
+
+    async def get_task_with_pause(tid):
+        task = await orig_get_task(tid)
+        if task and task["status"] == "planning" and task["enabled"]:
+            await app.tasks.repo.update_task(tid, {"enabled": 0})
+            task["enabled"] = 0
+        return task
+
+    app.tasks.repo.get_task = get_task_with_pause
+    task = await app.tasks.create_task("Save notes to a.txt")
+    await app.tasks.drain()
+
+    task = await app.tasks.get(task["task_id"])
+    assert task["status"] == "planning" and not task["enabled"]
+    assert task["error"] == PLAN_PAUSED_NOTE
+    assert llm.calls == []

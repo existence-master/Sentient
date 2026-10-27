@@ -1679,7 +1679,9 @@ class TaskService(Service):
         if await self._planning_paused(task_id):
             return
         task = await self.repo.get_task(task_id)
-        if task is None or task["status"] != "planning":
+        if task is None or task["status"] != "planning" or not task.get("enabled", True):
+            if task is not None and not task.get("enabled", True):
+                await self._planning_paused(task_id)
             return
         prompt = task.get("original_prompt") or task.get("description") or task.get("name") or ""
         try:
@@ -2566,19 +2568,24 @@ class TaskService(Service):
         if value is not None or condition not in scripts.COMPARING:  # an empty result keeps the baseline
             state["last_result"] = value
         await self._save_script_state(task_id, code, state)
-        current = await self.repo.get_task(task_id) or current
+        current = await self._stale_check(task_id, task)
+        if current is None:
+            return
         paused = paused or self._script_paused(task_id, current, manual)
         if previous_error and not paused:
             await self._notify(task, f"The check for '{name}' is working again.", "Check recovered", "script_recovered")
+            current = await self.repo.get_task(task_id) or current
+            paused = paused or self._script_paused(task_id, current, manual)
         if act and not paused:
-            if script.get("then") == "run":
-                context: dict[str, Any] = {"script_result": value, "message": message}
-                if trigger_data:
-                    context["trigger_event"] = trigger_data
-                fresh = await self.repo.get_task(task_id) or task
-                await self._start_run(fresh, trigger_data=context, next_execution_at=_KEEP)
-            else:
-                await self._notify(task, message, name, "script_alert", {"result": value})
+            fresh = await self.repo.get_task(task_id) or current
+            if not self._script_paused(task_id, fresh, manual):
+                if script.get("then") == "run":
+                    context: dict[str, Any] = {"script_result": value, "message": message}
+                    if trigger_data:
+                        context["trigger_event"] = trigger_data
+                    await self._start_run(fresh, trigger_data=context, next_execution_at=_KEEP)
+                else:
+                    await self._notify(task, message, name, "script_alert", {"result": value})
         self._paused_scripts.discard(task_id)
         await self._after_run(task_id, "completed", None)
         await self.publish(task_id)
