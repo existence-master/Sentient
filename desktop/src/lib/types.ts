@@ -389,6 +389,10 @@ export interface IntegrationsConfig {
   searxng_url: string
   weather_provider: 'open_meteo' | 'accuweather'
   mcp_servers: Record<string, McpServerConfig>
+  /** Let other apps use Sentient over MCP (#443). Off by default. */
+  mcp_server_enabled?: boolean
+  /** Let MCP apps save memories without going through Review (#443). */
+  mcp_server_memories_skip_review?: boolean
   /** App ids set to Read only (#141). */
   read_only?: string[]
   [key: string]: unknown
