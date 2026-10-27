@@ -446,10 +446,27 @@ class ChatRules:
         running weighs ``tool``, else None."""
         if not session_id:
             return None
-        if any(tool.name in names for names in self._checking.get(session_id, ())):
+        if self.is_checking(tool, session_id):
             return "ask"
         pending = await self._session_pending(session_id)
         return "ask" if pending and (tool.name in pending or tool.plugin in pending) else None
+
+    def is_checking(self, tool: Tool, session_id: str | None) -> bool:
+        """True while a rule check that is still running weighs ``tool`` in this chat."""
+        if not session_id:
+            return False
+        return any(tool.name in names for names in self._checking.get(session_id, ()))
+
+    async def pending_rule(self, tool: Tool, session_id: str | None) -> str | None:
+        """The strictest still-undecided rule suggestion in this chat naming ``tool`` or its app (#130), or None.
+        Unlike ``chat_rule`` — which collapses every undecided proposal to "ask" — this keeps the suggestion's own
+        rule, so a pending "never" can be told apart from a pending "ask"."""
+        if not session_id:
+            return None
+        pending = await self._session_pending(session_id)
+        names = {tool.name, tool.plugin}
+        rules = [r for key, r in pending.items() if key in names]
+        return max(rules, key=lambda r: STRICTNESS.get(r, 1), default=None)
 
     def _target(self, key: str, names: dict[str, str]) -> dict:
         tool = self.app.registry.get(key)

@@ -72,16 +72,17 @@ async def test_deny_on_the_phone_means_not_done(tg, isolated_home):
 async def test_settlement_during_send_is_processed_after_delivery_is_registered(tg, isolated_home, monkeypatch):
     await tg.pair(42)
     sent, release = asyncio.Event(), asyncio.Event()
-    send_approval = tg.ch.send_approval
+    send_markdown = tg.ch.send_markdown
 
-    async def delayed_send(chat_id, event):
-        message_id = await send_approval(chat_id, event)
-        sent.set()
-        # The platform has the message, but _deliver_live_approval has not registered its ID yet.
-        await release.wait()
-        return message_id
+    async def delayed_send(chat_id, md, buttons=None):
+        message_ids = await send_markdown(chat_id, md, buttons)
+        if "Approval needed" in md:
+            sent.set()
+            # The platform has the message, but deliver_notification has not registered its ID yet.
+            await release.wait()
+        return message_ids
 
-    monkeypatch.setattr(tg.ch, "send_approval", delayed_send)
+    monkeypatch.setattr(tg.ch, "send_markdown", delayed_send)
     try:
         async with tg.app.bus.subscribe() as events:
             out = await _api_turn(tg)

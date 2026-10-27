@@ -167,12 +167,14 @@ async def models(request: Request):
 
 
 class _Approvals:
-    """The approvals one API turn asks for, as ``kind: "approval"`` notifications whose ``status`` follows the answer
-    (the window's card words: ``allow``, ``deny``, ``expired``), so every place that shows one settles it."""
+    """The approvals one API turn asks for, to tell the client which calls were not done. The approval itself, its
+    ``kind: "approval"`` notification and that note's ``status`` (``allow``, ``deny``, ``expired``) come from the
+    agent's one path for turns another app steers, the same one MCP turns use (#443), so every place that shows it
+    settles it."""
 
     def __init__(self, core: Any, session_id: str) -> None:
         self.core, self.session_id = core, session_id
-        self.open: dict[str, tuple[str, str, str, float]] = {}  # call_id -> (notification id, approval id, what, asked at)
+        self.open: dict[str, str] = {}  # call_id -> what it was, while it waits
         self.not_done: list[str] = []
         self.told = 0  # how many of not_done the client has been given
 
@@ -182,40 +184,14 @@ class _Approvals:
 
     async def see(self, event: Any) -> None:
         if isinstance(event, ApprovalRequest):
-            what = self.what(event.name)
-            nid = new_id()
-            self.open[event.call_id] = (nid, event.approval_id, what, time.monotonic())
-            await self.core.notify(
-                "approval", f"Another app asked Sentient to use {what}. Allow it?", title="Approval needed",
-                payload={**event.model_dump(mode="json"), "session_id": self.session_id, "source": CHANNEL},
-                notification_id=nid,
-            )
-            self.open[event.call_id] = (nid, event.approval_id, what, time.monotonic())
+            self.open[event.call_id] = self.what(event.name)
         elif isinstance(event, ToolResultEvent) and event.call_id in self.open:
-            nid, _, what, asked = self.open.pop(event.call_id)
+            what = self.open.pop(event.call_id)
             if isinstance(event.result, dict) and event.result.get("declined"):
                 self.not_done.append(what)
-                # ponytail: unanswered means it waited the whole timeout; the broker doesn't say which it was
-                waited = time.monotonic() - asked >= self.core.approvals.timeout_s - 1
-                await self.settle(nid, "expired" if waited else "deny")
-            else:
-                await self.settle(nid, "allow")
-
-    async def settle(self, nid: str, status: str) -> None:
-        try:
-            note = await self.core.notifications.get(nid)
-            if note is not None and not (note.get("payload") or {}).get("status"):
-                await self.core.notifications.update_payload(nid, {**(note.get("payload") or {}), "status": status})
-        except Exception:
-            log.exception("could not settle approval notification %s", nid)
 
     async def close(self) -> None:
-        """Stopped or broken while still waiting: no longer answerable anywhere."""
-        owned = list(self.open.values())
-        for _, approval_id, _, _ in owned:
-            self.core.approvals.cancel(approval_id)
-        for nid, _, _, _ in owned:
-            await self.settle(nid, "expired")
+        """Stopped or broken while still waiting: the agent settled its notes and forgot the requests."""
         self.open.clear()
 
     def note(self) -> str:

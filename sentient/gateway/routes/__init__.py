@@ -1,6 +1,7 @@
 """All REST routers. One module per feature package; each module is owned by that package.
 
 core, models, notifications : core (composition root owner)
+mcp                         : core (the MCP server's status and token endpoints, #443)
 tasks                       : tasks package
 integrations                : integrations package
 memory, skills, proactivity : memory / proactivity / evolution package
@@ -28,6 +29,7 @@ from sentient.gateway.routes import (
     folders,
     hooks,
     integrations,
+    mcp,
     memory,
     migrate,
     models,
@@ -50,6 +52,7 @@ from sentient.gateway.routes import (
 ROUTERS = [
     core.router,
     models.router,
+    mcp.router,
     notifications.router,
     tasks.router,
     integrations.router,

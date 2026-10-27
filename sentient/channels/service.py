@@ -36,7 +36,6 @@ from sentient.channels.formatting import summary_text
 from sentient.channels.store import ChannelStore
 from sentient.channels.telegram import TelegramChannel
 from sentient.channels.whatsapp import WhatsAppChannel
-from sentient.llm.events import ApprovalRequest
 from sentient.memory.forget import forget as forget_learned
 from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
@@ -119,6 +118,7 @@ class ChannelService(Service):
         }
         # notification id -> [(channel, chat_id, message_id)] for messages with action buttons
         self._delivered: dict[str, list[tuple[str, str, str]]] = {}
+        self._approval_notes: dict[str, str] = {}  # approval_id -> the notification that carried it (#443)
         self._subagents_sent: set[tuple[str, str, str]] = set()
         self._rule_cards: dict[str, tuple[str, str, str]] = {}  # proposal id -> (channel, chat_id, message_id)
         # approval requests held back while the person is in the app (#139): notification id -> notification
@@ -455,40 +455,29 @@ class ChannelService(Service):
             return f"**{title or 'Your Daily Brief'}**\n{DailyBrief.as_text(brief, links=True)}", None
         if kind == "reminder":
             return f"**{title or 'Reminder'}**\n{message}", None
+        if kind == "approval":
+            # a chat turn's approval, raised where no chat surface could show it (an MCP app's turn,
+            # #443, or an API turn, #211): Allow and Deny answer the same approval the app would have shown
+            approval_id = payload.get("approval_id")
+            if not approval_id or payload.get("status"):
+                return None
+            md = f"**{title or 'Approval needed'}**\n{message}"
+            return md, [[
+                Button("Allow", f"na:a:{approval_id}", "success"),
+                Button("Deny", f"na:d:{approval_id}", "danger"),
+            ]]
         if payload.get("subagent_id") and cfg.deliver_subagents:
             return f"**{title or 'Background work finished'}**\n{message}", None
         return None
 
     @staticmethod
     def is_approval(note: dict) -> bool:
-        """A task's approval request (#139, ADR 0018), as opposed to an ordinary question, or a live one."""
+        """An approval request (#139, ADR 0018), as opposed to an ordinary question: a task's, or a
+        chat turn's own approval note (kind "approval", #443)."""
         payload = note.get("payload") or {}
-        task = note.get("kind") == "task" and payload.get("event") == "question" and isinstance(payload.get("approval"), dict)
-        return task or ChannelService.is_live_approval(note)
-
-    @staticmethod
-    def is_live_approval(note: dict) -> bool:
-        """An approval a chat turn without a window is waiting on (an API turn, #211): ``payload`` is its
-        ``approval_request``, answered through ``app.approvals`` like a chat's."""
-        return note.get("kind") == "approval" and bool((note.get("payload") or {}).get("approval_id"))
-
-    async def _deliver_live_approval(self, note: dict) -> int:
-        """The channel's own Allow and Deny message for a live approval, whose buttons answer it."""
-        payload = note.get("payload") or {}
-        if payload.get("status") or payload.get("approval_id") not in self.app.approvals.pending_ids():
-            return 0
-        event = ApprovalRequest.model_validate(payload)
-        sent = 0
-        for ch, chat in await self._delivery_targets():
-            # ponytail: a channel answers from one chat per request (the last one sent to); fine with one paired chat
-            mid = await ch.send_approval(chat["chat_id"], event)
-            if mid is None:
-                continue
-            sent += 1
-            self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], mid))
-            await self.record_delivery(ch, chat, "**Approval needed**", what="approval", reason="default",
-                                       ref=self._source_ref(note))
-        return sent
+        if note.get("kind") == "approval":
+            return bool(payload.get("approval_id"))
+        return note.get("kind") == "task" and payload.get("event") == "question" and isinstance(payload.get("approval"), dict)
 
     @staticmethod
     def _format_approval(note: dict) -> tuple[str, list[list[Button]] | None] | None:
@@ -535,8 +524,18 @@ class ChannelService(Service):
         sent = 0
         for nid, note in list(self._held.items()):
             self._held.pop(nid, None)
-            run_id = str((note.get("payload") or {}).get("run_id") or "")
-            if self.is_live_approval(note) or (run_id and await self._waiting_question(run_id) is not None):
+            payload = note.get("payload") or {}
+            if note.get("kind") == "approval":
+                # a chat turn's own approval (#443) waits on the broker, not on a task run: it is
+                # still deliverable only while the broker still holds it unanswered (the held copy's
+                # payload never gains a status, so the broker is the source of truth)
+                approval_id = str(payload.get("approval_id") or "")
+                broker = getattr(self.app, "approvals", None)
+                if approval_id and broker is not None and broker.is_waiting(approval_id):
+                    sent += await self.deliver_notification(note)
+                continue
+            run_id = str(payload.get("run_id") or "")
+            if run_id and await self._waiting_question(run_id) is not None:
                 sent += await self.deliver_notification(note)
         return sent
 
@@ -601,8 +600,6 @@ class ChannelService(Service):
             if note.get("id") and not (note.get("payload") or {}).get("status"):
                 self._held[str(note["id"])] = note  # the person is looking at the app: ask there first (#139)
             return 0
-        if self.is_live_approval(note):
-            return await self._deliver_live_approval(note)
         if note.get("kind") == "reminder":  # a timer or reminder goes back to the chat it was set in (#150)
             where = await self._reminder_delivery(note)
         else:
@@ -649,6 +646,10 @@ class ChannelService(Service):
                     log.exception("could not remember the delivered question")
             if buttons and ids and note.get("id"):
                 self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], ids[-1]))
+                if note.get("kind") == "approval" and payload.get("approval_id"):
+                    # which note carried this approval, so its buttons can be checked against the
+                    # delivery before they answer it (#443, the same ownership rule as #139/#337)
+                    self._approval_notes[str(payload["approval_id"])] = str(note["id"])
             await self.record_delivery(ch, chat, md, what=what, reason=reason, ref=ref)
         return sent
 
@@ -770,6 +771,27 @@ class ChannelService(Service):
             await ch.settle_buttons(chat_id, message_id, text[:120])
             return text[:190]
         outcome = "Plan approved" if approve else "Plan declined"
+        await ch.settle_buttons(chat_id, message_id, outcome)
+        return outcome
+
+    async def act_on_notification_approval(self, ch: Channel, chat_id: str, message_id: str, approval_id: str, *, allow: bool) -> str:
+        """The answer to a chat turn's approval note (kind "approval", #443): it resolves the same
+        broker approval the desktop card answers, so the waiting turn carries on at once."""
+        resolve = getattr(self.app.approvals, "resolve", None)
+        if resolve is None:
+            return "Approvals aren't available right now."
+        # the buttons answer only where this approval was actually delivered, like every other
+        # button in this service (#139, #337): a callback from anywhere else settles nothing
+        note_id = self._approval_notes.get(approval_id)
+        if (ch.id, chat_id, message_id) not in self._delivered.get(note_id or "", []):
+            await ch.settle_buttons(chat_id, message_id, "This request is no longer waiting")
+            return "This request is no longer waiting."
+        self._approval_notes.pop(approval_id, None)
+        self._forget_delivered(ch.id, chat_id, message_id)
+        if not resolve(approval_id, "allow" if allow else "deny", via=ch.id):
+            await ch.settle_buttons(chat_id, message_id, "This request is no longer waiting")
+            return "This request is no longer waiting."
+        outcome = "Allowed" if allow else "Denied"
         await ch.settle_buttons(chat_id, message_id, outcome)
         return outcome
 

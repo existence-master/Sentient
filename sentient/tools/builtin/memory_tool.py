@@ -95,6 +95,8 @@ async def _own_words(ctx: ToolContext) -> str | None:
     Read from the stored chat, never from the model, so nothing it read can pass for the user's words."""
     if not ctx.session_id or getattr(ctx, "origin", "user") != "user":
         return None
+    if getattr(ctx, "channel", "") == "mcp":
+        return None  # in an MCP app's chat the stored user messages are the app's words, not the user's (#443)
     rows = await ctx.store.recent_messages(ctx.session_id, OWN_WORDS_ROWS)
     words: list[str] = []
     for row in reversed(rows):
