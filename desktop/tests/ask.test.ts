@@ -7,8 +7,10 @@ import {
   askBounds,
   captureCommand,
   cleanSelection,
+  forgetCommand,
   MAX_SELECTION_CHARS,
   parseCapture,
+  parseForget,
   parsePaste,
   pasteBackCommand,
   resizedBounds,
@@ -118,4 +120,27 @@ test('empty states say what happened, without em-dashes', () => {
   }
   assert.match(emptyMessage('nothing', 'Ctrl+Alt+Shift+A', 'win32'), /press Ctrl\+Alt\+Shift\+A/)
   assert.match(emptyMessage('failed', 'x', 'linux'), /xdotool/)
+})
+
+test('the copied text leaves Windows clipboard history: the command and its answer (#332)', () => {
+  const text = 'Hi Maya,\r\nsee you on Friday. Arjun'
+  const cmd = forgetCommand(text, 1_760_000_000_123.7)
+  const [word, since, encoded] = cmd.split(' ')
+  assert.equal(word, 'forget')
+  assert.equal(since, '1760000000123')
+  assert.equal(Buffer.from(encoded, 'base64').toString('utf8'), text)
+  assert.equal(cmd.split(' ').length, 3) // one line, no spaces in the text part
+  assert.ok(!/[\r\n]/.test(cmd))
+  assert.deepEqual(parseForget('forgot 1\n'), { result: 'forgot', count: 1 })
+  assert.deepEqual(parseForget('forgot 0'), { result: 'forgot', count: 0 })
+  assert.deepEqual(parseForget('off'), { result: 'off' })
+  assert.deepEqual(parseForget(''), { result: 'failed' })
+  assert.deepEqual(parseForget('{"result":"failed","error":"x"}'), { result: 'failed' })
+  // the helper deletes only entries with exactly that text added since then, and says when history is off
+  assert.match(WIN_HELPER, /\$parts\[0\] -eq 'forget'/)
+  assert.match(WIN_HELPER, /DeleteItemFromHistory/)
+  assert.match(WIN_HELPER, /IsHistoryEnabled/)
+  assert.match(WIN_HELPER, /-ceq \$want/) // exactly that text, case and all
+  assert.match(WIN_HELPER, /FromUnixTimeMilliseconds\(\$since\)/) // nothing copied before the capture began
+  assert.doesNotMatch(WIN_HELPER, /`/) // String.raw: a backtick would end the script early
 })

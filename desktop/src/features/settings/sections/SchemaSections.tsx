@@ -1,4 +1,14 @@
-import { IconArrowRight, IconBolt, IconDownload, IconMicrophone, IconPlayerPlay, IconRefresh, IconVolume } from '@tabler/icons-react'
+import {
+  IconArrowRight,
+  IconBolt,
+  IconCloud,
+  IconDeviceDesktop,
+  IconDownload,
+  IconMicrophone,
+  IconPlayerPlay,
+  IconRefresh,
+  IconVolume
+} from '@tabler/icons-react'
 import { useNavigate } from 'react-router'
 import { toast } from 'sonner'
 import { Alert, Badge, Button, Card, FormRow, FormSection, ProgressBar, Skeleton, StatusDot, Switch } from '@/components/ui'
@@ -7,6 +17,7 @@ import { useBootstrap, useTools } from '@/hooks/core'
 import { useProactivityActions, useProactivityStatus } from '@/hooks/notifications'
 import { useSpeak, useVoicePrepare, useVoiceStatus } from '@/hooks/voice'
 import { errorMessage, isNotImplemented } from '@/lib/api'
+import type { VoicePrivacy } from '@/lib/types'
 import { relativeTime } from '@/lib/utils'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
@@ -14,6 +25,7 @@ import { WAKE_KEYS, WakeWordSection } from './AbilitySections'
 import { ApprovalGrantsSection } from './ApprovalGrants'
 import { ApprovalRulesSection } from './ApprovalRules'
 import { DICTATION_KEYS, DictationSection } from './Dictation'
+import { EmailTasksSection } from './EmailTasks'
 
 export function MemorySection({ query }: SectionProps) {
   const navigate = useNavigate()
@@ -36,7 +48,12 @@ export function MemorySection({ query }: SectionProps) {
 }
 
 export function TasksSection({ query }: SectionProps) {
-  return <SchemaForm section="tasks" title="Running tasks" filter={query} />
+  return (
+    <div className="space-y-8">
+      <EmailTasksSection query={query} />
+      <SchemaForm section="tasks" title="Running tasks" filter={query} />
+    </div>
+  )
 }
 
 export function ProactivitySection({ query }: SectionProps) {
@@ -224,9 +241,47 @@ export function VoiceSection({ query }: SectionProps) {
           </div>
         </Card>
       )}
+      {status.data?.privacy && <VoicePrivacyCard privacy={status.data.privacy} />}
       <WakeWordSection query={query} />
       <DictationSection query={query} />
       <SchemaForm section="voice" title="Voice settings" filter={query} exclude={[...WAKE_KEYS, ...DICTATION_KEYS]} />
     </div>
+  )
+}
+
+/** #170 Where your voice goes, stated plainly from the engine's own settings (never more than is true). */
+function VoicePrivacyCard({ privacy }: { privacy: VoicePrivacy }) {
+  return (
+    <FormSection
+      title="Where your voice goes"
+      description={
+        privacy.audio_local
+          ? 'All audio stays on this computer. Your recordings are turned into text here and never sent anywhere.'
+          : 'Some audio leaves this computer with your current settings. Each line says where it goes.'
+      }
+    >
+      <Card className="divide-y divide-border" data-testid="voice-privacy">
+        {privacy.items.map((item) => (
+          <div key={item.id} className="flex items-start gap-3 px-4 py-3">
+            {item.local ? (
+              <IconDeviceDesktop size={17} className="mt-0.5 shrink-0 text-success" aria-label="Stays on this computer" />
+            ) : (
+              <IconCloud size={17} className="mt-0.5 shrink-0 text-warning" aria-label="Leaves this computer" />
+            )}
+            <div className="min-w-0 flex-1 text-sm">
+              <div className="font-medium text-fg">{item.label}</div>
+              <div className="text-xs text-fg-subtle">{item.where}</div>
+            </div>
+          </div>
+        ))}
+        <div className="flex items-start gap-3 px-4 py-3">
+          <IconVolume size={17} className="mt-0.5 shrink-0 text-fg-subtle" />
+          <div className="min-w-0 flex-1 text-sm">
+            <div className="font-medium text-fg">Spoken replies</div>
+            <div className="text-xs text-fg-subtle">{privacy.replies.where}</div>
+          </div>
+        </div>
+      </Card>
+    </FormSection>
   )
 }

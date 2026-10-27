@@ -54,6 +54,11 @@ class BudgetReached(ModelRefused):
     code = "budget_reached"
 
 
+class Stopped(PlainProviderError):
+    """Stop everything ended this call before it started (a Claude Code call waiting its turn, #444): no fallback
+    model is tried, since everything was meant to stop."""
+
+
 class ProviderFailed(PlainProviderError):
     """A provider turned the request down for a known reason: out of credits, a rate limit, a bad key... (#280)."""
 
@@ -208,6 +213,7 @@ class LiteLLMProvider:
         self.config = config
         self.meter = meter  # set by the app: every call is checked against the budget and counted (#148)
         self._max_context: dict[str, int | None] = {}
+        self._stand_ins_logged: set[tuple[str, str, str]] = set()  # (role, its model, stand-in) said once (#474)
         # one local model call at a time, chats first (#149); reads the config live, so Settings changes apply
         self.jobs = ModelJobs(lambda: self.config.models)
 
@@ -249,7 +255,17 @@ class LiteLLMProvider:
         fallbacks = self.config.models.fallbacks.get(role) or (
             self.config.models.fallbacks.get("primary", []) if role in {"planner", "executor", "vision", "voice"} else []
         )
-        return [primary, *[m for m in fallbacks if m != primary]]
+        chain = [primary, *[m for m in fallbacks if m != primary]]
+        from sentient.llm.claude_code import stand_ins
+
+        spares = stand_ins(self.config, role, chain)
+        if spares:  # the fast role is only on Claude Code, which would refuse its jobs (#474)
+            if (role, chain[0], spares[0]) not in self._stand_ins_logged:
+                self._stand_ins_logged.add((role, chain[0], spares[0]))
+                log.info("the %s model %s can't do background work (Claude Code only answers chats), so %s does "
+                         "its jobs (memory, summaries, titles)", role, chain[0], ", then ".join(spares))
+            return spares
+        return chain
 
     def _kwargs_for(self, model: str, role: str | None = None) -> dict:
         prefix = _provider_prefix(model)
@@ -435,6 +451,8 @@ class LiteLLMProvider:
                     if isinstance(failure, PlainProviderError):
                         raise ProviderFailed(str(failure)) from exc
                     raise ProviderError(f"{model} stopped mid-reply: {exc}") from exc
+                if isinstance(exc, Stopped):
+                    raise
                 continue
         raise _all_failed(role, errors)
 
@@ -474,6 +492,17 @@ class LiteLLMProvider:
             text += chunk.text
         return text
 
+    async def _claude_code_text(self, model: str, role: str, messages: list[dict]) -> str:
+        """A text or JSON job through Claude Code, only when it does everything (#444): the reply, collected."""
+        from sentient.llm import claude_code
+
+        text = ""
+        async for chunk in claude_code.stream(self.config, model, role, messages, None):
+            text += chunk.text
+            if chunk.done:
+                await self._count(model, role, chunk.usage, None)  # on the user's plan: no price
+        return text
+
     # ------------------------------------------------------------------ non-streaming JSON
     async def complete_text(self, role: str, messages: list[dict], *, model: str | None = None) -> str:
         import re
@@ -485,10 +514,12 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
-                _refuse_claude_code(model, role)
+                _refuse_claude_code(self.config, model, role)
                 await self._admit(model, role)
                 if _provider_prefix(model) == CHATGPT:
                     text = await self._chatgpt_text(model, role, messages)
+                elif _provider_prefix(model) == CLAUDE_CODE:
+                    text = await self._claude_code_text(model, role, messages)
                 else:
                     kwargs = await self._call_kwargs(model, role)
                     sent, _ = apply_prompt_cache(model, messages)
@@ -497,6 +528,8 @@ class LiteLLMProvider:
                     await self._count(model, role, _usage_of(resp), _response_cost(litellm, resp, model))
                     text = resp.choices[0].message.content or ""
                 return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            except Stopped:
+                raise  # Stop everything: no fallback model
             except Exception as exc:
                 errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)
@@ -510,10 +543,12 @@ class LiteLLMProvider:
         override = model
         for model in self._chain(role, override):
             try:
-                _refuse_claude_code(model, role)
+                _refuse_claude_code(self.config, model, role)
                 await self._admit(model, role)
                 if _provider_prefix(model) == CHATGPT:
                     return parse_json_loose(await self._chatgpt_text(model, role, messages))
+                if _provider_prefix(model) == CLAUDE_CODE:
+                    return parse_json_loose(await self._claude_code_text(model, role, messages))
                 kwargs = await self._call_kwargs(model, role)
                 # Ollama's JSON mode corrupts qwen3 output ({"{"name": ...); ask for plain text and parse loosely
                 if _provider_prefix(model) not in {"ollama", "ollama_chat"}:
@@ -524,6 +559,8 @@ class LiteLLMProvider:
                 await self._count(model, role, _usage_of(resp), _response_cost(litellm, resp, model))
                 text = resp.choices[0].message.content or ""
                 return parse_json_loose(text)
+            except Stopped:
+                raise  # Stop everything: no fallback model
             except Exception as exc:
                 errors.append(_failure(exc, model))
                 log.warning("model %s failed for role %s: %s", model, role, exc)
@@ -567,12 +604,15 @@ def _usage_of(resp: Any) -> dict[str, int]:
     return {"prompt_tokens": int(get("prompt_tokens") or 0), "completion_tokens": int(get("completion_tokens") or 0)}
 
 
-def _refuse_claude_code(model: str, role: str) -> None:
-    """Claude Code only writes chat replies (ADR 0022): text and JSON jobs run in the background."""
+def _refuse_claude_code(config: SentientConfig, model: str, role: str) -> None:
+    """Claude Code only writes chat replies (ADR 0022): text and JSON jobs run in the background, so they are refused
+    unless it does everything (``models.claude_code_everywhere``, ADR 0032)."""
     if _provider_prefix(model) == CLAUDE_CODE:
-        from sentient.llm.claude_code import background_refusal
+        from sentient.llm.claude_code import unattended_refusal
 
-        raise ModelRefused(background_refusal(role))
+        why = unattended_refusal(config, role)
+        if why:
+            raise ModelRefused(why)
 
 
 def tool_arguments(raw: str | None) -> dict:

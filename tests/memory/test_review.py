@@ -94,7 +94,7 @@ async def test_a_fact_learned_after_reading_an_email_waits_and_is_never_used(cha
         "kind": "fact", "id": held["id"], "text": FACT, "source": "conversation", "from": "Mail",
         "snippet": held["review"]["snippet"], "session_id": held["review"]["session_id"],
         "title": None, "dated": None, "export": None, "reason": None,
-        "created_at": held["created_at"], "expires_at": None,
+        "created_at": held["created_at"], "expires_at": None, "scope": "personal",
     }
 
 

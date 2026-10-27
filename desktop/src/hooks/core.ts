@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { api, isNotImplemented } from '@/lib/api'
 import { useConnection } from '@/stores/connection'
-import type { OnboardingRequest, RuleProposal, Session, StopState } from '@/lib/types'
+import type { OnboardingRequest, RuleProposal, SensorState, Session, StopState } from '@/lib/types'
 import { qk } from './queryKeys'
 
 export function useBootstrap() {
@@ -31,6 +31,37 @@ export function useStopState() {
     staleTime: Infinity,
     retry: true,
     retryDelay: (n) => Math.min(1000 * 2 ** n, 10_000)
+  })
+}
+
+const NOTHING_LIVE: SensorState = { mic: false, camera: false, active: [], camera_off: [] }
+
+/**
+ * §24 Which microphones and cameras are live (#170). Live from `sensors.updated` (lib/events.ts); fetched once when the
+ * engine is ready. An engine without the route reads as nothing live.
+ */
+export function useSensors() {
+  const ready = useConnection((s) => s.backend.state === 'ready')
+  const qc = useQueryClient()
+  useEffect(() => {
+    if (ready) void qc.invalidateQueries({ queryKey: qk.sensors })
+  }, [ready, qc])
+  return useQuery({
+    queryKey: qk.sensors,
+    queryFn: () => api.sensors.get().catch((err) => (isNotImplemented(err) ? NOTHING_LIVE : Promise.reject(err))),
+    enabled: ready,
+    staleTime: Infinity,
+    retry: true,
+    retryDelay: (n) => Math.min(1000 * 2 ** n, 10_000)
+  })
+}
+
+/** Turn off one microphone or camera (`id`), or every one. */
+export function useStopSensor() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id?: string) => api.sensors.stop(id),
+    onSuccess: (r) => qc.setQueryData(qk.sensors, r.state)
   })
 }
 
@@ -139,6 +170,18 @@ export function useSetChatModel() {
   })
 }
 
+/** The memories one chat uses (#155). */
+export function useSetChatScope() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: string | null }) => api.sessions.setScope(id, scope),
+    onMutate: ({ id, scope }) => {
+      qc.setQueryData<Session[]>(qk.sessions, (old) => old?.map((s) => (s.id === id ? { ...s, memory_scope: scope ?? 'personal' } : s)))
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.sessions })
+  })
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient()
   return useMutation({
@@ -156,6 +199,11 @@ export function useDeleteSession() {
 // ---------------------------------------------------------------------------- files, tools, usage
 export function useFiles() {
   return useQuery({ queryKey: qk.files, queryFn: api.files.list })
+}
+
+/** Whether an attachment's file is still there (#458); only asked when `enabled`. */
+export function useFileExists(name: string, enabled: boolean) {
+  return useQuery({ queryKey: qk.fileExists(name), queryFn: () => api.files.exists(name), enabled, staleTime: 60_000 })
 }
 
 export function useTools() {

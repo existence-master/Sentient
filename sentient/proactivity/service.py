@@ -385,6 +385,10 @@ class ProactiveEngine(Service):
             if source == "webhook" and await self._hook_has_task(event_type):
                 log.info("webhook %s is handled by a triggered task: no suggestion", event_type)
                 return None
+            mailbox = getattr(getattr(self.app, "tasks", None), "inbox", None)
+            if mailbox is not None and source in ("gmail", "email_imap") and mailbox.addressed(item):
+                log.info("%s item %s went to the Sentient address: tasks by email handle it", source, item.get("id"))
+                return None
             return await self.process_event(source, event_type, item)
         except Exception:
             log.exception("proactive pipeline failed for %s item %s", source, item.get("id"))
@@ -929,6 +933,11 @@ class ProactiveEngine(Service):
         if decision.needed and followups.has_placeholder(decision.draft):
             # the draft would be sent exactly as written: drop it now, ask again next check
             log.info("follow-up for %s %s: the draft has a placeholder, trying again next check", c.source, c.key)
+            return None
+        if decision.needed and (copied := followups.copied_from_them(c, decision.draft)):
+            # an address or a link from the other person's text in the user's own words (#144): drop it, ask again
+            log.info("follow-up for %s %s: the draft copies %s from their message, trying again next check",
+                     c.source, c.key, copied)
             return None
         await self._mark_followup_checked(c, now)
         if not decision.needed:

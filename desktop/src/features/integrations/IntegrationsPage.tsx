@@ -8,6 +8,7 @@ import { ConnectDialog } from '@/features/integrations/ConnectDialog'
 import { IntegrationCard } from '@/features/integrations/IntegrationCard'
 import { IntegrationDrawer } from '@/features/integrations/IntegrationDrawer'
 import { McpServersSection } from '@/features/integrations/McpServers'
+import { SentientMcpSection } from '@/features/integrations/SentientMcp'
 import { CATEGORIES, sortIntegrations, type CategoryFilter } from '@/features/integrations/meta'
 import { useIntegrations } from '@/hooks/integrations'
 import { useMcpServers } from '@/hooks/integrations'
@@ -18,8 +19,10 @@ import { cn } from '@/lib/utils'
 /**
  * Integrations: connect apps, manage privacy filters and custom MCP servers.
  *
- * Deep links (also used by screenshots): `?connect=<id>`, `?open=<id>[&focus=privacy|tools|triggers|upgrades]`,
- * `?section=mcp|webhooks`, `?q=<search>`, `?category=<id>`.
+ * Deep links (also used by screenshots): `?connect=<id>`,
+ *   `?open=<id>[&focus=privacy|tools|triggers|upgrades|disconnect|forget]` (`forget`: the disconnect question with
+ *   "Also forget" ticked, #153),
+ * `?section=mcp|webhooks|sentient-mcp`, `?q=<search>`, `?category=<id>`.
  */
 export function IntegrationsPage() {
   const [params, setParams] = useSearchParams()
@@ -79,7 +82,8 @@ export function IntegrationsPage() {
 
   useEffect(() => {
     const section = params.get('section')
-    const target = section === 'mcp' ? '#mcp-servers' : section === 'webhooks' ? '#webhooks' : null
+    const target =
+      section === 'mcp' ? '#mcp-servers' : section === 'webhooks' ? '#webhooks' : section === 'sentient-mcp' ? '#sentient-mcp' : null
     if (!target || isLoading || mcp.isLoading) return
     const t = window.setTimeout(() => scroller.current?.querySelector(target)?.scrollIntoView({ block: 'start' }), 120)
     return () => window.clearTimeout(t)
@@ -241,6 +245,11 @@ export function IntegrationsPage() {
             {showMcp && (
               <div className="border-t border-border pt-8">
                 <McpServersSection id="mcp-servers" />
+              </div>
+            )}
+            {showMcp && (
+              <div className="border-t border-border pt-8">
+                <SentientMcpSection id="sentient-mcp" />
               </div>
             )}
           </div>

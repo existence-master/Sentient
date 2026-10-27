@@ -8,7 +8,7 @@ import { api, errorMessage, isApiError } from '@/lib/api'
 import type { SkillVetting } from '@/lib/types'
 import { cn, relativeTime } from '@/lib/utils'
 
-const SOURCE: Record<string, string> = { link: 'Added from a link', hermes: 'Brought over from Hermes' }
+const SOURCE: Record<string, string> = { link: 'Added from a link', hermes: 'Brought over from Hermes', learn: 'Learned from your docs', hub: 'From the Skills hub' }
 
 export function vetSourceLabel(v: SkillVetting): string {
   return SOURCE[v.source ?? ''] ?? 'Imported'
@@ -59,7 +59,7 @@ export function SafetyReport({ vetting: v, className }: { vetting: SkillVetting;
         <div className="mt-2.5 space-y-2 pl-7">
           {(files.length ? files : ['']).map((file) => (
             <div key={file}>
-              {files.length > 1 && (
+              {(files.length > 1 || (files.length === 1 && files[0] !== 'SKILL.md')) && (
                 <div className="mb-0.5 inline-flex items-center gap-1 font-mono text-2xs text-fg-subtle">
                   <IconFileCode size={11} /> {file}
                 </div>

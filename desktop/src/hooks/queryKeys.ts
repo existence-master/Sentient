@@ -7,6 +7,7 @@ import type { MemoryQuery, TimelineFilters } from '@/lib/types'
 export const qk = {
   bootstrap: ['bootstrap'] as const,
   stop: ['stop'] as const,
+  sensors: ['sensors'] as const,
   config: ['config'] as const,
   backups: ['backups'] as const,
   folders: ['folders'] as const,
@@ -16,6 +17,8 @@ export const qk = {
   sessions: ['sessions'] as const,
   /** Kept outside `sessions` so invalidating the list doesn't refetch transcripts mid-stream. */
   messages: (sessionId: string) => ['messages', sessionId] as const,
+  /** every chat's transcript (prefix of `messages`) */
+  allMessages: ['messages'] as const,
   sessionSearch: (q: string) => ['session-search', q] as const,
   ruleProposals: (sessionId: string) => ['rule-proposals', sessionId] as const,
 
@@ -28,6 +31,8 @@ export const qk = {
   chatgpt: ['models', 'chatgpt'] as const,
   modelPresets: ['models', 'presets'] as const,
   claudeCode: (enabled: boolean) => ['models', 'claude-code', enabled] as const,
+  /** Every Claude Code status, whichever switch it was asked for (#444: the accepted roles change with "everything"). */
+  claudeCodeAll: ['models', 'claude-code'] as const,
   secrets: ['secrets'] as const,
   /** How many times a secret was saved in this window (see `useSecretSaves`). Never fetched. */
   secretSaves: (name: string) => ['secret-saves', name] as const,
@@ -37,7 +42,9 @@ export const qk = {
     detail: (id: string) => ['tasks', id] as const,
     runEvents: (id: string, runId: string) => ['tasks', id, 'runs', runId, 'events'] as const,
     /** Kept outside the ['tasks'] prefix so task list updates never touch it. */
-    away: ['tasks-away'] as const
+    away: ['tasks-away'] as const,
+    /** Tasks by email (#159), outside the ['tasks'] prefix too. */
+    email: ['tasks-email'] as const
   },
 
   integrations: {
@@ -66,6 +73,8 @@ export const qk = {
     workspace: ['memories', 'workspace'] as const,
     personas: ['memories', 'personas'] as const,
     review: ['memories', 'review'] as const,
+    scopes: ['memories', 'scopes'] as const,
+    forgetPreview: (source: string) => ['memories', 'forget-preview', source] as const,
     dreams: ['memories', 'dreams'] as const
   },
   userModel: ['user-model'] as const,
@@ -78,6 +87,13 @@ export const qk = {
     diff: (name: string) => ['skills', 'diff', name] as const,
     evolutionLog: ['skills', 'evolution-log'] as const
   },
+  /** Skills hub (#210). Not under ['skills'], so a skill change doesn't refetch the sources over the network. */
+  skillsHub: {
+    sources: ['skills-hub', 'sources'] as const,
+    browse: (source: string) => ['skills-hub', 'browse', source] as const,
+    preview: (source: string, path: string) => ['skills-hub', 'preview', source, path] as const,
+    installed: ['skills-hub', 'installed'] as const
+  },
 
   voiceStatus: ['voice', 'status'] as const,
   sandboxStatus: ['sandbox', 'status'] as const,
@@ -85,6 +101,7 @@ export const qk = {
   usage: (days: number) => ['usage', days] as const,
   usageCost: ['usage', 'cost'] as const,
   files: ['files'] as const,
+  fileExists: (name: string) => ['files', 'exists', name] as const,
   tools: ['tools'] as const,
 
   /** The activity timeline (§21). Invalidated by most domain events (lib/events.ts). */

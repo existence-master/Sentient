@@ -1,11 +1,16 @@
-"""Timers and one-off reminders (#150): kept in SQLite, fired on time as notifications.
+"""Timers, one-off reminders and alarms (#150, #359): kept in SQLite, fired on time as notifications.
 
 A timer or reminder is set by a quick command (``sentient.agent.fastpath``, no model), by the model through the
 ``reminders`` tools, or over REST. One clock task sleeps until the next one is due (at most ``MAX_SLEEP_S``, so a
 computer waking from sleep or a clock change is noticed) and fires it with ``app.notify("reminder", ...)``: the
 window shows it (a native notification when the window is not in front), and a reminder set in a Telegram, Discord or
-WhatsApp chat goes back to that chat (``ChannelService``). One that came due while Sentient was not running fires
+WhatsApp chat goes back to that chat (``ChannelService``), and with ``channels.deliver_reminders`` a reminder or alarm
+set anywhere else goes to the delivery chats too. An alarm's notification makes the window ring. One that came due while Sentient was not running fires
 as soon as it starts, saying when it was due.
+
+An alarm counts as ringing for ``RING_S`` after it goes off (as long as the window rings), until it is stopped or
+snoozed (#390): from the banner, over REST, or by saying "stop" or "snooze" (a quick command). A snooze stops it and
+sets a new alarm with the same name, ``snoozed_from`` the one that rang.
 
 Firing never asks the model, and it is not paused by Stop everything: a timer the user set still rings.
 """
@@ -23,7 +28,7 @@ from sentient.store.db import new_id, now_iso
 
 log = logging.getLogger(__name__)
 
-KINDS = ("timer", "reminder")
+KINDS = ("timer", "reminder", "alarm")
 STATUSES = ("scheduled", "fired", "cancelled")
 MAX_SLEEP_S = 30.0
 LATE_AFTER_S = 90.0      # fired this much after it was due: the notification says when it was due
@@ -32,6 +37,8 @@ MAX_AHEAD = timedelta(days=366)
 KEEP_DAYS = 30           # fired and cancelled ones are forgotten after this long
 LIST_LIMIT = 100
 RETRY_S = 10.0          # a notification that could not be made is tried again after this long
+RING_S = 180.0          # an alarm rings this long at most (the window's chime, desktop stores/alarm.ts)
+SNOOZE_MIN, SNOOZE_MAX = 1, 180  # minutes a snooze can be
 
 
 class ReminderError(ValueError):
@@ -44,6 +51,7 @@ def _row(r: Any) -> dict:
         "duration_s": r["duration_s"], "fire_at": r["fire_at"], "status": r["status"], "session_id": r["session_id"],
         "channel": r["channel"], "language": r["language"], "source": r["source"], "created_at": r["created_at"],
         "fired_at": r["fired_at"], "cancelled_at": r["cancelled_at"], "notification_id": r["notification_id"],
+        "stopped_at": r["stopped_at"], "snoozed_from": r["snoozed_from"],
     }
 
 
@@ -98,10 +106,10 @@ class ReminderService(Service):
     async def add(
         self, kind: str, fire_at: datetime, *, message: str = "", connector: str = "", label: str = "",
         duration_s: float | None = None, session_id: str | None = None, channel: str | None = None,
-        language: str = "en", source: str = "chat",
+        language: str = "en", source: str = "chat", snoozed_from: str | None = None,
     ) -> dict:
         if kind not in KINDS:
-            raise ReminderError("A reminder is a timer or a reminder.")
+            raise ReminderError("A reminder is a timer, a reminder or an alarm.")
         if fire_at.tzinfo is None:
             raise ReminderError("The time needs a timezone.")
         now = datetime.now(UTC)
@@ -117,13 +125,14 @@ class ReminderService(Service):
             "label": " ".join(str(label or "").split())[:60], "duration_s": duration_s,
             "fire_at": fire_at.astimezone(UTC).isoformat(), "status": "scheduled", "session_id": session_id,
             "channel": channel, "language": language or "en", "source": source, "created_at": now_iso(),
-            "fired_at": None, "cancelled_at": None, "notification_id": None,
+            "fired_at": None, "cancelled_at": None, "notification_id": None, "stopped_at": None,
+            "snoozed_from": snoozed_from,
         }
         await self.app.store.execute(
             "INSERT INTO reminders(id, kind, message, connector, label, duration_s, fire_at, status, session_id, channel,"
-            " language, source, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " language, source, created_at, snoozed_from) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (item["id"], kind, item["message"], connector, item["label"], duration_s, item["fire_at"], "scheduled",
-             session_id, channel, item["language"], source, item["created_at"]),
+             session_id, channel, item["language"], source, item["created_at"], snoozed_from),
         )
         log.info("%s %s set for %s (%s, from %s)", kind, item["id"][:8], item["fire_at"], source, channel or "?")
         self._changed(item)
@@ -142,6 +151,73 @@ class ReminderService(Service):
             log.info("%s %s cancelled", item["kind"], reminder_id[:8])
             self._changed(item)
         return item, changed
+
+    # ------------------------------------------------------------------ a ringing alarm (#390)
+    async def ringing(self, now: datetime | None = None) -> list[dict]:
+        """The alarms ringing now, newest first: gone off in the last ``RING_S`` and not stopped or snoozed."""
+        now = now or datetime.now(UTC)
+        rows = await self.app.store.fetchall(
+            "SELECT * FROM reminders WHERE kind = 'alarm' AND status = 'fired' AND stopped_at IS NULL"
+            " ORDER BY fired_at DESC"
+        )
+        out = []
+        for r in rows:
+            fired = _parse(r["fired_at"])
+            if fired is not None and 0 <= (now - fired).total_seconds() <= RING_S:
+                out.append(_row(r))
+        return out
+
+    async def _claim(self, item: dict, now: datetime) -> dict | None:
+        """Mark one ringing alarm stopped; None when something else stopped it first."""
+        cur = await self.app.store.execute(
+            "UPDATE reminders SET stopped_at = ? WHERE id = ? AND stopped_at IS NULL", (now.isoformat(), item["id"])
+        )
+        return {**item, "stopped_at": now.isoformat()} if cur.rowcount else None
+
+    async def stop(self, reminder_id: str | None = None, *, now: datetime | None = None) -> list[dict]:
+        """Stop the ringing alarms (every one, or only ``reminder_id``). Returns the ones stopped now."""
+        now = now or datetime.now(UTC)
+        stopped = []
+        for item in await self.ringing(now):
+            if reminder_id and item["id"] != reminder_id:
+                continue
+            done = await self._claim(item, now)
+            if done is not None:
+                log.info("alarm %s stopped", item["id"][:8])
+                self._changed(done)
+                stopped.append(done)
+        return stopped
+
+    async def snooze(
+        self, minutes: float, reminder_id: str | None = None, *, source: str = "chat", now: datetime | None = None
+    ) -> tuple[dict, dict] | None:
+        """Snooze the ringing alarm (the newest, or ``reminder_id``): it stops, and a new alarm with the same name rings
+        ``minutes`` from now. Without ``reminder_id`` every other ringing alarm stops too. Returns ``(the one that
+        rang, the new alarm)``, or None when nothing is ringing."""
+        if not SNOOZE_MIN <= float(minutes) <= SNOOZE_MAX:
+            raise ReminderError(f"A snooze can be {SNOOZE_MIN} minute to {SNOOZE_MAX // 60} hours.")
+        now = now or datetime.now(UTC)
+        ringing = [r for r in await self.ringing(now) if not reminder_id or r["id"] == reminder_id]
+        for item in ringing:
+            rang = await self._claim(item, now)
+            if rang is None:
+                continue
+            seconds = float(minutes) * 60
+            try:
+                new = await self.add(
+                    "alarm", now + timedelta(seconds=seconds), label=item["label"], duration_s=seconds,
+                    session_id=item["session_id"], channel=item["channel"], language=item["language"], source=source,
+                    snoozed_from=item["id"],
+                )
+            except Exception:  # no new alarm: it keeps ringing rather than being silently lost
+                await self.app.store.execute("UPDATE reminders SET stopped_at = NULL WHERE id = ?", (item["id"],))
+                raise
+            log.info("alarm %s snoozed for %s minutes", item["id"][:8], minutes)
+            self._changed(rang)  # after the new alarm, so the window shows "snoozed" rather than nothing
+            if not reminder_id:
+                await self.stop(now=now)
+            return rang, new
+        return None
 
     def _changed(self, item: dict) -> None:
         self.app.bus.publish("reminder.updated", item)
@@ -213,6 +289,8 @@ class ReminderService(Service):
         tz = get_tz(user_timezone_name(self.app.config.assistant.timezone))
         if item["kind"] == "timer":
             title, body = pack.timer_done(item)
+        elif item["kind"] == "alarm":
+            title, body = pack.alarm_due(item, due.astimezone(tz), late)
         else:
             title, body = pack.reminder_due(item, due.astimezone(tz) if late else None)
         payload = {"event": item["kind"], "reminder_id": item["id"], "fire_at": item["fire_at"], "late": late,

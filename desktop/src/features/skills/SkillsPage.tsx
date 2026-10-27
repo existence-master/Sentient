@@ -1,9 +1,10 @@
-import { IconArchive, IconArrowRight, IconEyeCheck, IconFileAlert, IconLink, IconPlus, IconSearch, IconSparkles, IconTimeline } from '@tabler/icons-react'
+import { IconArchive, IconArrowRight, IconBuildingStore, IconEyeCheck, IconFileAlert, IconLink, IconPlus, IconSearch, IconSparkles, IconTimeline } from '@tabler/icons-react'
 import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { Alert, Button, EmptyState, Input, PageHeader, SegmentedControl, Skeleton, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui'
 import { CreateSkillDialog, ReviewNowButton } from '@/features/skills/actions'
 import { EvolutionLog } from '@/features/skills/EvolutionLog'
+import { HubPage } from '@/features/skills/HubPage'
 import { LintList } from '@/features/skills/LintList'
 import { PendingReview } from '@/features/skills/PendingReview'
 import { ImportSkillDialog } from '@/features/skills/SafetyReport'
@@ -14,7 +15,7 @@ import { errorMessage } from '@/lib/api'
 import type { BrokenSkill, Skill } from '@/lib/types'
 import { cn } from '@/lib/utils'
 
-type Tab = 'active' | 'pending' | 'archived' | 'log'
+type Tab = 'active' | 'pending' | 'archived' | 'hub' | 'log'
 
 export function SkillsPage() {
   const [params, setParams] = useSearchParams()
@@ -22,7 +23,7 @@ export function SkillsPage() {
   const [query, setQuery] = useState('')
   const [author, setAuthor] = useState<'all' | 'user' | 'assistant' | 'community'>('all')
 
-  const tab = (['active', 'pending', 'archived', 'log'].includes(params.get('tab') ?? '') ? params.get('tab') : 'active') as Tab
+  const tab = (['active', 'pending', 'archived', 'hub', 'log'].includes(params.get('tab') ?? '') ? params.get('tab') : 'active') as Tab
   const open = params.get('skill')
   const editing = params.get('edit') === '1'
   const focus = params.get('focus')
@@ -90,12 +91,15 @@ export function SkillsPage() {
           <TabsTrigger value="archived">
             <IconArchive size={15} /> Archived {data && <Count n={data.archived.length} />}
           </TabsTrigger>
+          <TabsTrigger value="hub">
+            <IconBuildingStore size={15} /> Find skills
+          </TabsTrigger>
           <TabsTrigger value="log">
             <IconTimeline size={15} /> Evolution log
           </TabsTrigger>
         </TabsList>
 
-        {tab !== 'log' && skills.isError && (
+        {tab !== 'log' && tab !== 'hub' && skills.isError && (
           <Alert tone="danger" title="Skills aren't available right now" action={<Button size="sm" onClick={() => void skills.refetch()}>Retry</Button>}>
             {errorMessage(skills.error)}
           </Alert>
@@ -169,6 +173,10 @@ export function SkillsPage() {
               </Grid>
             </>
           ) : null}
+        </TabsContent>
+
+        <TabsContent value="hub">
+          <HubPage onReview={(name) => set({ tab: 'pending', focus: name, skill: null, preview: null })} />
         </TabsContent>
 
         <TabsContent value="log">

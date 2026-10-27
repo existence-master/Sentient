@@ -1,5 +1,6 @@
-"""English quick commands (#150): timers, one-off reminders, and listing or cancelling them; with Home Assistant
-connected, also lights and switches (#175): "turn off the living room lights", "dim the bedroom lamp to 30%".
+"""English quick commands (#150, #359): timers, one-off reminders and alarms, listing or cancelling them, and what's
+next on the calendar; with Home Assistant connected, also lights and switches (#175): "turn off the living room
+lights", "dim the bedroom lamp to 30%". While an alarm rings, "stop", "turn it off" and "snooze" (#390).
 
 The grammar is deliberately narrow. A message must be *only* the command (with "please", "hey Sentient" and the
 like around it); anything else, or anything that could mean two things, is left to the model:
@@ -7,6 +8,9 @@ like around it); anything else, or anything that could mean two things, is left 
 - a clock time without AM or PM ("at 6") is ambiguous, unless it is written as 24-hour time ("18:00", "06:30");
 - a repeating wish ("every day", "each Monday") is a task, not a one-off reminder;
 - "today at 9 AM" when 9 AM has passed, a day name, "tonight" without a time, "in a bit" all go to the model.
+
+An alarm is the exception to the AM/PM rule, as on a phone: "set an alarm for 6:30" rings at the next 6:30, and
+"wake me at 7" at the next 7 that is not in the evening. The confirmation always says which one.
 """
 
 from __future__ import annotations
@@ -15,7 +19,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime, time, timedelta
 
-from sentient.agent.fastpath.base import ANY, LIGHT, REMINDER, SWITCH, TIMER, Command
+from sentient.agent.fastpath.base import ALARM, ANY, LIGHT, REMINDER, SWITCH, TIMER, Command
 
 code = "en"
 
@@ -69,23 +73,25 @@ _LINK = re.compile(r"\s+(to|that|about)\s+", re.I)
 _CANCEL_VERB = r"(?:cancel|stop|end|turn\s+off|switch\s+off|dismiss|kill|clear|silence)"
 _CANCEL_A = re.compile(
     rf"^{_CANCEL_VERB}(?P<all>\s+all(?:\s+of)?)?(?:\s+(?:the|my|that|this|those|these))?(?:\s+(?P<which>.+?))?"
-    r"\s+(?P<kind>timers?|reminders?)$", re.I,
+    r"\s+(?P<kind>timers?|reminders?|alarms?)$", re.I,
 )
 _CANCEL_B = re.compile(
-    rf"^{_CANCEL_VERB}(?:\s+(?:the|my|that|this))?\s+(?P<kind>timer|reminder)\s+(?:to|about|for|called|named|that)\s+"
+    rf"^{_CANCEL_VERB}(?:\s+(?:the|my|that|this))?\s+(?P<kind>timer|reminder|alarm)\s+(?:to|about|for|called|named|that)\s+"
     r"(?P<which>.+)$", re.I,
 )
 _LIST = [
     re.compile(
         r"^(?:what|which|show(?:\s+me)?|list|tell\s+me|read(?:\s+me)?)(?:\s+(?:are|is))?(?:\s+all)?\s+(?:my|the)"
-        r"(?:\s+(?:active|current|running|upcoming))?\s+(?P<kind>timers?|reminders?)"
+        r"(?:\s+(?:active|current|running|upcoming))?\s+(?P<kind>timers?|reminders?|alarms?)"
         r"(?:\s+(?:(?:are|do\s+i\s+have|i\s+have)\s+)?(?:set|running|left|active|on))?$", re.I,
     ),
     re.compile(
-        r"^(?:do\s+i\s+have|have\s+i\s+got|are\s+there|is\s+there|any)(?:\s+(?:any|a))?\s+(?P<kind>timers?|reminders?)"
+        r"^(?:do\s+i\s+have|have\s+i\s+got|are\s+there|is\s+there|any)(?:\s+(?:any|a|an))?\s+(?P<kind>timers?|reminders?|alarms?)"
         r"(?:\s+(?:set|running|on|left))?$", re.I,
     ),
-    re.compile(r"^(?:what|which)\s+(?P<kind>timers?|reminders?)\s+(?:do\s+i\s+have|are\s+(?:set|running|on))$", re.I),
+    re.compile(r"^(?:what|which)\s+(?P<kind>timers?|reminders?|alarms?)\s+(?:do\s+i\s+have|are\s+(?:set|running|on))$",
+               re.I),
+    re.compile(r"^(?:when(?:'s|\s+is)|what\s+time\s+is)\s+my\s+(?:next\s+)?(?P<kind>alarm)(?:\s+set(?:\s+for)?)?$", re.I),
     re.compile(r"^how\s+(?:much\s+time|long)(?:\s+(?:is|do\s+i\s+have|have\s+i\s+got))?\s+left"
                r"(?:\s+on\s+(?:my|the)\s+(?P<kind>timer))?$", re.I),
     re.compile(r"^(?:what's|what\s+is)\s+(?:left|the\s+time\s+left|remaining)\s+on\s+(?:my|the)\s+(?P<kind>timer)$",
@@ -95,6 +101,32 @@ _CLOCK = re.compile(
     r"^(?P<h>\d{1,2})(?:(?:[:.]|\s+)(?P<m>\d{2}))?(?:\s*o'?\s*clock)?\s*(?P<ap>[ap])?(?:\.?\s*m\b\.?)?"
     r"(?:\s+(?P<part>in\s+the\s+morning|in\s+the\s+afternoon|in\s+the\s+evening|at\s+night|tonight))?$", re.I,
 )
+
+
+_ALARM_A = re.compile(
+    r"^(?:(?:set|create|make|add|put\s+on|start|schedule)\s+(?:me\s+)?(?:an?\s+|my\s+|the\s+)?)?alarm"
+    r"(?:\s+(?P<rest>.+))?$", re.I,
+)
+_ALARM_B = re.compile(  # "set a 6:30 alarm", "set a 7 am alarm called gym"
+    r"^(?:set|create|make|add)\s+(?:me\s+)?(?:an?\s+)?(?P<when>.+?)\s+alarm"
+    r"(?:\s+(?:called|named|labell?ed)\s+(?P<label>.+))?$", re.I,
+)
+_WAKE = re.compile(r"^(?:wake\s+me(?:\s+up)?|get\s+me\s+up)\s+(?P<rest>.+)$", re.I)
+_ALARM_LABEL = re.compile(r"\s+(?:called|named|labell?ed)\s+(?P<label>.+)$", re.I)
+_EVENING_FROM = 19  # "wake me at 7" never means 7 PM; a nap "wake me at 4" may mean 4 PM
+_CAL = r"(?:calendar|schedule|agenda|diary)"
+_EVENT = r"(?:meeting|event|appointment|call)"
+_CALENDAR_NEXT = [
+    re.compile(rf"^(?:what's|what\s+is|whats|what)\s+(?:next|coming\s+up|up\s+next)\s+(?:on|in)\s+(?:my|the)\s+{_CAL}"
+               r"(?:\s+today)?$", re.I),
+    re.compile(rf"^(?:what's|what\s+is|whats|when's|when\s+is|where's|where\s+is)\s+my\s+next\s+{_EVENT}(?:\s+today)?$",
+               re.I),
+    re.compile(rf"^(?:what|which)\s+{_EVENT}\s+(?:do\s+i\s+have|have\s+i\s+got)\s+next$", re.I),
+    re.compile(rf"^what\s+do\s+i\s+have\s+(?:next|coming\s+up)(?:\s+(?:on|in)\s+my\s+{_CAL})?$", re.I),
+    re.compile(rf"^(?:show|tell)\s+me\s+(?:what's|what\s+is)\s+(?:next|coming\s+up)\s+(?:on|in)\s+my\s+{_CAL}$", re.I),
+    re.compile(rf"^(?:show\s+me\s+)?my\s+next\s+{_EVENT}$", re.I),
+    re.compile(rf"^next\s+(?:up\s+)?on\s+my\s+{_CAL}$", re.I),
+]
 
 
 # ---------------------------------------------------------------------------- text helpers
@@ -256,6 +288,40 @@ def parse_when(text: str, now: datetime) -> tuple[datetime, float | None] | None
     return at, None
 
 
+def parse_alarm_time(text: str, now: datetime, *, wake: bool = False) -> tuple[datetime, float | None] | None:
+    """When an alarm rings: like ``parse_when``, except that a clock time without AM or PM ("6:30", "at 7") is the next
+    one, as on a phone, and for ``wake`` ("wake me at 7") the next one that is not in the evening. On "tomorrow", it is
+    the morning one. None when it is not clear."""
+    s = " ".join((text or "").lower().split())
+    s = re.sub(r"^(?:for|at|to\s+(?:go\s+off|ring)\s+at)\s+", "", s)
+    found = parse_when(s, now)
+    if found is not None:
+        return found
+    if re.match(r"^(?:in|after)\s", s):
+        return None
+    day = None
+    m = re.match(r"^(today|tomorrow)\s+(.+)$", s) or re.match(r"^(.+?)\s+(today|tomorrow)$", s)
+    if m:
+        day, s = (m.group(1), m.group(2)) if m.group(1) in {"today", "tomorrow"} else (m.group(2), m.group(1))
+    s = re.sub(r"^(?:at|for)\s+", "", s)
+    if not re.fullmatch(r"[a-z0-9:. ']+", s) or re.search(r"\b(?:am|pm|a|p|morning|afternoon|evening|night|tonight)\b", s):
+        return None  # a half of the day was for parse_when, which found it unclear
+    options = [c for c in (_clock(f"{s} am"), _clock(f"{s} pm")) if c is not None]
+    if not options:
+        return None
+    if day == "tomorrow" or wake:
+        options = [c for c in options if c[0] < _EVENING_FROM] or options[:1]
+    base = now.date() + timedelta(days=1 if day == "tomorrow" else 0)
+    times = sorted(
+        datetime.combine(base + timedelta(days=extra), time(h, mi), tzinfo=now.tzinfo)
+        for h, mi in options for extra in ((0,) if day else (0, 1))
+    )
+    future = [t for t in times if t > now]
+    if not future or (day == "today" and future[0].date() != now.date()):
+        return None
+    return future[0], None
+
+
 def _clean_message(text: str) -> str:
     return " ".join((text or "").split()).strip(" .!?;:")
 
@@ -342,7 +408,39 @@ def _reminder_command(when: tuple[datetime, float | None], message: str, connect
 
 def _kind(word: str | None) -> str:
     w = (word or "").lower()
+    if w.startswith("alarm"):
+        return ALARM
     return TIMER if w.startswith("timer") else REMINDER if w.startswith("reminder") else ANY
+
+
+def _alarm(s: str, now: datetime) -> Command | None:
+    wake = _WAKE.match(s)
+    label = ""
+    if wake:
+        rest = wake["rest"]
+    else:
+        m = _ALARM_A.match(s)
+        if m is not None:
+            rest = m["rest"] or ""
+        else:
+            m = _ALARM_B.match(s)
+            if m is None:
+                return None
+            rest, label = m["when"], _label(m["label"] or "")
+    if not rest.strip() or _REPEATING.search(rest):
+        return None
+    named = _ALARM_LABEL.search(rest)
+    if named:
+        label, rest = _label(named["label"]) or label, rest[: named.start()]
+    when = parse_alarm_time(rest, now, wake=bool(wake))
+    if when is None:
+        return None
+    at, seconds = when
+    return Command("alarm", at=at, seconds=seconds, label=label)
+
+
+def _calendar(s: str) -> Command | None:
+    return Command("calendar_next") if any(p.match(s) for p in _CALENDAR_NEXT) else None
 
 
 def _cancel(s: str) -> Command | None:
@@ -433,15 +531,70 @@ def _home(s: str) -> Command | None:
     return None
 
 
+# ---------------------------------------------------------------------------- a ringing alarm (#390)
+_RING_LEAD = r"(?:(?:ok(?:ay)?|alright|all\s+right|oh|ugh|yes|yeah|fine)\s+)*"
+_RING_IT = r"(?:it|that|this|alarm|(?:the|my|that|this)\s+(?:(?P<which>[a-z0-9:' ]{1,30}?)\s+)?alarm)"
+_RING_STOP = [
+    re.compile(rf"^{_RING_LEAD}(?:stop|silence|dismiss|cancel|mute)(?:\s+{_RING_IT})?(?:\s+now)?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:turn|switch|shut)\s+off\s+{_RING_IT}(?:\s+now)?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:turn|switch|shut)\s+{_RING_IT}\s+off(?:\s+now)?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:the\s+|my\s+)?alarm\s+off$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:shut\s+up|quiet|be\s+quiet|enough|that's\s+enough|i'?m\s+(?:up|awake)|"
+               r"i\s+am\s+(?:up|awake))(?:\s+now)?$", re.I),
+]
+_RING_SNOOZE = [
+    re.compile(rf"^{_RING_LEAD}snooze(?:\s+{_RING_IT})?(?:\s+(?:for\s+)?(?:another\s+)?(?P<dur>.+?))?$", re.I),
+    re.compile(rf"^{_RING_LEAD}(?:give\s+me\s+)?(?:another\s+)?(?P<n>\S+)\s+more\s+(?P<unit>minutes?|mins?)$", re.I),
+]
+SNOOZE_MAX_S = 180 * 60
+
+
+def _ring_which(m: re.Match) -> str:
+    return _clean_message(m.groupdict().get("which") or "").lower()
+
+
+def _snooze_length(words: str) -> float | None:
+    """Seconds in "5 minutes", "5 more minutes", "10" (minutes); None when unclear or not 1 minute to 3 hours."""
+    w = " ".join(re.sub(r"\bmore\b", " ", words.lower()).split())
+    if re.fullmatch(r"\d{1,3}", w):
+        w += " minutes"
+    seconds = parse_duration(w, days=False)
+    return seconds if seconds is not None and 60 <= seconds <= SNOOZE_MAX_S else None
+
+
+def ringing(text: str, names: Sequence[str] = ()) -> Command | None:
+    """ "stop", "stop the alarm", "turn it off", "I'm up" -> ``alarm_stop``; "snooze", "snooze for 5 minutes",
+    "5 more minutes" -> ``alarm_snooze``. Only asked while an alarm rings."""
+    s = _strip_polite(_normalize(text), names)
+    s = re.sub(r"\b(\w+)(?:\s+\1\b)+", r"\1", s, flags=re.I)  # "stop stop stop"
+    if not s or len(s) > 80 or "\n" in (text or "").strip():
+        return None
+    for pat in _RING_STOP:
+        m = pat.match(s)
+        if m:
+            return Command("alarm_stop", which=_ring_which(m))
+    for pat in _RING_SNOOZE:
+        m = pat.match(s)
+        if m is None:
+            continue
+        found = m.groupdict()
+        words = f"{found['n']} {found['unit']}" if found.get("unit") else (found.get("dur") or "")
+        seconds = _snooze_length(words) if words else None
+        if words and seconds is None:
+            return None  # "snooze for a bit", "snooze notifications": the model
+        return Command("alarm_snooze", seconds=seconds, which=_ring_which(m))
+    return None
+
+
 def parse(text: str, now: datetime, names: Sequence[str] = ()) -> Command | None:
     s = _strip_polite(_normalize(text), names)
     if not s or len(s) > 300 or "\n" in (text or "").strip():
         return None
-    for read in (_timer, _cancel, _list):
+    for read in (_timer, _cancel, _list, _calendar):
         cmd = read(s)
         if cmd is not None:
             return cmd
-    return _reminder(s, now) or _home(s)
+    return _alarm(s, now) or _reminder(s, now) or _home(s)
 
 
 # ---------------------------------------------------------------------------- what Sentient says
@@ -524,8 +677,20 @@ def length(seconds: float) -> str:
     return " ".join(parts) or "0 second"
 
 
+def _alarm_clock(reminder: dict) -> str:
+    """ "7:00 AM" from the ``fire_at_local`` a tool result has, else ""."""
+    local = reminder.get("fire_at_local")
+    try:
+        return _clock_text(datetime.fromisoformat(str(local))) if local else ""
+    except ValueError:
+        return ""
+
+
 def name(reminder: dict) -> str:
-    """ "pasta timer", "10 minute timer", "reminder to call Ravi"."""
+    """ "pasta timer", "10 minute timer", "reminder to call Ravi", "7:00 AM alarm", "gym alarm"."""
+    if reminder.get("kind") == ALARM:
+        label = str(reminder.get("label") or "") or _alarm_clock(reminder)
+        return f"{label} alarm" if label else "alarm"
     if reminder.get("kind") == TIMER:
         label = str(reminder.get("label") or "")
         return f"{label} timer" if label else f"{length(float(reminder.get('duration_s') or 0))} timer"
@@ -536,13 +701,15 @@ def name(reminder: dict) -> str:
 def cancelled(reminders: list[dict]) -> str:
     if len(reminders) == 1:
         return f"Cancelled your {name(reminders[0])}."
-    timers = sum(1 for r in reminders if r.get("kind") == TIMER)
-    others = len(reminders) - timers
-    if not others:
-        return f"Cancelled your {timers} timers."
-    if not timers:
-        return f"Cancelled your {others} reminders."
-    return f"Cancelled {timers} timer{'s' if timers > 1 else ''} and {others} reminder{'s' if others > 1 else ''}."
+    counts = [(sum(1 for r in reminders if r.get("kind") == kind), kind) for kind in (TIMER, ALARM, REMINDER)]
+    counts = [(n, kind) for n, kind in counts if n]
+    if len(counts) == 1:
+        return f"Cancelled your {counts[0][0]} {counts[0][1]}s."
+    return "Cancelled " + _and([f"{n} {kind}{'s' if n > 1 else ''}" for n, kind in counts]) + "."
+
+
+def _and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + f" and {items[-1]}"
 
 
 def nothing(target: str) -> str:
@@ -550,12 +717,15 @@ def nothing(target: str) -> str:
         return "You don't have any timers running."
     if target == REMINDER:
         return "You don't have any reminders set."
+    if target == ALARM:
+        return "You don't have any alarms set."
     return "You don't have any timers or reminders set."
 
 
 def listing(reminders: list[dict], now: datetime) -> str:
     timers = [r for r in reminders if r.get("kind") == TIMER]
-    others = [r for r in reminders if r.get("kind") != TIMER]
+    alarms = [r for r in reminders if r.get("kind") == ALARM]
+    others = [r for r in reminders if r.get("kind") not in {TIMER, ALARM}]
     said = []
     if timers:
         items = []
@@ -565,6 +735,10 @@ def listing(reminders: list[dict], now: datetime) -> str:
             items.append(f"{label}, {duration(left if left >= 60 else round(left)) if left >= 1 else 'ending now'}"
                          f"{' left' if left >= 1 else ''}")
         said.append(f"You have {len(timers)} timer{'s' if len(timers) > 1 else ''}: " + _join(items) + ".")
+    if alarms:
+        items = [(f"{r['label']}, " if r.get("label") else "") + _alarm_day(_local(r, now), now) for r in alarms[:5]]
+        head = "You have" if not said else "And"
+        said.append(f"{head} {len(alarms)} alarm{'s' if len(alarms) > 1 else ''}: " + _join(items) + ".")
     if others:
         items = [f"{_what(r) or 'a reminder'} {_day_text(_local(r, now), now)}".strip() for r in others[:5]]
         head = "You have" if not said else "And"
@@ -586,8 +760,123 @@ def home_done(command: Command, count: int) -> str:
     return f"Turned {command.power} {what}."
 
 
+def _alarm_day(at: datetime, now: datetime) -> str:
+    """ "7:00 AM tomorrow", "6:30 PM today", "7:00 AM on Friday"."""
+    days = (at.date() - now.date()).days
+    if days == 0:
+        when = "today"
+    elif days == 1:
+        when = "tomorrow"
+    else:
+        when = f"on {at:%A}" if days < 7 else f"on {at:%A} {at.day} {at:%B}"
+    return f"{_clock_text(at)} {when}"
+
+
+def alarm_set(reminder: dict, now: datetime) -> str:
+    label = str(reminder.get("label") or "")
+    head = f"{label[:1].upper() + label[1:]} alarm" if label else "Alarm"
+    at = _local(reminder, now)
+    if reminder.get("duration_s"):
+        return f"{head} set for {duration(float(reminder['duration_s']))} from now, at {_clock_text(at)}."
+    return f"{head} set for {_alarm_day(at, now)}."
+
+
+def alarm_stopped(reminders: list[dict]) -> str:
+    return "Alarms stopped." if len(reminders) > 1 else "Alarm stopped."
+
+
+def alarm_snoozed(reminder: dict, now: datetime) -> str:
+    return f"Snoozed until {_clock_text(_local(reminder, now))}."
+
+
+def alarm_due(reminder: dict, at: datetime, late: bool) -> tuple[str, str]:
+    label = str(reminder.get("label") or "")
+    title = f"Alarm: {label}" if label else "Alarm"
+    if late:
+        return title, f"Your {_clock_text(at)} alarm went off while Sentient wasn't running."
+    return title, f"It's {_clock_text(at)}."
+
+
+def _event_time(raw: object, now: datetime) -> tuple[datetime, bool] | None:
+    """A calendar time in the user's timezone, and whether it was only a date (an all-day event)."""
+    text = str(raw or "")
+    try:
+        if len(text) == 10:
+            return datetime.combine(datetime.fromisoformat(text).date(), time(0, 0), tzinfo=now.tzinfo), True
+        at = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (at if at.tzinfo else at.replace(tzinfo=now.tzinfo)).astimezone(now.tzinfo), False
+
+
+def _event_title(ev: dict) -> str:
+    return " ".join(str(ev.get("summary") or "An event").split())[:100]
+
+
+def _event_text(ev: dict, start: datetime, all_day: bool, now: datetime) -> str:
+    days = (start.date() - now.date()).days
+    if days <= 0:
+        day = "today"
+    elif days == 1:
+        day = "tomorrow"
+    else:
+        day = f"on {start:%A}" if days < 7 else f"on {start:%A} {start.day} {start:%B}"
+    when = f"{day}, all day" if all_day else f"{day} at {_clock_text(start)}"
+    place = " ".join(str(ev.get("location") or "").split())
+    return f"{_event_title(ev)}, {when}" + (f" ({place})" if place and len(place) <= 40 else "")
+
+
+def calendar_next(events: list[dict], now: datetime, days: int) -> str:
+    """The event on now, today's all-day events, then the next event: a meeting later today is never hidden by an
+    all-day event today."""
+    ongoing, upcoming, all_day_today = [], [], []
+    for ev in events:
+        if not isinstance(ev, dict) or str(ev.get("status") or "").lower() == "cancelled":
+            continue
+        start = _event_time(ev.get("start"), now)
+        if start is None:
+            continue
+        at, date_only = start
+        all_day = bool(ev.get("all_day")) or date_only
+        if all_day:
+            end = _event_time(ev.get("end"), now)
+            last = end[0].date() - timedelta(days=1) if end is not None else at.date()  # the end date is exclusive
+            if at.date() > now.date():
+                upcoming.append((at, True, ev))
+            elif last >= now.date():  # today, or a few days that include today
+                all_day_today.append(ev)
+            continue
+        if at > now:
+            upcoming.append((at, False, ev))
+            continue
+        end = _event_time(ev.get("end"), now)
+        if end is not None and end[0] > now:
+            ongoing.append((end[0], ev))
+    upcoming.sort(key=lambda item: (item[0], not item[1]))
+    said = []
+    if all_day_today:
+        said.append("All day today: " + _and([_event_title(ev) for ev in all_day_today[:3]]) + ".")
+    if ongoing:
+        end_at, ev = ongoing[0]
+        said.append(f"Right now: {_event_title(ev)}, until {_clock_text(end_at)}.")
+    if upcoming:
+        at, all_day, ev = upcoming[0]
+        said.append(f"{'Next' if said else 'Next on your calendar'}: {_event_text(ev, at, all_day, now)}.")
+        later = [u for u in upcoming[1:] if u[0].date() == at.date() and not u[1]]
+        if later and not all_day:
+            said.append(f"After that: {_event_text(later[0][2], later[0][0], False, now)}.")
+    elif not said:
+        return f"Nothing on your calendar in the next {days} days."
+    return " ".join(said)
+
+
 def failed(error: str) -> str:
     return f"I couldn't do that: {error}" if error else "I couldn't do that."
+
+
+def unconfirmed(detail: str) -> str:
+    detail = detail.strip().rstrip(".")
+    return f"I tried, but {detail}." if detail else "I tried, but it didn't seem to work."
 
 
 def timer_done(reminder: dict) -> tuple[str, str]:

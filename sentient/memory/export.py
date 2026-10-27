@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from sentient import paths
+from sentient.memory import scopes as memory_scopes
 from sentient.memory.schema import ensure_memory_schema
 from sentient.memory.topics import DEFAULT_TOPIC, TOPIC_NAMES
 
@@ -41,6 +42,14 @@ def source_words(source: str) -> str:
         return rest
     if kind == "task":
         return "a task"
+    if kind == "channel" and rest:
+        return f"a chat in {rest.title()}"
+    if kind == "device" and rest:
+        return "a chat on a device"
+    if kind == "app" and rest:
+        return rest.replace("_", " ").title()
+    if kind == "folder" and rest:
+        return "your notes"
     return _SOURCE_WORDS.get(source, source or "Sentient")
 
 
@@ -54,7 +63,7 @@ def _day(iso: str | None) -> str:
 async def _rows(app: Any) -> tuple[list[dict], list[dict]]:
     await ensure_memory_schema(app.store)
     facts = [dict(r) for r in await app.store.fetchall(
-        "SELECT id, content, source, topics, memory_type, status, created_at, updated_at, expires_at, review"
+        "SELECT id, content, source, topics, memory_type, status, created_at, updated_at, expires_at, review, scope"
         " FROM facts ORDER BY created_at, id"
     )]
     insights = [dict(r) for r in await app.store.fetchall(
@@ -72,8 +81,10 @@ def _topics(raw: str) -> list[str]:
     return found or [DEFAULT_TOPIC]
 
 
-def _line(text: str, source: str, at: str | None, review: str | None = None) -> str:
+def _line(text: str, source: str, at: str | None, review: str | None = None, scope: str | None = None) -> str:
     where = source_words(source)
+    if scope and scope != memory_scopes.PERSONAL:  # #155: Work, Always or a project
+        where = f"{memory_scopes.label(scope)}, {where}"
     try:
         note = json.loads(review) if review else None
     except (TypeError, ValueError):
@@ -99,14 +110,17 @@ def markdown(user: str, facts: list[dict], insights: list[dict], now: datetime) 
     for topic in TOPIC_NAMES:
         rows = [f for f in active if _topics(f["topics"])[0] == topic]
         if rows:
-            out += [f"## {topic}", "", *(_line(f["content"], f["source"], f["created_at"]) for f in rows), ""]
+            out += [
+                f"## {topic}", "",
+                *(_line(f["content"], f["source"], f["created_at"], scope=f.get("scope")) for f in rows), "",
+            ]
     if known:
         out += [f"## About {name}", ""]
         out += [_line(i["statement"], i["source"], i["created_at"]) for i in known] + [""]
     if waiting:
         out += ["## Waiting for your review", "", "Sentient doesn't use these until you approve them.", ""]
-        out += [_line(w.get("content") or w.get("statement"), w["source"], w["created_at"], w.get("review"))
-                for w in waiting] + [""]
+        out += [_line(w.get("content") or w.get("statement"), w["source"], w["created_at"], w.get("review"),
+                      w.get("scope")) for w in waiting] + [""]
     if not active and not known and not waiting:
         out += ["Sentient doesn't remember anything yet.", ""]
     return "\n".join(out)
@@ -118,15 +132,16 @@ def _sqlite(path: Path, facts: list[dict], insights: list[dict]) -> None:
         con.executescript(
             """
             CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT NOT NULL, source TEXT, topics TEXT,
-                memory_type TEXT, status TEXT, created_at TEXT, updated_at TEXT, expires_at TEXT, came_from TEXT);
+                memory_type TEXT, status TEXT, created_at TEXT, updated_at TEXT, expires_at TEXT, came_from TEXT,
+                scope TEXT);
             CREATE TABLE about_you (id TEXT PRIMARY KEY, dimension TEXT, statement TEXT NOT NULL, confidence REAL,
                 status TEXT, source TEXT, created_at TEXT, updated_at TEXT, came_from TEXT);
             """
         )
         con.executemany(
-            "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             [(f["id"], f["content"], f["source"], f["topics"], f["memory_type"], f["status"], f["created_at"],
-              f["updated_at"], f["expires_at"], f["review"]) for f in facts],
+              f["updated_at"], f["expires_at"], f["review"], f.get("scope") or memory_scopes.PERSONAL) for f in facts],
         )
         con.executemany(
             "INSERT INTO about_you VALUES (?,?,?,?,?,?,?,?,?)",

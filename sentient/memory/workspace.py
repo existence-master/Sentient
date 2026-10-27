@@ -12,6 +12,7 @@ model call).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -150,6 +151,43 @@ class Workspace:
         self.user.parent.mkdir(parents=True, exist_ok=True)
         self.user.write_text(body, encoding="utf-8")
         return new
+
+    def remove_learned(self, facts: list[str], heading: str = "## Learned") -> int:
+        """Remove bullets that say exactly these facts from USER.md's Learned section (a memory moved out of
+        Personal, #155). The user's own text is never touched. Returns how many lines went."""
+        if not facts or not self.user.exists():
+            return 0
+        gone = {f.strip().lower() for f in facts if f.strip()}
+        lines = self.user.read_text(encoding="utf-8", errors="replace").splitlines()
+        out: list[str] = []
+        inside, removed = False, 0
+        for line in lines:
+            if line.startswith("#"):
+                inside = line.strip().lower() == heading.lower()
+            if inside and line.startswith("- ") and line[2:].strip().lower() in gone:
+                removed += 1
+                continue
+            out.append(line)
+        if removed:
+            self.user.write_text("\n".join(out) + "\n", encoding="utf-8")
+        return removed
+
+    def scrub(self, facts: list[str], user_name: str = "", repeats: Callable[[str], bool] | None = None) -> int:
+        """A memory was deleted (#152): its bullet goes from USER.md's Learned section, and every bullet of MEMORY.md
+        (written from memories by the nightly upkeep) that repeats it: ``repeats`` (an ``origins.Erased``, which spares
+        a remaining memory's similar lines, #456), else ``origins.says``. The user's own text in USER.md is never
+        touched. Returns how many lines went."""
+        from sentient.memory import origins
+
+        removed = self.remove_learned(facts)
+        if not self.memory.exists() or not (facts or repeats is not None):
+            return removed
+        said = repeats or (lambda line: any(origins.says(f, line, user_name) for f in facts))
+        lines = self.memory.read_text(encoding="utf-8", errors="replace").splitlines()
+        kept = [line for line in lines if not (line.lstrip().startswith(("- ", "* ")) and said(line))]
+        if len(kept) != len(lines):
+            self.memory.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        return removed + len(lines) - len(kept)
 
     def append_note(self, text: str, day: date | None = None) -> Path:
         day = day or date.today()

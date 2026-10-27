@@ -123,6 +123,9 @@ class ToolContext:
     # attachments. Set in code by the chat turn only (empty for tasks, subagents and other work); an "Only if I asked"
     # rule (#140) runs a tool without asking only when these words ask for it.
     user_words: list[str] = field(default_factory=list)
+    # the memory scope of this run (#155): a chat's or a task's ("personal", "work", a project). Empty: the chat's own,
+    # or every scope for work not tied to a chat (``memory.scopes.for_context``)
+    memory_scope: str = ""
 
     async def is_incognito(self) -> bool:
         """True when this run belongs to an incognito chat (#154)."""
@@ -162,6 +165,10 @@ UrlFn = Callable[[dict, ToolContext], "str | None"]
 # Reads a call's effect back after it ran (#165): ``verify(arguments, result, ctx) -> {ok, detail?}`` (sync or async);
 # None or an exception means it couldn't tell, and the tool's own result stands. Code only, never a model.
 VerifyFn = Callable[[dict, Any, ToolContext], "dict | Awaitable[dict | None] | None"]
+# Who a call goes to when its arguments don't say (#144): a reply goes to the sender in the thread's headers.
+# ``destinations_fn(arguments, ctx) -> [{"address", "why": "sender"|"reply_to"|"thread", "sender"}]`` (sync or async).
+# Worked out in code from the headers, before the call runs, so the second look and the approval card can show it.
+DestinationsFn = Callable[[dict, ToolContext], "list[dict] | Awaitable[list[dict] | None] | None"]
 
 # Default wording for approval prompts, by effective risk.
 RISK_LABELS = {
@@ -204,6 +211,8 @@ class Tool:
     outcome: str | None = None
     # Reads the effect back after a call that said it worked (see ``VerifyFn``): the file, the Sent folder, the event.
     verify: VerifyFn | None = None
+    # Who a call goes to when its arguments don't name them (a reply: the thread's headers), see ``DestinationsFn``.
+    destinations_fn: DestinationsFn | None = None
 
     def openai_schema(self) -> dict:
         schema = self.params_model.model_json_schema()
@@ -278,6 +287,14 @@ async def describe_call(tool: Tool, arguments: dict, ctx: ToolContext, risk: Ris
     return out
 
 
+def approval_reason(wording: dict, risk: Risk) -> str:
+    """The reason line of an approval card (#398): the label a ``describe_fn`` gave when it says more than the risk
+    alone ("Purchase", "Deletes", "Unlocks a door", "Takes a photo"), else empty, so the card writes its own line.
+    Never the tool's description: that is written for the model ("Click the element with this ref ...")."""
+    label = str((wording or {}).get("risk_label") or "").strip()
+    return "" if label == RISK_LABELS.get(Risk(risk), "") else label
+
+
 def _params_model_from_signature(fn: Callable, name: str) -> type[BaseModel]:
     sig = inspect.signature(fn)
     hints = typing.get_type_hints(fn, include_extras=True)
@@ -308,6 +325,7 @@ def tool(
     allow_for_chat: bool = True,
     outcome: str | None = None,
     verify: VerifyFn | None = None,
+    destinations_fn: DestinationsFn | None = None,
 ):
     """Decorator turning ``async def fn(ctx, arg: type = default)`` into a Tool."""
 
@@ -319,6 +337,7 @@ def tool(
             name=tool_name, description=desc, fn=fn, params_model=model, risk=risk, internal=internal,
             risk_fn=risk_fn, describe_fn=describe_fn, untrusted_output=untrusted_output, exfiltrates=exfiltrates,
             url_fn=url_fn, allow_for_chat=allow_for_chat, outcome=outcome, verify=verify,
+            destinations_fn=destinations_fn,
         )
 
     return wrap

@@ -167,7 +167,7 @@ def test_memory_routes(client):
     assert imp == {"added": 1, "updated": 0, "skipped": 0, "pending": 1, "source": "file:notes.md"}
     assert client.get("/api/memories/review").json()["items"][0]["from"] == "notes.md"
     assert client.post("/api/memories/import", files={"file": ("x.exe", b"MZ", "application/octet-stream")}).status_code == 400
-    assert client.delete("/api/memories/source/file:notes.md").json() == {"deleted": 1}
+    assert client.delete("/api/memories/source/file:notes.md").json() == {"deleted": 1, "unlinked": 0}
 
     assert client.get("/api/memories/summaries").json() == []
     ws = client.get("/api/memories/workspace").json()

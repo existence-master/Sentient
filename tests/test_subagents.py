@@ -7,6 +7,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+from sentient import paths
 from sentient.app import SentientApp
 from sentient.gateway.app import create_app
 from sentient.llm.events import ToolProgress, ToolResultEvent
@@ -257,5 +258,89 @@ async def test_subagent_stops_on_repeated_calls_and_on_its_token_limit(config, i
         res = await s.subagents.delegate("Read my notes", tools=["file_read"])
         assert res["status"] == "error" and res["error"].startswith("Stopped after using 1,200 tokens")
         assert len(llm.seen) == 2
+    finally:
+        await s.stop()
+
+
+async def test_parallel_subagents_each_report_only_their_own_files(config, isolated_home):
+    """Two subagents running at once each list the files they wrote, not the other's (#94)."""
+    arrived: list[str] = []
+    both_wrote = asyncio.Event()
+
+    @tool("rendezvous", risk=Risk.read)
+    async def rendezvous(ctx: ToolContext) -> str:
+        """Wait for the other helper."""
+        arrived.append(ctx.extra["subagent_id"])
+        if len(arrived) == 2:
+            both_wrote.set()
+        await asyncio.wait_for(both_wrote.wait(), 30)
+        return "ok"
+
+    class PerGoal(FakeProvider):
+        """Each helper gets its own script, whatever order they call the model in."""
+
+        def __init__(self, scripts: dict[str, list]):
+            super().__init__()
+            self.scripts = scripts
+
+        async def stream(self, role, messages, tools=None, *, model=None):
+            goal = next(g for g in self.scripts if g in messages[1]["content"])
+            self.replies = [self.scripts[goal].pop(0)]
+            async for chunk in super().stream(role, messages, tools, model=model):
+                yield chunk
+
+    llm = PerGoal({
+        "alpha": [[tool_call("file_write", name="alpha.txt", content="A")], [tool_call("rendezvous")], "wrote alpha"],
+        "beta": [[tool_call("file_write", name="notes/beta.md", content="B")], [tool_call("rendezvous")], "wrote beta"],
+    })
+    s = await start(config, isolated_home, llm, "files")
+    try:
+        (paths.files_dir() / "older.txt").write_text("already here", encoding="utf-8")
+        s.registry.register(make_plugin("meeting", rendezvous))
+        res = await s.subagents.delegate_many([
+            {"goal": "alpha", "tools": ["file_write", "rendezvous"]},
+            {"goal": "beta", "tools": ["file_write", "rendezvous"]},
+        ])
+        assert [r["status"] for r in res] == ["completed", "completed"]
+        assert res[0]["files_created"] == ["alpha.txt"]
+        assert res[1]["files_created"] == ["notes/beta.md"]
+        stored = await s.subagents.get(res[1]["subagent_id"], events=False)
+        assert stored["files_created"] == ["notes/beta.md"]
+    finally:
+        await s.stop()
+
+
+async def test_files_come_from_any_tool_saving_into_the_files_folder(config, isolated_home):
+    """Any tool whose result ``path`` is inside the files folder counts; ``saved`` alone or a path elsewhere,
+    like skill_save's, does not (#94)."""
+
+    @tool("chart_like", risk=Risk.read)
+    async def chart_like(ctx: ToolContext) -> dict:
+        """Save a chart."""
+        target = paths.files_dir() / "charts" / "steps.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"png")
+        return {"saved": "charts/steps.png", "path": str(target)}
+
+    @tool("save_skill_like", risk=Risk.read)
+    async def save_skill_like(ctx: ToolContext) -> dict:
+        """Save something that is not a file."""
+        return {"saved": str(isolated_home / "skills" / "thing" / "SKILL.md"), "name": "thing",
+                "path": str(isolated_home / "skills" / "thing" / "SKILL.md")}
+
+    @tool("saved_only", risk=Risk.read)
+    async def saved_only(ctx: ToolContext) -> dict:
+        """Say saved without a path."""
+        return {"saved": "ghost.txt"}
+
+    llm = FakeProvider(replies=[
+        [tool_call("chart_like")], [tool_call("save_skill_like")], [tool_call("saved_only")], "done",
+    ])
+    s = await start(config, isolated_home, llm, "anytool")
+    try:
+        s.registry.register(make_plugin("mixed", chart_like, save_skill_like, saved_only))
+        res = await s.subagents.delegate("save things", tools=["chart_like", "save_skill_like", "saved_only"])
+        assert res["status"] == "completed", res
+        assert res["files_created"] == ["charts/steps.png"]
     finally:
         await s.stop()

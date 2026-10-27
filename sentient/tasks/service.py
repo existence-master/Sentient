@@ -17,12 +17,21 @@ Status flow (single tasks)::
                can do: Try again / Skip this step / Cancel, tasks/stuck.py)
     active|pending, missed while the computer was off or asleep --> run once now or skipped (tasks/catchup.py)
     decline -> declined, archive -> archived
+    paused (enabled off) and interrupted by a restart: processing|waiting on an approval -> run cancelled with a note,
+               task active|pending; planning stays planning. Resume carries the run on (a retry) or plans it (#304)
+    paused while a run works -> it stops at its next safe point (before a model or tool call) and is held the same
+               way; a run waiting on an approval is held at once (#408)
 
 Swarm tasks skip approval (v2): planning -> processing -> completed | completed_with_errors | error.
 
 A try run ("Try it first", ``dry_run``, #142) is a run that only notes what it would send, change or run
 (``sentient/agent/dry_run.py``). It never changes the task's status, schedule or last result, so a plan can be tried
 before it is approved.
+
+A routine (recurring or triggered) has a setup checklist (``setup``, ``tasks/checklist.py``, #161): what it reads,
+what the user gets, what it may do without asking and what happens when what it reads isn't there. Before a run (or
+a check script) starts, code looks whether the source is there; when it isn't, the run ends ``skipped`` (quietly,
+with a notification, or with a retry a little later), and a try run fails saying what a real run would do.
 """
 
 from __future__ import annotations
@@ -37,17 +46,34 @@ from typing import Any
 
 from sentient.agent import dry_run, outcomes
 from sentient.agent import grants as grant_rules
+from sentient.agent.prompt import mark_outside
+from sentient.app_names import code_span, framed_app_name
 from sentient.llm.jobs import detached
 from sentient.llm.provider import PlainProviderError, ProviderError
+from sentient.memory import scopes as memory_scopes
 from sentient.services import Service, cancel_tasks
-from sentient.tasks import ask, away, catchup, continuity, executor, limits, scripts, stuck, swarm
+from sentient.tasks import (
+    ask,
+    away,
+    catchup,
+    checklist,
+    continuity,
+    email_inbox,
+    executor,
+    limits,
+    mcp_tasks,
+    scripts,
+    stuck,
+    swarm,
+)
 from sentient.tasks.away import AwayWatch
 from sentient.tasks.delivery import from_stored, stored
-from sentient.tasks.executor import RunFailed, RunPaused
+from sentient.tasks.executor import RunFailed, RunHeld, RunPaused
 from sentient.tasks.jsonio import complete_json_object
 from sentient.tasks.prompts import (
     CORE_HELPER_PLUGINS,
     EXCLUDED_PLUGINS,
+    PAUSE_RESUMED_NOTE,
     PLANNER_SYSTEM_PROMPT,
     RETRY_NOTE,
     TASK_CREATION_PROMPT,
@@ -61,7 +87,9 @@ from sentient.tasks.schedule import (
     normalize_schedule,
     parse_iso,
     parse_run_at,
+    spoken_interval,
     spoken_schedule,
+    spoken_window,
     user_timezone_name,
 )
 from sentient.tasks.scripts import ScriptInvalid, normalize_script, tools_named, validate_code
@@ -76,7 +104,7 @@ STATUSES = {
 }
 UPDATABLE_FIELDS = {
     "name", "description", "priority", "schedule", "plan", "enabled", "status", "model", "assignee", "script",
-    "browser_profile", "deliver_to", "notepad", "keep_running",
+    "browser_profile", "deliver_to", "notepad", "keep_running", "memory_scope", "setup",
 }
 SANDBOX_RESULT = {
     "ok": False, "backend": None, "stdout": "", "stderr": "", "result": None, "files_created": [],
@@ -87,6 +115,19 @@ MAX_RESUMES = 2
 BUSY = ("processing", "waiting_for_user")
 STALE_ANSWER = "This request was already answered or has changed. Open the task to see what it is waiting for."
 STOPPED_NOTE = "Run stopped by Stop everything."
+# a paused task's work is held, not carried on: after a restart (#304), or at the next safe point of a run that is
+# working when the user pauses it (#408). Resuming the task carries it on
+PAUSED_NOTE = "Paused before it finished. Resume the task to continue."
+# a run that can't stop part-way when its task is paused (#408) says why in its log, and finishes
+SWARM_FINISHES_NOTE = (
+    "This task's agents work side by side, so this run can't be stopped part-way. It will finish, and the task "
+    "won't run again until you resume it."
+)
+CALL_FINISHES_NOTE = (
+    "This one-step action had already started, so it can't be stopped part-way. It will finish, and the task "
+    "won't run again until you resume it."
+)
+PLAN_PAUSED_NOTE = "Paused before the plan was ready. Resume the task to continue."
 # on a task whose check script was rejected twice (#310): the AI does the job at each run instead
 NO_SCRIPT_NOTE = "I couldn't write a working check script for this, so the AI will do it at each run instead."
 WAITING_CONFLICT = "This task is waiting for your answer. Answer the question or cancel the run first."
@@ -180,6 +221,7 @@ class TaskService(Service):
         self._background: set[asyncio.Task] = set()
         self._runs: dict[str, asyncio.Task] = {}
         self._cancel_requested: set[str] = set()
+        self._holding: set[str] = set()  # runs whose task was paused: they stop at their next safe point (#408)
         self._locks: dict[str, asyncio.Lock] = {}
         self._sem: asyncio.Semaphore | None = None
         self._bus_subscription: Any = None
@@ -187,12 +229,12 @@ class TaskService(Service):
         self._last_tick: datetime | None = None  # wall clock of the last scheduler tick (a big jump means sleep)
         self._catch_up_reason: str | None = "start"  # what the next catch-up notice says it caught up after
         self.away = AwayWatch(self)  # pause routines while the user is away (#163)
+        self.inbox = email_inbox.EmailInbox(self)  # tasks by email (#159)
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         cfg = self.app.config.tasks
         self._sem = asyncio.Semaphore(cfg.max_concurrent_runs)
-        await self.repo.ensure_schema()
         from sentient.tasks.tools import TasksPlugin
 
         if not any(p.id == TasksPlugin.id for p in self.app.registry.plugins()):
@@ -252,6 +294,11 @@ class TaskService(Service):
         if runs:
             await asyncio.wait(runs, timeout=5)
         return cancelled + await cancel_tasks(self._background)
+
+    def holding(self, run_id: str) -> bool:
+        """True when the user paused this run's task while it worked: it stops before its next model or tool call
+        (#408). Checked by the executor at every safe point."""
+        return run_id in self._holding
 
     def _job_running(self, kind: str, task_id: str) -> bool:
         """True while a background job (``plan``, ``swarm``, ``script``) runs for this task."""
@@ -334,11 +381,13 @@ class TaskService(Service):
         model: str | None = None,
         auto_approve: bool = False,
         browser_profile: str | None = None,
+        memory_scope: str | None = None,
     ) -> dict:
         prompt = (prompt or "").strip()
         if not prompt:
             raise ValueError("A prompt is required.")
         browser_profile = self._browser_profile(browser_profile)
+        memory_scope = memory_scopes.chat_scope(memory_scope)
         context = dict(original_context or {})
         context.setdefault("source", "manual_creation" if source == "user" else source)
         now = self.now_iso()
@@ -353,6 +402,7 @@ class TaskService(Service):
             "enabled": True,
             "model": model or None,
             "browser_profile": browser_profile,
+            "memory_scope": memory_scope,
             "original_context": context,
             "plan": [],
             "chat_history": [],
@@ -374,6 +424,71 @@ class TaskService(Service):
             self._spawn(self._orchestrate_swarm(task_id), f"swarm:{task_id}")
         else:
             self._spawn(self._refine_and_plan(task_id, auto_approve=auto_approve), f"plan:{task_id}")
+        assert data is not None
+        return data
+
+    async def create_from_email(self, name: str, description: str, context: dict) -> dict:
+        """A task made from an email sent to the Sentient address (``tasks/email_inbox.py``, #159).
+
+        No refining step (that would read the email as the user's words): the name and description are written in
+        code, and the planner reads the email marked as outside content. The plan always waits for approval."""
+        now = self.now_iso()
+        task_id = await self.repo.insert_task({
+            "name": _title(name),
+            "description": description,
+            "status": "planning",
+            "priority": 1,
+            "assignee": "ai",
+            "original_prompt": description,
+            "source": email_inbox.SOURCE,
+            "enabled": True,
+            "model": None,
+            "memory_scope": memory_scopes.chat_scope(None),
+            "original_context": dict(context),
+            "plan": [],
+            "chat_history": [],
+            "clarifying_questions": [],
+            "task_type": "single",
+            "schedule": None,
+            "created_at": now,
+            "updated_at": now,
+        })
+        data = await self.publish(task_id)
+        self._spawn(self._plan_job(task_id), f"plan:{task_id}")
+        assert data is not None
+        return data
+
+    async def create_from_mcp(self, prompt: str, app_name: str) -> dict:
+        """A task an MCP app asked for (``sentient/tasks/mcp_tasks.py``, #443).
+
+        No refining step (that would read the app's words as the user's): the name and description
+        are the app's prompt as it stands, and the plan always waits for approval."""
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ValueError("A prompt is required.")
+        now = self.now_iso()
+        task_id = await self.repo.insert_task({
+            "name": _title(prompt),
+            "description": prompt,
+            "status": "planning",
+            "priority": 1,
+            "assignee": "ai",
+            "original_prompt": prompt,
+            "source": mcp_tasks.SOURCE,
+            "enabled": True,
+            "model": None,
+            "memory_scope": memory_scopes.chat_scope(None),
+            "original_context": {"source": mcp_tasks.SOURCE, "app": app_name},
+            "plan": [],
+            "chat_history": [],
+            "clarifying_questions": [],
+            "task_type": "single",
+            "schedule": None,
+            "created_at": now,
+            "updated_at": now,
+        })
+        data = await self.publish(task_id)
+        self._spawn(self._plan_job(task_id), f"plan:{task_id}")
         assert data is not None
         return data
 
@@ -570,6 +685,11 @@ class TaskService(Service):
             changes["model"] = data["model"] or None
         if "browser_profile" in data:
             changes["browser_profile"] = self._browser_profile(data["browser_profile"])
+        if "memory_scope" in data:  # #155: None or "" goes back to personal; "always" is refused (ValueError)
+            scope = memory_scopes.chat_scope(data["memory_scope"])
+            if scope != task.get("memory_scope") and task["status"] in BUSY:  # a run keeps the scope it started with
+                raise TaskConflict("This task is running right now. Try again when the run has finished.")
+            changes["memory_scope"] = scope
         if "deliver_to" in data:
             changes["deliver_to"] = stored(data["deliver_to"])
         if "notepad" in data:
@@ -593,14 +713,19 @@ class TaskService(Service):
                 if data["schedule"] else None
             )
             changes["schedule"] = schedule
+        self._update_setup(task, data, changes)
         status = changes.get("status", task["status"])
         enabled = changes.get("enabled", task["enabled"])
         if enabled and not task["enabled"] and status in {"active", "pending"} and self._unplanned_import(task):
             changes.pop("plan", None)  # an imported task's plan only comes from the planner or its own script
             return await self._start_imported(task, changes)
-        reschedule = "schedule" in changes or "status" in changes or (enabled and not task["enabled"])
-        if reschedule and status in {"active", "pending"}:
-            kind = (schedule or {}).get("type")
+        resuming = bool(enabled) and not task["enabled"]
+        # work a restart held while the task was paused (#304) carries on now, instead of a fresh run
+        held = await self.repo.held_runs(task_id, PAUSED_NOTE) if resuming else []
+        kind = (schedule or {}).get("type")
+        carries_on = any(not r.get("dry_run") for r in held) and kind not in {"recurring", "triggered"}
+        reschedule = "schedule" in changes or "status" in changes or resuming
+        if reschedule and status in {"active", "pending"} and not carries_on:
             if kind == "recurring":
                 changes["status"] = "active"
                 changes["next_execution_at"] = iso(calculate_next_run(schedule, self.now()))
@@ -610,7 +735,14 @@ class TaskService(Service):
             else:
                 changes["status"] = "pending"
                 changes["next_execution_at"] = iso(parse_run_at(schedule) or self.now())
+        pausing = "enabled" in changes and not changes["enabled"] and task["enabled"]
         await self._set(task_id, changes)
+        if pausing:
+            await self._pause_work(task_id)
+        if resuming:
+            for run in await self.repo.processing_runs(task_id):  # resumed before it reached a safe point: it goes on
+                self._holding.discard(run["id"])
+            await self._carry_on(task_id, held)
         if needs_approval:
             await self.publish(task_id)
             name = changes.get("name") or task.get("name") or "Untitled task"
@@ -619,6 +751,25 @@ class TaskService(Service):
                 "Plan ready for approval", "approval_needed",
             )
         return await self.get(task_id)
+
+    def _update_setup(self, task: dict, data: dict, changes: dict) -> None:
+        """The setup checklist after a PATCH (#161): answers merged in, ``confirm`` marks it confirmed. A task that
+        became a routine gets one filled in; a changed plan updates the apps it may act with."""
+        merged = {**task, **changes}
+        if not checklist.applies(merged):
+            if "setup" in data and data["setup"] is not None:
+                raise ValueError("Only recurring and triggered tasks have a setup checklist.")
+            if task.get("setup") is not None:
+                changes["setup"] = None  # no longer a routine: no checklist
+            return
+        current = task.get("setup") if isinstance(task.get("setup"), dict) else None
+        setup = current or checklist.prefill(merged, self.app.registry)
+        if "plan" in changes:
+            setup = {**setup, "acts": checklist.acting_apps(merged, self.app.registry)}
+        if isinstance(data.get("setup"), dict):
+            setup = checklist.merge(setup, data["setup"], self.app.registry, self.now_iso())
+        if setup != current:
+            changes["setup"] = setup
 
     async def delete(self, task_id: str) -> dict:
         await self._require(task_id)
@@ -651,6 +802,8 @@ class TaskService(Service):
                 validate_code((task.get("script") or {}).get("code"))
             except ScriptInvalid as exc:
                 raise TaskConflict(str(exc)) from exc
+        if checklist.applies(task) and not isinstance(task.get("setup"), dict):  # approved before it had one (#161)
+            await self._set(task_id, {"setup": checklist.prefill(task, self.app.registry)})
         schedule = task.get("schedule") or {}
         kind = schedule.get("type")
         now = self.now()
@@ -706,7 +859,8 @@ class TaskService(Service):
         task = await self._require(task_id)
         now = self.now_iso()
         keep = ("name", "description", "priority", "task_type", "schedule", "original_prompt", "source",
-                "assignee", "model", "browser_profile", "deliver_to", "original_context", "chat_history")
+                "assignee", "model", "browser_profile", "memory_scope", "deliver_to", "original_context",
+                "chat_history", "setup")
         fields = {k: task.get(k) for k in keep}
         fields.update(status="planning", enabled=True, plan=[], clarifying_questions=[], error=None,
                       created_at=now, updated_at=now)
@@ -877,7 +1031,8 @@ class TaskService(Service):
         fields: dict[str, Any] = {"retry_of": run_id}
         if checkpoint:
             problem = run.get("error") or "the run was cancelled before it finished"
-            fields["messages"] = [*checkpoint, {"role": "user", "content": RETRY_NOTE.format(error=problem)}]
+            note = PAUSE_RESUMED_NOTE if problem == PAUSED_NOTE else RETRY_NOTE.format(error=problem)
+            fields["messages"] = [*checkpoint, {"role": "user", "content": note}]
             fields["memory_sources"] = run.get("memory_sources")  # the transcript it continues had these in mind
             fields["sources"] = run.get("sources")  # and had read these
             if trying:
@@ -1098,6 +1253,11 @@ class TaskService(Service):
         """Consumer of the ``source.items`` domain event (docs/API.md section 16), for every origin."""
         if not isinstance(data, dict):
             return []
+        if not self.app.stopped:  # an email to the Sentient address becomes a task (#159)
+            try:
+                await self.inbox.handle(data)
+            except Exception:
+                log.exception("tasks by email failed")
         source = str(data.get("source") or "")
         event = str(data.get("event") or "")
         run_ids: list[str] = []
@@ -1182,6 +1342,7 @@ class TaskService(Service):
             self._catch_up_reason = "resume"  # missed runs are caught up on the first tick after Resume
             return run_ids
         await self._catch_up()
+        run_ids += await self.retry_skipped()
         for task_id in await self.repo.claim_due(self.now_iso()):
             task = await self.repo.get_task(task_id)
             if task is None:
@@ -1271,14 +1432,22 @@ class TaskService(Service):
         return report
 
     async def recover_interrupted(self) -> dict:
-        """Resume runs left 'processing' by a crash or restart (or fail them), and restart planning."""
+        """Resume runs left 'processing' by a crash or restart (or fail them), and restart planning.
+
+        A paused task's work is held instead (#304): its interrupted runs and the runs waiting on its approval end
+        ``cancelled`` with ``PAUSED_NOTE``, and a task left planning keeps waiting with ``PLAN_PAUSED_NOTE``. Nothing
+        calls the model for it until the user resumes the task (``update``, ``_carry_on``)."""
         cfg = self.app.config.tasks
-        report: dict[str, list[str]] = {"resumed": [], "failed": [], "replanned": []}
+        report: dict[str, list[str]] = {"resumed": [], "failed": [], "replanned": [], "held": []}
         for run in await self.repo.processing_runs():
             if run["id"] in self._runs:
                 continue
             task = await self.repo.get_task(run["task_id"])
             if task is None:
+                continue
+            if not task["enabled"] and task.get("task_type") != "swarm" and not await self._fixed_call_started(task, run):
+                if await self._hold_run(task, run):
+                    report["held"].append(run["id"])
                 continue
             resumes = int(run.get("resume_count") or 0)
             if cfg.resume_interrupted_runs and task.get("task_type") != "swarm" and resumes < MAX_RESUMES:
@@ -1300,6 +1469,12 @@ class TaskService(Service):
                     "Task interrupted", "run_failed",
                 )
                 report["failed"].append(run["id"])
+        for run in await self.repo.waiting_runs():  # an approval a paused task waits on would only expire
+            if not self._waits_on_approval(run):
+                continue  # a question to the user keeps waiting for the answer
+            task = await self.repo.get_task(run["task_id"])
+            if task is not None and not task["enabled"] and await self._hold_run(task, run):
+                report["held"].append(run["id"])
         # tasks left 'processing' with no live run: claimed right before a crash (no run row), or
         # stopped after the run finished but before the task was settled
         for task in await self.repo.list_tasks("status = 'processing'"):
@@ -1320,14 +1495,134 @@ class TaskService(Service):
         for task in await self.repo.list_tasks("status = 'planning'"):
             if self._job_running("plan", task["id"]) or self._job_running("swarm", task["id"]):
                 continue  # being planned right now (resume after Stop everything)
-            if task.get("task_type") == "swarm":
-                self._spawn(self._orchestrate_swarm(task["id"]), f"swarm:{task['id']}")
-            elif task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions"):
-                self._spawn(self._plan_job(task["id"]), f"plan:{task['id']}")
-            else:
-                self._spawn(self._refine_and_plan(task["id"]), f"plan:{task['id']}")
+            if not task["enabled"]:
+                if task.get("error") != PLAN_PAUSED_NOTE:
+                    await self._set(task["id"], {"error": PLAN_PAUSED_NOTE})
+                    await self.publish(task["id"])
+                report["held"].append(task["id"])
+                continue
+            self._plan_again(task)
             report["replanned"].append(task["id"])
         return report
+
+    def _plan_again(self, task: dict) -> None:
+        """Start planning a task left ``planning`` with no planner working on it."""
+        if task.get("task_type") == "swarm":
+            self._spawn(self._orchestrate_swarm(task["id"]), f"swarm:{task['id']}")
+        elif (task.get("schedule") or task.get("chat_history") or task.get("clarifying_questions")
+              or email_inbox.is_email_task(task)  # a task by email is never refined (#159)
+              or mcp_tasks.is_mcp_task(task)):  # nor one an MCP app asked for (#443)
+            self._spawn(self._plan_job(task["id"]), f"plan:{task['id']}")
+        else:
+            self._spawn(self._refine_and_plan(task["id"]), f"plan:{task['id']}")
+
+    @staticmethod
+    def _waits_on_approval(run: dict) -> bool:
+        """A run waiting on an approval (an Ask rule or a held call), not on a question to the user."""
+        pending = run.get("pending_question") or {}
+        return bool(pending.get("approval") or pending.get("untrusted_call"))
+
+    async def _pause_work(self, task_id: str) -> None:
+        """The user paused the task (#408): a run working right now stops at its next safe point, before its next
+        model or tool call, never in the middle of one (``holding``, ``_held_by_pause``), and a run waiting on an
+        approval is held at once. Both end like work a restart held (#304). A swarm's run, and a one-call run whose
+        call already started, can't stop part-way: they finish, and their log says so."""
+        task = await self.repo.get_task(task_id)
+        if task is None:
+            return
+        for run in await self.repo.processing_runs(task_id):
+            live = self._runs.get(run["id"])
+            if live is None or live.done():
+                continue  # not running in this session: the next start holds it (recover_interrupted)
+            if task.get("task_type") == "swarm":
+                await self.progress(task_id, run["id"], {"type": "info", "content": SWARM_FINISHES_NOTE})
+            elif await self._fixed_call_started(task, run):
+                await self.progress(task_id, run["id"], {"type": "info", "content": CALL_FINISHES_NOTE})
+            else:
+                self._holding.add(run["id"])
+        for run in await self.repo.waiting_runs(task_id):
+            if self._waits_on_approval(run):  # a question to the user keeps waiting, as after a restart
+                await self._hold_run(task, run)
+
+    async def _held_by_pause(self, task_id: str, run_id: str) -> None:
+        """A run stopped at a safe point because its task was paused (#408): it is held with ``PAUSED_NOTE`` and
+        carries on from its transcript when the task is resumed. Resumed meanwhile: it carries on now."""
+        self._holding.discard(run_id)
+        task, run = await self.repo.get_task(task_id), await self.repo.get_run(run_id)
+        if task is None or run is None or not await self._hold_run(task, run):
+            return
+        if (await self.repo.get_task(task_id) or {}).get("enabled"):
+            await self._carry_on(task_id, await self.repo.held_runs(task_id, PAUSED_NOTE))
+
+    async def _fixed_call_started(self, task: dict, run: dict) -> bool:
+        """An approved one-call run that already started its call: resuming it only ends it, never repeats the call,
+        so it is not held (a carry-on would start it afresh)."""
+        if executor.fixed_call_of(task) is None:
+            return False
+        return any((e.get("message") or {}).get("type") == "tool_call" for e in await self.repo.events(run["id"]))
+
+    async def _hold_run(self, task: dict, run: dict) -> bool:
+        """End a paused task's interrupted (or approval-waiting) run without resuming it (#304).
+
+        It ends ``cancelled`` with ``PAUSED_NOTE``; a held call's result says it was not made, so the run asks again
+        when it carries on. Resuming the task continues it from its checkpoint (``_carry_on``). False when the run
+        changed meanwhile."""
+        task_id, run_id = task["id"], run["id"]
+        if not await self.repo.finish_run(
+            run_id, "cancelled", error=PAUSED_NOTE, now=self.now_iso(), from_statuses=(run["status"],)
+        ):
+            return False
+        if run["status"] == "waiting_for_user":
+            call_id = (run.get("pending_question") or {}).get("tool_call_id")
+            messages = ask.fill_result(run.get("messages") or [], call_id, ask.paused_content())
+            await self.repo.update_run(run_id, {"messages": messages})
+            await self._resolve_question_notifications(run_id, "cancelled")
+        await self.progress(task_id, run_id, {"type": "info", "content": PAUSED_NOTE})
+        if not run.get("dry_run"):  # a try run never settles the task (#142)
+            await self._settle_held(task_id)
+        await self.publish(task_id)
+        return True
+
+    async def _settle_held(self, task_id: str) -> None:
+        """A paused task whose run was held waits for Resume with the note: a routine is ``active`` again, anything
+        else ``pending`` with nothing scheduled (Resume carries the held run on instead of starting a new one)."""
+        if await self.repo.processing_runs(task_id, real=True) or await self.repo.waiting_runs(task_id, real=True):
+            await self._after_run(task_id, "cancelled", None)  # another run still holds the task
+            return
+        task = await self.repo.get_task(task_id)
+        if task is None or task["status"] not in BUSY:
+            return
+        schedule = task.get("schedule") or {}
+        kind = schedule.get("type")
+        if kind == "recurring":
+            fields: dict[str, Any] = {"status": "active", "next_execution_at": iso(calculate_next_run(schedule, self.now()))}
+        elif kind == "triggered":
+            fields = {"status": "active", "next_execution_at": None}
+        else:
+            fields = {"status": "pending", "next_execution_at": None}
+        await self._set(task_id, {**fields, "error": PAUSED_NOTE})
+
+    async def _carry_on(self, task_id: str, held: list[dict]) -> None:
+        """The user resumed a paused task: runs a restart held carry on from their checkpoint, and a task left
+        planning is planned (#304)."""
+        for run in held:
+            try:
+                await self.retry_run(task_id, run["id"])
+            except (TaskConflict, TaskNotFound) as exc:
+                log.info("could not carry on held run %s of task %s: %s", run["id"], task_id, exc)
+        task = await self.repo.get_task(task_id)
+        if task is None:
+            return
+        if task.get("error") == PAUSED_NOTE:  # nothing could carry on: a waiting one-off starts again instead
+            fields: dict[str, Any] = {"error": None}
+            if task["status"] == "pending" and not task.get("next_execution_at"):
+                fields["next_execution_at"] = iso(parse_run_at(task.get("schedule") or {}) or self.now())
+            await self._set(task_id, fields)
+        if task["status"] == "planning" and not (self._job_running("plan", task_id) or self._job_running("swarm", task_id)):
+            if task.get("error") == PLAN_PAUSED_NOTE:
+                await self._set(task_id, {"error": None})
+            self._plan_again(task)
+        await self.publish(task_id)
 
     # ------------------------------------------------------------------ planning pipeline
     async def _refine(self, prompt: str) -> dict:
@@ -1421,8 +1716,11 @@ class TaskService(Service):
                 "Schedule (handled automatically by the scheduler; plan a single occurrence):\n"
                 + json.dumps(schedule, ensure_ascii=False)
             )
+        email = context.pop("email", None) if email_inbox.is_email_task(task) else None
         if set(context) - {"source"}:
             parts.append("Context:\n" + json.dumps(context, indent=2, ensure_ascii=False, default=str)[:12000])
+        if isinstance(email, dict):  # the email a task by email was made from: outside content (#159)
+            parts.append(email_inbox.planner_part(email, mark_outside))
         if answered:
             parts.append("Answers to your clarifying questions:\n" + "\n".join(
                 f"- Q: {q.get('text')}\n  A: {q.get('answer')}" for q in answered
@@ -1448,6 +1746,8 @@ class TaskService(Service):
         if current is None or current["status"] != "planning":
             return  # deleted or changed while the model was thinking
         name = str(data.get("name") or "").strip()[:200] if not is_change else ""
+        if email_inbox.is_email_task(task) or mcp_tasks.is_mcp_task(task):
+            name = ""  # a task from outside content keeps the name code gave it, also in notifications
         display_name = name or task.get("name") or "Untitled task"
 
         if new_questions and (not answered or not plan):
@@ -1480,6 +1780,15 @@ class TaskService(Service):
                 # a watch job that would check only once is almost never what was meant
                 sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": 60}, tz)
             fields["schedule"] = sched
+        if script is not None or no_script:
+            repaired = self._web_watch_schedule(
+                fields.get("schedule") or schedule, script, script_tools, task, data.get("schedule"), tz
+            )
+            if repaired is not None:
+                fields["schedule"] = repaired
+        planned = {**task, **fields}
+        if checklist.applies(planned):  # a routine's checklist, filled in from the plan for the user to confirm (#161)
+            fields["setup"] = checklist.prefill(planned, self.app.registry, task.get("setup"))
         if is_change:
             fields["chat_history"] = [*history, {
                 "role": "assistant",
@@ -1493,12 +1802,25 @@ class TaskService(Service):
                 fields["description"] = str(data["description"]).strip()
         if not await self.repo.update_task_if_status(task_id, {"planning"}, {**fields, "updated_at": self.now_iso()}):
             return  # declined, archived or edited while the planner was running
-        if auto_approve or not cfg.tasks.require_plan_approval:
+        # a plan written from someone's email, or from an MCP app's prompt, always waits for the
+        # user's approval (#159, #443)
+        if (auto_approve or not cfg.tasks.require_plan_approval) and not email_inbox.is_email_task(task) \
+                and not mcp_tasks.is_mcp_task(task):
             await self.approve(task_id)
             return
         await self.publish(task_id)
         short = display_name[:50] + ("..." if len(display_name) > 50 else "")
-        await self._notify(task, f"I've created a new plan for you: '{short}'", "Plan ready for approval", "approval_needed")
+        message = f"I've created a new plan for you: '{short}'"
+        if mcp_tasks.is_mcp_task(task):
+            # the note names the app that asked for the task, framed as a name like the
+            # approval notes do: the name is the app's own text, cleaned where it came in,
+            # and, the note being rendered as Markdown, put in a code span so Markdown
+            # cannot parse it into a link. The plan's title is the app's prompt word for
+            # word, so it goes in a code span too
+            who = (task.get("original_context") or {}).get("app")
+            framed = framed_app_name(who, capital=False)
+            message = f"I've created a new plan for {framed}: {code_span(short)}"
+        await self._notify(task, message, "Plan ready for approval", "approval_needed")
 
     async def _planned_script(
         self, task: dict, data: dict, system: str, parts: list[str]
@@ -1552,21 +1874,50 @@ class TaskService(Service):
             fixed = {**fixed, "schedule": data["schedule"]}
         return None, fixed, tools_named("\n".join(codes))
 
+    def _web_watch_schedule(
+        self, schedule: dict, script: dict | None, script_tools: list[str] | None, task: dict, proposed: Any, tz: str,
+    ) -> dict | None:
+        """A recurring schedule for a web check stuck on a trigger it has nothing to do with (#389), else None.
+
+        The check reads a page, a search or the news, so it must run on a timer to notice anything; a ``triggered``
+        schedule (a small model's guess for "tell me when a new event is added") would only run it when, say, a
+        calendar event arrives. A trigger the script reads, or one the request names, stays. The repair uses the
+        interval the user said, else the planner's daily or weekly schedule, else every hour."""
+        if (schedule or {}).get("type") != "triggered":
+            return None
+        code = str((script or {}).get("code") or "")
+        tools = tools_named(code) if script is not None else list(script_tools or [])
+        request = self._script_request(task)
+        if not scripts.polls_the_web(tools) or scripts.trigger_is_real(schedule, code, request):
+            return None
+        minutes = spoken_interval(request)
+        planned = normalize_schedule(proposed, tz) if isinstance(proposed, dict) and proposed else None
+        if minutes is not None:
+            sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": minutes}, tz)
+        elif planned is not None and planned["type"] == "recurring" and planned["frequency"] != "interval":
+            sched = spoken_window(planned, request)  # "every morning": the planner's daily or weekly schedule
+        else:  # an interval nobody asked for (small models pick 5 minutes) or none: every hour
+            sched = normalize_schedule({"type": "recurring", "frequency": "interval", "interval_minutes": 60}, tz)
+        log.info("web check for task %s had a %s trigger it never uses, checking on a timer instead",
+                 task["id"], schedule.get("source") or "blank")
+        return sched
+
     @staticmethod
-    def _script_request(task: dict) -> str:
+    def _script_request(task: dict, *, separate: bool = False) -> str | list[str]:
         """What the user asked for, for the planner's script checks (#375): the request, what they said in the task's
         chat since and their answers to clarifying questions."""
         said = [str(task.get("original_prompt") or task.get("description") or task.get("name") or "")]
+        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
         said += [str(m.get("content") or "") for m in task.get("chat_history") or []
                  if isinstance(m, dict) and m.get("role") == "user"]
-        said += [str(q.get("answer") or "") for q in task.get("clarifying_questions") or [] if isinstance(q, dict)]
-        return "\n".join(s for s in said if s.strip())
+        said = [s for s in said if s.strip()]
+        return said if separate else "\n".join(said)
 
     @staticmethod
     def _default_condition(task: dict, script: dict) -> dict:
         """A page watch the planner left on plain ``changed`` becomes ``noteworthy`` (#298, ``scripts.planner_default``)."""
         previous = task.get("script") if task.get("task_type") == "script" else None
-        return scripts.planner_default(script, TaskService._script_request(task), previous)
+        return scripts.planner_default(script, TaskService._script_request(task, separate=True), previous)
 
     def _no_script_plan(self, task: dict, script_tools: list[str], planned: list[dict]) -> list[dict]:
         """The plan of an AI-run task that replaces a rejected check script (#310): the user's own request as the step,
@@ -1685,19 +2036,34 @@ class TaskService(Service):
                 )
             except Exception:
                 log.exception("could not record the crash of task run %s", run_id)
+        finally:
+            self._holding.discard(run_id)
 
     async def _execute_locked(self, task_id: str, run_id: str, *, resume: bool, answered: bool = False) -> None:
         run = await self.repo.get_run(run_id)
         task = await self.repo.get_task(task_id)
         if run is None or task is None or run["status"] != "processing":
             return
+        if self.holding(run_id):  # paused while it waited for a free slot (#408)
+            await self._held_by_pause(task_id, run_id)
+            return
+        if not resume and not answered and (reason := await self._missing_source(task, run.get("trigger_data"))):
+            await self._source_missing(task, run, reason)  # what it reads isn't there: its checklist decides (#161)
+            return
         cfg = self.app.config.tasks
         opening = "Resuming the run after a restart." if resume else "Executor has picked up the task and is starting execution."
         if executor.is_first_retry_attempt(run):
+            retried = await self.repo.get_run(run["retry_of"]) or {}
             opening = (
                 "Retrying the failed run, continuing from where it stopped." if resume
+                else "Trying again now: what it reads wasn't there last time." if retried.get("status") == "skipped"
                 else "Retrying the failed run from the beginning."
             )
+            if retried.get("error") == PAUSED_NOTE:  # #304
+                opening = (
+                    "The task was resumed. Carrying on from where it stopped." if resume
+                    else "The task was resumed. Starting the run again from the beginning."
+                )
         if answered:
             opening = "Got your answer. Carrying on with the task."
         elif run.get("dry_run") and not resume:
@@ -1720,6 +2086,9 @@ class TaskService(Service):
         except RunPaused as paused:
             await self._pause_run(task_id, run_id, paused.question)
             return
+        except RunHeld:  # the task was paused: stopped at a safe point (#408)
+            await self._held_by_pause(task_id, run_id)
+            return
         except TimeoutError:
             status, error = "error", f"Stopped after {cfg.run_timeout_minutes} minutes without finishing. {limits.LIMITS_HINT}"
         except RunFailed as exc:
@@ -1736,6 +2105,112 @@ class TaskService(Service):
         ):
             status, error = "completed_with_errors", needs
         await self._finish_run(task_id, run_id, status, error=error, loop_result=loop_result, aggregated=aggregated)
+
+    # ------------------------------------------------------------------ a missing source (#161)
+    async def _missing_source(self, task: dict, trigger_data: Any = None) -> str | None:
+        """Why the routine's source isn't there (its page doesn't answer, its app isn't connected, its folder is
+        gone), or None when it is, or when there is nothing to check. Checked in code before a run or check starts.
+        An event from the app the task reads is proof enough that the app is there."""
+        if not checklist.applies(task):
+            return None
+        source = ((task.get("setup") or {}).get("source") or {}) if isinstance(task.get("setup"), dict) else {}
+        schedule = task.get("schedule") or {}
+        if trigger_data and source.get("kind") == "app" and source.get("target") == schedule.get("source"):
+            return None
+        try:
+            return await checklist.check_source(self.app, task)
+        except Exception:
+            log.exception("could not check the source of task %s", task.get("id"))
+            return None
+
+    async def _skipped_tries(self, run: dict) -> int:
+        """How many runs in a row, this one included, were skipped for a missing source and tried again."""
+        tries, current, seen = 1, run, {run["id"]}
+        while current.get("retry_of") and current["retry_of"] not in seen:
+            previous = await self.repo.get_run(current["retry_of"])
+            if previous is None or previous.get("status") != "skipped":
+                break
+            tries, current = tries + 1, previous
+            seen.add(previous["id"])
+        return tries
+
+    def _clock_time(self, when: datetime, task: dict) -> str:
+        tz = get_tz((task.get("schedule") or {}).get("timezone") or self.tz_name())
+        return when.astimezone(tz).strftime("%H:%M")
+
+    def _missing_policy(self, task: dict) -> str:
+        setup = task.get("setup") if isinstance(task.get("setup"), dict) else {}
+        policy = setup.get("if_missing")
+        return policy if policy in checklist.IF_MISSING else checklist.DEFAULT_IF_MISSING
+
+    async def _tell_missing(self, task: dict, error: str, reason: str, policy: str, extra: dict | None = None) -> None:
+        name = task.get("name") or "Untitled task"
+        short = name[:60] + ("..." if len(name) > 60 else "")
+        why = error.removeprefix("Skipped: ")
+        await self._notify(task, f"'{name}' didn't run. {why[:1].upper()}{why[1:]}", f"Skipped: {short}",
+                           "source_missing", {"reason": reason, "if_missing": policy, **(extra or {})})
+
+    async def _source_missing(self, task: dict, run: dict, reason: str) -> None:
+        """The run's source isn't there: the run ends ``skipped`` and the checklist's ``if_missing`` decides the rest
+        (#161). ``skip``: nothing more. ``notify``: the user is told. ``retry``: it is tried again
+        ``tasks.source_retry_minutes`` later, at most ``tasks.source_retries`` times, then the user is told. A try
+        run fails instead, saying what a real run would do."""
+        task_id, run_id = task["id"], run["id"]
+        policy = self._missing_policy(task)
+        if run.get("dry_run"):
+            error = (f"{reason[:1].upper()}{reason[1:]}, so a real run would {checklist.missing_phrase(policy)}. "
+                     "Nothing was sent, changed or run.")
+            await self._finish_run(task_id, run_id, "error", error=error)
+            return
+        cfg = self.app.config.tasks
+        retry_at: str | None = None
+        tell = policy == "notify"
+        error = f"Skipped: {reason}."
+        if policy == "retry":
+            tries = await self._skipped_tries(run)
+            if tries <= cfg.source_retries:
+                at = self.now() + timedelta(minutes=cfg.source_retry_minutes)
+                retry_at = iso(at)
+                error = f"Skipped: {reason}. Trying again at {self._clock_time(at, task)} (try {tries} of {cfg.source_retries})."
+            else:
+                tell = True
+                error = f"Skipped: {reason}. It tried again {cfg.source_retries} times, so it waits for its next run."
+        if not await self.repo.finish_run(run_id, "skipped", error=error, now=self.now_iso()):
+            return  # cancelled meanwhile
+        if retry_at:
+            await self.repo.update_run(run_id, {"retry_at": retry_at})
+        await self.progress(task_id, run_id, {"type": "info", "content": error})
+        await self._after_run(task_id, "skipped", error)
+        await self.publish(task_id)
+        if tell:
+            await self._tell_missing(task, error, reason, policy, {"run_id": run_id})
+
+    async def retry_skipped(self) -> list[str]:
+        """Start the runs skipped for a missing source whose time to try again has come (every scheduler tick, #161).
+        A retry is dropped when the task was paused, or when a newer run of a scheduled task came first."""
+        started: list[str] = []
+        for run in await self.repo.retries_due(self.now_iso()):
+            if not await self.repo.claim_retry(run["id"]):
+                continue
+            task = await self.repo.get_task(run["task_id"])
+            if task is None or not task["enabled"] or task["status"] not in {"active", "processing", "waiting_for_user"}:
+                continue
+            triggered = (task.get("schedule") or {}).get("type") == "triggered"
+            latest = await self.repo.latest_run(task["id"])
+            if not triggered and latest is not None and latest["id"] != run["id"]:
+                continue  # its next scheduled run already came
+            if task.get("task_type") != "single" or not self._runnable(task):
+                continue
+            now = self.now_iso()
+            new_id = await self.repo.insert_run(
+                task["id"], now=now, plan=task.get("plan") or [], trigger_data=run.get("trigger_data")
+            )
+            await self.repo.update_run(new_id, {"retry_of": run["id"]})
+            await self._set(task["id"], {"status": "processing", "last_execution_at": now, "error": None})
+            self._dispatch(task["id"], new_id)
+            await self.publish(task["id"])
+            started.append(new_id)
+        return started
 
     async def _settle_checks(self, task_id: str, run_id: str, final: str) -> str | None:
         """Settle a finished run's outcome checks (#165): save each failure that still stands with its plain sentence,
@@ -1972,6 +2447,9 @@ class TaskService(Service):
         script = dict(task.get("script") or {})
         code = str(script.get("code") or "")
         name = task.get("name") or "Untitled task"
+        if reason := await self._missing_source(task, trigger_data):
+            await self._check_source_missing(task, script, code, reason)  # its checklist decides (#161)
+            return
         outcome = await self._sandbox_run(code, trigger_data)
         now = self.now_iso()
         previous_error = script.get("last_error")
@@ -2025,6 +2503,44 @@ class TaskService(Service):
                 await self._notify(task, message, name, "script_alert", {"result": value})
         await self._after_run(task_id, "completed", None)
         await self.publish(task_id)
+
+    async def _check_source_missing(self, task: dict, script: dict, code: str, reason: str) -> None:
+        """A check script's page (or app, or folder) isn't there (#161): the check is ``skipped`` in its history, and
+        the checklist's ``if_missing`` decides the rest, as for a run: nothing more, a notification, or an earlier
+        check (``tasks.source_retry_minutes`` from now, at most ``tasks.source_retries`` in a row, then a notice). A
+        triggered check can't be moved up, so "try again later" tells the user instead."""
+        task_id = task["id"]
+        policy = self._missing_policy(task)
+        if policy == "retry" and (task.get("schedule") or {}).get("type") != "recurring":
+            policy = "notify"  # a triggered check has no time to move up: its event is gone, so the user is told
+        cfg = self.app.config.tasks
+        tries = 1
+        for check in reversed([c for c in script.get("checks") or [] if isinstance(c, dict)]):
+            if check.get("outcome") != "skipped":
+                break
+            tries += int(check.get("count") or 1)
+        tell = policy == "notify"
+        error = f"Skipped: {reason}."
+        sooner: datetime | None = None
+        if policy == "retry":
+            if tries <= cfg.source_retries:
+                sooner = self.now() + timedelta(minutes=cfg.source_retry_minutes)
+                error = f"Skipped: {reason}. Checking again at {self._clock_time(sooner, task)} (try {tries} of {cfg.source_retries})."
+            else:
+                tell = True
+                error = f"Skipped: {reason}. It checked again {cfg.source_retries} times, so it waits for its next check."
+        now = self.now_iso()
+        checks = scripts.add_check(script.get("checks"), "skipped", now, error)
+        await self._save_script_state(task_id, code, {"last_run_at": now, "checks": checks})
+        await self._after_run(task_id, "completed", None)
+        if sooner is not None:
+            current = await self.repo.get_task(task_id) or {}
+            due = parse_iso(current.get("next_execution_at"))
+            if current.get("status") == "active" and due is not None and sooner < due:
+                await self._set(task_id, {"next_execution_at": iso(sooner)})
+        await self.publish(task_id)
+        if tell:
+            await self._tell_missing(task, error, reason, policy)
 
     @staticmethod
     def _check_outcome(condition: str, act: bool, value: Any, previous: Any) -> tuple[str, str]:

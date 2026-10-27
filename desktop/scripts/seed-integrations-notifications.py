@@ -162,6 +162,7 @@ async def suggestion_row(app: SentientApp, note: dict, payload: dict, when: str,
 
 # ----------------------------------------------------------------------------- seed
 async def seed() -> None:
+    seed_safety.check_home(HOME)  # before the database is deleted, also with --keep-live
     HOME.mkdir(parents=True, exist_ok=True)
     if not KEEP_DB:
         for suffix in ("", "-wal", "-shm"):

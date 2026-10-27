@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS channel_chats (
     paired_at  TEXT NOT NULL,
     deliver    INTEGER NOT NULL DEFAULT 1,
     session_id TEXT,
+    is_group   INTEGER NOT NULL DEFAULT 0,       -- a group chat (ADR 0029): only owner_id talks to Sentient there
+    owner_id   TEXT,                             -- the person who paired a group chat
     PRIMARY KEY (channel, chat_id)
 );
 
@@ -50,7 +52,7 @@ CREATE TABLE IF NOT EXISTS channel_deliveries (
     chat_label TEXT,
     title      TEXT NOT NULL,                 -- the message's first line, short
     what       TEXT NOT NULL,                 -- task | question | approval | plan | brief | suggestion | subagent | other
-    reason     TEXT NOT NULL,                 -- chosen (the task picked this chat) | default (the chat's delivery is on) | chat
+    reason     TEXT NOT NULL,                 -- chosen (the task picked this chat) | default (the chat's delivery is on) | chat | reminder | reminder_copy
     status     TEXT NOT NULL,                 -- delivered | failed
     error      TEXT,
     ref        TEXT,

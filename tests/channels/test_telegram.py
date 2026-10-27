@@ -521,7 +521,8 @@ async def test_polling_backoff_recovery_and_revoked_token(tg):
     ]
     statuses: list[str] = []
     async with app.bus.subscribe() as q:
-        await asyncio.wait_for(ch.run(), 5)
+        # the loop ends itself on the 401; the ceiling only matters if it never does (#420)
+        await asyncio.wait_for(ch.run(), 30)
         while not q.empty():
             e = q.get_nowait()
             if e["type"] == "channel.updated":

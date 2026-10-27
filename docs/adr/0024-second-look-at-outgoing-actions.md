@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-13
+- **Amended by:** [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md) (marked text inside a user turn is outside content),
+  [ADR 0031](0031-recipients-first-and-a-tool-less-reader.md) (a name never vouches for an address outside content wrote; reply destinations come from the headers and are checked)
 
 ## Context
 
@@ -20,7 +22,8 @@ Before a call that can send data out (`rules.sends_out`) runs, the agent loop ta
 
 - **Deterministic, always:** every recipient (email address or phone number in a recipient field) must be in the
   user's own words, in trusted records (Sentient's own tool results, Google Contacts, saved memories) or belong to a
-  name the user gave; every amount must be one the user gave; after outside content, a link must not come from that
+  name the user gave (marked outside content inside a user turn, such as a group member's message, is not the user's
+  words, [ADR 0029](0029-group-chats-and-trusting-a-chat-again.md)); every amount must be one the user gave; after outside content, a link must not come from that
   content. Not run on code (`exec`).
 - **Model, only for `send` and `exec`:** when the call would otherwise run without a question, or the run read
   outside content, one short, tool-free `fast`-role prompt sees only the user's words and the action's arguments,

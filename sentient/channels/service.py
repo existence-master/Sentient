@@ -36,6 +36,7 @@ from sentient.channels.formatting import summary_text
 from sentient.channels.store import ChannelStore
 from sentient.channels.telegram import TelegramChannel
 from sentient.channels.whatsapp import WhatsAppChannel
+from sentient.memory.forget import forget as forget_learned
 from sentient.proactivity.brief import DailyBrief
 from sentient.services import Service
 from sentient.tasks.delivery import WHATSAPP_SELF
@@ -46,7 +47,7 @@ log = logging.getLogger(__name__)
 _UNSET: Any = object()
 TASK_RESULT_EVENTS = {
     "run_completed", "run_failed", "planning_failed", "clarification_needed", "disabled",
-    "script_alert", "script_failed", "script_recovered", "handed_off",
+    "script_alert", "script_failed", "script_recovered", "handed_off", "source_missing",
 }
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
@@ -117,6 +118,7 @@ class ChannelService(Service):
         }
         # notification id -> [(channel, chat_id, message_id)] for messages with action buttons
         self._delivered: dict[str, list[tuple[str, str, str]]] = {}
+        self._approval_notes: dict[str, str] = {}  # approval_id -> the notification that carried it (#443)
         self._subagents_sent: set[tuple[str, str, str]] = set()
         self._rule_cards: dict[str, tuple[str, str, str]] = {}  # proposal id -> (channel, chat_id, message_id)
         # approval requests held back while the person is in the app (#139): notification id -> notification
@@ -242,7 +244,9 @@ class ChannelService(Service):
         await self.publish_channel(ch.id)
         return await self.channel_dict(ch.id)
 
-    async def disconnect(self, channel_id: str) -> dict:
+    async def disconnect(self, channel_id: str, *, forget: bool = False) -> dict:
+        """Stop a messaging app. ``forget``: also forget what Sentient learned there (#153): its chats and their
+        messages, summaries and facts; the result then carries ``forgotten``. Paired chats stay paired."""
         ch = self.get(channel_id)
         if not ch.uses_token:
             await ch.unlink()  # type: ignore[attr-defined]
@@ -252,8 +256,10 @@ class ChannelService(Service):
             keychain.delete_secret(ch.secret_name)
         await self.store.clear_code(channel_id)
         await self.store.set_state(channel_id, enabled=0, status="disconnected", error=None, account_label=None)
+        forgotten = await forget_learned(self.app, f"channel:{channel_id}", ch.display_name) if forget else None
         await self.publish_channel(channel_id)
-        return await self.channel_dict(channel_id)
+        out = await self.channel_dict(channel_id)
+        return {**out, "forgotten": forgotten} if forgotten is not None else out
 
     async def create_pairing(self, channel_id: str) -> dict:
         ch = self.get(channel_id)
@@ -364,17 +370,24 @@ class ChannelService(Service):
             return "desktop"
 
     async def _reminder_delivery(self, note: dict) -> str | list[dict]:
-        """The paired chat a timer or reminder was set in, or "desktop" when it was set anywhere else."""
-        session_id = (note.get("payload") or {}).get("session_id")
+        """The paired chat a timer, reminder or alarm was set in. One set anywhere else stays on the desktop, except
+        that with ``channels.deliver_reminders`` a reminder or alarm also goes to the delivery chats ("default", #359)."""
+        payload = note.get("payload") or {}
+        # one set in a messaging chat that is no longer paired never goes to other chats
+        elsewhere = "default" if (
+            self.app.config.channels.deliver_reminders and payload.get("event") in {"reminder", "alarm"}
+            and payload.get("channel") not in self.channels
+        ) else "desktop"
+        session_id = payload.get("session_id")
         if not session_id:
-            return "desktop"
+            return elsewhere
         try:
             found = await self.store.chat_for_session(str(session_id))
-        except Exception:
+        except Exception:  # fail closed
             log.exception("could not find the chat of a reminder")
             return "desktop"
         if found is None:
-            return "desktop"
+            return elsewhere
         channel, chat = found
         return [{"channel": channel, "chat_id": chat["chat_id"]}]
 
@@ -442,14 +455,28 @@ class ChannelService(Service):
             return f"**{title or 'Your Daily Brief'}**\n{DailyBrief.as_text(brief, links=True)}", None
         if kind == "reminder":
             return f"**{title or 'Reminder'}**\n{message}", None
+        if kind == "approval":
+            # a chat turn's approval, raised where no chat surface could show it (an MCP app's turn,
+            # #443): Allow and Deny answer the same approval the app would have shown
+            approval_id = payload.get("approval_id")
+            if not approval_id or payload.get("status"):
+                return None
+            md = f"**{title or 'Approval needed'}**\n{message}"
+            return md, [[
+                Button("Allow", f"na:a:{approval_id}", "success"),
+                Button("Deny", f"na:d:{approval_id}", "danger"),
+            ]]
         if payload.get("subagent_id") and cfg.deliver_subagents:
             return f"**{title or 'Background work finished'}**\n{message}", None
         return None
 
     @staticmethod
     def is_approval(note: dict) -> bool:
-        """A task's approval request (#139, ADR 0018), as opposed to an ordinary question."""
+        """An approval request (#139, ADR 0018), as opposed to an ordinary question: a task's, or a
+        chat turn's own approval note (kind "approval", #443)."""
         payload = note.get("payload") or {}
+        if note.get("kind") == "approval":
+            return bool(payload.get("approval_id"))
         return note.get("kind") == "task" and payload.get("event") == "question" and isinstance(payload.get("approval"), dict)
 
     @staticmethod
@@ -497,7 +524,17 @@ class ChannelService(Service):
         sent = 0
         for nid, note in list(self._held.items()):
             self._held.pop(nid, None)
-            run_id = str((note.get("payload") or {}).get("run_id") or "")
+            payload = note.get("payload") or {}
+            if note.get("kind") == "approval":
+                # a chat turn's own approval (#443) waits on the broker, not on a task run: it is
+                # still deliverable only while the broker still holds it unanswered (the held copy's
+                # payload never gains a status, so the broker is the source of truth)
+                approval_id = str(payload.get("approval_id") or "")
+                broker = getattr(self.app, "approvals", None)
+                if approval_id and broker is not None and broker.is_waiting(approval_id):
+                    sent += await self.deliver_notification(note)
+                continue
+            run_id = str(payload.get("run_id") or "")
             if run_id and await self._waiting_question(run_id) is not None:
                 sent += await self.deliver_notification(note)
         return sent
@@ -578,7 +615,10 @@ class ChannelService(Service):
         sent = 0
         targets = await self._chosen_targets(where) if isinstance(where, list) else await self._delivery_targets()
         what, ref = self._what(note), self._source_ref(note)
-        reason = "reminder" if note.get("kind") == "reminder" else "chosen" if chosen else "default"
+        if note.get("kind") == "reminder":
+            reason = "reminder" if chosen else "reminder_copy"  # its own chat, or a copy for the delivery chats
+        else:
+            reason = "chosen" if chosen else "default"
         for ch, chat in targets:
             if subagent_id:
                 key = (str(subagent_id), ch.id, chat["chat_id"])
@@ -606,6 +646,10 @@ class ChannelService(Service):
                     log.exception("could not remember the delivered question")
             if buttons and ids and note.get("id"):
                 self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], ids[-1]))
+                if note.get("kind") == "approval" and payload.get("approval_id"):
+                    # which note carried this approval, so its buttons can be checked against the
+                    # delivery before they answer it (#443, the same ownership rule as #139/#337)
+                    self._approval_notes[str(payload["approval_id"])] = str(note["id"])
             await self.record_delivery(ch, chat, md, what=what, reason=reason, ref=ref)
         return sent
 
@@ -727,6 +771,27 @@ class ChannelService(Service):
             await ch.settle_buttons(chat_id, message_id, text[:120])
             return text[:190]
         outcome = "Plan approved" if approve else "Plan declined"
+        await ch.settle_buttons(chat_id, message_id, outcome)
+        return outcome
+
+    async def act_on_notification_approval(self, ch: Channel, chat_id: str, message_id: str, approval_id: str, *, allow: bool) -> str:
+        """The answer to a chat turn's approval note (kind "approval", #443): it resolves the same
+        broker approval the desktop card answers, so the waiting turn carries on at once."""
+        resolve = getattr(self.app.approvals, "resolve", None)
+        if resolve is None:
+            return "Approvals aren't available right now."
+        # the buttons answer only where this approval was actually delivered, like every other
+        # button in this service (#139, #337): a callback from anywhere else settles nothing
+        note_id = self._approval_notes.get(approval_id)
+        if (ch.id, chat_id, message_id) not in self._delivered.get(note_id or "", []):
+            await ch.settle_buttons(chat_id, message_id, "This request is no longer waiting")
+            return "This request is no longer waiting."
+        self._approval_notes.pop(approval_id, None)
+        self._forget_delivered(ch.id, chat_id, message_id)
+        if not resolve(approval_id, "allow" if allow else "deny", via=ch.id):
+            await ch.settle_buttons(chat_id, message_id, "This request is no longer waiting")
+            return "This request is no longer waiting."
+        outcome = "Allowed" if allow else "Denied"
         await ch.settle_buttons(chat_id, message_id, outcome)
         return outcome
 

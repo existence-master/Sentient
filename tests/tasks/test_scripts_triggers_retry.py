@@ -326,9 +326,7 @@ SEARCH_CODE = "from sentient_tools import tools, result\nresult(tools.internet_s
          "noteworthy"),
         # "important changes" asks for the AI check, not for every change
         *[(f"Tell me about {q} changes on https://example.org/events", PAGE_CODE, "changed", "noteworthy")
-          for q in ("important", "big", "major", "significant", "meaningful")],
-        *[(f"Tell me about {q} page changes on https://example.org/events", PAGE_CODE, "changed", "noteworthy")
-          for q in ("important", "big", "major", "significant", "meaningful")],
+          for q in ("important", "big", "major", "significant", "meaningful", "important page", "significant price")],
         # the user wants every change: "changed" is kept, even for a whole page
         ("Tell me whenever anything at all on this page changes: https://example.org/events", PAGE_CODE, "changed",
          "changed"),
@@ -359,6 +357,155 @@ async def test_planner_watch_defaults_whole_pages_to_important_changes(make_app,
     prompt = json_calls(llm, "planner")[1]["messages"][0]["content"]
     assert "This is the default for watching a page, a feed or the news" in prompt
     assert 'If the user wants to hear about any change at all, use "changed".' in prompt
+
+
+@pytest.mark.parametrize(("role", "stored"), [("user", "changed"), ("assistant", "noteworthy")])
+async def test_planner_watch_default_uses_user_chat(make_app, role, stored):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="noteworthy", code=PAGE_CODE,
+        original_prompt="Watch this page for new events: https://example.org/events",
+        chat_history=[{"role": "assistant", "content": "Tell me about any change at all."}],
+    )
+    if role == "user":
+        await app.tasks.chat(task_id, "Actually tell me about any change at all on that page")
+    else:
+        await app.tasks.chat(task_id, "Check every ten minutes instead")
+    await app.tasks.drain()
+    task = await app.tasks.get(task_id)
+    assert task["status"] == "approval_pending"
+    assert task["script"]["condition"] == stored
+
+
+@pytest.mark.parametrize("message", [
+    "Change it to check every 30 minutes",
+    "Change the time to every 30 minutes",
+    "Thanks for everything",
+    "Anything else you need from me?",
+])
+async def test_planner_watch_default_ignores_edits_and_unrelated_chat(make_app, message):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="noteworthy", code=PAGE_CODE,
+        original_prompt="Watch this page for new events: https://example.org/events",
+    )
+    await app.tasks.chat(task_id, message)
+    await app.tasks.drain()
+    assert (await app.tasks.get(task_id))["script"]["condition"] == "noteworthy"
+
+
+async def test_planner_watch_default_uses_newest_change_preference(make_app):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="changed", code=PAGE_CODE,
+        original_prompt="Watch this page for any change at all: https://example.org/events",
+    )
+    await app.tasks.chat(task_id, "Only important changes please")
+    await app.tasks.drain()
+    assert (await app.tasks.get(task_id))["script"]["condition"] == "noteworthy"
+
+
+def test_planner_default_uses_the_last_preference_in_one_message():
+    changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
+    assert scripts.planner_default(
+        changed, "Only important changes — actually, tell me about any change.",
+    )["condition"] == "changed"
+    assert scripts.planner_default(
+        changed, "Tell me about any change — only important changes, please.",
+    )["condition"] == "noteworthy"
+
+
+@pytest.mark.parametrize(("message", "preference"), [
+    ("Has anything changed on that page?", None),
+    ("Any updates?", None),
+    ("Are there any changes on the page today?", None),
+    ("Were there any updates since yesterday?", None),
+    ("What changed on the page?", None),
+    ("Did you tell me about every change?", None),
+    ("Why did you notify me of every change?", None),
+    ("Change to every hour", None),
+    ("I changed my mind about the watch", None),
+    ("Change of plans", None),
+    ("Can you change how often it checks?", None),
+    ("Tell me about any change", "changed"),
+    ("Can you tell me about every change?", "changed"),
+    ("Could you notify me of any change?", "changed"),
+    ("Would you please let me know about all updates?", "changed"),
+    ("Tell me when https://example.org/events changes", "changed"),
+    ("If it changes, let me know", "changed"),
+    ("Let me know whenever the page updates", "changed"),
+    ("Only important updates", "noteworthy"),
+    ("Only tell me about important stuff. Schedule changes are fine", "noteworthy"),
+    ("Ignore minor changes, I only care about new events", "noteworthy"),
+    ("Ignore all minor changes", "noteworthy"),
+    ("Skip all the minor changes", "noteworthy"),
+    ("Only important changes, not every change", "noteworthy"),
+    ("Not every change, only important ones", "noteworthy"),
+    ("Don't tell me about every change", "noteworthy"),
+    ("Thanks for all the updates", None),
+    ("Can you tell me what changes were made?", None),
+    # #489
+    ("Don't notify me at night, but tell me about every change", "changed"),
+    ("Ignore all the tiny changes", "noteworthy"),
+    ("Ignore all trivial changes", "noteworthy"),
+    ("Don't bother with all the minor changes", "noteworthy"),
+    ("Please don't bother me with every little change", "noteworthy"),
+    ("Could you tell me about the changes today?", None),
+    ("Notify me about the changes as they happen", "changed"),
+    ("Alert me of the updates on this page", "changed"),
+    ("Let me know what changes were made", None),
+    ("Only important changes; notify me about the changes on this page", "noteworthy"),
+    ("Only important changes; tell me about every change after all", "changed"),
+    ("Don't ignore minor changes; notify me about changes on this page", "changed"),
+    ("Never skip the small updates, let me know about updates here", "changed"),
+    ("Don't ignore minor changes", "changed"),
+    # "tell me about the changes" asks for future changes unless it is a one-off question
+    ("Tell me about the changes as they happen", "changed"),
+    ("Tell me about the changes from now on", "changed"),
+    ("Tell me about the changes going forward", "changed"),
+    ("Tell me about the new changes every time", "changed"),
+    ("Tell me about the changes so far", None),
+    ("Tell me about the changes since Monday", None),
+    ("Tell me about the changes on the page?", None),
+    ("Tell me about the changes that were made", None),
+    ("Tell me about the changes that have been made to the page", None),
+    ("Tell me about the changes as they happen. Can you do that?", "changed"),
+    ("Only important changes; tell me about the changes as they happen", "noteworthy"),
+])
+def test_change_preference_requires_an_explicit_watch_request(message, preference):
+    assert scripts._change_preference(message) == preference
+
+
+@pytest.mark.parametrize(("message", "condition"), [
+    ("Don't notify me at night, but tell me about every change", "changed"),
+    ("Please don't bother me with every little change", "noteworthy"),
+    ("Could you tell me about the changes today?", "noteworthy"),
+    ("Notify me about the changes as they happen", "changed"),
+    ("Only important changes; notify me about the changes on this page", "noteworthy"),
+    ("Tell me about the changes as they happen", "changed"),
+    ("Don't ignore minor changes", "changed"),
+    ("Tell me about the changes that were made", "noteworthy"),
+    ("Tell me about the changes as they happen. Can you do that?", "changed"),
+])
+def test_planner_default_reads_the_new_phrasings(message, condition):
+    changed = normalize_script({"code": PAGE_CODE, "condition": "changed"})
+    assert scripts.planner_default(changed, message)["condition"] == condition
+
+
+async def test_planner_watch_default_gives_later_chat_priority_over_answers(make_app):
+    watch = {**PLAN_SCRIPT, "script": {"code": PAGE_CODE, "condition": "changed", "then": "notify"}}
+    app = await make_app(FakeProvider(json_replies=[watch]))
+    task_id = await _script_task(
+        app, condition="noteworthy", code=PAGE_CODE,
+        original_prompt="Watch this page for new events: https://example.org/events",
+        clarifying_questions=[{"question": "What should I report?", "answer": "Only important changes"}],
+    )
+    await app.tasks.chat(task_id, "Actually, tell me about any change.")
+    await app.tasks.drain()
+    assert (await app.tasks.get(task_id))["script"]["condition"] == "changed"
 
 
 async def test_changing_a_watch_in_chat_to_any_change_keeps_changed(make_app):

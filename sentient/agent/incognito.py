@@ -20,6 +20,7 @@ import shutil
 from datetime import UTC, datetime, timedelta
 
 from sentient import paths
+from sentient.agent import selections
 from sentient.services import Service
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,10 @@ class IncognitoSweeper(Service):
     async def start(self) -> None:
         await self.purge()  # chats from an earlier run were closed with it
         await self.remove_stray_outputs()
+        try:  # selected text whose chat is gone (#332)
+            await selections.remove_strays(self.app.store)
+        except OSError:
+            log.exception("removing selected text no chat has failed")
         if self.app.enable_background:
             self.run_every(SWEEP_EVERY_S, self.sweep, name="sweep", initial_delay=SWEEP_EVERY_S)
 

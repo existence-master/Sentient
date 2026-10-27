@@ -1,11 +1,13 @@
-import { IconCalendar, IconCheck, IconClock, IconHistory, IconHourglassHigh, IconPencil, IconTrash, IconX } from '@tabler/icons-react'
+import { IconCalendar, IconCheck, IconClock, IconGauge, IconHistory, IconHourglassHigh, IconMoodConfuzed, IconPencil, IconReplace, IconRoute, IconTrash, IconX } from '@tabler/icons-react'
 import { useEffect, useState } from 'react'
-import { Alert, Button, ConfirmDialog, Sheet, Textarea } from '@/components/ui'
+import { Alert, Button, ConfirmDialog, Select, Sheet, Textarea } from '@/components/ui'
+import { useMemoryScopes } from '@/hooks/memory'
 import { useHotkey } from '@/hooks/useHotkey'
 import { formatDateTime } from '@/lib/utils'
-import { ExpiryBadge, SourceChip, TopicPill } from './bits'
+import { ExpiryBadge, ScopeIcon, scopeLabel, TopicPill } from './bits'
 import { useNow, useOptimisticMemoryActions } from './hooks'
 import { countdown, expiresInMs, recentRelative, sourceMeta, type MemoryWithHistory } from './meta'
+import { Confidence, SourceLinks } from './SourceLinks'
 
 export function MemoryDetail({
   memory,
@@ -18,7 +20,8 @@ export function MemoryDetail({
   onOpenChange: (open: boolean) => void
   onForgetSource: (source: string) => void
 }) {
-  const { update, remove } = useOptimisticMemoryActions()
+  const { update, remove, move, setState } = useOptimisticMemoryActions()
+  const scopes = useMemoryScopes()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [confirm, setConfirm] = useState(false)
@@ -89,6 +92,24 @@ export function MemoryDetail({
             <ExpiryBadge memory={memory} now={now} />
           </div>
 
+          {memory.state === 'disputed' && (
+            <Alert tone="warning" icon={<IconMoodConfuzed />} title="You said this isn't right">
+              Sentient keeps it here but leaves it out of chats and tasks. Edit it, forget it, or{' '}
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => setState.mutate({ id: memory.id, state: 'current' })}>
+                say it's right after all
+              </button>
+              .
+            </Alert>
+          )}
+          {memory.state === 'superseded' && (
+            <Alert tone="info" icon={<IconReplace />} title="Replaced by a newer memory">
+              {memory.superseded_by_content ? `Now: "${memory.superseded_by_content}". ` : ''}Sentient keeps this one as history and doesn't use it.{' '}
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => setState.mutate({ id: memory.id, state: 'current' })}>
+                It's still true
+              </button>
+            </Alert>
+          )}
+
           {memory.previous_content && memory.previous_content !== memory.content && (
             <div className="rounded-xl border border-border bg-sunken/60 p-3.5">
               <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-fg-muted">
@@ -98,15 +119,38 @@ export function MemoryDetail({
             </div>
           )}
 
+          <section aria-label="Where it came from" className="space-y-2">
+            <h3 className="flex items-center gap-1.5 text-xs font-medium text-fg-muted">
+              <IconRoute size={13} /> Where it came from
+            </h3>
+            <SourceLinks memory={memory} onForgetSource={onForgetSource} />
+          </section>
+
           <dl className="divide-y divide-border rounded-xl border border-border bg-surface text-sm">
-            <Row icon={<src.icon size={14} />} label="Source">
-              <div className="flex items-center justify-between gap-2">
-                <SourceChip source={memory.source} className="text-sm text-fg" />
-                <button type="button" onClick={() => onForgetSource(memory.source)} className="text-xs text-fg-subtle underline-offset-2 hover:text-danger hover:underline">
-                  Forget all from this source
+            <Row icon={<IconGauge size={14} />} label="How sure">
+              <Confidence memory={memory} />
+              {memory.state !== 'disputed' && memory.state !== 'superseded' && (
+                <button
+                  type="button"
+                  onClick={() => setState.mutate({ id: memory.id, state: 'disputed' })}
+                  className="mt-1.5 text-xs text-fg-subtle underline-offset-2 hover:text-warning hover:underline"
+                >
+                  This isn't right
                 </button>
+              )}
+            </Row>
+            <Row icon={<ScopeIcon scope={memory.scope} size={14} />} label="Used in">
+              <Select
+                size="sm"
+                className="w-full"
+                aria-label="Move to"
+                value={memory.scope ?? 'personal'}
+                onValueChange={(v) => v !== (memory.scope ?? 'personal') && move.mutate({ id: memory.id, scope: v })}
+                options={scopeOptions(scopes.data?.map((s) => s.name) ?? [], memory.scope ?? 'personal')}
+              />
+              <div className="mt-1 text-xs text-fg-subtle">
+                {memory.scope === 'always' ? 'Every chat can use it.' : `Only ${scopeLabel(memory.scope)} chats use it, plus anything you ask about directly.`}
               </div>
-              <div className="text-xs text-fg-subtle">{src.description}</div>
             </Row>
             <Row icon={<IconCalendar size={14} />} label="Learned">
               {formatDateTime(memory.created_at)} {recentRelative(memory.created_at) && <span className="text-fg-subtle">· {recentRelative(memory.created_at)}</span>}
@@ -148,6 +192,12 @@ export function MemoryDetail({
       />
     </Sheet>
   )
+}
+
+function scopeOptions(names: string[], current: string) {
+  const all = ['personal', 'work', 'always', ...names.filter((n) => !['personal', 'work', 'always'].includes(n))]
+  if (!all.includes(current)) all.push(current)
+  return all.map((n) => ({ value: n, label: scopeLabel(n), icon: <ScopeIcon scope={n} size={14} /> }))
 }
 
 function Row({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {

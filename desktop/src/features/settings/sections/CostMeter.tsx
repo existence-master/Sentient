@@ -108,6 +108,21 @@ export function CostMeter() {
               }))}
             />
           </div>
+          {!!p.claude_code_by_role?.length && (
+            <CostTable
+              title="Your Claude Code, by job"
+              description="Which jobs used your Claude plan through Claude Code."
+              empty=""
+              rows={p.claude_code_by_role.map((r) => ({
+                key: r.role,
+                label: roleLabel(r.role),
+                title: r.role,
+                row: { ...r, cost_usd: null, unpriced_calls: 0 },
+                plan: true,
+                local: false
+              }))}
+            />
+          )}
         </>
       ) : null}
 
@@ -184,16 +199,19 @@ function BudgetCard({ budget }: { budget: BudgetState }) {
 
 function CostTable({
   title,
+  description,
   rows,
   empty
 }: {
   title: string
+  description?: string
   empty: string
   rows: Array<{ key: string; label: string; title: string; row: CostRow; plan: boolean; local: boolean }>
 }) {
   return (
     <Card className="p-4">
-      <h3 className="mb-3 text-sm font-semibold text-fg">{title}</h3>
+      <h3 className={description ? 'text-sm font-semibold text-fg' : 'mb-3 text-sm font-semibold text-fg'}>{title}</h3>
+      {description && <p className="mb-3 mt-0.5 text-xs text-fg-subtle">{description}</p>}
       <div className="space-y-2">
         {rows.slice(0, 10).map((r) => (
           <div key={r.key} className="flex items-baseline justify-between gap-3 text-xs">

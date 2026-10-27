@@ -372,6 +372,46 @@ def _check_whole_page(tree: ast.AST) -> None:
         )
 
 
+# Tools that read the web: a script using them polls a page, a search or the news (#389).
+WEB_TOOLS = ("web_fetch", "web_search", "news_top_headlines", "news_search")
+# Words that name a trigger's app in a request: "when I get an email", "when a meeting is added to my calendar".
+_SOURCE_WORDS: dict[str, re.Pattern] = {
+    "gmail": re.compile(r"\b(?:e-?mails?|mail|inbox|gmail)\b", re.IGNORECASE),
+    "email_imap": re.compile(r"\b(?:e-?mails?|mail|inbox)\b", re.IGNORECASE),
+    "gcalendar": re.compile(r"\b(?:calendars?|meetings?|appointments?)\b", re.IGNORECASE),
+    "home_assistant": re.compile(
+        r"\b(?:home\s+assistant|smart\s+home|doors?|lights?|locks?|sensors?|thermostats?|garage|alarms?|switch(?:es)?)\b",
+        re.IGNORECASE),
+    "webhook": re.compile(r"\b(?:webhooks?|hooks?)\b", re.IGNORECASE),
+}
+
+
+def _reads_trigger_event(code: str) -> bool:
+    """The code reads the ``trigger_event`` variable; a comment or a string that only mentions it does not count."""
+    try:
+        tree = ast.parse(code or "")
+    except SyntaxError:
+        return False
+    return any(isinstance(node, ast.Name) and node.id == "trigger_event" and isinstance(node.ctx, ast.Load)
+               for node in ast.walk(tree))
+
+
+def polls_the_web(tools: list[str]) -> bool:
+    """A script (or the AI-run task that replaced one) that reads pages, a search or the news."""
+    return any(t in WEB_TOOLS for t in tools)
+
+
+def trigger_is_real(schedule: dict, code: str, request: str) -> bool:
+    """Whether a ``triggered`` schedule can be what a web check runs on (#389): the script reads the event that
+    started it (``trigger_event``), or the user's request names the trigger's app ("when I get an email"). Small
+    models give a page watch like "tell me when a new event is added" a Google Calendar trigger, so it would only
+    run when a calendar event arrives and never look at the page."""
+    if _reads_trigger_event(code):
+        return True
+    words = _SOURCE_WORDS.get(str(schedule.get("source") or "").strip().lower())
+    return bool(words and words.search(request or ""))
+
+
 def check_rules(code: str, condition: str, request: str = "") -> None:
     """Reject what small models write into check scripts that cannot work (#305), with a plain reason the planner
     can act on: a package that is not installed, an endless loop, a wait, memory calls, an alert result on a
@@ -459,30 +499,95 @@ def normalize_script(
     return out
 
 
-# the user asks to hear about a change itself ("when it changes", "anything", "everything"): no AI check decides that.
-# Not a bare "every": "every 10 minutes" is a schedule. Qualified changes (group 1) ask for the AI check; one word
-# may sit between the qualifier and "changes" ("important page changes", "significant price changes").
-_ANY_CHANGE = re.compile(
-    r"\b(?:(important|big|major|significant|meaningful)\s+(?:\w+\s+)?)?chang(?:e|es|ed|ing)\b"
-    r"|\bany\s?thing\b|\bevery\s?thing\b",
+# Text up to the end of a clause: a comma or semicolon, or a full stop, question or exclamation mark followed by
+# a space (a URL's dots don't end it).
+_WITHIN_CLAUSE = r"(?:[^\n,;.!?]|[.!?](?=\S))"
+
+# The newest request about updates wins. A question about a page is not a request to change its watch setting;
+# neither is a bare use of "change" as a verb. Requests for every update must say that positively.
+_NOTEWORTHY_REQUEST = re.compile(
+    r"\b(?:only\s+)?(?:important|big|major|significant|meaningful)\s+(?:\w+\s+)?"
+    r"(?:changes?|updates?|stuff|ones?)\b"
+    # "don't ignore minor changes" asks for them, so a negated ignore/skip is not this preference
+    r"|\b(?:(?<!\bdon't\s)(?<!\bdo\snot\s)(?<!\bnever\s)(?:ignore|skip)"
+    r"|(?:don't|do not)(?:\s+bother(?:\s+me)?\s+with)?)\s+(?:(?:all|the|every)\s+){0,2}"
+    r"(?:minor|small|little|tiny|trivial)\s+(?:changes?|updates?)\b"
+    r"|\b(?:not|never)\s+(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
+    # within one clause: "Don't notify me at night, but tell me about every change" asks for every change
+    r"|\b(?:don't|do not)\s+(?:tell me|notify me|let me know|alert me|report)\b" + _WITHIN_CLAUSE + r"{0,160}?"
+    r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b",
     re.IGNORECASE,
 )
-_NEGATED_ANY_CHANGE = re.compile(
-    r"\bnot\s*$"
-    r"|\b(?:do(?:es)?\s+not|don['\u2019]t|doesn['\u2019]t|never)\s+"
-    r"(?:want|need|report|send|notify|tell|show|include|track|watch|monitor)\b[^.;,!?\n]*$"
-    r"|\bno\s+need\b[^.;,!?\n]*$",
+_QUESTION_REQUEST = re.compile(
+    r"^\s*(?:please\s+)?(?:tell me|notify me|let me know|alert me|report)\b"
+    r"|\b(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"(?:tell me|notify me|let me know|alert me|report)\b",
+    re.IGNORECASE,
+)
+_EVERY_CHANGE_REQUEST = re.compile(
+    r"\b(?:any|every|all)\s+(?:\w+\s+){0,3}?(?:changes?|updates?)\b"
+    r"|\b(?:when|whenever|if)\b[^\n]{0,160}?\b(?:changes?|updates?)\b"
+    # "tell me about the changes (today)" asks about particular changes, not for every future one
+    r"|\b(?:tell me|report)\b"
+    r"(?!\s+(?:what|which)\s+(?:changes?|updates?)\b|\s+(?:about|of)\s+the\s+(?:\w+\s+)?(?:changes?|updates?)\b)"
+    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|notify me|let me know|alert me|report)\b[^\n]{0,160}?\b"
+    r"(?:anything|everything)\s+(?:at\s+all|new)\b"
+    # "don't ignore minor changes" asks for those too
+    r"|\b(?:don't|do not|never)\s+(?:ignore|skip)\s+(?:(?:any|the)\s+)?"
+    r"(?:minor|small|little|tiny|trivial)\s+(?:changes?|updates?)\b",
+    re.IGNORECASE,
+)
+# A time or past-tense wording that makes "tell me about the changes" a one-off question about changes
+# that already happened.
+_ONE_OFF_TIME = (
+    r"(?:today|tonight|yesterday|so\s+far|just\s+now|earlier|lately|recently"
+    r"|this\s+(?:morning|afternoon|evening|week|month)|last\s+\w+|since\s+\w+"
+    r"|(?:that|which)\s+(?:were|was|have\s+been|has\s+been|had\s+been|happened)|(?:were|was)\s+made)"
+)
+# "notify me about the changes (as they happen)" asks for future changes without saying
+# which, so it is delivery wording: an "only important changes" in the same message decides.
+# So is "tell me about the changes", unless a one-off time or a question in the same clause makes it
+# about past changes.
+_CHANGE_NOTIFICATION_REQUEST = re.compile(
+    r"\b(?:notify me|let me know|alert me)\b(?!\s+(?:what|which)\s+(?:changes?|updates?)\b)"
+    + _WITHIN_CLAUSE + r"{0,160}?\b(?:changes?|updates?)\b"
+    r"|\b(?:tell me|report)\s+(?:about|of)\s+the\s+(?:\w+\s+)?(?:changes?|updates?)\b"
+    r"(?!" + _WITHIN_CLAUSE + r"{0,80}?\b" + _ONE_OFF_TIME + r"\b)(?!" + _WITHIN_CLAUSE + r"{0,160}?\?)",
+    re.IGNORECASE,
+)
+_NEGATED_REQUEST_PREFIX = re.compile(
+    r"\b(?:not|never)\s*$|\b(?:don't|do not)\b[^,.!?;]{0,60}$"
+    r"|\b(?:thanks|thank you)\s+for\s*$",
     re.IGNORECASE,
 )
 
 
-def _asks_for_any_change(request: str) -> bool:
-    text = request or ""
-    asks_for_any: bool | None = None
-    for match in _ANY_CHANGE.finditer(text):
-        negated = _NEGATED_ANY_CHANGE.search(text[:match.start()]) is not None
-        asks_for_any = not match.group(1) and not negated
-    return asks_for_any is True
+def _change_preference(message: str) -> str | None:
+    """``changed`` or ``noteworthy`` when one user message says which updates to report."""
+    if message.rstrip().endswith("?") and not _QUESTION_REQUEST.search(message):
+        return None
+    noteworthy_matches = list(_NOTEWORTHY_REQUEST.finditer(message))
+    noteworthy_spans = [match.span() for match in noteworthy_matches]
+    preferences = [(match.start(), "noteworthy") for match in noteworthy_matches]
+    changed_matches = list(_EVERY_CHANGE_REQUEST.finditer(message))
+    if not noteworthy_matches:
+        changed_matches += _CHANGE_NOTIFICATION_REQUEST.finditer(message)
+    preferences += [
+        (match.start(), "changed") for match in changed_matches
+        if not any(start <= match.start() < end for start, end in noteworthy_spans)
+        and not _NEGATED_REQUEST_PREFIX.search(message[:match.start()])
+    ]
+    return max(preferences, default=(0, None), key=lambda preference: preference[0])[1]
+
+
+def _latest_change_preference(request: str | list[str]) -> str | None:
+    messages = request.split("\n") if isinstance(request, str) else request
+    for message in reversed(messages):
+        preference = _change_preference(str(message or ""))
+        if preference is not None:
+            return preference
+    return None
 
 
 def _is_fetch(node: ast.AST, pages: set[str]) -> bool:
@@ -521,14 +626,17 @@ def returns_whole_page(code: str) -> bool:
     )
 
 
-def planner_default(script: dict, request: str, previous: dict | None = None) -> dict:
+def planner_default(script: dict, request: str | list[str], previous: dict | None = None) -> dict:
     """A ``changed`` check the planner proposes that returns a whole fetched page becomes ``noteworthy`` (#298): a
     view counter or a timestamp there would notify on every check. One value taken out of the page, a search, a
-    request that talks about a change ("changes", "anything", "everything", but not "important changes") and a task
-    already on ``changed`` keep ``changed``."""
-    if script.get("condition") != "changed" or (previous or {}).get("condition") == "changed":
+    request whose newest update preference is every change keeps ``changed``. A newer request for important changes
+    switches an existing ``changed`` task back to ``noteworthy``."""
+    if script.get("condition") != "changed":
         return script
-    if _asks_for_any_change(request) or not returns_whole_page(script.get("code") or ""):
+    if not returns_whole_page(script.get("code") or ""):
+        return script
+    preference = _latest_change_preference(request)
+    if preference == "changed" or (preference is None and (previous or {}).get("condition") == "changed"):
         return script
     return {**script, "condition": "noteworthy"}
 

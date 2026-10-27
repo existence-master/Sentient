@@ -47,8 +47,8 @@ export interface DictationHost {
   /** Push to talk heard something: send it to Sentient. */
   talk(text: string): void
   notify(title: string, body: string): void
-  /** The microphone turned on or off (tray tooltip). */
-  micChanged(on: boolean): void
+  /** The microphone turned on or off (tray and the engine's microphone indicator, #170); `mode` while on. */
+  micChanged(on: boolean, mode: DictationMode | null): void
 }
 
 type Phase = 'idle' | 'starting' | 'listening' | 'working'
@@ -74,6 +74,12 @@ export class DictationController {
 
   get micOn(): boolean {
     return this.mic
+  }
+
+  /** What the microphone is on for, in the words the indicator shows (#170); null while it is off. */
+  get micPurpose(): string | null {
+    if (!this.mic) return null
+    return this.mode === 'dictate' ? 'Dictation' : 'Push to talk'
   }
 
   /** Settings from `voice.dictation` (on start and whenever the config changes). Also gets the pill ready. */
@@ -213,7 +219,7 @@ export class DictationController {
   private setMic(on: boolean): void {
     if (this.mic === on) return
     this.mic = on
-    this.host.micChanged(on)
+    this.host.micChanged(on, on ? this.mode : null)
   }
 
   /** Events from the pill window; anything from another window is ignored. */

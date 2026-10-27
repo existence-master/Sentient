@@ -29,8 +29,20 @@ export const LABELS: Record<string, FieldLabel> = {
   'chat.show_thinking': { label: 'Show thinking', description: "Show the model's reasoning in a collapsible block." },
   'chat.auto_title': { label: 'Name chats automatically' },
   'chat.quick_commands': {
-    label: 'Quick timers and reminders',
-    description: 'Simple requests like "set a timer for 10 minutes" or "remind me at 6 pm to call Ravi" happen at once, without the model. English for now.'
+    label: 'Quick timers, reminders and alarms',
+    description:
+      'Simple requests like "set a timer for 10 minutes", "remind me at 6 pm to call Ravi", "wake me at 7" or "what\'s next on my calendar" happen at once, without the model. English for now.'
+  },
+  'chat.alarm_snooze_minutes': {
+    label: 'Snooze length',
+    unit: 'min',
+    description: 'How long "snooze" puts off a ringing alarm, unless you say how long ("snooze for 5 minutes").'
+  },
+  // channels (#359)
+  'channels.deliver_reminders': {
+    label: 'Reminders and alarms on your phone too',
+    description:
+      'Reminders and alarms you set on this computer or by voice also go off in your paired chats that get notifications. Ones you set in a chat always go off in that chat.'
   },
   // memory
   'memory.facts_top_k': { label: 'Facts recalled per message', unit: 'facts' },
@@ -41,6 +53,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'memory.graph_link_similarity': { label: 'Graph link threshold', percent: true },
   'memory.summarize_after_minutes': { label: 'Summarize conversations after', unit: 'min' },
   'memory.summary_chunk_messages': { label: 'Messages per summary', unit: 'messages' },
+  'memory.keep_superseded_days': { label: 'Keep replaced memories for', unit: 'days', description: '0 keeps them forever. Current memories are not affected.' },
   // folders: matching pieces of notes that go along with each message (#354)
   'folders.prompt_notes': { label: 'Note pieces with each message', unit: 'pieces' },
   'folders.prompt_min_similarity': { label: 'How closely a note must match', percent: true },
@@ -56,6 +69,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'models.battery_max_wait_s': { label: 'Upkeep never waits longer than', unit: 's' },
   // models (#148)
   'models.local_only': { label: 'Local only' },
+  'models.claude_code_max_concurrent': { label: 'Claude Code runs at once' },
+  'models.claude_code_everywhere': { label: 'Use my Claude Code for everything' },
   'models.monthly_budget_usd': { label: 'Monthly budget', unit: 'USD' },
   'models.budget_at_limit': { label: 'When the budget is used up', options: { ask: 'Ask', stop: 'Stop' } },
   // tasks
@@ -74,6 +89,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'tasks.away_pause_days': { label: 'Pause routines when you are away for', unit: 'days' },
   'tasks.away_pause_after_results': { label: 'Or when unseen results reach', unit: 'results' },
   'tasks.away_ask_hours': { label: 'Ask before pausing, then wait', unit: 'hours' },
+  'tasks.email': { hidden: true }, // its own section: Tasks by email (#159)
   // proactivity
   'proactivity.enabled': { label: 'Proactive suggestions' },
   'proactivity.poll_interval_minutes': { label: 'Check connected apps every', unit: 'min' },
@@ -263,6 +279,8 @@ export const LABELS: Record<string, FieldLabel> = {
   'integrations.searxng_url': { label: 'SearXNG address', placeholder: 'https://search.example.com' },
   'integrations.weather_provider': { label: 'Weather', options: { open_meteo: 'Open-Meteo', accuweather: 'AccuWeather' } },
   'integrations.hide_one_time_codes': { label: 'Hide one-time codes in email' },
+  'integrations.mcp_server_enabled': { label: 'Let other apps use Sentient (MCP)' },
+  'integrations.mcp_server_memories_skip_review': { label: 'Let MCP apps save memories without review' },
   'integrations.mcp_servers': { hidden: true },
   'integrations.read_only': { hidden: true }
 }

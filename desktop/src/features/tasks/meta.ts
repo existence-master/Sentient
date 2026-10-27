@@ -12,6 +12,7 @@ import {
   IconMessageQuestion,
   IconPlayerPlay,
   IconPlayerPause,
+  IconPlayerSkipForward,
   IconRepeat,
   IconShieldCheck,
   IconSparkles,
@@ -21,6 +22,7 @@ import {
   IconUser,
   IconMessageCircle,
   IconBulb,
+  IconMailForward,
   IconRadar,
   type Icon
 } from '@tabler/icons-react'
@@ -59,7 +61,9 @@ export const RUN_STATUS_META: Record<RunStatus, StatusMeta> = {
   completed: STATUS_META.completed,
   completed_with_errors: STATUS_META.completed_with_errors,
   error: STATUS_META.error,
-  cancelled: STATUS_META.cancelled
+  cancelled: STATUS_META.cancelled,
+  // what it reads wasn't there, so it didn't start (#161)
+  skipped: { label: 'Skipped', tone: 'warning', icon: IconPlayerSkipForward }
 }
 
 const UNKNOWN: StatusMeta = { label: 'Unknown', tone: 'neutral', icon: IconClock }
@@ -107,18 +111,20 @@ export function taskKind(task: Pick<Task, 'task_type' | 'schedule'>): TaskKind {
 }
 
 // ---------------------------------------------------------------------------- sources
-export type TaskSource = 'you' | 'chat' | 'proactive'
+export type TaskSource = 'you' | 'chat' | 'proactive' | 'email'
 
 export const SOURCE_META: Record<TaskSource, { label: string; icon: Icon }> = {
   you: { label: 'You', icon: IconUser },
   chat: { label: 'Chat', icon: IconMessageCircle },
-  proactive: { label: 'Proactive', icon: IconBulb }
+  proactive: { label: 'Proactive', icon: IconBulb },
+  email: { label: 'Email', icon: IconMailForward }
 }
 
 export function taskSource(task: Pick<Task, 'original_context'>): TaskSource {
   const s = task.original_context?.source
   if (s === 'chat') return 'chat'
   if (s === 'proactive' || s === 'trigger') return 'proactive'
+  if (s === 'email') return 'email'
   return 'you'
 }
 
