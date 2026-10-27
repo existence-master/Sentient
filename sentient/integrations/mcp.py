@@ -143,6 +143,35 @@ class ServerConn:
     plugin: MCPServerPlugin | None = None
     listed: list = field(default_factory=list)  # the tools the server listed on its last connection
     review: dict | None = None  # the safety check of those tools (#146)
+    health: str | None = None  # healthy | failing; null when disabled or authentication is required
+    last_check_at: str | None = None
+    usage_count: int = 0
+
+
+MCP_CATALOG = (
+    {
+        "id": "fetch",
+        "name": "Fetch",
+        "description": "The official MCP fetch server for reading web pages as model context.",
+        "documentation_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+        "transport": "stdio",
+        "command": "uvx",
+        "args": ["mcp-server-fetch"],
+        "required_values": [],
+        "enabled": False,
+    },
+    {
+        "id": "github",
+        "name": "GitHub",
+        "description": "The official MCP GitHub server for repositories and issues.",
+        "documentation_url": "https://github.com/github/github-mcp-server",
+        "transport": "stdio",
+        "command": "docker",
+        "args": ["run", "-i", "--rm", "-e", "GITHUB_PERSONAL_ACCESS_TOKEN", "ghcr.io/github/github-mcp-server"],
+        "required_values": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+        "enabled": False,
+    },
+)
 
 
 def _risk_for(tool: Any) -> Risk:
@@ -266,6 +295,8 @@ class MCPManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._baseline: set[str] = set()  # servers trusted as they are the first time they connect (#146)
         self._announced: set[tuple[str, str, str]] = set()  # (server, tool, hash) the user was told about
+        self._health_task: asyncio.Task | None = None
+        self._usage_lock = asyncio.Lock()
 
     @property
     def app(self) -> Any:
@@ -274,13 +305,26 @@ class MCPManager:
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
         await self._load_baseline()
+        rows = await self.app.store.fetchall("SELECT server, usage_count, health, last_check_at FROM mcp_server_metrics")
         for name, spec in dict(self.app.config.integrations.mcp_servers).items():
             spec_dict = dict(spec or {})
             if spec_dict.get("transport") == "http" and spec_dict.get("url"):
                 migrate_server_credentials(name, spec_dict.get("url"))
-            self._launch(name, spec_dict)
+            conn = self._launch(name, spec_dict)
+            row = next((r for r in rows if r["server"] == name), None)
+            if row:
+                conn.usage_count = int(row["usage_count"] or 0)
+                conn.health = row["health"]
+                conn.last_check_at = row["last_check_at"]
+        if self._health_task is None or self._health_task.done():
+            self._health_task = asyncio.create_task(self._health_loop(), name="mcp:health")
 
     async def stop(self) -> None:
+        if self._health_task is not None:
+            self._health_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._health_task
+            self._health_task = None
         for conn in list(self.servers.values()):
             self._cancel_sign_in(conn)
         await asyncio.gather(*(self._shutdown(c) for c in list(self.servers.values())), return_exceptions=True)
@@ -314,7 +358,25 @@ class MCPManager:
             "tools": list(conn.tools),
             "review": conn.review,
             "error": conn.error,
+            "health": conn.health,
+            "last_check_at": conn.last_check_at,
+            "usage_count": conn.usage_count,
         }
+
+    def catalog(self) -> list[dict]:
+        return [dict(item) for item in MCP_CATALOG]
+
+    async def add_catalog(self, catalog_id: str) -> dict:
+        item = next((item for item in MCP_CATALOG if item["id"] == catalog_id), None)
+        if item is None:
+            raise ValueError("Unknown verified MCP server.")
+        name = str(item["name"])
+        if name in self.servers:
+            raise ValueError(f"An MCP server named '{name}' is already configured.")
+        spec = {key: value for key, value in item.items() if key in {"transport", "command", "args", "enabled"}}
+        if item.get("required_values"):
+            spec["env"] = {str(item["required_values"][0]): ""}
+        return await self.add(name, spec)
 
     async def add(self, name: str, spec: dict, *, wait_s: float = 15.0) -> dict:
         name = name.strip()
@@ -444,10 +506,18 @@ class MCPManager:
 
     async def _relaunch(self, name: str, stored: dict) -> ServerConn:
         old = self.servers.pop(name, None)
+        usage_count = old.usage_count if old is not None else 0
         if old is not None:
             self._cancel_sign_in(old)
             await self._shutdown(old)
-        return self._launch(name, stored)
+        row = await self.app.store.fetchone(
+            "SELECT usage_count FROM mcp_server_metrics WHERE server = ?", (name,)
+        )
+        if row is not None:
+            usage_count = max(usage_count, int(row["usage_count"] or 0))
+        conn = self._launch(name, stored)
+        conn.usage_count = usage_count
+        return conn
 
     async def set_values(self, name: str, values: dict, *, enable: bool = False, wait_s: float = 15.0) -> dict:
         """Fill in the header or environment values a server lists by name (the "Add values" form). Values go to the
@@ -532,7 +602,10 @@ class MCPManager:
             delete_secret(f"mcp:{name}")
             forget_server(name, url=url)
             await self._forget_reviews(name)
-            return existed or conn is not None
+            removed = existed or conn is not None
+            if removed:
+                await self.app.store.execute("DELETE FROM mcp_server_metrics WHERE server = ?", (name,))
+            return removed
 
     # ------------------------------------------------------------------ safety check of tools (#146)
     async def review_tools(self, name: str, decisions: dict[str, str]) -> dict:
@@ -709,6 +782,34 @@ class MCPManager:
             if probe.unauthorized or _has(exc, NeedsSignIn):
                 return {"ok": False, "tools": [], "error": SIGN_IN_MESSAGES[_auth_of(conn.spec)]}
             return {"ok": False, "tools": [], "error": _err(exc)}
+
+    async def _health_loop(self) -> None:
+        while True:
+            await asyncio.sleep(float(self.app.config.integrations.mcp_health_check_s))
+            for conn in list(self.servers.values()):
+                try:
+                    await self._check_health(conn)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("MCP health check failed for %s", conn.name)
+
+    async def _check_health(self, conn: ServerConn) -> None:
+        if conn.status in {"disabled", "disconnected", "needs_sign_in", "connecting"}:
+            await self._clear_health(conn)
+            return
+        healthy = False
+        try:
+            if conn.client is not None and conn.status == "connected":
+                await asyncio.wait_for(self._list_tools(conn.client), float(self.app.config.integrations.mcp_timeout_s))
+                healthy = True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            conn.error = _err(exc)
+            if _looks_disconnected(exc):
+                conn.broken.set()
+        await self._set_health(conn, "healthy" if healthy else "failing")
 
     # ------------------------------------------------------------------ sign-in (MCP authorization spec)
     async def sign_in(self, name: str) -> dict:
@@ -949,6 +1050,7 @@ class MCPManager:
         backoff = MIN_BACKOFF_S
         while not conn.stop.is_set():
             conn.status, conn.error = "connecting", None
+            await self._clear_health(conn)
             conn.broken.clear()
             probe = Probe()
             retry_now = False
@@ -964,6 +1066,7 @@ class MCPManager:
                         allowed = set()
                     self._register(conn, tools, allowed)
                     conn.status = "connected"
+                    await self._set_health(conn, "healthy")
                     conn.refresh_tried = False
                     conn.ready.set()
                     backoff = MIN_BACKOFF_S
@@ -978,9 +1081,11 @@ class MCPManager:
                         conn.refresh_tried = True  # the token may have died early: refresh once before asking
                         retry_now = True
                     conn.status, conn.error = "needs_sign_in", SIGN_IN_MESSAGES[auth]
+                    await self._clear_health(conn)
                     log.info("mcp server %s needs a sign-in", conn.name)
                 else:
                     conn.status, conn.error = "error", _err(exc)
+                    await self._set_health(conn, "failing")
                     log.warning("mcp server %s failed: %s", conn.name, conn.error)
             finally:
                 conn.client = None
@@ -999,6 +1104,23 @@ class MCPManager:
                 await asyncio.wait_for(conn.broken.wait(), wait)
             backoff = min(backoff * 2, MAX_BACKOFF_S)
         conn.status = conn.status if conn.status in {"error", "needs_sign_in"} else "disconnected"
+
+    async def _set_health(self, conn: ServerConn, health: str | None) -> None:
+        conn.health = health
+        conn.last_check_at = now_iso()
+        await self.app.store.execute(
+            "INSERT INTO mcp_server_metrics(server, health, last_check_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(server) DO UPDATE SET health = excluded.health, last_check_at = excluded.last_check_at",
+            (conn.name, health, conn.last_check_at),
+        )
+
+    async def _clear_health(self, conn: ServerConn) -> None:
+        conn.health = None
+        await self.app.store.execute(
+            "INSERT INTO mcp_server_metrics(server, health) VALUES (?, NULL) "
+            "ON CONFLICT(server) DO UPDATE SET health = NULL",
+            (conn.name,),
+        )
 
     def _register(self, conn: ServerConn, mcp_tools: list, allowed: set[str]) -> None:
         """Register the tools named in ``allowed`` (the ones the user approved as they are now)."""
@@ -1058,6 +1180,7 @@ class MCPManager:
                 return {"error": f"The MCP server '{conn.name}' isn't connected right now ({conn.error or conn.status})."}
             timeout = float(self.app.config.integrations.mcp_timeout_s)
             try:
+                await self._record_usage(conn)
                 result = await client.call_tool(mcp_name, arguments, read_timeout_seconds=timeout)
             except Exception as exc:
                 msg = _err(exc)
@@ -1067,6 +1190,16 @@ class MCPManager:
             return _result_to_json(result)
 
         return call
+
+    async def _record_usage(self, conn: ServerConn) -> None:
+        """Count attempted calls, including calls that fail at the MCP transport."""
+        async with self._usage_lock:
+            await self.app.store.execute(
+                "INSERT INTO mcp_server_metrics(server, usage_count) VALUES (?, 1) "
+                "ON CONFLICT(server) DO UPDATE SET usage_count = usage_count + 1",
+                (conn.name,),
+            )
+            conn.usage_count += 1
 
 
 def _err(exc: BaseException) -> str:

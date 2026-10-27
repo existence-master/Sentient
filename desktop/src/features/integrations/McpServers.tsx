@@ -1,5 +1,6 @@
 import {
   IconAlertTriangle,
+  IconBook,
   IconChevronDown,
   IconEye,
   IconEyeOff,
@@ -34,7 +35,7 @@ import {
   type Tone
 } from '@/components/ui'
 import { ForgetLearned, forgottenMessage, useForgetChoice } from '@/features/memory/ForgetLearned'
-import { useMcpActions, useMcpServers } from '@/hooks/integrations'
+import { useMcpActions, useMcpCatalog, useMcpServers } from '@/hooks/integrations'
 import { errorMessage, isNotImplemented } from '@/lib/api'
 import type { ConnectionAccess, McpAuth, McpServer } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -61,6 +62,8 @@ export function splitArgs(raw: string): string[] {
 
 export function McpServersSection({ id }: { id?: string }) {
   const servers = useMcpServers()
+  const catalog = useMcpCatalog()
+  const { addCatalog } = useMcpActions()
   const [adding, setAdding] = useState(false)
   const anyConnecting = (servers.data ?? []).some((s) => s.status === 'connecting')
 
@@ -110,6 +113,54 @@ export function McpServersSection({ id }: { id?: string }) {
       )}
 
       <AddMcpDialog open={adding} onOpenChange={setAdding} />
+
+      <div className="mt-8">
+        <div className="mb-3">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-fg">
+            <IconBook size={16} /> Verified server templates
+          </h3>
+          <p className="mt-0.5 text-xs text-fg-subtle">Curated from the maintainers' official documentation. Templates start turned off.</p>
+        </div>
+        {catalog.isLoading ? (
+          <Skeleton className="h-20 rounded-xl" />
+        ) : catalog.isError ? (
+          <Alert tone="danger" title="Couldn't load verified servers">{errorMessage(catalog.error)}</Alert>
+        ) : (
+          <ul className="grid gap-2 md:grid-cols-2">
+            {(catalog.data ?? []).map((entry) => {
+              const alreadyAdded = (servers.data ?? []).some((server) => server.name === entry.name)
+              return (
+                <li key={entry.id} className="rounded-xl border border-border bg-surface px-4 py-3">
+                  <div className="flex items-start gap-3">
+                    <BrandIcon id="mcp" size={32} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-fg">{entry.name}</div>
+                      <div className="mt-0.5 text-xs text-fg-subtle">{entry.description}</div>
+                      <a className="mt-1 inline-block text-xs text-accent hover:underline" href={entry.documentation_url} target="_blank" rel="noreferrer">
+                        Official documentation
+                      </a>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={alreadyAdded}
+                      loading={addCatalog.isPending && addCatalog.variables === entry.id}
+                      onClick={() =>
+                        addCatalog.mutate(entry.id, {
+                          onSuccess: (server) => toast.success(`${server.name} was added`, { description: 'Add its required values, then turn it on.' }),
+                          onError: (e) => toast.error("Couldn't add server", { description: errorMessage(e) })
+                        })
+                      }
+                    >
+                      {alreadyAdded ? 'Added' : 'Add'}
+                    </Button>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </div>
     </section>
   )
 }
@@ -148,6 +199,11 @@ function McpServerRow({ server: s }: { server: McpServer }) {
               {s.status === 'connecting' ? <Spinner size={11} /> : <StatusDot tone={status.tone} />}
               {status.label}
             </span>
+            {s.health && (
+              <span className={cn('text-xs', s.health === 'healthy' ? 'text-success' : 'text-danger')}>
+                {s.health === 'healthy' ? 'Healthy' : 'Failing'}
+              </span>
+            )}
             {toCheck > 0 && (
               <Badge size="xs" tone={s.review?.verdict === 'high' || s.review?.reason === 'changed' ? 'danger' : 'warning'} icon={<IconAlertTriangle />}>
                 {s.review?.reason === 'changed' ? 'Tools changed' : `${toCheck} tool${toCheck === 1 ? '' : 's'} to check`}
@@ -156,6 +212,10 @@ function McpServerRow({ server: s }: { server: McpServer }) {
           </div>
           <div className="mt-0.5 truncate font-mono text-xs text-fg-subtle" title={target ?? ''}>
             {target}
+          </div>
+          <div className="mt-1 text-xs text-fg-subtle">
+            {s.usage_count ?? 0} attempted call{(s.usage_count ?? 0) === 1 ? '' : 's'}
+            {s.last_check_at && ` · checked ${new Date(s.last_check_at).toLocaleString()}`}
           </div>
         </div>
         {missing.length > 0 ? (

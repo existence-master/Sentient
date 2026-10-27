@@ -720,6 +720,7 @@ class IntegrationsConfig(BaseModel):
         "", description="Optional GitHub OAuth app client id enabling 'Sign in with GitHub' (device flow) instead of a token."
     )
     mcp_timeout_s: int = Field(60, ge=5, le=600, description="Timeout for a single MCP tool call.")
+    mcp_health_check_s: int = Field(60, ge=10, le=3600, description="How often connected MCP servers are checked.")
     home_assistant_live: bool = Field(
         True,
         description="Listen to Home Assistant for changes (a door opening, a light turning on) so tasks can start "

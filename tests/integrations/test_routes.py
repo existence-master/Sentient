@@ -98,3 +98,14 @@ def test_mcp_routes_validation(client):
     assert client.post("/api/integrations/mcp/local/values", json={"enable": "yes"}).status_code == 422
     kept = client.post("/api/integrations/mcp/local/values", json={"values": {}}).json()
     assert kept["name"] == "local" and kept["status"] == "disabled"
+
+
+def test_mcp_catalog_routes(client):
+    catalog = client.get("/api/integrations/mcp/catalog")
+    assert catalog.status_code == 200
+    assert {entry["id"] for entry in catalog.json()} == {"fetch", "github"}
+    added = client.post("/api/integrations/mcp/catalog/github")
+    assert added.status_code == 200
+    assert added.json()["enabled"] is False
+    assert client.post("/api/integrations/mcp/catalog/github").status_code == 400
+    assert client.post("/api/integrations/mcp/catalog/not-real").status_code == 400
