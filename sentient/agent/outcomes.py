@@ -495,8 +495,12 @@ _MEMORY_CLAIMS = [
     ),
     # "I've made a note that you ...", "I made a note of it"
     re.compile(r"\bi(?:'ve| have)?\s+(?:just\s+)?made a (?:mental )?note\b", re.I),
-    # "I'll remember that", "I will remember your wake-up time"
-    re.compile(r"\bi(?:'ll| will|'m going to| am going to)\s+(?:(?:always|definitely|now)\s+)?(?:remember|memori[sz]e)\b", re.I),
+    # "I'll remember that", "I will remember your wake-up time", "I'll note your wake-up time" (real qwen3:8b, no call)
+    re.compile(
+        r"\bi(?:'ll| will|'m going to| am going to)\s+(?:(?:always|definitely|now|make sure to|be sure to)\s+)?"
+        r"(?:(?:remember|memori[sz]e)\b|(?:note|save|store|jot)\s+(?:that|this|it|your|down)\b)",
+        re.I,
+    ),
     # "I've saved that to my memory", "Saved to memory", "That's now in your memories"
     re.compile(
         rf"\b(?:(?:{_MEMORY_VERBS})\b[^.!?\n]{{0,60}}?\b(?:to|in|into|as|under)|(?:it|that|this)(?:'s| is)\s+(?:now\s+)?in)"

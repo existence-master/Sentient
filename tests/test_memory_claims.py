@@ -27,6 +27,8 @@ async def _app(config, isolated_home, llm, name):
     "I've saved that you wake up at 7 a.m.",
     "I\u2019ve saved that you wake up at 7 a.m.",  # a curly apostrophe is the same claim
     "Got it! I'll remember that you wake up at 7.",
+    "I'll note your wake-up time and scheduling preference.",  # real qwen3:8b, with no call
+    "I've noted that you wake up at 6:30 AM on Saturdays and will avoid scheduling anything before 8 AM.",  # main
 ])
 async def test_a_claimed_save_without_a_memory_call_is_corrected(config, isolated_home, reply):
     llm = FakeProvider(replies=[[tool_call("current_datetime")], reply])
@@ -178,6 +180,8 @@ def test_memory_claims_are_recognized_narrowly():
         "I won\u2019t remember that.",
         "I already have that you wake up at 7.",
         "I saved it.",  # names nothing: could be a file
+        "I'll save the file once you confirm.",
+        "I'll make sure to suggest vegetarian-friendly options.",
         "Done!",
         "Correction: I didn't save the file.",
         outcomes.MEMORY_NOT_SAVED,
