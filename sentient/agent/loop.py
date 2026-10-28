@@ -93,7 +93,7 @@ from sentient.llm.provider import (
 )
 from sentient.memory import review as memory_review
 from sentient.memory import scopes as memory_scopes
-from sentient.memory.facts import FactMemory
+from sentient.memory.facts import FactMemory, keyword_tokens, new_details
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
@@ -313,6 +313,16 @@ def history_to_openai(rows: list[dict], *, api_turn: bool = False) -> list[dict]
     return fixed
 
 
+# the words of a memory claim itself, left out when a kept memory is matched against it (#526)
+_MEMORY_CLAIM_WORDS = frozenset({
+    "saved", "stored", "noted", "recorded", "remembered", "remember", "memorized", "memorised", "memorize",
+    "memorise", "logged", "kept", "added", "put", "written", "jotted", "down", "made", "note", "mental", "memory",
+    "memories", "long", "term", "got", "sure", "okay", "fact", "now", "ll", "ve",
+})
+# capitalized words of a claim that are not names: "I", "I've", "AM" in "6:30 AM"
+_CLAIM_DETAIL_SKIP = frozenset({"i", "i've", "i'll", "i'm", "am", "pm", "yes", "got", "sure"})
+
+
 def browser_click_history(rows: list[dict]) -> list[dict]:
     """Completed browser-click outcomes in stored chat history, oldest first (#402)."""
     calls: dict[str, dict] = {}
@@ -454,6 +464,9 @@ class LoopResult:
     handed_off: list[dict] = field(default_factory=list)
     # the outcome checks of the calls that ran (#165, ``sentient.agent.outcomes``), in order; written by code only
     checks: list[dict] = field(default_factory=list)
+    # memory_remember calls in this run, recorded by code so a chat reply cannot claim a save that never happened
+    # (#526): [{ok}]
+    memory_saves: list[dict] = field(default_factory=list)
     # browser clicks attempted in this run, recorded by code so a final reply cannot invent one (#402)
     browser_clicks: list[dict] = field(default_factory=list)
     # completed browser clicks from earlier chat turns, consulted only for an explicit reference to one (#402)
@@ -1690,6 +1703,8 @@ class Agent:
                     res.get("clicked") or approval.get("target") or tc.arguments.get("ref", "")
                 ) if isinstance(res, dict) else tc.arguments.get("ref", ""),
             })
+        if tc.name == "memory_remember":  # a near-duplicate it skipped or a fact sent to Review worked too (#526)
+            result.memory_saves.append({"ok": ran and not is_error and not err and outcomes.result_problem(res) is None})
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):
                 ctx.untrusted = untrusted_source(p.tool, self.registry)
@@ -2124,6 +2139,9 @@ class Agent:
         leftover = release()
 
         try:  # the turn counts as busy until here, also when the caller stops reading at Done
+            if correction := await self._memory_correction(result, incognito):
+                result.text += correction
+                yield TextDelta(text=correction, **ev)
             if result.error and not result.text:
                 # the reply failed before it said anything: nothing is saved, but every turn still ends with one
                 # done (docs/API.md section 1, #334), so the window and the messaging apps know it is over
@@ -2417,6 +2435,49 @@ class Agent:
             return TrustResult(was=was, trusted=False, still=still, writer=writer)
         self._publish_mark(session_id, "")
         return TrustResult(was=was, trusted=True)
+
+    async def _memory_correction(self, result: LoopResult, incognito: bool) -> str:
+        """The line added to a chat reply that says it saved a memory when no memory_remember call worked this turn
+        (#526), or "". A claim that a saved memory already backs (an earlier turn's save, or one made from the Memory
+        screen) is left alone: "Yes, I saved that you wake up at 7" can be about a save before this turn."""
+        if result.error or not result.text:
+            return ""
+        claim = outcomes.unmade_memory_claim(result.text, result.memory_saves)
+        if not claim or await self._memory_backs(claim):
+            return ""
+        note = outcomes.MEMORY_NOT_SAVED_INCOGNITO if incognito else outcomes.MEMORY_NOT_SAVED
+        if f"Correction: {note}" in result.text:  # copied from an earlier correction in the chat: one is enough
+            return ""
+        log.info("the reply claimed a memory save that did not happen; correcting it: %r", claim[:120])
+        return f"\n\nCorrection: {note}"
+
+    async def _memory_backs(self, claim: str) -> bool:
+        """True when a kept memory shares most of the meaningful words of ``claim`` (beyond the claim's own verbs)."""
+        words = [w for w in keyword_tokens(claim, 12) if w not in _MEMORY_CLAIM_WORDS]
+        if not words:
+            return False
+        try:
+            rows = await self.store.fetchall(
+                "SELECT f.content FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid"
+                " WHERE facts_fts MATCH ? AND f.state != 'superseded' LIMIT 20",
+                (" OR ".join(f'"{w}"*' for w in words),),  # a prefix, so "wake" finds "wakes"
+            )
+        except Exception as exc:  # no memory tables: nothing backs it
+            log.debug("memory look-up for a claimed save skipped: %s", exc)
+            return False
+
+        def same(a: str, b: str) -> bool:  # "wake" and "wakes", "prefer" and "prefers"
+            return a == b or (min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)))
+
+        for row in rows:
+            content = str(row["content"])
+            have = keyword_tokens(content, None)
+            # every name, place and number in the claim must be in the memory: "moved to London" never backs a claim
+            # that it saved "moved to Paris"
+            details = {d for d in new_details(claim, content) if d.lower() not in _CLAIM_DETAIL_SKIP}
+            if not details and sum(any(same(w, h) for h in have) for w in words) * 2 >= len(words):
+                return True
+        return False
 
     async def _persist_stopped(
         self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None,
