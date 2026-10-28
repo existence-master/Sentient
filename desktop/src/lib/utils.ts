@@ -145,12 +145,17 @@ const MIXED_CASE = new RegExp(
   'gi'
 )
 
-/** Marks a mixed-case name as one word when it stands alone or as a camelCase / PascalCase part ("myGitHubToken"). */
+/**
+ * Marks a mixed-case name as one word so the camelCase split leaves it whole ("myGitHubToken"). It is spaced off only
+ * where it starts a camelCase part or touches a digit ("oauth2"), so "github.com" keeps its dot.
+ */
 function keepMixedCase(m: string, i: number, s: string): string {
   const before = s[i - 1] ?? ''
   const after = s[i + m.length] ?? ''
-  const starts = !/[a-zA-Z]/.test(before) || (/[a-z0-9]/.test(before) && /[A-Z]/.test(m[0]))
-  return starts && !/[a-z]/.test(after) ? ` ${m.toLowerCase()} ` : m
+  const camelStart = /[a-z0-9]/.test(before) && /[A-Z]/.test(m[0])
+  const digit = /[0-9]/.test(before) || /[0-9]/.test(after)
+  const word = m.toLowerCase()
+  return (camelStart || digit) && !/[a-z]/.test(after) ? ` ${word} ` : word
 }
 
 /** snake_case / kebab-case / camelCase -> "Sentence case", keeping names like Claude Code or GitHub as written. */
@@ -161,7 +166,7 @@ export function humanize(key: string): string {
     .replace(/[\s_-]+/g, ' ')
     .trim()
     .toLowerCase()
-    .replace(/\b[a-z0-9]+\b/g, (w) => NAMES[w] ?? w)
+    .replace(/\b[a-z0-9]+\b/g, (w) => (Object.hasOwn(NAMES, w) ? NAMES[w] : w))
   for (const [phrase, name] of PHRASES) words = words.replace(phrase, name)
   return words.charAt(0).toUpperCase() + words.slice(1)
 }

@@ -47,3 +47,14 @@ test('names only match whole words', () => {
   assert.equal(humanize('said_aid'), 'Said aid')
   assert.equal(humanize('claudette'), 'Claudette')
 })
+
+test('a key named like an Object property reads as itself', () => {
+  assert.equal(humanize('constructor'), 'Constructor')
+  assert.equal(humanize('constructor_count'), 'Constructor count')
+})
+
+test('a name next to punctuation keeps it, and a name next to a digit is split off', () => {
+  assert.equal(humanize('github.com'), 'GitHub.com')
+  assert.equal(humanize('repo (GitHub)'), 'Repo (GitHub)')
+  assert.equal(humanize('oauth2Token'), 'OAuth 2 token')
+})
