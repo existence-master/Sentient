@@ -137,11 +137,28 @@ const PHRASES: [RegExp, string][] = [
   [/\bhome assistant\b/gi, 'Home Assistant']
 ]
 
+/** Names with a capital inside them (GitHub, OAuth, OpenAI) that the camelCase split below would break apart. */
+const MIXED_CASE = new RegExp(
+  Object.values(NAMES)
+    .filter((n) => n !== n.toUpperCase() && /.[A-Z]/.test(n))
+    .join('|'),
+  'gi'
+)
+
+/** Marks a mixed-case name as one word when it stands alone or as a camelCase / PascalCase part ("myGitHubToken"). */
+function keepMixedCase(m: string, i: number, s: string): string {
+  const before = s[i - 1] ?? ''
+  const after = s[i + m.length] ?? ''
+  const starts = !/[a-zA-Z]/.test(before) || (/[a-z0-9]/.test(before) && /[A-Z]/.test(m[0]))
+  return starts && !/[a-z]/.test(after) ? ` ${m.toLowerCase()} ` : m
+}
+
 /** snake_case / kebab-case / camelCase -> "Sentence case", keeping names like Claude Code or GitHub as written. */
 export function humanize(key: string): string {
   let words = key
+    .replace(MIXED_CASE, keepMixedCase)
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
+    .replace(/[\s_-]+/g, ' ')
     .trim()
     .toLowerCase()
     .replace(/\b[a-z0-9]+\b/g, (w) => NAMES[w] ?? w)

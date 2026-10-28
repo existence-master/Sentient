@@ -28,6 +28,20 @@ test('product names and short forms keep their spelling', () => {
   assert.equal(humanize('suggestion_ttl_hours'), 'Suggestion TTL hours')
 })
 
+test('mixed-case names survive schema titles and camelCase or PascalCase keys', () => {
+  assert.equal(humanize('GitHub OAuth Client ID'), 'GitHub OAuth client ID')
+  assert.equal(humanize('ChatGPT Client ID'), 'ChatGPT client ID')
+  assert.equal(humanize('OpenAI API Key'), 'OpenAI API key')
+  assert.equal(humanize('WhatsApp Bridge'), 'WhatsApp bridge')
+  assert.equal(humanize('githubOAuthClientId'), 'GitHub OAuth client ID')
+  assert.equal(humanize('myGitHubToken'), 'My GitHub token')
+  assert.equal(humanize('GitHubToken'), 'GitHub token')
+  assert.equal(humanize('openAIKey'), 'OpenAI key')
+  assert.equal(humanize('useChatGPT'), 'Use ChatGPT')
+  assert.equal(humanize('whatsAppEnabled'), 'WhatsApp enabled')
+  assert.equal(humanize('GITHUB_TOKEN'), 'GitHub token')
+})
+
 test('names only match whole words', () => {
   assert.equal(humanize('valid_idea'), 'Valid idea')
   assert.equal(humanize('said_aid'), 'Said aid')
