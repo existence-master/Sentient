@@ -319,6 +319,8 @@ async def move_memory(request: Request, memory_id: int, body: dict):
 @router.delete("/{memory_id}")
 async def delete_memory(request: Request, memory_id: int):
     mem = _memory(request)
+    if await mem.get_fact(memory_id) is None:  # so a failure below can't pass a missing id off as deleted (#534)
+        raise HTTPException(404, f"memory {memory_id} not found")
     try:
         deleted = await mem.erase(memory_id, notify=True)  # with everything derived from it (#152)
     except Exception:

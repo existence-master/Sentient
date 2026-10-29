@@ -113,3 +113,27 @@ def test_a_failed_cleanup_step_is_flagged_and_a_clean_delete_is_not(client, monk
     monkeypatch.undo()
     assert client.delete(f"/api/memories/{other}").json() == {"deleted": True}
     assert client.delete("/api/memories/4242").status_code == 404
+
+
+def test_a_missing_id_is_404_even_when_the_erase_would_fail(client, monkeypatch):
+    mem = client.core.memory
+
+    async def erase_fails(fid, *, notify=False):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(mem, "erase", erase_fails)
+    r = client.delete("/api/memories/4242")
+    assert r.status_code == 404
+
+
+def test_an_unreadable_queue_counts_as_cleanup_pending(client, monkeypatch):
+    mem, store = client.core.memory, client.core.store
+    real_fetchone = store.fetchone
+
+    async def fetchone_failing_on_queue(sql, *args, **kwargs):
+        if "FROM pending_erase" in sql:
+            raise RuntimeError("database is locked")
+        return await real_fetchone(sql, *args, **kwargs)
+
+    monkeypatch.setattr(store, "fetchone", fetchone_failing_on_queue)
+    assert client.portal.call(mem.cleanup_pending, 1) is True
