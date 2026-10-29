@@ -92,7 +92,7 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.replace("\r\n", "\n").strip().encode("utf-8")).hexdigest()
 
 
-def _without_fenced_code(body: str) -> str:
+def _without_fenced_code(body: str) -> tuple[str, tuple[str, int] | None]:
     """Blank fenced code while preserving the surrounding Markdown lines."""
     fence: tuple[str, int] | None = None
     lines: list[str] = []
@@ -115,18 +115,25 @@ def _without_fenced_code(body: str) -> str:
         ):
             fence = None
         lines.append("")
-    return "\n".join(lines)
+    return "\n".join(lines), fence
 
 
 def ensure_skill_sections(body: str) -> str:
     """Add missing fields to a new or rewritten skill without altering existing sections."""
     out = body.strip()
-    searchable = _without_fenced_code(out)
+    visible = re.sub(r"<!--.*?-->", lambda m: "\n" * m.group().count("\n"), out, flags=re.DOTALL)
+    searchable, open_fence = _without_fenced_code(visible)
+    missing = []
     for section in SKILL_SECTIONS:
-        heading = rf"^ {{0,3}}#+[ \t]+{re.escape(section)}(?:[ \t]+#+)?[ \t]*$"
+        heading = rf"^ {{0,3}}#{{1,6}}[ \t]+{re.escape(section)}(?:[ \t]+#+)?[ \t]*$"
         if not re.search(heading, searchable, flags=re.IGNORECASE | re.MULTILINE):
-            separator = "\n\n" if out else ""
-            out += f"{separator}## {section}\n{_SECTION_PLACEHOLDERS[section]}"
+            missing.append(section)
+    if missing and open_fence is not None:
+        marker, length = open_fence
+        out += "\n" + marker * length
+    for section in missing:
+        separator = "\n\n" if out else ""
+        out += f"{separator}## {section}\n{_SECTION_PLACEHOLDERS[section]}"
     return out
 
 
@@ -474,7 +481,9 @@ class SkillLibrary:
             render_skill(
                 name,
                 description if description is not None else skill.description,
-                ensure_skill_sections(body) if body is not None else skill.body,
+                ensure_skill_sections(body)
+                if body is not None and body.strip() != skill.body.strip()
+                else skill.body,
                 author=skill.author,
                 version=skill.version_int + (1 if skill.state == "active" else 0),
                 tags=tags if tags is not None else skill.tags,

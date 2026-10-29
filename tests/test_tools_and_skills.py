@@ -1,7 +1,12 @@
 import pytest
 
 from sentient import paths
-from sentient.skills.loader import SKILL_SECTIONS, SkillLibrary, parse_skill_file
+from sentient.skills.loader import (
+    SKILL_SECTIONS,
+    SkillLibrary,
+    ensure_skill_sections,
+    parse_skill_file,
+)
 from sentient.tools.base import Risk, ToolContext, tool
 from sentient.tools.registry import ToolRegistry
 
@@ -108,12 +113,13 @@ def test_skill_section_headings_inside_fences_do_not_count(isolated_home):
     )
 
 
+@pytest.mark.parametrize("submitted_body", [None, "same", "whitespace"])
 @pytest.mark.parametrize("target", ["active", "pending", "archived"])
 @pytest.mark.parametrize(
     "changes",
     [{"tags": ["email"]}, {"description": "Updated description"}, {"requires_tools": ["gmail"]}],
 )
-def test_metadata_edits_preserve_legacy_skill_body(isolated_home, target, changes):
+def test_metadata_edits_preserve_legacy_skill_body(isolated_home, target, changes, submitted_body):
     paths.ensure_layout()
     lib = SkillLibrary()
     base = {"active": lib.root, "pending": lib.pending_dir, "archived": lib.archived_dir}[target]
@@ -125,12 +131,15 @@ def test_metadata_edits_preserve_legacy_skill_body(isolated_home, target, change
         encoding="utf-8",
     )
 
+    if submitted_body is not None:
+        changes = {**changes, "body": body if submitted_body == "same" else f"\n{body}\n"}
     updated = lib.edit("legacy-digest", target=target, **changes)
 
     assert updated.body == body
     assert updated.version_int == (4 if target == "active" else 3)
     for field, value in changes.items():
-        assert getattr(updated, field) == value
+        if field != "body":
+            assert getattr(updated, field) == value
 
 
 def test_explicit_skill_body_edits_add_missing_sections(isolated_home):
@@ -153,3 +162,17 @@ def test_skill_requires_tools_filter(isolated_home):
     assert lib.get("mail-triage") is None
     lib.reload(available_plugins={"memory", "gmail"})
     assert lib.get("mail-triage") is not None
+
+
+@pytest.mark.parametrize("hidden", ["####### Approval", "<!--\n## Approval\n-->"])
+def test_non_headings_do_not_suppress_skill_sections(hidden):
+    result = ensure_skill_sections(f"## Procedure\nDo it.\n{hidden}")
+    assert "\n## Approval\n- Follow each tool's normal approval rules." in result
+
+
+@pytest.mark.parametrize("marker", ["```", "~~~~"])
+def test_missing_sections_follow_the_closing_fence(marker):
+    body = f"## Procedure\nDo it.\n{marker}markdown\n## Approval\nExample."
+    result = ensure_skill_sections(body)
+    assert result.startswith(body + "\n" + marker + "\n\n## When to use\n")
+    assert ensure_skill_sections(result) == result
