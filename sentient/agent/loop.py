@@ -93,7 +93,7 @@ from sentient.llm.provider import (
 )
 from sentient.memory import review as memory_review
 from sentient.memory import scopes as memory_scopes
-from sentient.memory.facts import FactMemory
+from sentient.memory.facts import FactMemory, keyword_tokens, new_details
 from sentient.memory.sources import MemorySources
 from sentient.memory.workspace import Workspace
 from sentient.services import cancel_tasks
@@ -109,6 +109,7 @@ from sentient.tools.base import (
     describe_call,
     effective_risk,
     is_unprompted,
+    without_memory_tools,
 )
 from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
@@ -191,12 +192,9 @@ REPEAT_NUDGE = (
     "Do not call it again with these arguments. Try something different, or answer the user with what you have."
 )
 # Incognito chats (#154): tools that would keep something from the chat are never offered or run, and the model is
-# told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory look-ups go too.
+# told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory tools go too: that is the
+# turn's ``memory_allowed`` decision (#525). ``run_loop`` leaves both out of every run of the chat, helpers included.
 INCOGNITO_LEARNING_TOOLS = frozenset({"memory_remember", "skill_save"})
-INCOGNITO_MEMORY_TOOLS = frozenset({
-    "memory_recall", "memory_search_by_source", "memory_search_history", "history_semantic_search",
-    "history_time_search", "user_model_ask",
-})
 INCOGNITO_NOTE = (
     "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
     "user closes it. Never say you will remember something from it."
@@ -299,6 +297,16 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
         fixed.append(m)
         i += 1
     return fixed
+
+
+# the words of a memory claim itself, left out when a kept memory is matched against it (#526)
+_MEMORY_CLAIM_WORDS = frozenset({
+    "saved", "stored", "noted", "recorded", "remembered", "remember", "memorized", "memorised", "memorize",
+    "memorise", "logged", "kept", "added", "put", "written", "jotted", "down", "made", "note", "mental", "memory",
+    "memories", "long", "term", "got", "sure", "okay", "fact", "now", "ll", "ve",
+})
+# capitalized words of a claim that are not names: "I", "I've", "AM" in "6:30 AM"
+_CLAIM_DETAIL_SKIP = frozenset({"i", "i've", "i'll", "i'm", "am", "pm", "yes", "got", "sure"})
 
 
 def browser_click_history(rows: list[dict]) -> list[dict]:
@@ -442,6 +450,9 @@ class LoopResult:
     handed_off: list[dict] = field(default_factory=list)
     # the outcome checks of the calls that ran (#165, ``sentient.agent.outcomes``), in order; written by code only
     checks: list[dict] = field(default_factory=list)
+    # memory_remember calls in this run, recorded by code so a chat reply cannot claim a save that never happened
+    # (#526): [{ok}]
+    memory_saves: list[dict] = field(default_factory=list)
     # browser clicks attempted in this run, recorded by code so a final reply cannot invent one (#402)
     browser_clicks: list[dict] = field(default_factory=list)
     # completed browser clicks from earlier chat turns, consulted only for an explicit reference to one (#402)
@@ -723,15 +734,24 @@ class Agent:
     async def system_prompt(self, user_text: str, channel: str, session: dict | None = None) -> str:
         return (await self._system_prompt_with_sources(user_text, channel, session))[0]
 
+    def memory_allowed(self, session: dict | None, channel: str) -> bool:
+        """Whether a chat turn may use what Sentient knows about the user (#525): memories, the profile, the user
+        model and other chats. Decided once per turn, here only; the turn puts it in ``ToolContext.memory_allowed``
+        so its prompt, its tools and everything it starts (helpers, the reader, scripts) follow the same answer.
+        False in an incognito chat while ``chat.incognito_uses_memory`` is off. Another kind of turn without memory
+        (an app's turn the user hasn't allowed to read memories, #479) adds its condition here."""
+        incognito = bool((session or {}).get("incognito"))
+        return not incognito or self.config.chat.incognito_uses_memory
+
     async def _system_prompt_with_sources(
-        self, user_text: str, channel: str, session: dict | None = None
+        self, user_text: str, channel: str, session: dict | None = None, *, memory_allowed: bool | None = None
     ) -> tuple[str, MemorySources, list[dict]]:
         """The system prompt, the memories put into it (recalled facts, user-model insights) and the pieces of the
         user's notes put into it (#354). An incognito chat (#154) reads memory and notes only while
         ``chat.incognito_uses_memory`` is on, and is told nothing will be kept. The chat's memory scope (#155) decides
         which facts are recalled; a work or project chat also leaves out the personal profile files."""
         incognito = bool((session or {}).get("incognito"))
-        reads_memory = not incognito or self.config.chat.incognito_uses_memory
+        reads_memory = self.memory_allowed(session, channel) if memory_allowed is None else memory_allowed
         scope = memory_scopes.of_session(self.config, session)
         personal = memory_scopes.is_personal(scope)
         if reads_memory:
@@ -773,12 +793,6 @@ class Agent:
         if incognito:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
         return prompt, sources, notes
-
-    def _incognito_tools(self, tool_names: list[str] | None) -> list[str]:
-        """``tool_names`` (None: every offered tool) without the tools an incognito chat must not use (#154)."""
-        names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
-        left_out = INCOGNITO_LEARNING_TOOLS | (frozenset() if self.config.chat.incognito_uses_memory else INCOGNITO_MEMORY_TOOLS)
-        return [n for n in names if n not in left_out]
 
     def _read_only_apps(self) -> list[str]:
         """Names of the connected apps set to Read only that have tools Sentient now can't use (#141), so the model
@@ -846,6 +860,14 @@ class Agent:
         unprompted = is_unprompted(getattr(ctx, "origin", None)) or is_unprompted(source)
         if unprompted and not is_unprompted(getattr(ctx, "origin", None)):
             ctx.origin = str(source).strip().lower()  # tools this run starts (a subagent) must see it as unprompted too
+        if ctx.incognito or not ctx.memory_allowed:
+            # whoever built the list (a chat turn, a helper, a task), a run is never offered more than its turn
+            # (#525): nothing that would keep something from an incognito chat (#154), and no memory tools without
+            # memory. A call made anyway is refused as not offered, and the tools themselves refuse too.
+            names = tool_names if tool_names is not None else [t.name for t in self.registry.tools()]
+            if ctx.incognito:
+                names = [n for n in names if n not in INCOGNITO_LEARNING_TOOLS]
+            tool_names = names if ctx.memory_allowed else without_memory_tools(names)
         tools = self.registry.openai_schemas(tool_names) or None
         result.tool_result_limit = await self.tool_result_limit(role, model)
         rounds = max_rounds or self.config.models.max_tool_rounds
@@ -1635,6 +1657,8 @@ class Agent:
                     res.get("clicked") or approval.get("target") or tc.arguments.get("ref", "")
                 ) if isinstance(res, dict) else tc.arguments.get("ref", ""),
             })
+        if tc.name == "memory_remember":  # a near-duplicate it skipped or a fact sent to Review worked too (#526)
+            result.memory_saves.append({"ok": ran and not is_error and not err and outcomes.result_problem(res) is None})
         if ran and p.tool is not None and not ctx.untrusted:
             if brings_untrusted(p.tool):
                 ctx.untrusted = untrusted_source(p.tool, self.registry)
@@ -1899,7 +1923,10 @@ class Agent:
 
             session = await self.store.get_session(session_id)
             incognito = bool((session or {}).get("incognito"))
-            system, sources, notes = await self._system_prompt_with_sources(user_text, channel, session)
+            memory_allowed = self.memory_allowed(session, channel)  # once per turn (#525)
+            system, sources, notes = await self._system_prompt_with_sources(
+                user_text, channel, session, memory_allowed=memory_allowed
+            )
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
             convo = self.mark_outside_messages(history_to_openai(history))
             result.browser_click_history.extend(browser_click_history(history))
@@ -1935,6 +1962,7 @@ class Agent:
             messages: list[dict] = [{"role": "system", "content": system}, *convo]
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = incognito
+            ctx.memory_allowed = memory_allowed  # helpers, the reader and scripts it starts copy it (#525)
             ctx.memory_scope = memory_scopes.of_session(self.config, session)  # recall and saving use it (#155)
             # a turn an MCP app steers is outside content from the start (issue #443): its text is not
             # the user's words, so it never fills user_words, and the chat is marked before anything
@@ -1974,8 +2002,6 @@ class Agent:
             except Exception as exc:  # selection must never break a turn
                 log.warning("tool selection failed, offering all tools: %s", exc)
                 tool_names = None
-            if incognito:
-                tool_names = self._incognito_tools(tool_names)
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
                 mid = await self.store.add_message(session_id, role_, content, **fields)
@@ -2034,6 +2060,9 @@ class Agent:
         leftover = release()
 
         try:  # the turn counts as busy until here, also when the caller stops reading at Done
+            if correction := await self._memory_correction(result, incognito):
+                result.text += correction
+                yield TextDelta(text=correction, **ev)
             if result.error and not result.text:
                 # the reply failed before it said anything: nothing is saved, but every turn still ends with one
                 # done (docs/API.md section 1, #334), so the window and the messaging apps know it is over
@@ -2132,6 +2161,7 @@ class Agent:
             session = await self.store.get_session(session_id)
             ctx = self.tool_context(session_id, channel)
             ctx.incognito = bool((session or {}).get("incognito"))
+            ctx.memory_allowed = self.memory_allowed(session, channel)
             ctx.extra = {**ctx.extra, "quick": True, "quick_language": plan.language.code}
             results: list[tuple[Any, bool]] = []
             checks: list[dict] = []
@@ -2323,6 +2353,49 @@ class Agent:
             return TrustResult(was=was, trusted=False, still=still, writer=writer)
         self._publish_mark(session_id, "")
         return TrustResult(was=was, trusted=True)
+
+    async def _memory_correction(self, result: LoopResult, incognito: bool) -> str:
+        """The line added to a chat reply that says it saved a memory when no memory_remember call worked this turn
+        (#526), or "". A claim that a saved memory already backs (an earlier turn's save, or one made from the Memory
+        screen) is left alone: "Yes, I saved that you wake up at 7" can be about a save before this turn."""
+        if result.error or not result.text:
+            return ""
+        claim = outcomes.unmade_memory_claim(result.text, result.memory_saves)
+        if not claim or await self._memory_backs(claim):
+            return ""
+        note = outcomes.MEMORY_NOT_SAVED_INCOGNITO if incognito else outcomes.MEMORY_NOT_SAVED
+        if f"Correction: {note}" in result.text:  # copied from an earlier correction in the chat: one is enough
+            return ""
+        log.info("the reply claimed a memory save that did not happen; correcting it: %r", claim[:120])
+        return f"\n\nCorrection: {note}"
+
+    async def _memory_backs(self, claim: str) -> bool:
+        """True when a kept memory shares most of the meaningful words of ``claim`` (beyond the claim's own verbs)."""
+        words = [w for w in keyword_tokens(claim, 12) if w not in _MEMORY_CLAIM_WORDS]
+        if not words:
+            return False
+        try:
+            rows = await self.store.fetchall(
+                "SELECT f.content FROM facts_fts JOIN facts f ON f.id = facts_fts.rowid"
+                " WHERE facts_fts MATCH ? AND f.state != 'superseded' LIMIT 20",
+                (" OR ".join(f'"{w}"*' for w in words),),  # a prefix, so "wake" finds "wakes"
+            )
+        except Exception as exc:  # no memory tables: nothing backs it
+            log.debug("memory look-up for a claimed save skipped: %s", exc)
+            return False
+
+        def same(a: str, b: str) -> bool:  # "wake" and "wakes", "prefer" and "prefers"
+            return a == b or (min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)))
+
+        for row in rows:
+            content = str(row["content"])
+            have = keyword_tokens(content, None)
+            # every name, place and number in the claim must be in the memory: "moved to London" never backs a claim
+            # that it saved "moved to Paris"
+            details = {d for d in new_details(claim, content) if d.lower() not in _CLAIM_DETAIL_SKIP}
+            if not details and sum(any(same(w, h) for h in have) for w in words) * 2 >= len(words):
+                return True
+        return False
 
     async def _persist_stopped(
         self, session_id: str, partial: str, sources: MemorySources, used: AnswerSources | None = None,
