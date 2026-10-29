@@ -146,16 +146,26 @@ const MIXED_CASE = new RegExp(
 )
 
 /**
- * Marks a mixed-case name as one word so the camelCase split leaves it whole ("myGitHubToken"). It is spaced off only
- * where it starts a camelCase part or touches a digit ("oauth2"), so "github.com" keeps its dot.
+ * Whether a word starts or ends at position p of s: next to a non-letter, at a lower-to-upper step ("my|GitHub") or
+ * before the last capital of a run that a lowercase letter follows ("open|AI|Key").
+ */
+function isWordEdge(s: string, p: number): boolean {
+  const [a = '', b = '', c = ''] = [s[p - 1], s[p], s[p + 1]]
+  if (!/[a-z]/i.test(a) || !/[a-z]/i.test(b)) return true
+  return /[A-Z]/.test(b) && (/[a-z]/.test(a) || /[a-z]/.test(c))
+}
+
+/**
+ * Marks a mixed-case name as one word so the camelCase split leaves it whole ("myGitHubToken"). A match that is only
+ * part of a word ("openAirQuality", "coAuthor") is left as written. The name is spaced off only from a letter or digit
+ * ("oauth2"), so "github.com" keeps its dot.
  */
 function keepMixedCase(m: string, i: number, s: string): string {
-  const before = s[i - 1] ?? ''
-  const after = s[i + m.length] ?? ''
-  const camelStart = /[a-z0-9]/.test(before) && /[A-Z]/.test(m[0])
-  const digit = /[0-9]/.test(before) || /[0-9]/.test(after)
-  const word = m.toLowerCase()
-  return (camelStart || digit) && !/[a-z]/.test(after) ? ` ${word} ` : word
+  const end = i + m.length
+  if (!isWordEdge(s, i) || !isWordEdge(s, end)) return m
+  const pre = /[a-z0-9]/i.test(s[i - 1] ?? '') ? ' ' : ''
+  const post = /[a-z0-9]/i.test(s[end] ?? '') ? ' ' : ''
+  return pre + m.toLowerCase() + post
 }
 
 /** snake_case / kebab-case / camelCase -> "Sentence case", keeping names like Claude Code or GitHub as written. */

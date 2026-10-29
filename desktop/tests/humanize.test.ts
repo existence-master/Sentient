@@ -58,3 +58,13 @@ test('a name next to punctuation keeps it, and a name next to a digit is split o
   assert.equal(humanize('repo (GitHub)'), 'Repo (GitHub)')
   assert.equal(humanize('oauth2Token'), 'OAuth 2 token')
 })
+
+test('a name that is only part of a word leaves that word alone', () => {
+  assert.equal(humanize('openAirQuality'), 'Open air quality')
+  assert.equal(humanize('coAuthorName'), 'Co author name')
+  assert.equal(humanize('coAuthToken'), 'Co auth token')
+  assert.equal(humanize('whatsApplet'), 'Whats applet')
+  assert.equal(humanize('reopenAiKey'), 'Reopen AI key')
+  assert.equal(humanize('openAiModel'), 'OpenAI model')
+  assert.equal(humanize('APIGitHubToken'), 'API GitHub token')
+})
