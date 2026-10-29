@@ -54,15 +54,21 @@ export const SKILL_TEMPLATE = `# New skill
 ## When to use
 Describe the situation or request that should trigger this skill.
 
+## Inputs and access
+- Information, files, tools, or connected services needed
+
 ## Procedure
 1. First step
 2. Second step
 
-## Pitfalls
-- What to avoid
-
 ## Verification
 - How to tell it worked
+
+## Output
+- What to return or save
+
+## Approval
+- Steps that need approval, or normal tool approval rules
 `
 
 export function slugify(name: string): string {

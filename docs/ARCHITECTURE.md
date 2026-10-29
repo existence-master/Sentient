@@ -179,7 +179,7 @@ transcript for resume after restart, and stream progress to the window.
 
 ### Self-evolution with a human in the loop
 After substantial chats and task runs a background reviewer proposes a skill
-(SKILL.md with When to use / Procedure / Pitfalls / Verification). With
+(SKILL.md with When to use / Inputs and access / Procedure / Verification / Output / Approval). With
 `skills.write_approval` on, proposals wait in Skills → Pending. A curator
 retires unused skills; profile upkeep refreshes MEMORY.md and appends learned
 facts to USER.md without overwriting your own text.
