@@ -11,7 +11,7 @@ from sentient.evolution.log import log_event
 from sentient.skills import checks as skill_checks
 from sentient.skills import vet
 from sentient.skills.lint import has_danger, lint_text
-from sentient.skills.loader import render_skill, slugify, valid_name
+from sentient.skills.loader import ensure_skill_sections, render_skill, slugify, valid_name
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from sentient.tools.rules import OUTSIDE_KEY
 
@@ -107,6 +107,7 @@ async def skill_save(
         name = slugify(name)
     if not valid_name(name):
         return {"error": "skill name must be lowercase letters, digits and dashes (2-64 chars)"}
+    body = ensure_skill_sections(body)
     existing = lib.get_active_file(name)
     pending = bool(ctx.config.skills.write_approval)
     # never overwrite a skill the user edited or wrote: propose the change instead (#164)

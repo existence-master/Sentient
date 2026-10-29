@@ -290,7 +290,7 @@ def render_skill(
     if validate:
         meta["validate"] = validate
     front = yaml.dump(meta, Dumper=_Dumper, sort_keys=False, allow_unicode=True).strip()
-    return f"---\n{front}\n---\n\n{ensure_skill_sections(body)}\n"
+    return f"---\n{front}\n---\n\n{body.strip()}\n"
 
 
 class SkillLibrary:
@@ -405,7 +405,7 @@ class SkillLibrary:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             render_skill(
-                name, description, body, author=author, version=version, tags=tags,
+                name, description, ensure_skill_sections(body), author=author, version=version, tags=tags,
                 requires_tools=requires_tools, created_by_review=created_by_review,
                 browser_profile=current.browser_profile if current else None,
                 validate=validate if validate is not None else (current.validate if current else None),
@@ -474,7 +474,7 @@ class SkillLibrary:
             render_skill(
                 name,
                 description if description is not None else skill.description,
-                body if body is not None else skill.body,
+                ensure_skill_sections(body) if body is not None else skill.body,
                 author=skill.author,
                 version=skill.version_int + (1 if skill.state == "active" else 0),
                 tags=tags if tags is not None else skill.tags,

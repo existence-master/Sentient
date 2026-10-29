@@ -1,3 +1,5 @@
+import pytest
+
 from sentient import paths
 from sentient.skills.loader import SKILL_SECTIONS, SkillLibrary, parse_skill_file
 from sentient.tools.base import Risk, ToolContext, tool
@@ -104,6 +106,43 @@ def test_skill_section_headings_inside_fences_do_not_count(isolated_home):
     assert skill.body.endswith(
         "## Approval\n- Follow each tool's normal approval rules."
     )
+
+
+@pytest.mark.parametrize("target", ["active", "pending", "archived"])
+@pytest.mark.parametrize(
+    "changes",
+    [{"tags": ["email"]}, {"description": "Updated description"}, {"requires_tools": ["gmail"]}],
+)
+def test_metadata_edits_preserve_legacy_skill_body(isolated_home, target, changes):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    base = {"active": lib.root, "pending": lib.pending_dir, "archived": lib.archived_dir}[target]
+    path = base / "legacy-digest" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    body = "# Digest\n## When to use\nWeekly.\n## Procedure\nRead mail.\n## Pitfalls\nAvoid duplicates.\n## Verification\nCheck it."
+    path.write_text(
+        f"---\nname: legacy-digest\ndescription: Legacy digest\nversion: '3'\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+    updated = lib.edit("legacy-digest", target=target, **changes)
+
+    assert updated.body == body
+    assert updated.version_int == (4 if target == "active" else 3)
+    for field, value in changes.items():
+        assert getattr(updated, field) == value
+
+
+def test_explicit_skill_body_edits_add_missing_sections(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    lib.write("edited-skill", "A procedure", "## Procedure\nOriginal.")
+
+    updated = lib.edit("edited-skill", body="## Procedure\nUpdated.")
+
+    assert "Original." not in updated.body
+    assert "Updated." in updated.body
+    assert all(f"## {section}" in updated.body for section in SKILL_SECTIONS)
 
 
 def test_skill_requires_tools_filter(isolated_home):
