@@ -174,18 +174,23 @@ def _failed(content: str | None) -> bool:
     return isinstance(data, dict) and bool(data.get("error") or data.get("declined"))
 
 
+async def _fact_exists(mem, fact_id: int) -> bool:
+    """Whether the memory's row is there, without reading it: a row that can't be read must still be deletable."""
+    return await mem.store.fetchone("SELECT 1 FROM facts WHERE id = ?", (fact_id,)) is not None
+
+
 @tool("memory_forget", risk=Risk.send)
 async def memory_forget(ctx: ToolContext, fact_id: int) -> dict:
     """Permanently delete a remembered fact by id (from memory_recall). Use when the user asks you to forget something."""
     if ctx.memory is None:
         return {"error": "memory unavailable"}
     mem = ctx.memory
-    if await mem.get_fact(fact_id) is None:  # so a failure below can't pass a missing id off as deleted (#536)
+    if not await _fact_exists(mem, fact_id):  # so a failure below can't pass a missing id off as deleted (#536)
         return {"deleted": False, "id": fact_id}
     try:
         ok = await mem.erase(fact_id, notify=True)
     except Exception:
-        if await mem.get_fact(fact_id) is not None:
+        if await _fact_exists(mem, fact_id):
             log.exception("forgetting memory %s failed before it was deleted", fact_id)
             return {"error": DELETE_FAILED}
         # The memory is gone and memory upkeep finishes its queued cleanup, as the delete route says (#534, #536).
@@ -196,7 +201,7 @@ async def memory_forget(ctx: ToolContext, fact_id: int) -> dict:
         return {"deleted": True, "id": fact_id, "cleanup_pending": True, "note": CLEANUP_NOTE}
     if not ok:
         # an erase that aborted before touching anything leaves the memory in place
-        return {"error": DELETE_FAILED} if await mem.get_fact(fact_id) is not None else {"deleted": False, "id": fact_id}
+        return {"error": DELETE_FAILED} if await _fact_exists(mem, fact_id) else {"deleted": False, "id": fact_id}
     if await mem.cleanup_pending(fact_id):  # a cleanup step failed and waits for memory upkeep (#462)
         return {"deleted": True, "id": fact_id, "cleanup_pending": True, "note": CLEANUP_NOTE}
     return {"deleted": True, "id": fact_id}

@@ -213,3 +213,10 @@ def test_the_forget_tool_flags_a_failed_cleanup_step_and_not_a_clean_delete(clie
     monkeypatch.undo()
     assert out["deleted"] is True and out["cleanup_pending"] is True
     assert _forget_tool(client, other) == {"deleted": True, "id": other}
+
+
+def test_the_forget_tool_deletes_a_memory_whose_stored_topics_are_unreadable(client):
+    honda, _ = _seed(client)
+    client.portal.call(client.core.store.execute, "UPDATE facts SET topics = ? WHERE id = ?", ("not json", honda))
+    assert _forget_tool(client, honda) == {"deleted": True, "id": honda}
+    assert not _rows(client, "SELECT id FROM facts WHERE id = ?", (honda,))
