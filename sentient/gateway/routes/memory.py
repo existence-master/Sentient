@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import shutil
 import tempfile
 from pathlib import Path
@@ -17,6 +19,8 @@ from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.memory.personas import PERSONAS, render_persona
 from sentient.memory.topics import TOPICS
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/memories", tags=["memory"], dependencies=MCP_OK)
 
@@ -315,7 +319,19 @@ async def move_memory(request: Request, memory_id: int, body: dict):
 @router.delete("/{memory_id}")
 async def delete_memory(request: Request, memory_id: int):
     mem = _memory(request)
-    deleted = await mem.erase(memory_id, notify=True)  # with everything derived from it (#152)
+    try:
+        deleted = await mem.erase(memory_id, notify=True)  # with everything derived from it (#152)
+    except Exception:
+        if await mem.get_fact(memory_id) is not None:
+            log.exception("deleting memory %s failed before it was deleted", memory_id)
+            raise HTTPException(503, "couldn't delete this memory right now, try again") from None
+        # The memory is gone and its cleanup is queued: the hourly memory upkeep replays it (#462), so this delete
+        # worked and must not look like an error to the window (#534).
+        log.exception("memory %s was deleted, but finishing the delete failed; memory upkeep will finish its cleanup",
+                      memory_id)
+        with contextlib.suppress(Exception):  # forget() may have raised before it told the window
+            mem.publish("DELETE", memory_id)
+        return {"deleted": True, "cleanup_pending": True}
     if not deleted:
         # A False that left the memory in place means the erase aborted before
         # touching anything (its pending-cleanup row could not be recorded),
@@ -323,4 +339,6 @@ async def delete_memory(request: Request, memory_id: int):
         if await mem.get_fact(memory_id) is not None:
             raise HTTPException(503, "couldn't delete this memory right now, try again")
         raise HTTPException(404, f"memory {memory_id} not found")
+    if await mem.cleanup_pending(memory_id):  # a cleanup step failed and waits for memory upkeep (#462)
+        return {"deleted": True, "cleanup_pending": True}
     return {"deleted": True}
