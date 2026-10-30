@@ -1893,7 +1893,11 @@ every model refuses says so the same way: "Memories not saved from your chats", 
 - `PATCH /api/memories/{id}` `{scope}` → `Memory`: moves it to another scope (below). 400 empty `scope`, 404 if missing.
   `{state: "disputed"|"current"}` → `Memory`: the user says it isn't right (kept, out of every prompt) or is (current,
   `confidence` 1.0; a superseded memory comes back). 400 another state.
-- `DELETE /api/memories/{id}` → `{deleted: true}` (404 if missing), with everything derived from it (below)
+- `DELETE /api/memories/{id}` → `{deleted: true, cleanup_pending?: true}` (404 if missing), with everything derived
+  from it (below). `cleanup_pending: true` means the memory is gone but a step of removing what came from it failed
+  and waits in a queue that the hourly memory upkeep replays until it succeeds, for up to 7 days (#462); it is still
+  a successful delete (#534). 503 "try again" when the delete failed before the memory was deleted, which is then
+  still there.
 - `DELETE /api/memories/source/{source}` → `{deleted, unlinked}`: forgets the memories learned from `source`. A memory
   another source backs too is not deleted: it loses this source and keeps the others (`unlinked`), see "Sources and
   forgetting" below.

@@ -38,12 +38,11 @@ from sentient.memory.topics import TOPIC_NAMES
 from sentient.memory.vectors import cosine
 from sentient.services import Service, cancel_tasks
 from sentient.skills import checks as skill_checks
-from sentient.skills.loader import render_skill, slugify, valid_name
+from sentient.skills.loader import ensure_skill_sections, render_skill, slugify, valid_name
 from sentient.store.db import after_watermark, next_watermark, now_iso
 
 log = logging.getLogger(__name__)
 
-SECTIONS = ["When to use", "Procedure", "Pitfalls", "Verification"]
 TRANSCRIPT_BUDGET = 14_000
 REVIEW_LOOKBACK_DAYS = 3
 STABLE_TOPICS = set(TOPIC_NAMES) - {"Miscellaneous"}
@@ -82,14 +81,6 @@ def _parse_ts(value: Any) -> datetime | None:
 
 async def _maybe_await(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
-
-
-def ensure_sections(body: str) -> str:
-    out = body.strip()
-    for sec in SECTIONS:
-        if not re.search(rf"^#+\s*{re.escape(sec)}\b", out, flags=re.IGNORECASE | re.MULTILINE):
-            out += f"\n\n## {sec}\n- (none noted yet)"
-    return out
 
 
 def _count(value: Any) -> int:
@@ -511,7 +502,7 @@ class EvolutionService(Service):
         requires = [str(t) for t in raw.get("requires_tools") or [] if str(t) in plugin_ids]
         tags = [str(t) for t in raw.get("tags") or []][:8]
         validate = skill_checks.merge(existing.validate if existing else [], skill_checks.parse(raw.get("validate"))[0])
-        body = ensure_sections(body)
+        body = ensure_skill_sections(body)
         report = await self.check_skill(name, validate, origin=origin, description=description, body=body)
         if skill_checks.failure(report):
             return None  # a skill whose own check fails isn't proposed (#386)
@@ -616,7 +607,7 @@ class EvolutionService(Service):
         while lib.get_any(name) or (lib.pending_dir / name).exists():
             n += 1
             name = f"{base[:58]}-{n}"
-        body = ensure_sections(body)
+        body = ensure_skill_sections(body)
         if refs:
             body = f"{body.rstrip()}\n\n{learn.reference_section(refs)}"
         # how to check it: a knowledge skill's reference files are all there and intact (#386). Sentient drafts this
@@ -862,7 +853,7 @@ class EvolutionService(Service):
         if decision not in {"patch", "repair", "update"} or len(body) < 80:
             log.info("no usable repair for %s (%s: %s)", name, decision, str(raw.get("reason") or "")[:200])
             return None
-        body = ensure_sections(body)  # adds any missing standard section; a fix need not repeat the headings
+        body = ensure_skill_sections(body)  # a fix need not repeat every standard heading
         if " ".join(body.split()) == " ".join(current.body.split()):
             return None
         description = " ".join(str(raw.get("description") or "").split()) or current.description

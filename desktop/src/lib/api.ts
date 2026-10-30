@@ -750,7 +750,8 @@ export const api = {
     setState: (id: number, state: 'current' | 'disputed') => http.patch<Memory>(`/api/memories/${id}`, { state }),
     resetScope: (scope: string) => http.delete<{ deleted: number }>(`/api/memories/scope/${enc(scope)}`),
     update: (id: number, content: string) => http.put<Memory>(`/api/memories/${id}`, { content }),
-    delete: (id: number) => http.delete<{ deleted: boolean }>(`/api/memories/${id}`),
+    /** `cleanup_pending`: deleted, but some of what came from it is removed by the next hourly upkeep (#534). */
+    delete: (id: number) => http.delete<{ deleted: boolean; cleanup_pending?: boolean }>(`/api/memories/${id}`),
     deleteBySource: (source: string) => http.delete<{ deleted: number; unlinked: number }>(`/api/memories/source/${enc(source)}`),
     /** What disconnecting ``source`` with "Also forget" would delete (#153): app:<id>, channel:<id>, device:<id>, folder:<id>. */
     forgetPreview: (source: string) => http.get<ForgetCounts>('/api/memories/forget-preview', { query: { source } }),

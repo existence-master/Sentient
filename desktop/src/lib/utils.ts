@@ -104,13 +104,80 @@ export function safeJsonParse<T = unknown>(text: string | null | undefined, fall
   }
 }
 
-/** snake_case / kebab-case / camelCase -> "Sentence case". */
+/** Names and short forms that keep their own spelling inside a sentence-case label (#454). */
+const NAMES: Record<string, string> = {
+  ai: 'AI',
+  api: 'API',
+  chatgpt: 'ChatGPT',
+  claude: 'Claude',
+  cpu: 'CPU',
+  discord: 'Discord',
+  docker: 'Docker',
+  github: 'GitHub',
+  gmail: 'Gmail',
+  gpu: 'GPU',
+  id: 'ID',
+  kb: 'KB',
+  mb: 'MB',
+  mcp: 'MCP',
+  oauth: 'OAuth',
+  obsidian: 'Obsidian',
+  ollama: 'Ollama',
+  openai: 'OpenAI',
+  stt: 'STT',
+  telegram: 'Telegram',
+  ttl: 'TTL',
+  tts: 'TTS',
+  url: 'URL',
+  usd: 'USD',
+  whatsapp: 'WhatsApp'
+}
+const PHRASES: [RegExp, string][] = [
+  [/\bClaude code\b/g, 'Claude Code'],
+  [/\bhome assistant\b/gi, 'Home Assistant']
+]
+
+/** Names with a capital inside them (GitHub, OAuth, OpenAI) that the camelCase split below would break apart. */
+const MIXED_CASE = new RegExp(
+  Object.values(NAMES)
+    .filter((n) => n !== n.toUpperCase() && /.[A-Z]/.test(n))
+    .join('|'),
+  'gi'
+)
+
+/**
+ * Whether a word starts or ends at position p of s: next to a non-letter, at a lower-to-upper step ("my|GitHub") or
+ * before the last capital of a run that a lowercase letter follows ("open|AI|Key").
+ */
+function isWordEdge(s: string, p: number): boolean {
+  const [a = '', b = '', c = ''] = [s[p - 1], s[p], s[p + 1]]
+  if (!/[a-z]/i.test(a) || !/[a-z]/i.test(b)) return true
+  return /[A-Z]/.test(b) && (/[a-z]/.test(a) || /[a-z]/.test(c))
+}
+
+/**
+ * Marks a mixed-case name as one word so the camelCase split leaves it whole ("myGitHubToken"). A match that is only
+ * part of a word ("openAirQuality", "coAuthor") is left as written. The name is spaced off only from a letter or digit
+ * ("oauth2"), so "github.com" keeps its dot.
+ */
+function keepMixedCase(m: string, i: number, s: string): string {
+  const end = i + m.length
+  if (!isWordEdge(s, i) || !isWordEdge(s, end)) return m
+  const pre = /[a-z0-9]/i.test(s[i - 1] ?? '') ? ' ' : ''
+  const post = /[a-z0-9]/i.test(s[end] ?? '') ? ' ' : ''
+  return pre + m.toLowerCase() + post
+}
+
+/** snake_case / kebab-case / camelCase -> "Sentence case", keeping names like Claude Code or GitHub as written. */
 export function humanize(key: string): string {
-  const words = key
+  let words = key
+    .replace(MIXED_CASE, keepMixedCase)
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
+    .replace(/[\s_-]+/g, ' ')
     .trim()
     .toLowerCase()
+    .replace(/\b[a-z0-9]+\b/g, (w) => (Object.hasOwn(NAMES, w) ? NAMES[w] : w))
+  for (const [phrase, name] of PHRASES) words = words.replace(phrase, name)
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 

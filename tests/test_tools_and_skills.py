@@ -1,5 +1,12 @@
+import pytest
+
 from sentient import paths
-from sentient.skills.loader import SkillLibrary
+from sentient.skills.loader import (
+    SKILL_SECTIONS,
+    SkillLibrary,
+    ensure_skill_sections,
+    parse_skill_file,
+)
 from sentient.tools.base import Risk, ToolContext, tool
 from sentient.tools.registry import ToolRegistry
 
@@ -49,6 +56,104 @@ def test_skill_roundtrip_and_pending(isolated_home):
     assert lib.get("secret-sauce").author == "assistant"
 
 
+def test_new_skills_get_the_six_field_shape_and_legacy_skills_still_load(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    path = lib.write("new-skill", "A new procedure", "# New skill\n## Procedure\n1. Do it.")
+    new = parse_skill_file(path)
+    assert new is not None
+    assert [f"## {section}" in new.body for section in SKILL_SECTIONS] == [True] * 6
+
+    legacy_path = lib.root / "legacy-skill" / "SKILL.md"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(
+        "---\nname: legacy-skill\ndescription: An older skill.\n---\n\n"
+        "# Legacy skill\n## Procedure\n1. Keep working.\n",
+        encoding="utf-8",
+    )
+    legacy = parse_skill_file(legacy_path)
+    assert legacy is not None
+    assert legacy.body == "# Legacy skill\n## Procedure\n1. Keep working."
+
+
+def test_skill_section_headings_must_match_the_complete_name(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    path = lib.write(
+        "heading-boundaries",
+        "Test section heading boundaries",
+        "# Heading boundaries\n## Approval required\n- Ask first.\n"
+        "## Output ##\n- A report.\n"
+        "   ## Verification\n- Checked.\n"
+        "    ## Inputs and access\n- This is a code block, not a heading.",
+    )
+    skill = parse_skill_file(path)
+    assert skill is not None
+    assert "## Approval required" in skill.body
+    assert "\n## Approval\n" in skill.body
+    assert skill.body.count("## Output") == 1
+    assert skill.body.count("## Verification") == 1
+    assert "\n## Inputs and access\n" in skill.body
+
+
+def test_skill_section_headings_inside_fences_do_not_count(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    path = lib.write(
+        "fenced-headings",
+        "Test fenced section headings",
+        "# Fenced headings\n```markdown\n## Approval\n```\n"
+        "~~~markdown\n## Output\n~~~",
+    )
+    skill = parse_skill_file(path)
+    assert skill is not None
+    assert "\n## Output\n- (state what to return)" in skill.body
+    assert skill.body.endswith(
+        "## Approval\n- Follow each tool's normal approval rules."
+    )
+
+
+@pytest.mark.parametrize("submitted_body", [None, "same", "whitespace"])
+@pytest.mark.parametrize("target", ["active", "pending", "archived"])
+@pytest.mark.parametrize(
+    "changes",
+    [{"tags": ["email"]}, {"description": "Updated description"}, {"requires_tools": ["gmail"]}],
+)
+def test_metadata_edits_preserve_legacy_skill_body(isolated_home, target, changes, submitted_body):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    base = {"active": lib.root, "pending": lib.pending_dir, "archived": lib.archived_dir}[target]
+    path = base / "legacy-digest" / "SKILL.md"
+    path.parent.mkdir(parents=True)
+    body = "# Digest\n## When to use\nWeekly.\n## Procedure\nRead mail.\n## Pitfalls\nAvoid duplicates.\n## Verification\nCheck it."
+    path.write_text(
+        f"---\nname: legacy-digest\ndescription: Legacy digest\nversion: '3'\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+    if submitted_body is not None:
+        changes = {**changes, "body": body if submitted_body == "same" else f"\n{body}\n"}
+    updated = lib.edit("legacy-digest", target=target, **changes)
+
+    assert updated.body == body
+    assert updated.version_int == (4 if target == "active" else 3)
+    for field, value in changes.items():
+        if field != "body":
+            assert getattr(updated, field) == value
+
+
+def test_explicit_skill_body_edits_add_missing_sections(isolated_home):
+    paths.ensure_layout()
+    lib = SkillLibrary()
+    lib.write("edited-skill", "A procedure", "## Procedure\nOriginal.")
+
+    updated = lib.edit("edited-skill", body="## Procedure\nUpdated.")
+
+    assert "Original." not in updated.body
+    assert "Updated." in updated.body
+    assert all(f"## {section}" in updated.body for section in SKILL_SECTIONS)
+
+
 def test_skill_requires_tools_filter(isolated_home):
     paths.ensure_layout()
     lib = SkillLibrary()
@@ -57,3 +162,17 @@ def test_skill_requires_tools_filter(isolated_home):
     assert lib.get("mail-triage") is None
     lib.reload(available_plugins={"memory", "gmail"})
     assert lib.get("mail-triage") is not None
+
+
+@pytest.mark.parametrize("hidden", ["####### Approval", "<!--\n## Approval\n-->"])
+def test_non_headings_do_not_suppress_skill_sections(hidden):
+    result = ensure_skill_sections(f"## Procedure\nDo it.\n{hidden}")
+    assert "\n## Approval\n- Follow each tool's normal approval rules." in result
+
+
+@pytest.mark.parametrize("marker", ["```", "~~~~"])
+def test_missing_sections_follow_the_closing_fence(marker):
+    body = f"## Procedure\nDo it.\n{marker}markdown\n## Approval\nExample."
+    result = ensure_skill_sections(body)
+    assert result.startswith(body + "\n" + marker + "\n\n## When to use\n")
+    assert ensure_skill_sections(result) == result

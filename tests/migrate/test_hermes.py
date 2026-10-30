@@ -84,7 +84,7 @@ async def test_skill_names_stay_unique(app, hermes_home):
     app.skills.write("weekly-review", "Mine", "My own weekly review.", author="user")
     first = await hermes.apply(app, str(hermes_home), ["skills"])
     assert "weekly-review-hermes" in first["skills"]["imported"]
-    assert app.skills.get_active_file("weekly-review").body == "My own weekly review."
+    assert app.skills.get_active_file("weekly-review").body.startswith("My own weekly review.")
     assert app.skills.get_pending("weekly-review-hermes").name == "weekly-review-hermes"
     # importing again does not make copies of skills Sentient already has
     again = await hermes.preview(app, str(hermes_home))
