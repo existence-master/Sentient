@@ -909,7 +909,7 @@ class Agent:
             tool_calls: list[ToolCall] = []
             try:
                 async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted,
-                                                      source):
+                                                      source, private=not ctx.memory_allowed):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
@@ -1147,11 +1147,13 @@ class Agent:
 
     async def _model_stream(
         self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool,
-        source: str = "chat",
+        source: str = "chat", *, private: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
-        else (ADR 0022). Its usage is counted under ``source``."""
-        with claude_code.attended(attended), usage_source(source):
+        else (ADR 0022). Its usage is counted under ``source``. ``private``: the turn may not use what Sentient
+        knows about the user (``ToolContext.memory_allowed`` is False), so Claude Code's own account details stay
+        out of the answer too (#533)."""
+        with claude_code.attended(attended), claude_code.private(private), usage_source(source):
             async for chunk in self.llm.stream(role, messages, tools, model=model):
                 yield chunk
 

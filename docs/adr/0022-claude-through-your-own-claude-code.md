@@ -65,6 +65,16 @@ this is counted or allowed."
   refused with a plain message, so the role's fallback model takes over. It makes no embeddings. The check-up never
   calls it.
 - **Stop everything** kills every running Claude Code process tree (a Windows job object or a POSIX process group).
+- **Claude Code's own context** (#533). Claude Code adds context of its own next to Sentient's system prompt.
+  Sentient turns off what it can with documented switches on every run: CLAUDE.md files, auto memory and the git
+  snapshot (`CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY`,
+  `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS`). Two notes stay, because no supported flag, setting or variable removes
+  them while Claude Code uses the plan login: the signed-in Claude account's email and a note about the computer
+  (working folder, operating system). In a turn that may not use what Sentient knows about the user
+  (`ToolContext.memory_allowed` False: an incognito chat with memory off, an app's turn without memory), Claude is
+  told those notes aren't the user's, and the account email (from `claude auth status`, kept in memory only) is
+  replaced with "[email hidden]" in the reply, its thinking and tool call arguments, unless the turn itself
+  contains it. Ordinary chats are unchanged.
 
 ## Consequences
 
