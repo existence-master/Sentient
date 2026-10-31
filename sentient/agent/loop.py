@@ -1286,11 +1286,14 @@ class Agent:
             reason = untrusted_reason(ctx.untrusted)
         elif ctx.untrusted and plan.host and plan.host not in ctx.visited and address_carries_data(address):
             reason = untrusted_address_reason(ctx.untrusted, plan.host)  # the address itself could carry data out
-        if not reason and ctx.channel == "mcp" and preview.action_kind(tool.name, tc.arguments) in {"delete", "trash"}:
-            # a delete an MCP app steered this chat into always asks (issue #443), including one the
-            # trash preference would quietly swap for a move to the trash: deletes sit below send
-            # level, so the outside-content gate above never sees them on its own
-            reason = "An app asked Sentient to delete this through MCP, so Sentient checks with you first."
+        if not reason and ctx.channel in APP_CHANNELS and preview.action_kind(tool.name, tc.arguments) in {
+            "delete", "trash",
+        }:
+            # a delete another app steered this chat into, through MCP (issue #443) or the API (#479), always
+            # asks, including one the trash preference would quietly swap for a move to the trash: deletes
+            # sit below send level, so the outside-content gate above never sees them on its own
+            how = "through MCP" if ctx.channel == "mcp" else "through Sentient's API"
+            reason = f"An app asked Sentient to delete this {how}, so Sentient checks with you first."
         if reason:
             # the run read outside content: anything that can send data out needs the user's own yes, whatever the
             # mode, Allow rules or "Allow for this chat" say (ADR 0018). Nothing a model says can clear it.

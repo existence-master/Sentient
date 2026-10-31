@@ -226,6 +226,12 @@ export interface OpenAIApiConfig {
   allow_memory: boolean
 }
 
+/** `POST /api/openai-api/key`: a new key for `/v1`, replacing the old one. This answer is the only place it's shown. */
+export interface OpenAIApiKey {
+  key: string
+  base_url: string
+}
+
 export interface ChatConfig {
   history_window: number
   compress_after_messages: number

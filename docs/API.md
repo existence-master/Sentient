@@ -544,7 +544,8 @@ when `openai_api.allow_memory` is on too (below).
   content, so a model that keeps the outside-content rule strictly still answers (#479). Their text never
   counts as the user's own words for an "Only if I asked" rule or a standing-rule proposal, and does not use the
   quick-command shortcut. Calls that run code or send data out ask for approval even with an Allow rule or approvals
-  turned off (ADR 0018). The user's explicit approval is still required. Facts learned from API messages stay
+  turned off (ADR 0018), and so does a delete or a move to the trash, as for `sentient mcp` (#443). The user's
+  explicit approval is still required. Facts learned from API messages stay
   pending for review rather than being accepted as the user's own statements (ADR 0021).
   Stored API user messages retain `name: "another app (API)"`; their text is marked as outside content when the
   chat is continued from the window, where the user is the one speaking. Keyword and date-based history reads retain that source even after the original chat is

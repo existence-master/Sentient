@@ -11,6 +11,7 @@ import { AssistantImportCard } from '@/features/memory/AssistantImport'
 import { HermesImportCard } from '@/features/onboarding/HermesImport'
 import { SchemaForm } from '../SchemaForm'
 import type { SectionProps } from '../SettingsPage'
+import { ConnectedAppsSection } from './ConnectedApps'
 
 const FOLDERS: Array<{ target: OpenPathTarget; label: string; description: string }> = [
   { target: 'home', label: 'Data folder', description: 'Everything Sentient stores: database, config and files.' },
@@ -96,6 +97,8 @@ export function AdvancedSection({ query }: SectionProps) {
           </span>
         </FormRow>
       </FormSection>
+
+      <ConnectedAppsSection query={query} />
 
       <SchemaForm section="integrations" title="Web & integrations" filter={query} />
 

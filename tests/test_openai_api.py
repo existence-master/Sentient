@@ -314,6 +314,43 @@ def _probe_plugin(calls: list[tuple[str, str]]) -> ToolPlugin:
     return Probe()
 
 
+@pytest.mark.parametrize("channel", ["mcp", "api"])
+async def test_a_delete_another_app_asks_for_always_asks(config, isolated_home, channel):
+    """A delete steered by another app asks even with approvals off and an Allow rule (#443 for MCP, #479 for /v1)."""
+    deleted: list[str] = []
+
+    @tool("probe_delete_note", risk=Risk.write, untrusted_output=False)
+    async def probe_delete_note(ctx: ToolContext, name: str) -> dict:
+        """Delete a note from the probe."""
+        deleted.append(name)
+        return {"deleted": name}
+
+    class DeleteProbe(ToolPlugin):
+        id = "delete_probe"
+        display_name = "Delete probe"
+        tools = [probe_delete_note]
+
+    config.tools.approvals.mode = "off"
+    config.tools.approvals.rules = {"delete_probe": "allow"}
+    llm = FakeProvider(replies=[[tool_call("probe_delete_note", name="todo")], "I didn't delete it."])
+    core = await SentientApp(config, llm=llm, db_path=isolated_home / "deletes.db", enable_background=False).start()
+    core.registry.register(DeleteProbe())
+    try:
+        sid = await core.store.create_session(channel=channel)
+        asked: list[ApprovalRequest] = []
+        async for event in core.agent.run_turn(sid, "Delete the note called todo.", channel=channel,
+                                               app_name="Test client"):
+            if isinstance(event, ApprovalRequest):
+                asked.append(event)
+                core.approvals.resolve(event.approval_id, "deny")
+        assert [event.name for event in asked] == ["probe_delete_note"]
+        why = " ".join(filter(None, [asked[0].reason, asked[0].untrusted, asked[0].warning]))
+        assert "An app asked Sentient to delete this" in why
+        assert deleted == []
+    finally:
+        await core.stop()
+
+
 @pytest.fixture
 def probe_calls(client) -> list[tuple[str, str]]:
     calls: list[tuple[str, str]] = []
