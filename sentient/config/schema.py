@@ -329,7 +329,8 @@ class ChatConfig(BaseModel):
     incognito_uses_memory: bool = Field(
         True,
         description="Incognito chats can use what Sentient already knows about you. Nothing from an incognito chat "
-        "is ever remembered either way.",
+        "is ever remembered either way. With Claude through your Claude Code, Claude Code itself still tells Claude "
+        "your Claude account's email; when this is off, Sentient keeps that email out of replies and actions.",
     )
     incognito_delete_after_minutes: int = Field(
         30,

@@ -919,7 +919,7 @@ class Agent:
             tool_calls: list[ToolCall] = []
             try:
                 async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted,
-                                                      source):
+                                                      source, private=not ctx.memory_allowed):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
@@ -1199,11 +1199,13 @@ class Agent:
 
     async def _model_stream(
         self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool,
-        source: str = "chat",
+        source: str = "chat", *, private: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
-        else (ADR 0022). Its usage is counted under ``source``."""
-        with claude_code.attended(attended), usage_source(source):
+        else (ADR 0022). Its usage is counted under ``source``. ``private``: the turn may not use what Sentient
+        knows about the user (``ToolContext.memory_allowed`` is False), so Claude Code's own account details stay
+        out of the answer too (#533)."""
+        with claude_code.attended(attended), claude_code.private(private), usage_source(source):
             async for chunk in self.llm.stream(role, messages, tools, model=model):
                 yield chunk
 
@@ -2152,8 +2154,10 @@ class Agent:
                         ), "memory"
                     )
                 if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
-                    self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
-                self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
+                    self._spawn(self._auto_title(session_id, user_text, result.text, private=not ctx.memory_allowed),
+                                "titles")
+                self._spawn(self._maybe_compress(session_id, flush=not incognito, private=not ctx.memory_allowed),
+                            "memory")
                 if incognito:
                     log.info("incognito chat %s: nothing learned from this turn", session_id)
                 elif self.app is not None:
@@ -2584,15 +2588,17 @@ class Agent:
         except Exception as exc:
             log.warning("background extraction failed: %s", exc)
 
-    async def _auto_title(self, session_id: str, user_text: str, reply: str) -> None:
+    async def _auto_title(self, session_id: str, user_text: str, reply: str, *, private: bool = False) -> None:
+        """``private``: the turn had no memory, so Claude Code's own account details stay out of the title (#533)."""
         try:
-            title = await self.llm.complete_text(
-                "fast",
-                [
-                    {"role": "system", "content": "Write a 2-6 word title for this chat. Title case. No quotes, no punctuation at the end. Reply with the title only."},
-                    {"role": "user", "content": f"User: {user_text[:500]}\nAssistant: {reply[:500]}"},
-                ],
-            )
+            with claude_code.private(private):
+                title = await self.llm.complete_text(
+                    "fast",
+                    [
+                        {"role": "system", "content": "Write a 2-6 word title for this chat. Title case. No quotes, no punctuation at the end. Reply with the title only."},
+                        {"role": "user", "content": f"User: {user_text[:500]}\nAssistant: {reply[:500]}"},
+                    ],
+                )
             title = title.strip().strip('"').strip()[:80]
             if title:
                 await self.store.rename_session(session_id, title)
@@ -2619,10 +2625,11 @@ class Agent:
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
 
-    async def _maybe_compress(self, session_id: str, *, flush: bool = True) -> None:
+    async def _maybe_compress(self, session_id: str, *, flush: bool = True, private: bool = False) -> None:
         """Hermes-style context compression: fold turns that fell out of the history
         window into a running summary injected into the system prompt. ``flush=False`` (an incognito chat) keeps
-        no facts from the folded turns."""
+        no facts from the folded turns. ``private``: a chat without memory, so Claude Code's own account details stay
+        out of the summary (#533)."""
         try:
             total = await self.store.count_messages(session_id)
             window = self.config.chat.history_window
@@ -2646,13 +2653,14 @@ class Agent:
                     memory_scopes.of_session(self.config, session),
                 )
             prev = (session or {}).get("context_summary") or ""
-            summary = await self.llm.complete_text(
-                "fast",
-                [
-                    {"role": "system", "content": "Update the running summary of a conversation. Keep decisions, facts, names, dates, open questions and anything the assistant promised. Max 250 words. Plain text."},
-                    {"role": "user", "content": f"Current summary:\n{prev or '(none)'}\n\nNew turns:\n{transcript}"},
-                ],
-            )
+            with claude_code.private(private):
+                summary = await self.llm.complete_text(
+                    "fast",
+                    [
+                        {"role": "system", "content": "Update the running summary of a conversation. Keep decisions, facts, names, dates, open questions and anything the assistant promised. Max 250 words. Plain text."},
+                        {"role": "user", "content": f"Current summary:\n{prev or '(none)'}\n\nNew turns:\n{transcript}"},
+                    ],
+                )
             await self.store.execute(
                 "UPDATE sessions SET context_summary = ?, context_upto = ? WHERE id = ?",
                 (summary.strip(), next_watermark(upto, older, "created_at", "rowid"), session_id),

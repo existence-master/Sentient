@@ -68,6 +68,8 @@ def fake_claude(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_LOG", str(log))
     monkeypatch.setenv("FAKE_CLAUDE_PIDS", str(tmp_path / "pids.json"))
     monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "not-for-claude")
+    auth_log = tmp_path / "auth.jsonl"
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH_LOG", str(auth_log))
 
     class Fake:
         pids = tmp_path / "pids.json"
@@ -79,6 +81,11 @@ def fake_claude(tmp_path, monkeypatch):
         @staticmethod
         def runs() -> list[dict]:
             return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+        @staticmethod
+        def auth_runs() -> list[dict]:
+            return ([json.loads(line) for line in auth_log.read_text(encoding="utf-8").splitlines()]
+                    if auth_log.exists() else [])
 
     return Fake
 
@@ -248,6 +255,242 @@ async def test_only_the_users_own_plan_login_is_used(make_app, fake_claude, monk
     await _turn(app, "say hello")
     [run] = fake_claude.runs()
     assert run["auth_env"] == ["CLAUDE_CONFIG_DIR"]
+
+
+# ---------------------------------------------------------------------------- Claude Code's own context (#533)
+ACCOUNT = "maya.rao@example.com"  # what the fake claude says is signed in (fictional)
+CLEAN = {"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+         "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS": "1"}
+
+
+async def _private_turn(app: SentientApp, text: str, *, incognito: bool = True) -> list:
+    sid = await app.store.create_session(channel="desktop", incognito=incognito)
+    return [ev async for ev in app.agent.run_turn(sid, text)]
+
+
+async def test_every_run_leaves_out_claude_md_auto_memory_and_git(make_app, fake_claude):
+    """A normal chat: no CLAUDE.md, auto memory or git snapshot, and nothing else changes (no account lookup, no
+    note, the reply as Claude wrote it)."""
+    fake_claude.scenario("leak")
+    app = await make_app()
+    events = await _turn(app, "what's my email?")
+    [run] = fake_claude.runs()
+    assert run["context"] == CLEAN
+    assert claude_code.PRIVATE_NOTE not in run["system"]
+    assert fake_claude.auth_runs() == []
+    assert ACCOUNT in next(e for e in events if isinstance(e, Done)).content
+
+
+async def test_incognito_without_memory_keeps_the_account_email_out(make_app, fake_claude, cc_config):
+    """#533: an incognito chat with memory off. Claude Code still tells Claude the account email, so Claude is told
+    those notes aren't the user's, and the email never reaches the reply, its thinking or the transcript."""
+    from sentient.llm.events import ThinkingDelta
+
+    cc_config.chat.incognito_uses_memory = False
+    fake_claude.scenario("leak")
+    app = await make_app()
+    events = await _private_turn(app, "what's my email?")
+    text = "".join(e.text for e in events if isinstance(e, TextDelta))
+    thinking = "".join(e.text for e in events if isinstance(e, ThinkingDelta))
+    done = next(e for e in events if isinstance(e, Done))
+    assert text == done.content
+    assert ACCOUNT not in text.lower() and ACCOUNT not in thinking.lower()
+    assert text.count(claude_code.HIDDEN) == 2 and claude_code.HIDDEN in thinking  # split and upper-case ones too
+    [run] = fake_claude.runs()
+    assert run["context"] == CLEAN
+    assert run["system"].rstrip().endswith(claude_code.PRIVATE_NOTE)
+    [auth] = fake_claude.auth_runs()
+    assert auth["argv"] == ["auth", "status", "--json"] and auth["context"] == CLEAN
+
+
+async def test_incognito_with_memory_on_is_an_ordinary_turn(make_app, fake_claude, cc_config):
+    cc_config.chat.incognito_uses_memory = True
+    fake_claude.scenario("leak")
+    app = await make_app()
+    await _private_turn(app, "what's my email?")
+    [run] = fake_claude.runs()
+    assert claude_code.PRIVATE_NOTE not in run["system"] and fake_claude.auth_runs() == []
+
+
+async def test_an_email_the_user_gives_stays(make_app, fake_claude, cc_config):
+    """Only Claude Code's own account note is kept out: an address the user typed in the chat is theirs to use."""
+    cc_config.chat.incognito_uses_memory = False
+    fake_claude.scenario("leak")
+    app = await make_app()
+    events = await _private_turn(app, f"my email is {ACCOUNT.upper()}, repeat it")
+    assert ACCOUNT in next(e for e in events if isinstance(e, Done)).content.lower()
+
+
+async def test_a_turn_without_memory_is_private_whatever_its_channel(make_app, fake_claude):
+    """The hook an app's turn without memory (#479) relies on: any run whose ``ToolContext.memory_allowed`` is False
+    gets the note and the account email taken out, tool call arguments included (a helper's goal, a message)."""
+    from sentient.agent.loop import LoopResult
+
+    fake_claude.scenario("leak")
+    app = await make_app()
+    sent: list[str] = []
+    app.registry.register(_postcards(sent))
+    ctx = app.agent.tool_context(None, "api")
+    ctx.memory_allowed = False
+    result = LoopResult()
+    messages = [{"role": "system", "content": "You are Sentient."}, {"role": "user", "content": "send my email on"}]
+    async for _ in app.agent.run_loop(messages, ctx, result=result, tool_names=["send_postcard"], max_rounds=1):
+        pass
+    first = fake_claude.runs()[0]
+    assert first["system"].endswith(claude_code.PRIVATE_NOTE) and first["context"] == CLEAN
+    call = next(m for m in messages if m.get("tool_calls"))["tool_calls"][0]
+    args = json.loads(call["function"]["arguments"])
+    assert args == {"text": f"Write to {claude_code.HIDDEN} soon", "to": [claude_code.HIDDEN]}
+    assert ACCOUNT not in json.dumps(messages).lower()
+
+
+async def test_private_stream_hides_the_email_in_tool_calls(cc_config, fake_claude):
+    fake_claude.scenario("leak")
+    schema = [{"type": "function", "function": {
+        "name": "send_postcard", "description": "Post a postcard.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "string"}}}}}]
+    hi = [{"role": "user", "content": "hi"}]
+    with claude_code.attended(), claude_code.private():
+        chunks = [c async for c in claude_code.stream(cc_config, MODEL, "primary", hi, schema)]
+    [call] = chunks[-1].tool_calls
+    assert call.name == "send_postcard" and ACCOUNT not in json.dumps(call.arguments)
+    with claude_code.attended():  # not private: as Claude wrote it
+        chunks = [c async for c in claude_code.stream(cc_config, MODEL, "primary", hi, schema)]
+    assert chunks[-1].tool_calls[0].arguments["to"] == [ACCOUNT]
+
+
+def test_hider_takes_out_split_and_mixed_case_secrets():
+    hider = claude_code.Hider({"ab@cd.io"})
+    out = "".join(hider.feed(p) for p in ["mail AB", "@c", "D.IO now, a", "b@cd.io"]) + hider.flush()
+    assert out == f"mail {claude_code.HIDDEN} now, {claude_code.HIDDEN}"
+    held = claude_code.Hider({"ab@cd.io"})
+    assert held.feed("x a") == "x " and held.flush() == "a"  # a tail that could start it waits, then comes out as is
+    assert claude_code.Hider(set()).feed("ab@cd.io") == "ab@cd.io"
+    assert held.hide_value({"a": ["AB@cd.io", 1], "b": "hi", "ab@cd.io": "x"}) == {
+        "a": [claude_code.HIDDEN, 1], "b": "hi", claude_code.HIDDEN: "x"}  # keys too
+    anyone = claude_code.Hider(set(), any_email=True, allowed={"keep@me.org"})
+    out = "".join(anyone.feed(p) for p in ["write to x@y.c", "om or keep@ME.org, ", "thanks"]) + anyone.flush()
+    assert out == f"write to {claude_code.HIDDEN} or keep@ME.org, thanks"  # never cut in the middle of an address
+
+
+def _split_everywhere(hider_args: dict, text: str) -> list[str]:
+    """``text`` fed to a new Hider in two pieces, cut at every place: what comes out each time."""
+    outs = []
+    for cut in range(1, len(text)):
+        hider = claude_code.Hider(**hider_args)
+        outs.append(hider.feed(text[:cut]) + hider.feed(text[cut:]) + hider.flush())
+    return outs
+
+
+def test_only_whole_addresses_are_hidden_wherever_the_text_is_cut():
+    """The account address inside a longer one the user gave (notmaya.rao@...) is not it: that one stays whole, and
+    the account address on its own is still hidden, however the stream is cut, in both modes."""
+    text = f"Write to not{ACCOUNT} or {ACCOUNT.upper()}, and {ACCOUNT}.au too."
+    want = f"Write to not{ACCOUNT} or {claude_code.HIDDEN}, and {ACCOUNT}.au too."
+    known = {"secrets": {ACCOUNT}}
+    assert set(_split_everywhere(known, text)) == {want}
+    unknown = {"secrets": set(), "any_email": True, "allowed": {f"not{ACCOUNT}", f"{ACCOUNT}.au"}}
+    assert set(_split_everywhere(unknown, text)) == {want}
+    assert claude_code.Hider({ACCOUNT}).hide_value({"to": [f"not{ACCOUNT}", ACCOUNT]}) == {
+        "to": [f"not{ACCOUNT}", claude_code.HIDDEN]}
+
+
+def test_a_long_word_is_not_held_back_for_ever():
+    hider = claude_code.Hider({ACCOUNT})
+    blob = "A" * (claude_code.MAX_HELD + 1)
+    assert hider.feed(blob) == blob and hider.pending == ""  # longer than any address: let go at once
+    assert hider.feed("abc") == "" and hider.flush() == "abc"
+
+
+async def test_account_inside_a_longer_address_the_user_gave_is_still_hidden(cc_config, fake_claude):
+    """The turn contains notmaya.rao@example.com, not the account address: the account address is still hidden."""
+    fake_claude.scenario("leak")
+    hi = [{"role": "user", "content": f"copy not{ACCOUNT} please"}]
+    with claude_code.attended(), claude_code.private():
+        chunks = [c async for c in claude_code.stream(cc_config, MODEL, "primary", hi, None)]
+    text = "".join(c.text for c in chunks)
+    assert ACCOUNT not in text.lower() and claude_code.HIDDEN in text
+
+
+async def test_the_second_look_of_a_turn_without_memory_is_private(make_app, fake_claude, monkeypatch):
+    """The second look's reason reaches the approval question, so in a turn without memory it is a private call."""
+    from types import SimpleNamespace
+
+    from sentient.agent import second_look
+    from sentient.llm.provider import ToolCall
+
+    app = await make_app()
+    app.registry.register(_postcards([]))
+    app.config.tools.approvals.second_look_model = True
+    seen: list[bool] = []
+
+    async def model_check(*a, **k):
+        seen.append(claude_code.is_private())
+        return ""
+
+    async def describe_call(*a, **k):
+        return {"risk_label": "Send", "target": ""}
+
+    monkeypatch.setattr(second_look, "model_check", model_check)
+    monkeypatch.setattr(second_look, "describe_call", describe_call)
+    tool_ = app.registry.get("send_postcard")
+    for allowed in (False, True):
+        ctx = app.agent.tool_context(None, "desktop")
+        ctx.memory_allowed = allowed
+        look = second_look.Look(app.agent, tool_, ToolCall(id="c1", name="send_postcard", arguments={"text": "hi"}),
+                                ctx, SimpleNamespace(risk=Risk.send), [{"role": "user", "content": "send hi"}])
+        await look.model()
+    assert seen == [True, False]
+
+
+def test_account_lookup_asks_each_time_and_says_when_it_cannot_tell(fake_claude, monkeypatch):
+    exe = claude_code.find_executable()
+    assert claude_code.account_emails(exe) == {ACCOUNT}  # the email, and the one inside the organisation name
+    monkeypatch.setenv("FAKE_CLAUDE_EMAIL", "rao.maya@example.org")  # signed in to another account meanwhile
+    assert claude_code.account_emails(exe) == {"rao.maya@example.org"}
+    assert len(fake_claude.auth_runs()) == 2  # asked afresh: a switched login is never missed
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH", "fail")
+    assert claude_code.account_emails(exe) is None  # can't tell, which is not the same as "no email"
+
+
+async def test_private_turn_hides_every_address_when_the_account_is_unknown(make_app, fake_claude, cc_config,
+                                                                            monkeypatch):
+    """When ``claude auth status`` can't say which account is signed in, a turn without memory still lets no account
+    email out: every address the turn itself didn't contain is taken out of the reply, thinking and tool calls."""
+    from sentient.agent.loop import LoopResult
+    from sentient.llm.events import ThinkingDelta
+
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH", "fail")
+    fake_claude.scenario("leak")
+    app = await make_app()
+    app.registry.register(_postcards([]))
+    ctx = app.agent.tool_context(None, "desktop")
+    ctx.memory_allowed = False
+    result = LoopResult()
+    messages = [{"role": "user", "content": "email it to me, and copy keep@me.org"}]
+    events = [e async for e in app.agent.run_loop(messages, ctx, result=result, tool_names=["send_postcard"],
+                                                  max_rounds=1)]
+    shown = "".join(e.text for e in events if isinstance(e, (TextDelta, ThinkingDelta)))
+    assert ACCOUNT not in shown.lower() and claude_code.HIDDEN in shown
+    assert ACCOUNT not in json.dumps(messages).lower()
+    assert fake_claude.runs()[0]["system"].endswith(claude_code.PRIVATE_NOTE)
+
+
+async def test_titles_and_summaries_of_a_chat_without_memory_are_private(make_app, fake_claude):
+    """The title and the running summary of a chat without memory are written as private calls too: a summary goes
+    back into the chat's prompt, where an email would count as one the chat itself contains."""
+    app = await make_app()
+    seen: list[bool] = []
+
+    async def complete_text(role, messages, *, model=None):
+        seen.append(claude_code.is_private())
+        return "A title"
+
+    app.agent.llm.complete_text = complete_text
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    await app.agent._auto_title(sid, "hi", "hello", private=True)
+    await app.agent._auto_title(sid, "hi", "hello")
+    assert seen == [True, False]
 
 
 # ---------------------------------------------------------------------------- refusals
