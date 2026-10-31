@@ -403,6 +403,7 @@ class LiteLLMProvider:
                             delta = chunk.choices[0].delta if chunk.choices else None
                             if delta is None:
                                 continue
+                            name_tool_calls(delta)
                             reasoning = getattr(delta, "reasoning_content", None)
                             if reasoning:
                                 emitted = True
@@ -625,6 +626,17 @@ def tool_arguments(raw: str | None) -> dict:
         except ValueError:
             args = {"_raw": raw}
     return args if isinstance(args, dict) else {"_raw": raw}
+
+
+def name_tool_calls(delta: Any) -> None:
+    """Give a streamed tool call that arrives without an id one of our own (#509). Ollama 0.9.0 sends a call with no
+    arguments (``{}``, such as ``browser_screenshot``) without an id, and LiteLLM's ``stream_chunk_builder`` drops
+    it: the model's call was lost and the round looked like an empty answer. Only a call's first piece has a name;
+    later pieces of its arguments are left as they are."""
+    for tc in getattr(delta, "tool_calls", None) or []:
+        function = getattr(tc, "function", None)
+        if not getattr(tc, "id", None) and getattr(function, "name", None):
+            tc.id = f"call_{uuid.uuid4().hex[:12]}"
 
 
 def split_think(text: str, in_think: bool) -> tuple[list[tuple[str, bool]], bool]:
