@@ -518,6 +518,14 @@ class MemoryConfig(BaseModel):
         6000, ge=500, description="Max characters injected from each workspace markdown file."
     )
     graph_link_similarity: float = Field(0.80, ge=0.0, le=1.0, description="Memory graph edge threshold.")
+    family_margin: float = Field(
+        0.02, ge=0.0, le=1.0,
+        description="When the English keyword attribute families (residence, job, ...) find nothing in a fact - "
+        "often because it isn't English - a family is assigned instead, whichever embeds closest to a short "
+        "description of it, as long as it's ahead of the next closest by at least this much. A fixed similarity "
+        "floor doesn't travel between embedding models (one scored an unrelated Hindi fact 0.44-0.49 against "
+        "every family alike), so this compares the best match against the runner-up instead of an absolute score.",
+    )
     summarize_after_minutes: int = Field(
         60, ge=5, description="Conversation chunks older than this are summarized into episodic memory."
     )

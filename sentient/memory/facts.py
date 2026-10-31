@@ -29,7 +29,8 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -151,13 +152,35 @@ def new_details(new_fact: str, existing: str) -> set[str]:
 
 # ---------------------------------------------------------------------- subjects and attribute families
 _RSQUO = chr(0x2019)  # curly apostrophe some models write in possessives
-_NAME_WORD_RE = re.compile(r"[A-Za-z][\w'-]*")
-_LEAD_SKIP = STOPWORDS | {
+# Any Unicode letter, not just A-Z: a Cyrillic or Greek name is a word here too. (Devanagari and other
+# scripts without a case distinction go through scripts.devanagari_subjects instead, via subject_aliases.)
+# A number ("2021") still matches - ``isupper()`` below is false for it either way, so it's never a name - so
+# that it keeps its own position in ``words``, instead of collapsing "In 2021 Kabir" to "In" directly before
+# "Kabir" and making the preposition check below (mis)fire on "Kabir".
+_NAME_WORD_RE = re.compile(r"[^\W_][\w'-]*")
+_MONTHS = {
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+    "november", "december",
+}
+_WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+_LEAD_SKIP = STOPWORDS | _MONTHS | _WEEKDAYS | {
     "every", "last", "next", "since", "today", "tonight", "yesterday", "tomorrow", "recently", "currently",
     "lately", "usually", "always", "sometimes", "often", "earlier", "later", "after", "before", "during", "once",
     "still", "morning", "evening", "night", "week", "weekend", "month", "year", "day", "until", "yes", "okay",
     "actually", "update", "correction", "oh", "well",
 }
+# A capitalized word right after one of these is a place or a time, never a subject ("the trip to Goa", "moved
+# to Austin"): without this, scanning past a leading clause (below) could pick it up as a person.
+_PREPOSITIONS = frozenset({
+    "in", "to", "from", "at", "after", "before", "near", "on", "during", "via", "through", "toward", "towards",
+    "into", "onto", "within",
+})
+# Enough to clear a short leading clause ("Last year in March, after the wedding, Riya ..."); the subject is
+# still whichever word looks name-like first, so this is a bound on how far to look, not a guess of where it is.
+_SUBJECT_SCAN_WORDS = 12
+# A sentence that leads with one of these has no subject here on purpose ("She moved to Delhi, India." - the
+# comma is "Delhi, India", not a leading clause): never treat it as one just because a comma turns up later.
+_SUBJECT_PRONOUNS = frozenset({"he", "she", "it", "they", "this", "that", "these", "those", "we"})
 _RELATION_WORDS = {
     "sister", "brother", "mother", "mom", "mum", "father", "dad", "wife", "husband", "partner", "girlfriend",
     "boyfriend", "son", "daughter", "friend", "manager", "boss", "colleague", "cousin", "uncle", "aunt", "grandmother",
@@ -248,6 +271,19 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
     text = (text or "").replace(_RSQUO, "'").strip()
     found = list(_NAME_WORD_RE.finditer(text))
     words = [m.group() for m in found]
+    # Ordinary words before the last comma of a leading clause ("Last year in March, after the wedding, Riya
+    # moved to Mumbai.") don't have to be recognised to be skipped - only words after it do, same as without
+    # a leading clause at all ("She moved to Delhi" still has no subject). A real leading clause has a clause
+    # of its own after the last comma too ("Riya moved to Mumbai"), not just a trailing tag ("India." in "The
+    # office moved to Pune, India." - more than one word of ", Country." pattern never earns this either,
+    # pronoun-led or not: it isn't a leading clause, so treating it as one made the country the subject and,
+    # worse, a second "X moved to Y, Country." then read as a correction of the first, unrelated fact).
+    trailing_words = len(_NAME_WORD_RE.findall(text.rsplit(",", 1)[-1])) if "," in text else 0
+    permissive_until = (
+        sum(len(_NAME_WORD_RE.findall(c)) for c in text.split(",")[:-1])
+        if "," in text and trailing_words > 1 and (not words or words[0].lower() not in _SUBJECT_PRONOUNS)
+        else 0
+    )
 
     def joined(j: int) -> bool:  # words j and j + 1 are only a space apart ("Maya Rao", not "Priya, Maya")
         return j + 1 < len(found) and not text[found[j].end():found[j + 1].start()].strip()
@@ -269,7 +305,7 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
             aliases.add(name)
         return aliases
 
-    for i, w in enumerate(words[:6]):
+    for i, w in enumerate(words[:_SUBJECT_SCAN_WORDS]):
         low = w.lower()
         poss = low.endswith("'s")
         root = low[:-2] if poss else low
@@ -278,10 +314,12 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
             return (relation(user, i + 1) or {user}) if low == "my" or poss else {user}
         if low in _OWNER_PRONOUNS:
             return relation(SOMEONE, i + 1) or set()
-        is_name = (w[0].isupper() and root not in _LEAD_SKIP) or root == user
+        # a place or a time right after a preposition is never the subject ("the trip to Goa", "moved to Austin")
+        after_prep = i > 0 and words[i - 1].lower() in _PREPOSITIONS
+        is_name = (w[0].isupper() and root not in _LEAD_SKIP and not after_prep) or root == user
         if not is_name:
-            if w[0].isupper() or root in _LEAD_SKIP:
-                continue  # sentence starters like "Every", "Since", "Last"
+            if w[0].isupper() or root in _LEAD_SKIP or i < permissive_until or w.isdigit():
+                continue  # a sentence starter, a bare year ("In 2021 ..."), or inside a leading clause
             return set()
         # a full name, up to the word that owns something: "Maya Rao's sister" is Maya's sister, not Maya
         end = i
@@ -305,6 +343,57 @@ def fact_subjects(text: str, user_name: str = "") -> set[str]:
 def attribute_families(text: str) -> set[str]:
     low = (text or "").lower().replace(_RSQUO, "'")
     return {name for name, rx in ATTRIBUTE_FAMILIES.items() if rx.search(low)}
+
+
+# A short description of each family, embedded once per model and cached, for text the English keyword
+# regexes above miss - chiefly non-English facts, whose words never match ATTRIBUTE_FAMILIES at all.
+_FAMILY_PROTOTYPES: dict[str, str] = {
+    "residence": "where someone lives, has lived, or has moved to",
+    "job": "someone's job, employer, role or career",
+    "relationship": "someone's romantic relationship or marital status",
+    "diet": "what someone eats, or their diet",
+    "health": "someone's health, an illness, allergy or medical condition",
+    "ownership": "something someone owns, bought or sold",
+    "schedule": "someone's daily routine or schedule",
+}
+_family_proto_cache: dict[str, dict[str, list[float]]] = {}  # embedding-model key -> family -> prototype vector
+
+
+async def embedding_attribute_families(
+    text: str,
+    embed_one: Callable[[str], Awaitable[list[float]]],
+    model_key: str,
+    margin: float,
+    vector: list[float] | None = None,
+) -> set[str]:
+    """The attribute family whose short description embeds closest to ``text``, rather than the English
+    keyword families above. Meant as a fallback for text those regexes find nothing in - typically non-English
+    facts - not a replacement: the keyword path is nearly free and exact, so callers should only reach for
+    this once it comes back empty.
+
+    A fixed similarity floor doesn't travel between embedding models: tested against a real local model,
+    a Hindi fact scored 0.44-0.49 against every family alike, well under a 0.78 floor calibrated by guesswork,
+    so nothing ever matched. Comparing the best score against the next-best instead needs no calibration to
+    the model's own noise floor - only that the right family scores further out than the rest, which held even
+    at 0.44-0.49 - and naturally returns nothing when the scores are this close because none of them stand out,
+    rather than because they're all "too low".
+
+    ``vector`` reuses a stored embedding instead of embedding ``text`` again (dreaming has one for every active
+    fact already), but only when its dimension matches the prototypes': a fact embedded under a since-changed
+    model can't be compared to them, the same guard ``contradiction_pairs`` already applies before any ``cosine``
+    call."""
+    cache = _family_proto_cache.get(model_key)
+    if cache is None:
+        cache = {name: await embed_one(proto) for name, proto in _FAMILY_PROTOTYPES.items()}
+        _family_proto_cache[model_key] = cache
+    dim = len(next(iter(cache.values()), []))
+    vec = vector if vector and len(vector) == dim else await embed_one(text)
+    if not vec:
+        return set()
+    ranked = sorted(((cosine(vec, proto_vec), name) for name, proto_vec in cache.items()), reverse=True)
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < margin:
+        return set()
+    return {ranked[0][1]} if ranked else set()
 
 
 PAST_RE = re.compile(
@@ -333,13 +422,45 @@ def profile_fact(text: str, user_name: str = "") -> FactProfile:
         if base[:1].isdigit() or (i > 0 and base[:1].isupper()):
             details.add(base)
     return FactProfile(
-        subjects=frozenset(fact_subjects(text, user_name)),
+        # subject_aliases, not fact_subjects: a Devanagari fact needs scripts.devanagari_subjects to get a
+        # subject at all (#95) - fact_subjects only reads capital letters, which Devanagari doesn't have.
+        subjects=frozenset(subject_aliases(text, user_name)),
         families=frozenset(attribute_families(text)),
         negation=bool(NEGATION_RE.search(text or "")),
         details=frozenset(details),
         words=frozenset(w.lower().removesuffix("'s") for w in found),
         tokens=frozenset(keyword_tokens(text, None)),
     )
+
+
+async def profile_fact_async(
+    text: str,
+    embed_one: Callable[[str], Awaitable[list[float]]] | None,
+    user_name: str = "",
+    model_key: str = "",
+    margin: float = 0.02,
+    vector: list[float] | None = None,
+) -> FactProfile:
+    """Like :func:`profile_fact`, but when the keyword attribute families come back empty - usually because
+    ``text`` isn't English - falls back to :func:`embedding_attribute_families`. ``embed_one`` is omitted
+    (``None``) wherever an embedder isn't on hand (e.g. the dreaming service with no configured memory).
+
+    ``vector`` is the fact's own embedding, already computed and stored, when the caller has it (dreaming
+    reviews every active fact and each one has one) - reused instead of embedding the same text again, which
+    against 500 facts with no keyword family was the difference between 241 s and 14.5 s. A fresh embed call
+    is the fallback for text that has no stored vector yet (a fact not yet saved).
+
+    An embedding call failing (a local model briefly unavailable, say) falls back to the keyword-only profile
+    rather than failing the whole contradiction step over one fact."""
+    prof = profile_fact(text, user_name)
+    if prof.families or embed_one is None:
+        return prof
+    try:
+        families = await embedding_attribute_families(text, embed_one, model_key, margin, vector)
+    except Exception:
+        log.warning("embedding attribute families failed for a fact, keeping the keyword-only profile", exc_info=True)
+        return prof
+    return prof if not families else replace(prof, families=frozenset(families))
 
 
 # ---------------------------------------------------------------------- is a new fact about the same thing?
@@ -1532,9 +1653,12 @@ class FactMemory:
         self, fact: str, exclude: set[int], scopes: list[str] | None = None
     ) -> list[dict]:
         """Up to 3 facts about the same subject and attribute family as ``fact``, found by keyword rather
-        than embedding ("moved to Bengaluru last month" scores low against "lives in Pune")."""
+        than embedding ("moved to Bengaluru last month" scores low against "lives in Pune"). The family
+        itself falls back to embedding similarity when the keyword families miss, e.g. non-English text."""
         user = self.config.assistant.user_name
-        prof = profile_fact(fact, user)
+        model_key = self.llm.model_for("embedding")
+        margin = self.config.memory.family_margin
+        prof = await profile_fact_async(fact, self.embed_query, user, model_key, margin)
         if not prof.subjects or not prof.families:
             return []
         terms = [t for s in sorted(prof.subjects) for t in keyword_tokens(s)]
@@ -1553,7 +1677,7 @@ class FactMemory:
         )
         out = []
         for r in rows:
-            other = profile_fact(r["content"], user)
+            other = await profile_fact_async(r["content"], self.embed_query, user, model_key, margin)
             if prof.families & other.families and conflict_strength(prof, other) > 0:
                 out.append(_row_to_memory(r))
         out.sort(key=lambda m: m["updated_at"] or "", reverse=True)
