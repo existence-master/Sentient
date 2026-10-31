@@ -75,7 +75,8 @@ this is counted or allowed."
   told those notes aren't the user's, and the account email (from `claude auth status`, asked for each call and
   kept in memory only) is replaced with "[email hidden]" in the reply, its thinking and tool call arguments, unless
   the turn itself contains it. When the account can't be read, every email address the turn didn't contain is
-  replaced instead. The title and running summary of such a chat are written the same way. Ordinary chats are
+  replaced instead. Only whole addresses count, both for what is hidden and for what the turn contains. The
+  title, running summary, second look and reader of such a turn are private calls too. Ordinary chats are
   unchanged.
 
 ## Consequences
