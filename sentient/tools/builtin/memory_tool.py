@@ -6,7 +6,9 @@ Ports the v2 memory MCP (search, cud, search by source) and the v2 history MCP
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import re
 
 from sentient.memory import review
@@ -14,6 +16,8 @@ from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
 from sentient.tools.rules import OTHER_ROLE, brings_untrusted, group_source
+
+log = logging.getLogger(__name__)
 
 INCOGNITO_REFUSAL = (
     "Not saved: this is an incognito chat, so nothing from it is remembered. Don't tell the user you will remember it."
@@ -26,6 +30,8 @@ HELD_NOTE = (
     "Saved for the user to review first, because this run read outside content or nobody asked for it. "
     "It is not used until they approve it."
 )
+CLEANUP_NOTE = "Forgotten. Tidying up what was made from it finishes on its own a little later."
+DELETE_FAILED = "couldn't delete this memory right now, try again"
 
 
 async def _memory_closed(ctx: ToolContext) -> bool:
@@ -168,13 +174,37 @@ def _failed(content: str | None) -> bool:
     return isinstance(data, dict) and bool(data.get("error") or data.get("declined"))
 
 
+async def _fact_exists(mem, fact_id: int) -> bool:
+    """Whether the memory's row is there, without reading it: a row that can't be read must still be deletable."""
+    return await mem.store.fetchone("SELECT 1 FROM facts WHERE id = ?", (fact_id,)) is not None
+
+
 @tool("memory_forget", risk=Risk.send)
 async def memory_forget(ctx: ToolContext, fact_id: int) -> dict:
     """Permanently delete a remembered fact by id (from memory_recall). Use when the user asks you to forget something."""
     if ctx.memory is None:
         return {"error": "memory unavailable"}
-    ok = await ctx.memory.erase(fact_id, notify=True)
-    return {"deleted": ok, "id": fact_id}
+    mem = ctx.memory
+    if not await _fact_exists(mem, fact_id):  # so a failure below can't pass a missing id off as deleted (#536)
+        return {"deleted": False, "id": fact_id}
+    try:
+        ok = await mem.erase(fact_id, notify=True)
+    except Exception:
+        if await _fact_exists(mem, fact_id):
+            log.exception("forgetting memory %s failed before it was deleted", fact_id)
+            return {"error": DELETE_FAILED}
+        # The memory is gone and memory upkeep finishes its queued cleanup, as the delete route says (#534, #536).
+        log.exception("memory %s was forgotten, but finishing the delete failed; memory upkeep will finish its cleanup",
+                      fact_id)
+        with contextlib.suppress(Exception):  # forget() may have raised before it told the window
+            mem.publish("DELETE", fact_id)
+        return {"deleted": True, "id": fact_id, "cleanup_pending": True, "note": CLEANUP_NOTE}
+    if not ok:
+        # an erase that aborted before touching anything leaves the memory in place
+        return {"error": DELETE_FAILED} if await _fact_exists(mem, fact_id) else {"deleted": False, "id": fact_id}
+    if await mem.cleanup_pending(fact_id):  # a cleanup step failed and waits for memory upkeep (#462)
+        return {"deleted": True, "id": fact_id, "cleanup_pending": True, "note": CLEANUP_NOTE}
+    return {"deleted": True, "id": fact_id}
 
 
 @tool("memory_search_by_source", risk=Risk.read)

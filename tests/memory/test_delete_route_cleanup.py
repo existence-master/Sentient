@@ -3,7 +3,8 @@
 A failure after the memory row is gone used to answer a bare 500, although the
 memory was deleted and its queued cleanup (#462) finishes on the next upkeep.
 It is a successful delete now, flagged `cleanup_pending`. A failure before the
-row is deleted still answers 503 "try again", and a missing id 404.
+row is deleted still answers 503 "try again", and a missing id 404. The
+`memory_forget` tool the model uses answers the same way (#536).
 """
 
 from __future__ import annotations
@@ -137,3 +138,85 @@ def test_an_unreadable_queue_counts_as_cleanup_pending(client, monkeypatch):
 
     monkeypatch.setattr(store, "fetchone", fetchone_failing_on_queue)
     assert client.portal.call(mem.cleanup_pending, 1) is True
+
+
+def _forget_tool(client, fid):
+    core = client.core
+
+    async def call():
+        return await core.registry.get("memory_forget").call(core.agent.tool_context(None, "cli"), {"fact_id": fid})
+
+    return client.portal.call(call)
+
+
+def test_the_forget_tool_reports_success_when_the_row_is_gone_and_its_cleanup_is_queued(client, monkeypatch):
+    mem = client.core.memory
+    honda, summary = _seed(client)
+    real_forget = mem.forget
+
+    async def forget_crashes(fid, *, notify=False):
+        assert await real_forget(fid, notify=notify)
+        raise RuntimeError("vector delete failed after the row went")
+
+    monkeypatch.setattr(mem, "forget", forget_crashes)
+    out = _forget_tool(client, honda)
+    monkeypatch.undo()
+    assert "error" not in out
+    assert out["deleted"] is True and out["cleanup_pending"] is True
+
+    # The memory is no longer listed, and the hourly upkeep still finishes its cleanup.
+    assert honda not in [m["id"] for m in client.get("/api/memories", params={"state": "all"}).json()]
+    client.portal.call(
+        client.core.store.execute,
+        "UPDATE pending_erase SET at = ?",
+        ((datetime.now(UTC) - timedelta(hours=2)).isoformat(),),
+    )
+    assert client.portal.call(mem.drain_pending_erases) == 1
+    assert not _rows(client, "SELECT id FROM summaries WHERE id = ?", (summary,))
+
+
+def test_the_forget_tool_keeps_a_plain_error_when_nothing_was_deleted(client, monkeypatch):
+    mem, store = client.core.memory, client.core.store
+    honda, _ = _seed(client)
+
+    async def forget_fails_first(fid, *, notify=False):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(mem, "forget", forget_fails_first)
+    assert _forget_tool(client, honda) == {"error": "couldn't delete this memory right now, try again"}
+    monkeypatch.undo()
+
+    # An erase that aborts before touching anything (its cleanup could not be queued) is the same error.
+    real_execute = store.execute
+
+    async def execute_failing_on_queue(sql, *args, **kwargs):
+        if sql.startswith("INSERT INTO pending_erase"):
+            raise RuntimeError("database is locked")
+        return await real_execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(store, "execute", execute_failing_on_queue)
+    assert _forget_tool(client, honda) == {"error": "couldn't delete this memory right now, try again"}
+    monkeypatch.undo()
+    assert client.get(f"/api/memories/{honda}").status_code == 200
+
+
+def test_the_forget_tool_flags_a_failed_cleanup_step_and_not_a_clean_delete(client, monkeypatch):
+    mem = client.core.memory
+    honda, _ = _seed(client)
+    other = int(client.portal.call(lambda: mem.remember("Maya likes masala chai", source="manual", use_llm=False))["id"])
+
+    async def cascade_fails(*args, **kwargs):
+        raise RuntimeError("MEMORY.md is locked by another program")
+
+    monkeypatch.setattr(mem, "_cascade", cascade_fails)
+    out = _forget_tool(client, honda)
+    monkeypatch.undo()
+    assert out["deleted"] is True and out["cleanup_pending"] is True
+    assert _forget_tool(client, other) == {"deleted": True, "id": other}
+
+
+def test_the_forget_tool_deletes_a_memory_whose_stored_topics_are_unreadable(client):
+    honda, _ = _seed(client)
+    client.portal.call(client.core.store.execute, "UPDATE facts SET topics = ? WHERE id = ?", ("not json", honda))
+    assert _forget_tool(client, honda) == {"deleted": True, "id": honda}
+    assert not _rows(client, "SELECT id FROM facts WHERE id = ?", (honda,))
