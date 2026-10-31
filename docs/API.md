@@ -502,6 +502,78 @@ accept or loosen a rule.
   ends, so calls already running when the budget is reached (a swarm's workers, a chat and a task at once) still
   finish, and spending can go past the budget by what they cost.
 
+### OpenAI-compatible API (#211)
+Lets other apps on this computer (editors, scripts, shortcuts) chat with Sentient and use its tools, using any OpenAI
+client pointed at `<engine>/v1`. Off until `openai_api.enabled` is `true` (`PATCH /api/config`). Its memories only
+when `openai_api.allow_memory` is on too (below).
+- Only loopback connections can use `/v1`, even if the gateway also listens on the network or the API is enabled
+  after startup. Both the transport's local address and client address must be numeric loopback IPs (IPv4, IPv6,
+  or IPv4-mapped IPv6). Missing addresses are refused; `Host` and forwarded headers cannot make a network-facing
+  socket local. Connect directly to the local engine; remote access through a proxy is not supported.
+- `POST /api/openai-api/key` (window token) → `{key, base_url}`: a new key (`sk-sentient-...`) in the keychain entry
+  `openai_api_key`, replacing the old one. This answer is the only place it is shown. 503 when the keychain can't
+  save it.
+- `/v1/...` takes `Authorization: Bearer <key>`, never the window's token. Errors use OpenAI's shape
+  `{error: {message, type, param, code}}`: 404 `api_off` while the setting is off, 401 `invalid_api_key` for a missing
+  or wrong key, 403 `local_only` for a non-loopback connection, 400 `invalid_request` for malformed or invalid
+  request bodies, 400 `no_user_message`, 409 `chat_busy` for an
+  overlapping request, and 500 `turn_failed` when the turn ended in an error (the turn's own error message, or for
+  an unexpected failure a plain sentence; the details are in the engine's log).
+  The off/locality/key checks happen before JSON or schema validation, including for malformed requests.
+- `GET /v1/models` → `{object: "list", data: [{id: "sentient", object: "model", created, owned_by}]}`.
+- `POST /v1/chat/completions` `{model, messages: [{role, content}], stream?, user?}` runs one chat turn in the named
+  chat for `user` (`"API"` when absent, made on first use, `channel: "api"`, title = the name; the mapping is the
+  `openai_api.sessions` meta entry). Only the last `user` message is sent (its text parts when `content` is a list):
+  Sentient keeps the chat's history itself, so earlier messages, `system` messages and fields such as `temperature`
+  are ignored. Without `stream` → a `chat.completion` with the reply and `usage`; with `stream: true` →
+  `text/event-stream` of `chat.completion.chunk`s (a first `delta: {role: "assistant"}`, `delta.content` per
+  `text_delta`, a last `delta: {}` with `finish_reason: "stop"`), a `data: {error}` line if the turn failed, then
+  `data: [DONE]`. API turns have no undo window (`channel: "api"` is not attended, section 10).
+- **Approvals still ask in the app.** A call that needs the user's OK (section 2, rules and modes as in any chat)
+  posts one `kind: "approval"` notification, the same one an MCP app's turn posts (section 6 "Approval payload",
+  with `channel: "api"` and `source: "api"`): the window shows it with Allow and Deny (answered with
+  `POST /api/approvals`), and paired chats get it like a task's approval (section 14). The request keeps waiting
+  meanwhile. Once answered, `payload.status` is `allow` or `deny`; `expired` when nobody answered within
+  `tools.approvals.timeout_s` or the turn was stopped (`notification.updated`). Pending approvals are discarded when their turn ends, even if notification
+  creation was interrupted; any still-pending saved notification is expired. A call that was declined or not
+  answered in time is never claimed: the reply starts with `Not done: "<tool>" needed your OK in Sentient and didn't
+  get it.` (streamed, a `delta.content` sent as soon as the call is declined, before the model's words about it).
+- The chat counts as outside content from the start of each API turn, including in an existing chat
+  (`untrusted: "another app (API)"`). In an API turn the model reads the app's requests, this one and earlier ones,
+  as requests: prefixed with `[Sent by another app on this computer through Sentient's API]`, not wrapped as outside
+  content, so a model that keeps the outside-content rule strictly still answers (#479). Their text never
+  counts as the user's own words for an "Only if I asked" rule or a standing-rule proposal, and does not use the
+  quick-command shortcut. Calls that run code or send data out ask for approval even with an Allow rule or approvals
+  turned off (ADR 0018), and so does a delete or a move to the trash, as for `sentient mcp` (#443). The user's
+  explicit approval is still required. Facts learned from API messages stay
+  pending for review rather than being accepted as the user's own statements (ADR 0021).
+  Stored API user messages retain `name: "another app (API)"`; their text is marked as outside content when the
+  chat is continued from the window, where the user is the one speaking. Keyword and date-based history reads retain that source even after the original chat is
+  trusted again. Summaries containing API messages retain their outside-source mark and are excluded from shared
+  summary search; facts extracted when those messages are compressed still wait for review. Trusting a chat up
+  to an older message does not cover newer API input.
+- **What the key reaches.** Chatting and Sentient's tools, with approvals as above. Memories stay out unless
+  `openai_api.allow_memory` is on (default off, #479): an API turn then gets no recalled memories, user-model
+  insights, notes or profile files in its prompt (only Sentient's persona, plus a note saying they aren't available),
+  and `memory_recall`, `memory_search_by_source`, `memory_search_history`, `history_semantic_search`,
+  `history_time_search`, `user_model_ask` and `memory_forget` are left out of its tools and refused if called anyway.
+  This is the turn's one memory decision (section 10, "Turns without memory"), so the same holds for every helper,
+  reader call and script the turn starts.
+  `memory_remember` stays, and what it saves waits for review. With it on, an API turn reads memory like a chat in
+  the window, so whoever holds the key can ask about anything Sentient remembers, including past chats.
+- Concurrent first requests share the same chat for a given name, and creating one name cannot overwrite another
+  name's chat mapping. Only one API turn can run in that chat at a time. An overlapping API request returns
+  409 `chat_busy` before starting a turn; it is not queued to run later. Different named chats can proceed independently.
+- **Stop everything** (`POST /api/stop-all`) ends a running API turn, waiting approvals included: 409 `stopped`
+  (`Stopped.`), or a `data: {error: {message: "Stopped."}}` line before `[DONE]` when streaming. A client that hangs
+  up doesn't end the turn: it runs to the end and is saved, as in the window.
+  Stop also cancels admitted turns that have not started or are waiting during initialization. Requests still
+  allocating their named chat when Stop occurs return 409 `stopped` before starting a turn; a new explicit request
+  made after Stop can start normally.
+- Errors carry `x-should-retry: false`, so OpenAI's SDKs don't retry a failed turn and run its tools again.
+- The chat list marks these chats "From another app (API)", and Activity says
+  `From another app (API), in the chat "<name>"` for what they did.
+
 ---
 
 ## 3. Models & secrets (fully changeable model configuration)
@@ -1694,11 +1766,13 @@ Proactive suggestion payload:
 `email_imap`), `webhook` (then `event_type` is the hook id and `hook_name` is set) or `heartbeat`.
 
 Approval payload (kind `approval`): an approval raised by a chat turn no chat surface could show (an MCP
-app's turn, #443), posted by the agent loop alongside the stream event so the user can answer it here.
+app's turn, #443, or an OpenAI-compatible API turn, section 2, #211), posted once by the agent loop alongside the
+stream event so the user can answer it here. An API turn's note reads `Another app asked Sentient to use "<tool>".
+Allow it?` and adds `source: "api"`.
 ```json
 {"approval_id": "...", "name": "<tool name>", "risk": "send|exec|write|read", "arguments": {},
- "session_id": "...", "channel": "mcp", "reason": "...", "untrusted": "an MCP app",
- "status": "<the decision, once answered>"}
+ "session_id": "...", "channel": "mcp|api", "reason": "...", "untrusted": "an MCP app",
+ "status": "<the decision, once answered; expired when nobody answered in time or the turn ended first>"}
 ```
 The notification center renders Allow/Deny from it and answers through `POST /api/approvals` with the same
 `approval_id` (the broker is one for the whole engine, so any surface's answer settles the waiting turn);
@@ -2722,7 +2796,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 - Subagents cannot spawn subagents, use the voice role, or run tools of effective risk `send` or `exec`; those calls are
   denied with an explanation the parent can relay.
 - **Turns without memory** (#525). Each chat turn decides once whether it may use what Sentient knows about the user
-  (`Agent.memory_allowed(session, channel)`: false in an incognito chat while `chat.incognito_uses_memory` is off)
+  (`Agent.memory_allowed(session, channel)`: false in an incognito chat while `chat.incognito_uses_memory` is off,
+  and in a `/v1` turn while `openai_api.allow_memory` is off)
   and carries the answer in `ToolContext.memory_allowed`. Everything the turn starts copies it: helpers
   (`delegate_task`, `delegate_tasks`, background ones too), the reader and `execute_code` scripts. Without memory,
   the memory tools (`memory_recall`, `memory_search_by_source`, `memory_search_history`, `history_semantic_search`,
@@ -3078,6 +3153,11 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   that delivered it to that chat (`channel_questions`); `tq:` buttons never answer an approval. A reply with a word or
   an option number answers it like any task question. Unpaired chats are refused as always. A request past its time
   can't be approved (the toast and the message say it expired).
+- Approval requests of chat turns another app steers (an MCP app's turn, #443, and the OpenAI-compatible API,
+  section 2, #211) arrive as `kind: "approval"` notifications (section 6) and are held and sent the same way, as one
+  message with **Allow** and **Deny** (`na:<a|d>:<approval_id>`), answering through `app.approvals`; a button only
+  answers from a message that delivered it to that chat. When the request is answered anywhere, expires or is
+  stopped, the message's buttons settle.
 - Delivery (chats with `deliver: true`, from `notification.new`; a task's `deliver_to` can keep its notifications on
   the desktop or send them only to chosen chats instead, section 4 "Where results go"): task results and failures
   (`payload.event` in `run_completed`, `run_failed`, `planning_failed`, `clarification_needed`, `disabled`,

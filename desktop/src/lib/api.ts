@@ -110,6 +110,7 @@ import type {
   PresetApplyResult,
   OllamaPullProgress,
   OnboardingRequest,
+  OpenAIApiKey,
   Persona,
   PrivacyFilters,
   IntegrationEntities,
@@ -475,6 +476,11 @@ export const api = {
     put: (config: SentientConfig) => http.put<{ saved: boolean }>('/api/config', config),
     patch: (patch: DeepPartial<SentientConfig> | Record<string, unknown>) =>
       http.patch<ConfigPatchResponse>('/api/config', patch)
+  },
+
+  // §2 the OpenAI-compatible API (#211): a new key, shown once, replaces the old one
+  openaiApi: {
+    makeKey: () => http.post<OpenAIApiKey>('/api/openai-api/key')
   },
 
   sessions: {

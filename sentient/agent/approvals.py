@@ -241,6 +241,14 @@ class ApprovalBroker:
             self._choices[approval_id] = list(choices)
         return fut
 
+    def cancel(self, approval_id: str) -> None:
+        """Forget an abandoned request without applying an answer or creating any grant."""
+        fut = self._pending.pop(approval_id, None)
+        self._choices.pop(approval_id, None)
+        self._via.pop(approval_id, None)
+        if fut is not None and not fut.done():
+            fut.cancel()
+
     async def wait(
         self, approval_id: str, session_id: str | None, tool_name: str, risk: Risk | None = None
     ) -> Decision:

@@ -65,6 +65,16 @@ def is_marked(content: str) -> bool:
     return bool(found) and hmac.compare_digest(found["code"], outside_code(found["body"]))
 
 
+# A /v1 request as the model reads it in an API turn (#211): said in plain words, not marked as outside content, so a
+# model that keeps OUTSIDE_RULE strictly still answers the app. The chat itself stays marked (ctx.untrusted), so
+# whatever the app asks for still goes through the same approvals.
+API_REQUEST_NOTE = "[Sent by another app on this computer through Sentient's API]"
+
+
+def frame_api_request(content: str) -> str:
+    return f"{API_REQUEST_NOTE}\n{content or ''}"
+
+
 def mark_outside(content: str, source: str) -> str:
     """``content`` (a tool message) wrapped as outside content from ``source`` ("Web", "Gmail"). Text this engine
     already marked is returned as it is; a result cut for length keeps the engine's note after the closing marker."""

@@ -219,6 +219,19 @@ export interface GatewayConfig {
   port: number
 }
 
+/** The OpenAI-compatible chat API (#211, docs/API.md section 2). */
+export interface OpenAIApiConfig {
+  enabled: boolean
+  /** Connected apps get memories, the profile and past chats only when this is on (#479). */
+  allow_memory: boolean
+}
+
+/** `POST /api/openai-api/key`: a new key for `/v1`, replacing the old one. This answer is the only place it's shown. */
+export interface OpenAIApiKey {
+  key: string
+  base_url: string
+}
+
 export interface ChatConfig {
   history_window: number
   compress_after_messages: number
@@ -458,6 +471,7 @@ export interface SentientConfig {
   assistant: AssistantConfig
   models: ModelsConfig
   gateway: GatewayConfig
+  openai_api: OpenAIApiConfig
   chat: ChatConfig
   memory: MemoryConfig
   tools: ToolsConfig
