@@ -262,3 +262,53 @@ def test_find_ignores_unknown_tools_and_mentions():
     assert text_calls.find(PROSE["a mention"], SCHEMAS.get) is None
     example = text_calls.find(PROSE["a long answer with an example call"], SCHEMAS.get)
     assert example is not None and not example.is_action and not example.runnable
+
+
+# ---------------------------------------------------------------------- review follow-ups
+async def test_a_call_after_prose_on_the_same_line_runs(config):
+    reply = f"I will remember this: {CALL}"
+    _, events, _, memories = await _turn(config, [reply, "Saved."])
+    assert [e.name for e in events if isinstance(e, ToolCallEvent)] == ["memory_remember"]
+    assert any(FACT in m for m in memories)
+    shown = _shown(events)
+    assert shown.startswith("I will remember this:") and not any(bit in shown for bit in RAW_BITS), shown
+
+
+def test_a_name_last_call_stays_held_however_long():
+    reply = '{"arguments": {"fact": "' + "Maya likes long walks. " * 30 + '"}, "name": "memory_remember"}'
+    assert _stream(reply) == ""
+    found = text_calls.find(reply, SCHEMAS.get)
+    assert found is not None and found.runnable
+
+
+def test_tool_call_tags_in_a_long_answer_are_not_run():
+    reply = "Here is how tool calls look in Sentient. " * 15 + f"\n<tool_call>{CALL}</tool_call>\nThat's the format."
+    found = text_calls.find(reply, SCHEMAS.get)
+    assert found is not None and not found.is_action and not found.runnable
+
+
+def test_an_unclosed_tag_runs_only_a_complete_call():
+    complete = text_calls.find(f"<tool_call>\n{CALL}", SCHEMAS.get)
+    assert complete is not None and complete.runnable
+    cut = text_calls.find('<tool_call>\n{"name": "memory_remember", "arguments": {"fact": "Maya ru', SCHEMAS.get)
+    assert cut is not None and cut.is_action and not cut.runnable  # nudged, never run with a cut-off value
+
+
+def test_a_real_call_keeps_an_unrelated_example_in_the_text():
+    reply = 'Saving it. For reference: {"name": "web_search", "arguments": {"query": "x"}}\n' + CALL
+    schemas = {**SCHEMAS, "web_search": {"type": "object", "properties": {"query": {"type": "string"}}}}
+    found = text_calls.find(reply, schemas.get, only={"memory_remember"})
+    assert found is not None and "web_search" in found.cleaned and "memory_remember" not in found.cleaned
+
+
+def test_id_and_type_stay_when_the_tool_takes_them():
+    schemas = {"open_ticket": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}}
+    found = text_calls.find('{"name": "open_ticket", "id": "T-7"}', schemas.get)
+    assert found is not None and found.calls == [("open_ticket", {"id": "T-7"})]
+
+
+async def test_the_nudge_is_gone_once_the_model_calls_the_tool(config):
+    bad = '{"name": "memory_remember", "arguments": {"note": "Maya runs on Sundays"}}'
+    llm, _, _, _ = await _turn(config, [bad, [tool_call("memory_remember", fact=FACT)], "Saved."])
+    assert any(c.startswith("You wrote the ") for c in llm.seen[1])
+    assert not any(c.startswith("You wrote the ") for c in llm.seen[2])  # not sent again after the real call

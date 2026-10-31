@@ -974,7 +974,10 @@ class Agent:
                 return
             result.thinking += think_acc
             ctx.result_limit = result.tool_result_limit  # a tool returning a part sizes it to fit (#336)
-            written = text_calls.find(text_acc, self._tool_schema) if tools and shown < len(text_acc) else None
+            if call_nudge is not None and messages and messages[-1] is call_nudge:
+                messages.pop()  # the model has answered the nudge: it is scaffolding, not part of the conversation
+            only = {tc.name for tc in tool_calls} if tool_calls else None
+            written = text_calls.find(text_acc, self._tool_schema, only) if tools and shown < len(text_acc) else None
             streamed = text_acc[:shown]
             if written is not None and tool_calls:
                 text_acc = written.cleaned  # it made the real calls too: the written copy is never shown
@@ -1029,8 +1032,6 @@ class Agent:
                     continue
                 if empty_nudged and messages and messages[-1].get("content") in NUDGES:
                     messages.pop()  # the nudge is scaffolding, not part of the conversation
-                if call_nudge is not None and messages and messages[-1] is call_nudge:
-                    messages.pop()
                 if not text_acc.strip() and result.findings:
                     # still nothing (real qwen3:8b after a memory look-up, #322): answer from what the tools returned
                     text_acc = findings.summarize(result.findings)

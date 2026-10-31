@@ -34,8 +34,6 @@ TAGS = ("<tool_call>", "<tool_calls>")
 TAG_RE = re.compile(r"<tool_calls?>(.*?)(?:</tool_calls?>|$)", re.DOTALL)
 # prose around written calls, in characters: up to this the call is the reply's action ("I'll note that." + call)
 MAX_AROUND = 400
-# a JSON object this long with no tool name yet is not a call
-MAX_UNNAMED = 300
 NUDGE = (
     "You wrote the {name} call out as text, so it did not run and the user can't see it. "
     "Make the tool call itself now, or answer the user in plain words."
@@ -76,6 +74,12 @@ def held_from(text: str, names: Collection[str], start: int = 0) -> int:
         if _could_be_call(text[ls:], names):
             return ls
         nl = text.find("\n", ls)
+        end = tag if nl == -1 else min(nl, tag)
+        brace = text.find("{", ls, end)  # "I'll remember this: {"name": ...}": a call after prose on the same line
+        while brace != -1:
+            if text[brace + 1 :].lstrip()[:1] in ('"', "") and _inner_could_be_call(text[brace:], names):
+                return brace
+            brace = text.find("{", brace + 1, end)
         if nl == -1:
             break
         ls = nl + 1
@@ -138,7 +142,7 @@ def _inner_could_be_call(s: str, names: Collection[str]) -> bool:
             if value == "function" and key in ("type", "function"):
                 continue  # the OpenAI shape: the name follows inside "function"
             return False
-        return _balanced_end(inner, 0) == -1 and len(inner) <= MAX_UNNAMED
+        return _balanced_end(inner, 0) == -1  # no tool name yet: held until the object closes
     if TAGS[0].startswith(inner[: len(TAGS[0])]):
         return True
     m = _IDENT.match(inner)
@@ -179,14 +183,16 @@ def _balanced_end(s: str, i: int) -> int:
 
 
 # ---------------------------------------------------------------------- a finished reply
-def find(text: str, schema_for: SchemaFn) -> Found | None:
-    """The written-out calls in a finished reply, or None when it has none (or a tool name is only mentioned)."""
+def find(text: str, schema_for: SchemaFn, only: Collection[str] | None = None) -> Found | None:
+    """The written-out calls in a finished reply, or None when it has none (or a tool name is only mentioned).
+    With ``only`` (the tools the model really called), just the written copies of those calls count."""
     if not text or not text.strip():
         return None
-    tagged = bool(TAG_RE.search(text))
     spans: list[tuple[int, int, list[tuple[str, Any]]]] = []  # (start, end, [(tool, arguments or None)])
     for m in TAG_RE.finditer(text):
-        calls = _calls_in(m.group(1), schema_for, loose=True)
+        # a tag that never closes may end inside the arguments: only a complete object counts, never a repaired one
+        closed = bool(re.search(r"</tool_calls?>$", m.group(0)))
+        calls = _calls_in(m.group(1), schema_for, loose=closed)
         spans.append((m.start(), m.end(), calls or [(_named(m.group(1)), None)]))
     for start, end, calls in _json_spans(text, schema_for) + _paren_spans(text, schema_for):
         if not any(start < e and s < end for s, e, _ in spans):
@@ -196,6 +202,10 @@ def find(text: str, schema_for: SchemaFn) -> Found | None:
         if broken is None:
             return None
         spans.append(broken)
+    if only is not None:
+        spans = [sp for sp in spans if all(not name or name in only for name, _ in sp[2])]
+        if not spans:
+            return None
     spans.sort(key=lambda sp: sp[0])
     names: list[str] = []
     calls: list[tuple[str, dict]] = []
@@ -216,7 +226,7 @@ def find(text: str, schema_for: SchemaFn) -> Found | None:
     before = _TRAILING_WRAPPERS.sub("", pieces[0]).rstrip()
     after = "\n".join(_prose(p) for p in pieces[1:]).strip()
     around = len(_prose(pieces[0])) + len(after)
-    is_action = tagged or around <= MAX_AROUND
+    is_action = around <= MAX_AROUND
     cleaned = "\n\n".join(p for p in (before, after) if p)
     return Found(calls=calls if fits else [], names=names, before=before, cleaned=cleaned,
                  runnable=is_action and fits and bool(calls), is_action=is_action)
@@ -355,7 +365,9 @@ def _as_call(obj: Any, schema_for: SchemaFn) -> tuple[str, Any] | None:
     name = _strip_prefix(obj[name_key])
     arg_key = next((k for k in ARG_KEYS if k in obj), None)
     if arg_key is None:  # {"name": "memory_remember", "fact": "..."}: the other keys are the arguments
-        args: Any = {k: v for k, v in obj.items() if k not in (name_key, "id", "type")}
+        props = (schema_for(name) or {}).get("properties") or {}
+        drop = {name_key} | ({"id", "type"} - set(props))  # call bookkeeping, unless the tool takes them
+        args: Any = {k: v for k, v in obj.items() if k not in drop}
     else:
         args = obj[arg_key]
         if isinstance(args, str):
