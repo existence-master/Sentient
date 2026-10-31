@@ -24,7 +24,8 @@ Sentient turns off on every run, and, which no supported flag or setting removes
 Claude account's email and a note about the computer (working folder, operating system). In a turn that may not use
 what Sentient knows about the user (``private``: an incognito chat with memory off, an app's turn without memory),
 Claude is told those notes aren't the user's and the account email is taken out of what comes back (text, thinking
-and tool calls) unless the turn itself contains it. The email comes from ``claude auth status`` and stays in memory.
+and tool calls) unless the turn itself contains it. The email comes from ``claude auth status`` (asked each time) and
+stays in memory; when it can't be read, every email address the turn didn't contain is taken out instead.
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ PRIVATE_NOTE = (
 )
 HIDDEN = "[email hidden]"  # what stands in for the account email in a turn without memory
 EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
-ACCOUNT_TTL_S = 600  # how long the account email from ``claude auth status`` is reused
+WORD_END = re.compile(r"[A-Za-z0-9._%+\-@]+$")  # a streamed word that may still grow into an email address
 VERSION_TIMEOUT_S = 15
 STDERR_KEEP = 4000
 EXIT_WAIT_S = 5  # how long cleanup waits for Claude Code to exit after it was stopped
@@ -142,7 +143,6 @@ INTRO = ("The conversation so far is below, oldest first. Write the assistant's 
 _attended: ContextVar[bool] = ContextVar("sentient_claude_code_attended", default=False)
 _private: ContextVar[bool] = ContextVar("sentient_claude_code_private", default=False)
 _live: set[ProcessTree] = set()  # Claude Code processes running right now, for Stop everything
-_account: tuple[float, frozenset[str]] | None = None  # (when, account emails) from ``claude auth status``; memory only
 
 
 # ---------------------------------------------------------------------------- how many at once (#444)
@@ -536,17 +536,20 @@ def _env() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------- the account email (#533)
-def _account_lookup(exe: str) -> frozenset[str]:
+def account_emails(exe: str) -> frozenset[str] | None:
     """The email addresses ``claude auth status`` shows for the signed-in account, lower-cased, for taking them out of
-    answers in a turn without memory. Blocking. Empty when it can't tell. Kept in memory only, never logged."""
+    answers in a turn without memory; None when it can't tell. Asked afresh for each such call (it runs while Claude
+    Code starts), so a switched login is never missed. Blocking. Kept in memory only, never logged."""
     try:
         out = subprocess.run([exe, "auth", "status", "--json"], capture_output=True, text=True, timeout=VERSION_TIMEOUT_S,
                              stdin=subprocess.DEVNULL, env=_env(), encoding="utf-8", errors="replace",
                              **({"creationflags": CREATE_NO_WINDOW} if IS_WINDOWS else {}))
-        data = json.loads(out.stdout or "null")
+        data = json.loads(out.stdout or "null") if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError, ValueError):
+        data = None
+    if not isinstance(data, dict):
         log.debug("Claude Code: couldn't read the account from claude auth status")
-        return frozenset()
+        return None
     found: set[str] = set()
 
     def walk(value: Any) -> None:
@@ -563,17 +566,6 @@ def _account_lookup(exe: str) -> frozenset[str]:
     return frozenset(found)
 
 
-def account_emails(exe: str) -> frozenset[str]:
-    """``_account_lookup``, reused for ``ACCOUNT_TTL_S``. Blocking: call it on a thread."""
-    global _account
-    now = time.monotonic()
-    if _account is not None and now - _account[0] < ACCOUNT_TTL_S:
-        return _account[1]
-    emails = _account_lookup(exe)
-    _account = (now, emails)
-    return emails
-
-
 def _sent_text(messages: list[dict]) -> str:
     """Everything Sentient sends in one call (system prompt, conversation, tool calls and results), lower-cased."""
     parts: list[str] = []
@@ -587,32 +579,45 @@ def _sent_text(messages: list[dict]) -> str:
 
 class Hider:
     """Takes ``secrets`` out of streamed text, case-insensitively, even when one is split across pieces: the tail
-    that could be the start of one waits for the next piece (``feed``) or the end (``flush``)."""
+    that could be the start of one waits for the next piece (``feed``) or the end (``flush``). With ``any_email``
+    (the account couldn't be read) it takes out every email address that isn't in ``allowed``, holding back a word
+    that could still grow into one."""
 
-    def __init__(self, secrets: frozenset[str] | set[str]):
+    def __init__(self, secrets: frozenset[str] | set[str], *, any_email: bool = False, allowed: str = ""):
         self.secrets = sorted((s for s in secrets if s), key=len, reverse=True)
         self.pattern = re.compile("|".join(re.escape(s) for s in self.secrets), re.IGNORECASE) if self.secrets else None
+        self.any_email = any_email
+        self.allowed = allowed
         self.pending = ""
 
     def hide(self, text: str) -> str:
-        return self.pattern.sub(HIDDEN, text) if self.pattern and text else text
+        if not text:
+            return text
+        if self.pattern is not None:
+            text = self.pattern.sub(HIDDEN, text)
+        if self.any_email:
+            text = EMAIL.sub(lambda m: m[0] if m[0].lower() in self.allowed else HIDDEN, text)
+        return text
 
     def feed(self, text: str) -> str:
-        if self.pattern is None:
+        if self.pattern is None and not self.any_email:
             return text
-        buf = self.hide(self.pending + text)
+        buf, tail = self.pending + text, ""
+        if self.any_email and (word := WORD_END.search(buf)):  # the last word may still grow into an address
+            buf, tail = buf[:word.start()], word[0]
+        buf = self.hide(buf)  # whole addresses first, so a held-back tail never cuts one
         low = buf.lower()
         keep = 0
-        for secret in self.secrets:
+        for secret in self.secrets:  # the end may be the start of one that the next piece finishes
             for n in range(min(len(secret) - 1, len(buf)), keep, -1):
                 if secret.startswith(low[-n:]):
                     keep = n
                     break
-        self.pending = buf[len(buf) - keep:] if keep else ""
+        self.pending = buf[len(buf) - keep:] + tail
         return buf[:len(buf) - keep]
 
     def flush(self) -> str:
-        out, self.pending = self.pending, ""
+        out, self.pending = self.hide(self.pending), ""
         return out
 
     def hide_value(self, value: Any) -> Any:
@@ -620,7 +625,7 @@ class Hider:
         if isinstance(value, str):
             return self.hide(value)
         if isinstance(value, dict):
-            return {k: self.hide_value(v) for k, v in value.items()}
+            return {self.hide(k) if isinstance(k, str) else k: self.hide_value(v) for k, v in value.items()}
         if isinstance(value, list):
             return [self.hide_value(v) for v in value]
         return value
@@ -842,8 +847,11 @@ async def stream(
         thinking_hider = hider
         if lookup is not None:  # the account email, looked up while Claude Code started
             sent = _sent_text(messages)  # an email the turn itself contains (the user gave it) stays
-            secrets = {e for e in await lookup if e not in sent}
-            hider, thinking_hider = Hider(secrets), Hider(secrets)
+            emails = await lookup
+            secrets = {e for e in emails or () if e not in sent}
+            unknown = emails is None  # couldn't tell which account: every address the turn didn't contain goes
+            hider = Hider(secrets, any_email=unknown, allowed=sent)
+            thinking_hider = Hider(secrets, any_email=unknown, allowed=sent)
 
         verified = False
         finished = False

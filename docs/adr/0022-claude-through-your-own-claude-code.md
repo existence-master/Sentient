@@ -72,9 +72,11 @@ this is counted or allowed."
   them while Claude Code uses the plan login: the signed-in Claude account's email and a note about the computer
   (working folder, operating system). In a turn that may not use what Sentient knows about the user
   (`ToolContext.memory_allowed` False: an incognito chat with memory off, an app's turn without memory), Claude is
-  told those notes aren't the user's, and the account email (from `claude auth status`, kept in memory only) is
-  replaced with "[email hidden]" in the reply, its thinking and tool call arguments, unless the turn itself
-  contains it. Ordinary chats are unchanged.
+  told those notes aren't the user's, and the account email (from `claude auth status`, asked for each call and
+  kept in memory only) is replaced with "[email hidden]" in the reply, its thinking and tool call arguments, unless
+  the turn itself contains it. When the account can't be read, every email address the turn didn't contain is
+  replaced instead. The title and running summary of such a chat are written the same way. Ordinary chats are
+  unchanged.
 
 ## Consequences
 

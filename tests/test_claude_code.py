@@ -70,7 +70,6 @@ def fake_claude(tmp_path, monkeypatch):
     monkeypatch.setenv("SENTIENT_GATEWAY_TOKEN", "not-for-claude")
     auth_log = tmp_path / "auth.jsonl"
     monkeypatch.setenv("FAKE_CLAUDE_AUTH_LOG", str(auth_log))
-    monkeypatch.setattr(claude_code, "_account", None)  # each test looks the account up afresh
 
     class Fake:
         pids = tmp_path / "pids.json"
@@ -367,21 +366,61 @@ def test_hider_takes_out_split_and_mixed_case_secrets():
     held = claude_code.Hider({"ab@cd.io"})
     assert held.feed("x a") == "x " and held.flush() == "a"  # a tail that could start it waits, then comes out as is
     assert claude_code.Hider(set()).feed("ab@cd.io") == "ab@cd.io"
-    assert held.hide_value({"a": ["AB@cd.io", 1], "b": "hi"}) == {"a": [claude_code.HIDDEN, 1], "b": "hi"}
+    assert held.hide_value({"a": ["AB@cd.io", 1], "b": "hi", "ab@cd.io": "x"}) == {
+        "a": [claude_code.HIDDEN, 1], "b": "hi", claude_code.HIDDEN: "x"}  # keys too
+    anyone = claude_code.Hider(set(), any_email=True, allowed="keep@me.org")
+    out = "".join(anyone.feed(p) for p in ["write to x@y.c", "om or keep@ME.org, ", "thanks"]) + anyone.flush()
+    assert out == f"write to {claude_code.HIDDEN} or keep@ME.org, thanks"  # never cut in the middle of an address
 
 
-def test_account_lookup_reads_emails_and_is_reused(fake_claude, monkeypatch):
+def test_account_lookup_asks_each_time_and_says_when_it_cannot_tell(fake_claude, monkeypatch):
     exe = claude_code.find_executable()
     assert claude_code.account_emails(exe) == {ACCOUNT}  # the email, and the one inside the organisation name
-    claude_code.account_emails(exe)
-    assert len(fake_claude.auth_runs()) == 1  # reused for a while
+    monkeypatch.setenv("FAKE_CLAUDE_EMAIL", "rao.maya@example.org")  # signed in to another account meanwhile
+    assert claude_code.account_emails(exe) == {"rao.maya@example.org"}
+    assert len(fake_claude.auth_runs()) == 2  # asked afresh: a switched login is never missed
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH", "fail")
+    assert claude_code.account_emails(exe) is None  # can't tell, which is not the same as "no email"
 
-    def gone(*a, **k):
-        raise OSError("gone")
 
-    monkeypatch.setattr(claude_code, "_account", None)
-    monkeypatch.setattr(claude_code.subprocess, "run", gone)
-    assert claude_code.account_emails(exe) == frozenset()  # can't tell: nothing is taken out, the note still applies
+async def test_private_turn_hides_every_address_when_the_account_is_unknown(make_app, fake_claude, cc_config,
+                                                                            monkeypatch):
+    """When ``claude auth status`` can't say which account is signed in, a turn without memory still lets no account
+    email out: every address the turn itself didn't contain is taken out of the reply, thinking and tool calls."""
+    from sentient.agent.loop import LoopResult
+    from sentient.llm.events import ThinkingDelta
+
+    monkeypatch.setenv("FAKE_CLAUDE_AUTH", "fail")
+    fake_claude.scenario("leak")
+    app = await make_app()
+    app.registry.register(_postcards([]))
+    ctx = app.agent.tool_context(None, "desktop")
+    ctx.memory_allowed = False
+    result = LoopResult()
+    messages = [{"role": "user", "content": "email it to me, and copy keep@me.org"}]
+    events = [e async for e in app.agent.run_loop(messages, ctx, result=result, tool_names=["send_postcard"],
+                                                  max_rounds=1)]
+    shown = "".join(e.text for e in events if isinstance(e, (TextDelta, ThinkingDelta)))
+    assert ACCOUNT not in shown.lower() and claude_code.HIDDEN in shown
+    assert ACCOUNT not in json.dumps(messages).lower()
+    assert fake_claude.runs()[0]["system"].endswith(claude_code.PRIVATE_NOTE)
+
+
+async def test_titles_and_summaries_of_a_chat_without_memory_are_private(make_app, fake_claude):
+    """The title and the running summary of a chat without memory are written as private calls too: a summary goes
+    back into the chat's prompt, where an email would count as one the chat itself contains."""
+    app = await make_app()
+    seen: list[bool] = []
+
+    async def complete_text(role, messages, *, model=None):
+        seen.append(claude_code.is_private())
+        return "A title"
+
+    app.agent.llm.complete_text = complete_text
+    sid = await app.store.create_session(channel="desktop", incognito=True)
+    await app.agent._auto_title(sid, "hi", "hello", private=True)
+    await app.agent._auto_title(sid, "hi", "hello")
+    assert seen == [True, False]
 
 
 # ---------------------------------------------------------------------------- refusals

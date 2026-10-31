@@ -66,6 +66,9 @@ def main() -> int:
         if os.environ.get("FAKE_CLAUDE_AUTH_LOG"):
             with open(os.environ["FAKE_CLAUDE_AUTH_LOG"], "a", encoding="utf-8") as f:
                 f.write(json.dumps({"argv": argv, "context": {k: os.environ.get(k) for k in CONTEXT_SWITCHES}}) + "\n")
+        if os.environ.get("FAKE_CLAUDE_AUTH") == "fail":  # an older Claude Code, or one that can't say
+            print("error: unknown command 'auth'", file=sys.stderr)
+            return 1
         print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "email": email, "orgName": f"{email}'s Organization"}))
         return 0
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "chat")
