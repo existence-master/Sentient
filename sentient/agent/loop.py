@@ -209,6 +209,11 @@ PolicyFn = Callable[[Tool, Risk, dict], "str | Awaitable[str | None] | None"]
 
 
 # ---------------------------------------------------------------------- transcript helpers
+def _call_key(name: str, arguments: Any) -> tuple[str, str]:
+    """A call's tool and arguments, comparable across rounds."""
+    return name, json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
+
+
 def _normalize_tool_calls(calls: Any) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
@@ -880,6 +885,7 @@ class Agent:
         empty_nudged = False
         call_nudge: dict | None = None  # the one nudge about a tool call written out as text (#532)
         known = {t.name for t in self.registry.tools(include_hidden=True)}
+        made: set[tuple[str, str]] = set()  # (tool, arguments) of every call this run made
         round_no = 0
         def interrupted() -> bool:
             if interrupt is None or not interrupt():
@@ -981,6 +987,11 @@ class Agent:
             streamed = text_acc[:shown]
             if written is not None and tool_calls:
                 text_acc = written.cleaned  # it made the real calls too: the written copy is never shown
+            elif written is not None and written.runnable and all(_call_key(n, a) in made for n, a in written.calls):
+                # real qwen3:8b wrote the same call out again after its result: it already ran, so this is the answer
+                log.info("%s: the model wrote out %s again after it ran; not running it twice", source,
+                         ", ".join(written.names))
+                text_acc = written.before
             elif written is not None and written.runnable:
                 # a small model wrote its call out as text: it runs as the real call, through every usual check
                 log.info("%s: the model wrote %s out as text; running it as a call", source, ", ".join(written.names))
@@ -1054,6 +1065,7 @@ class Agent:
                 return
             # a delete for good becomes its app's trash version unless the user asked for it to be permanent (#142);
             # swapped before the call is saved, so the transcript, approvals and second look all see the trash call
+            made.update(_call_key(tc.name, tc.arguments) for tc in tool_calls)
             swapped = self._prefer_trash(tool_calls, messages, ctx)
             if swapped and tool_names is not None:
                 tool_names = [*tool_names, *(tc.name for tc in tool_calls if tc.id in swapped and tc.name not in tool_names)]

@@ -330,3 +330,12 @@ def test_an_unknown_type_does_not_hide_the_name_after_it():
 def test_an_unclosed_tag_keeps_a_complete_call_followed_by_prose():
     found = text_calls.find(f"<tool_call>\n{CALL}\nI saved it.", SCHEMAS.get)
     assert found is not None and found.runnable and found.calls == [("memory_remember", {"fact": FACT})]
+
+
+async def test_the_same_call_written_again_after_it_ran_is_not_run_twice(config):
+    # real qwen3:8b, in a chat that already held written-out calls, wrote the call again after its result
+    llm, events, _, _ = await _turn(config, [f"I'll note it.\n{CALL}", f"I'll note your Sunday run.\n{CALL}", "unused"])
+    assert [e.name for e in events if isinstance(e, ToolCallEvent)] == ["memory_remember"]
+    assert len(llm.seen) == 2
+    assert _done(events).content == "I'll note your Sunday run."
+    assert not any(bit in _shown(events) for bit in RAW_BITS)
