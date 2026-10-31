@@ -31,7 +31,7 @@ from sentient.llm.provider import parse_json_loose, tool_arguments
 NAME_KEYS = ("name", "tool", "tool_name", "function", "type")
 ARG_KEYS = ("arguments", "parameters", "args", "input", "params")
 TAGS = ("<tool_call>", "<tool_calls>")
-TAG_RE = re.compile(r"<tool_calls?>(.*?)(?:</tool_calls?>|$)", re.DOTALL)
+TAG_RE = re.compile(r"<(tool_calls?)>(.*?)(?:</\1>|$)", re.DOTALL)  # the closing tag matches the opening one
 # prose around written calls, in characters: up to this the call is the reply's action ("I'll note that." + call)
 MAX_AROUND = 400
 NUDGE = (
@@ -136,11 +136,12 @@ def _inner_could_be_call(s: str, names: Collection[str]) -> bool:
         for m in _NAME_FIELD.finditer(inner):
             key, value, closed = m.group(1), _strip_prefix(m.group(2)), m.group(3)
             if not closed:
-                return any(n.startswith(value) for n in names) or (key in ("type", "function") and "function".startswith(value))
+                return key == "type" or any(n.startswith(value) for n in names) or (
+                    key == "function" and "function".startswith(value))
             if value in names:
                 return True
-            if value == "function" and key in ("type", "function"):
-                continue  # the OpenAI shape: the name follows inside "function"
+            if key == "type" or (key == "function" and value == "function"):
+                continue  # {"type": "function"|"tool_call", ...}: the tool's name follows
             return False
         return _balanced_end(inner, 0) == -1  # no tool name yet: held until the object closes
     if TAGS[0].startswith(inner[: len(TAGS[0])]):
@@ -190,10 +191,14 @@ def find(text: str, schema_for: SchemaFn, only: Collection[str] | None = None) -
         return None
     spans: list[tuple[int, int, list[tuple[str, Any]]]] = []  # (start, end, [(tool, arguments or None)])
     for m in TAG_RE.finditer(text):
-        # a tag that never closes may end inside the arguments: only a complete object counts, never a repaired one
-        closed = bool(re.search(r"</tool_calls?>$", m.group(0)))
-        calls = _calls_in(m.group(1), schema_for, loose=closed)
-        spans.append((m.start(), m.end(), calls or [(_named(m.group(1)), None)]))
+        # a tag that never closes may end inside the arguments: only a complete leading object counts, never a
+        # repaired one
+        body = m.group(2)
+        if m.group(0).endswith(f"</{m.group(1)}>"):
+            calls = _calls_in(body, schema_for, loose=True)
+        else:
+            calls = _leading_calls(body, schema_for)
+        spans.append((m.start(), m.end(), calls or [(_named(body), None)]))
     for start, end, calls in _json_spans(text, schema_for) + _paren_spans(text, schema_for):
         if not any(start < e and s < end for s, e, _ in spans):
             spans.append((start, end, calls))
@@ -325,6 +330,16 @@ def _paren_arguments(inner: str, schema: dict) -> dict | None:
         return args
     except (SyntaxError, ValueError, AssertionError, TypeError):
         return None
+
+
+def _leading_calls(body: str, schema_for: SchemaFn) -> list[tuple[str, Any]]:
+    """The calls in a complete JSON object or array at the start of ``body`` (whatever follows it); [] otherwise."""
+    body = re.sub(r"^\s*```[\w-]*\s*", "", body).lstrip()
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(body)
+    except json.JSONDecodeError:
+        return []
+    return _as_calls(obj, schema_for)
 
 
 def _calls_in(body: str, schema_for: SchemaFn, *, loose: bool = False) -> list[tuple[str, Any]]:

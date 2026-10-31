@@ -312,3 +312,21 @@ async def test_the_nudge_is_gone_once_the_model_calls_the_tool(config):
     llm, _, _, _ = await _turn(config, [bad, [tool_call("memory_remember", fact=FACT)], "Saved."])
     assert any(c.startswith("You wrote the ") for c in llm.seen[1])
     assert not any(c.startswith("You wrote the ") for c in llm.seen[2])  # not sent again after the real call
+
+
+def test_a_closing_tag_must_match_its_opening_tag():
+    cut = '<tool_calls>\n{"name": "memory_remember", "arguments": {"fact": "Maya ru</tool_call>'
+    found = text_calls.find(cut, SCHEMAS.get)
+    assert found is not None and not found.runnable  # unclosed: never repaired into a cut-off fact
+
+
+def test_an_unknown_type_does_not_hide_the_name_after_it():
+    reply = '{"type": "tool_call", "name": "memory_remember", "arguments": {"fact": "Maya runs every Sunday at 6 a.m."}}'
+    assert _stream(reply) == ""
+    found = text_calls.find(reply, SCHEMAS.get)
+    assert found is not None and found.runnable and found.calls == [("memory_remember", {"fact": FACT})]
+
+
+def test_an_unclosed_tag_keeps_a_complete_call_followed_by_prose():
+    found = text_calls.find(f"<tool_call>\n{CALL}\nI saved it.", SCHEMAS.get)
+    assert found is not None and found.runnable and found.calls == [("memory_remember", {"fact": FACT})]
