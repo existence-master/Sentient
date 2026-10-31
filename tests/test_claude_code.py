@@ -368,9 +368,79 @@ def test_hider_takes_out_split_and_mixed_case_secrets():
     assert claude_code.Hider(set()).feed("ab@cd.io") == "ab@cd.io"
     assert held.hide_value({"a": ["AB@cd.io", 1], "b": "hi", "ab@cd.io": "x"}) == {
         "a": [claude_code.HIDDEN, 1], "b": "hi", claude_code.HIDDEN: "x"}  # keys too
-    anyone = claude_code.Hider(set(), any_email=True, allowed="keep@me.org")
+    anyone = claude_code.Hider(set(), any_email=True, allowed={"keep@me.org"})
     out = "".join(anyone.feed(p) for p in ["write to x@y.c", "om or keep@ME.org, ", "thanks"]) + anyone.flush()
     assert out == f"write to {claude_code.HIDDEN} or keep@ME.org, thanks"  # never cut in the middle of an address
+
+
+def _split_everywhere(hider_args: dict, text: str) -> list[str]:
+    """``text`` fed to a new Hider in two pieces, cut at every place: what comes out each time."""
+    outs = []
+    for cut in range(1, len(text)):
+        hider = claude_code.Hider(**hider_args)
+        outs.append(hider.feed(text[:cut]) + hider.feed(text[cut:]) + hider.flush())
+    return outs
+
+
+def test_only_whole_addresses_are_hidden_wherever_the_text_is_cut():
+    """The account address inside a longer one the user gave (notmaya.rao@...) is not it: that one stays whole, and
+    the account address on its own is still hidden, however the stream is cut, in both modes."""
+    text = f"Write to not{ACCOUNT} or {ACCOUNT.upper()}, and {ACCOUNT}.au too."
+    want = f"Write to not{ACCOUNT} or {claude_code.HIDDEN}, and {ACCOUNT}.au too."
+    known = {"secrets": {ACCOUNT}}
+    assert set(_split_everywhere(known, text)) == {want}
+    unknown = {"secrets": set(), "any_email": True, "allowed": {f"not{ACCOUNT}", f"{ACCOUNT}.au"}}
+    assert set(_split_everywhere(unknown, text)) == {want}
+    assert claude_code.Hider({ACCOUNT}).hide_value({"to": [f"not{ACCOUNT}", ACCOUNT]}) == {
+        "to": [f"not{ACCOUNT}", claude_code.HIDDEN]}
+
+
+def test_a_long_word_is_not_held_back_for_ever():
+    hider = claude_code.Hider({ACCOUNT})
+    blob = "A" * (claude_code.MAX_HELD + 1)
+    assert hider.feed(blob) == blob and hider.pending == ""  # longer than any address: let go at once
+    assert hider.feed("abc") == "" and hider.flush() == "abc"
+
+
+async def test_account_inside_a_longer_address_the_user_gave_is_still_hidden(cc_config, fake_claude):
+    """The turn contains notmaya.rao@example.com, not the account address: the account address is still hidden."""
+    fake_claude.scenario("leak")
+    hi = [{"role": "user", "content": f"copy not{ACCOUNT} please"}]
+    with claude_code.attended(), claude_code.private():
+        chunks = [c async for c in claude_code.stream(cc_config, MODEL, "primary", hi, None)]
+    text = "".join(c.text for c in chunks)
+    assert ACCOUNT not in text.lower() and claude_code.HIDDEN in text
+
+
+async def test_the_second_look_of_a_turn_without_memory_is_private(make_app, fake_claude, monkeypatch):
+    """The second look's reason reaches the approval question, so in a turn without memory it is a private call."""
+    from types import SimpleNamespace
+
+    from sentient.agent import second_look
+    from sentient.llm.provider import ToolCall
+
+    app = await make_app()
+    app.registry.register(_postcards([]))
+    app.config.tools.approvals.second_look_model = True
+    seen: list[bool] = []
+
+    async def model_check(*a, **k):
+        seen.append(claude_code.is_private())
+        return ""
+
+    async def describe_call(*a, **k):
+        return {"risk_label": "Send", "target": ""}
+
+    monkeypatch.setattr(second_look, "model_check", model_check)
+    monkeypatch.setattr(second_look, "describe_call", describe_call)
+    tool_ = app.registry.get("send_postcard")
+    for allowed in (False, True):
+        ctx = app.agent.tool_context(None, "desktop")
+        ctx.memory_allowed = allowed
+        look = second_look.Look(app.agent, tool_, ToolCall(id="c1", name="send_postcard", arguments={"text": "hi"}),
+                                ctx, SimpleNamespace(risk=Risk.send), [{"role": "user", "content": "send hi"}])
+        await look.model()
+    assert seen == [True, False]
 
 
 def test_account_lookup_asks_each_time_and_says_when_it_cannot_tell(fake_claude, monkeypatch):

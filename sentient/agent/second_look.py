@@ -812,9 +812,10 @@ class Look:
         action = f"{wording['risk_label']}: {rule_label(self.tool, None, self.agent.registry)}"
         if wording.get("target"):
             action += f" ({wording['target']})"
-        warning = await model_check(
-            self.agent.llm, self.request(), action, self.arguments, attended=self.attended, model=self.model_name,
-        )
+        with claude_code.private(getattr(self.ctx, "memory_allowed", True) is False):  # no account email (#533)
+            warning = await model_check(
+                self.agent.llm, self.request(), action, self.arguments, attended=self.attended, model=self.model_name,
+            )
         if warning:
             log.info("second look: %s flagged (model): %s", self.tool.name, warning)
         else:

@@ -105,6 +105,7 @@ PRIVATE_NOTE = (
 HIDDEN = "[email hidden]"  # what stands in for the account email in a turn without memory
 EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+")
 WORD_END = re.compile(r"[A-Za-z0-9._%+\-@]+$")  # a streamed word that may still grow into an email address
+MAX_HELD = 512  # longer than any email address (254): a word this long is let go instead of held back
 VERSION_TIMEOUT_S = 15
 STDERR_KEEP = 4000
 EXIT_WAIT_S = 5  # how long cleanup waits for Claude Code to exit after it was stopped
@@ -578,17 +579,26 @@ def _sent_text(messages: list[dict]) -> str:
 
 
 class Hider:
-    """Takes ``secrets`` out of streamed text, case-insensitively, even when one is split across pieces: the tail
-    that could be the start of one waits for the next piece (``feed``) or the end (``flush``). With ``any_email``
-    (the account couldn't be read) it takes out every email address that isn't in ``allowed``, holding back a word
-    that could still grow into one."""
+    """Takes the ``secrets`` (whole email addresses, any case) out of streamed text, even when one is split across
+    pieces. With ``any_email`` (the account couldn't be read) it takes out every email address that isn't in
+    ``allowed`` instead. While it filters, the last word of the text so far waits for the next piece (``feed``) or
+    the end (``flush``), since it may still grow into an address; a word longer than ``MAX_HELD`` is let go."""
 
-    def __init__(self, secrets: frozenset[str] | set[str], *, any_email: bool = False, allowed: str = ""):
+    def __init__(self, secrets: frozenset[str] | set[str], *, any_email: bool = False,
+                 allowed: frozenset[str] | set[str] = frozenset()):
         self.secrets = sorted((s for s in secrets if s), key=len, reverse=True)
-        self.pattern = re.compile("|".join(re.escape(s) for s in self.secrets), re.IGNORECASE) if self.secrets else None
+        # a whole address only: not the tail of a longer one (notmaya@...) nor the start of one (maya@x.com.au)
+        self.pattern = re.compile(
+            r"(?<![A-Za-z0-9._%+\-])(?:" + "|".join(re.escape(s) for s in self.secrets) + r")(?![A-Za-z0-9\-]|\.[A-Za-z0-9\-])",
+            re.IGNORECASE,
+        ) if self.secrets else None
         self.any_email = any_email
-        self.allowed = allowed
+        self.allowed = {a.lower() for a in allowed}
         self.pending = ""
+
+    @property
+    def active(self) -> bool:
+        return self.pattern is not None or self.any_email
 
     def hide(self, text: str) -> str:
         if not text:
@@ -600,21 +610,13 @@ class Hider:
         return text
 
     def feed(self, text: str) -> str:
-        if self.pattern is None and not self.any_email:
+        if not self.active:
             return text
         buf, tail = self.pending + text, ""
-        if self.any_email and (word := WORD_END.search(buf)):  # the last word may still grow into an address
+        if (word := WORD_END.search(buf)) and len(word[0]) <= MAX_HELD:  # may still grow into an address
             buf, tail = buf[:word.start()], word[0]
-        buf = self.hide(buf)  # whole addresses first, so a held-back tail never cuts one
-        low = buf.lower()
-        keep = 0
-        for secret in self.secrets:  # the end may be the start of one that the next piece finishes
-            for n in range(min(len(secret) - 1, len(buf)), keep, -1):
-                if secret.startswith(low[-n:]):
-                    keep = n
-                    break
-        self.pending = buf[len(buf) - keep:] + tail
-        return buf[:len(buf) - keep]
+        self.pending = tail
+        return self.hide(buf)
 
     def flush(self) -> str:
         out, self.pending = self.hide(self.pending), ""
@@ -846,12 +848,12 @@ async def stream(
         err_reader = _start_threads(proc, stdin_data, loop, queue, stderr)
         thinking_hider = hider
         if lookup is not None:  # the account email, looked up while Claude Code started
-            sent = _sent_text(messages)  # an email the turn itself contains (the user gave it) stays
+            given = {m.lower() for m in EMAIL.findall(_sent_text(messages))}  # addresses the turn itself contains stay
             emails = await lookup
-            secrets = {e for e in emails or () if e not in sent}
+            secrets = {e for e in emails or () if e not in given}
             unknown = emails is None  # couldn't tell which account: every address the turn didn't contain goes
-            hider = Hider(secrets, any_email=unknown, allowed=sent)
-            thinking_hider = Hider(secrets, any_email=unknown, allowed=sent)
+            hider = Hider(secrets, any_email=unknown, allowed=given)
+            thinking_hider = Hider(secrets, any_email=unknown, allowed=given)
 
         verified = False
         finished = False
