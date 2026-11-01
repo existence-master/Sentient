@@ -6,7 +6,8 @@
  *                user never installs Python (see electron/main/paths.ts)
  *
  * Everything else is identical in both modes, including `~/.sentient` as the data folder:
- * - picks a free loopback port and a random 32-byte token per launch
+ * - starts on the loopback port it used last time when that is still free, otherwise a free one, and remembers it
+ *   (#544, port-logic.ts); a random 32-byte token per launch
  * - pipes stdout/stderr to <home>/logs/backend.log (token redacted) and keeps a tail
  * - polls GET /api/health (then verifies the token with /api/bootstrap)
  * - restarts on crash with exponential backoff, gives up after repeated failures
@@ -20,6 +21,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import type { BackendStatus } from '../../src/types/bridge'
 import { homePaths, resolveEngine } from './paths'
+import { choosePort } from './port-logic'
 
 const START_TIMEOUT_MS = Number(process.env.SENTIENT_BACKEND_START_TIMEOUT_MS) || 120_000
 const MAX_CONSECUTIVE_CRASHES = 5
@@ -48,6 +50,12 @@ function portIsFree(port: number): Promise<boolean> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/** Where the engine's last port is kept between launches (the desktop's own settings file, prefs.ts). */
+export interface PortMemory {
+  load: () => unknown
+  save: (port: number) => void
+}
+
 export class BackendManager extends EventEmitter {
   readonly token = randomBytes(32).toString('base64url')
   port = 0
@@ -65,6 +73,10 @@ export class BackendManager extends EventEmitter {
   private stopping = false
   private enginePath = ''
   private frozen = false
+
+  constructor(private readonly portMemory?: PortMemory) {
+    super()
+  }
 
   get baseUrl(): string {
     return `http://127.0.0.1:${this.port}`
@@ -129,7 +141,8 @@ export class BackendManager extends EventEmitter {
 
   private async spawnOnce(): Promise<void> {
     const gen = ++this.generation
-    if (!this.port || !(await portIsFree(this.port))) this.port = await freePort()
+    // This session's port first (a crash restart), else the one remembered from the last launch, else a free one.
+    this.port = await choosePort(this.port || this.loadRememberedPort(), { isFree: portIsFree, pickFree: freePort })
     const engine = resolveEngine()
     this.enginePath = engine.command
     this.frozen = engine.frozen
@@ -191,6 +204,7 @@ export class BackendManager extends EventEmitter {
     if (gen !== this.generation || this.stopping) return
     if (result === 'ready') {
       this.readyAt = Date.now()
+      this.rememberPort(this.port)
       this.setStatus({ state: 'ready', baseUrl: this.baseUrl })
     } else if (result === 'timeout') {
       this.generation++ // ignore the exit we are about to cause
@@ -198,6 +212,23 @@ export class BackendManager extends EventEmitter {
       this.fail(`The engine didn't answer within ${Math.round(START_TIMEOUT_MS / 1000)} seconds.`)
     }
     // 'exited' is handled by onUnexpectedExit
+  }
+
+  private loadRememberedPort(): unknown {
+    try {
+      return this.portMemory?.load()
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Only a port the engine really answered on is remembered, so a start that never worked changes nothing. */
+  private rememberPort(port: number): void {
+    try {
+      if (this.loadRememberedPort() !== port) this.portMemory?.save(port)
+    } catch {
+      /* non-fatal: the next launch just picks a free port */
+    }
   }
 
   private async waitReady(gen: number): Promise<'ready' | 'timeout' | 'exited' | 'superseded'> {

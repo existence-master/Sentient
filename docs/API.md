@@ -1616,7 +1616,7 @@ The other direction: other AI apps on this computer (Claude Code, Cursor, any MC
 itself. The command `sentient mcp` (package `sentient/mcp_server/`) runs an MCP server over stdio and is a
 thin client of this same REST API. It finds the engine through the discovery file the engine writes at
 startup (`engine-discovery.json` in the Sentient home: the loopback address it bound, never a secret; the
-desktop picks a fresh port every launch), refuses a non-loopback engine address (a name like `localhost`
+desktop keeps the engine on the port it used last time, but picks a free one when that port is taken, #544), refuses a non-loopback engine address (a name like `localhost`
 is pinned to the literal `127.0.0.1`, so the address the server talks to is the address the engine
 proves), and holds no state. An HTTP
 transport is deliberately not offered; it may return later, protected by the same MCP-only token.

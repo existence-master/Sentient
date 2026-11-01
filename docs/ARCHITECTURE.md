@@ -36,7 +36,8 @@ process with one database file.
 ```
 ┌────────────────────────── Sentient.app (Electron) ──────────────────────────┐
 │ main process                                                                │
-│  • picks a free port + random token, spawns the engine, restarts on crash   │
+│  • reuses last launch's port (else a free one) + random token, spawns the   │
+│    engine, restarts on crash                                                │
 │  • window, tray, global shortcuts, screen sharing, notifications, autostart │
 │  • preload bridge window.sentient {getConnection, openExternal, ...}        │
 │                                                                             │
