@@ -51,7 +51,7 @@ TASK_RESULT_EVENTS = {
 }
 STATUS_LABELS = {
     "approved": "Approved", "declined": "Declined", "dismissed": "Dismissed", "answered": "Answered", "cancelled": "Cancelled",
-    "expired": "Expired",
+    "expired": "Expired", "allow": "Allowed", "deny": "Denied",
     "kept": "Keeping them running", "paused": "Paused", "resumed": "Resumed",  # routines while away (#163)
 }
 APPROVAL_HINT = "Tap a button, or reply to this message with {words}."
@@ -457,7 +457,7 @@ class ChannelService(Service):
             return f"**{title or 'Reminder'}**\n{message}", None
         if kind == "approval":
             # a chat turn's approval, raised where no chat surface could show it (an MCP app's turn,
-            # #443): Allow and Deny answer the same approval the app would have shown
+            # #443, or an API turn, #211): Allow and Deny answer the same approval the app would have shown
             approval_id = payload.get("approval_id")
             if not approval_id or payload.get("status"):
                 return None

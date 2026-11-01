@@ -8,6 +8,7 @@ messages get ``messages.summarized = 1``.
 
 A summary of a chat that read outside content carries that chat's mark (``summaries.untrusted``, ADR 0021): it is
 listed for the user, but ``search`` (what other chats, proactivity and profile upkeep see) leaves it out.
+API messages retain their own mark even after their chat is trusted again.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from sentient.memory import prompts
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.vectors import VecTable, pack
 from sentient.store.db import NOT_INCOGNITO, Store, new_id, now_iso
+from sentient.tools.rules import API_SOURCE
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +82,7 @@ class EpisodicMemory:
         cutoff = (now - timedelta(minutes=self.config.memory.summarize_after_minutes)).isoformat()
         size = self.config.memory.summary_chunk_messages
         rows = await self.store.fetchall(
-            "SELECT id, session_id, role, content, attachments, created_at FROM messages"
+            "SELECT id, session_id, role, name, content, attachments, created_at FROM messages"
             " WHERE summarized = 0 AND role IN ('user', 'assistant') AND content IS NOT NULL AND content != ''"
             f" AND created_at < ? AND {NOT_INCOGNITO.format(col='messages.session_id')}"  # never summarized (#154)
             " ORDER BY session_id, created_at, rowid",
@@ -108,7 +110,8 @@ class EpisodicMemory:
             attachments = json.loads(m["attachments"]) if m.get("attachments") else []
             if attachments:
                 text = f"(Attached file for context: {', '.join(attachments)}) {text}"
-            lines.append(f"{m['role']}: {text}")
+            speaker = f"user (from {API_SOURCE})" if m.get("role") == "user" and m.get("name") == API_SOURCE else m["role"]
+            lines.append(f"{speaker}: {text}")
         return "\n".join(lines)
 
     async def summarize_chunk(self, session_id: str, chunk: list[dict], user_name: str = "") -> dict | None:
@@ -133,6 +136,8 @@ class EpisodicMemory:
             "SELECT untrusted, channel, memory_scope FROM sessions WHERE id = ?", (session_id,)
         )
         untrusted = (session["untrusted"] or "") if session else ""
+        if not untrusted and any(m.get("role") == "user" and m.get("name") == API_SOURCE for m in chunk):
+            untrusted = API_SOURCE
         # the chat's memory scope (#155), kept so the summary stays out of the personal profile after the chat is gone
         scope = memory_scopes.of_session(self.config, dict(session)) if session else memory_scopes.PERSONAL
         cur = await self.store.execute(
@@ -217,7 +222,7 @@ class EpisodicMemory:
         s = parse_when(start).isoformat()
         e = parse_when(end, end=True).isoformat()
         rows = await self.store.fetchall(
-            "SELECT m.session_id, m.role, m.content, m.created_at, s.title FROM messages m"
+            "SELECT m.session_id, m.role, m.name, m.content, m.created_at, s.title FROM messages m"
             " LEFT JOIN sessions s ON s.id = m.session_id"
             " WHERE m.created_at >= ? AND m.created_at <= ? AND m.role IN ('user', 'assistant')"
             " AND m.content IS NOT NULL AND m.content != ''"

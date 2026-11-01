@@ -32,7 +32,7 @@ import mimetypes
 import re
 import time
 import weakref
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -56,7 +56,7 @@ from sentient.agent import incognito as incognito_outputs
 from sentient.agent import undo as undo_rules
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
-from sentient.agent.prompt import build_system_prompt, mark_outside
+from sentient.agent.prompt import build_system_prompt, frame_api_request, mark_outside
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.app_names import clean_app_name, framed_app_name
@@ -115,6 +115,7 @@ from sentient.tools.base import (
 from sentient.tools.builtin.time_tool import resolve_tz
 from sentient.tools.registry import ToolRegistry
 from sentient.tools.rules import (
+    API_SOURCE,
     ASK,
     EVENT_ROLE,
     HAND_OFF,
@@ -147,6 +148,7 @@ from sentient.tools.rules import (
     rule_label,
     saved_outside_source,
     sends_out,
+    tool_title,
     unattended_ask_message,
     untrusted_address_reason,
     untrusted_hold_message,
@@ -182,6 +184,8 @@ NOTES_TIMEOUT_S = 4.0  # looking up matching pieces of the user's notes for the 
 # and until it does the tools it is weighing ask first in that chat (one with Claude Code stops instead, ADR 0022)
 RULE_CHECK_WAIT_S = WAIT_S
 SPOKEN_CHANNELS = {"voice", "glasses", "phone"}  # these turns use the voice role
+# turns another app steers (MCP #443, the OpenAI-compatible API #211): their approvals land as notifications
+APP_CHANNELS = frozenset({"mcp", "api"})
 # Real qwen3:8b told the user "the Place order button was clicked" after a plain decline, so say it bluntly.
 DECLINED = (
     "NOT DONE. The user declined this action, so it did not happen. Tell the user plainly that it was not done "
@@ -196,6 +200,14 @@ REPEAT_NUDGE = (
 # told so it does not promise to remember. Without ``chat.incognito_uses_memory`` the memory tools go too: that is the
 # turn's ``memory_allowed`` decision (#525). ``run_loop`` leaves both out of every run of the chat, helpers included.
 INCOGNITO_LEARNING_TOOLS = frozenset({"memory_remember", "skill_save"})
+# A /v1 turn while openai_api.allow_memory is off (#479) is a turn without memory (``Agent.memory_allowed``), so
+# ``MEMORY_TOOLS`` (memory_forget included) are left out of it and of everything it starts, in code. memory_remember
+# stays (it goes to Review). This note tells the model why.
+API_NO_MEMORY_NOTE = (
+    "## Another app\nThis chat comes from another app through Sentient's API. Sentient's memories, the user's "
+    "profile and other chats aren't available to it. If asked about them, say the user can allow connected apps to "
+    "use their memories."
+)
 INCOGNITO_NOTE = (
     "## Incognito chat\nThis is an incognito chat. Nothing from it is saved to memory, and it is deleted when the "
     "user closes it. Never say you will remember something from it."
@@ -235,7 +247,7 @@ def _normalize_tool_calls(calls: Any) -> list[dict]:
     return out
 
 
-def history_to_openai(rows: list[dict]) -> list[dict]:
+def history_to_openai(rows: list[dict], *, api_turn: bool = False) -> list[dict]:
     """Stored transcript rows -> OpenAI-format messages every provider accepts.
 
     Repairs what history windows and interrupted turns leave behind: tool messages whose call was cut off,
@@ -273,6 +285,8 @@ def history_to_openai(rows: list[dict]) -> list[dict]:
             content = r.get("content") or ""
             if r.get("attachments"):
                 content += "\n\n(Attached earlier: " + ", ".join(r["attachments"]) + ")"
+            if role == "user" and r.get("name") == API_SOURCE:  # the app's own earlier requests read as requests
+                content = frame_api_request(content) if api_turn else mark_outside(content, API_SOURCE)
             out.append({"role": role, "content": content})
 
     # every assistant tool call needs its reply right after it; tool messages need their call
@@ -635,6 +649,13 @@ class Agent:
         """True from the start of a chat turn until its last write (the final or stopped reply) is done."""
         return self._busy.get(session_id, 0) > 0
 
+    def create_turn_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Start a detached chat task owned by Stop before its first step, through its final cleanup."""
+        task = asyncio.create_task(coro)
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+        return task
+
     def _turn_done(self, session_id: str) -> None:
         left = self._busy.get(session_id, 0) - 1
         if left > 0:
@@ -744,8 +765,10 @@ class Agent:
         """Whether a chat turn may use what Sentient knows about the user (#525): memories, the profile, the user
         model and other chats. Decided once per turn, here only; the turn puts it in ``ToolContext.memory_allowed``
         so its prompt, its tools and everything it starts (helpers, the reader, scripts) follow the same answer.
-        False in an incognito chat while ``chat.incognito_uses_memory`` is off. Another kind of turn without memory
-        (an app's turn the user hasn't allowed to read memories, #479) adds its condition here."""
+        False in an incognito chat while ``chat.incognito_uses_memory`` is off, and in a /v1 turn from another app
+        while ``openai_api.allow_memory`` is off (#479)."""
+        if channel == "api" and not self.config.openai_api.allow_memory:
+            return False
         incognito = bool((session or {}).get("incognito"))
         return not incognito or self.config.chat.incognito_uses_memory
 
@@ -798,6 +821,8 @@ class Agent:
             prompt += "\n\n" + memory_scopes.prompt_note(scope)
         if incognito:
             prompt += "\n\n" + (INCOGNITO_NOTE if reads_memory else INCOGNITO_NO_MEMORY_NOTE)
+        if channel == "api" and not reads_memory:
+            prompt += "\n\n" + API_NO_MEMORY_NOTE
         return prompt, sources, notes
 
     def _read_only_apps(self) -> list[str]:
@@ -1315,11 +1340,14 @@ class Agent:
             reason = untrusted_reason(ctx.untrusted)
         elif ctx.untrusted and plan.host and plan.host not in ctx.visited and address_carries_data(address):
             reason = untrusted_address_reason(ctx.untrusted, plan.host)  # the address itself could carry data out
-        if not reason and ctx.channel == "mcp" and preview.action_kind(tool.name, tc.arguments) in {"delete", "trash"}:
-            # a delete an MCP app steered this chat into always asks (issue #443), including one the
-            # trash preference would quietly swap for a move to the trash: deletes sit below send
-            # level, so the outside-content gate above never sees them on its own
-            reason = "An app asked Sentient to delete this through MCP, so Sentient checks with you first."
+        if not reason and ctx.channel in APP_CHANNELS and preview.action_kind(tool.name, tc.arguments) in {
+            "delete", "trash",
+        }:
+            # a delete another app steered this chat into, through MCP (issue #443) or the API (#479), always
+            # asks, including one the trash preference would quietly swap for a move to the trash: deletes
+            # sit below send level, so the outside-content gate above never sees them on its own
+            how = "through MCP" if ctx.channel == "mcp" else "through Sentient's API"
+            reason = f"An app asked Sentient to delete this {how}, so Sentient checks with you first."
         if reason:
             # the run read outside content: anything that can send data out needs the user's own yes, whatever the
             # mode, Allow rules or "Allow for this chat" say (ADR 0018). Nothing a model says can clear it.
@@ -1455,37 +1483,51 @@ class Agent:
             p.tool, p.risk, purchase=purchase, untrusted=bool(p.untrusted or p.warning), chat=bool(ctx.session_id),
             remember_session=self.approvals.config.remember_session,
         )
-        self.approvals.create(approval_id, offered)
+        answer = self.approvals.create(approval_id, offered)
         note: dict | None = None
-        if ctx.channel == "mcp" and self.app is not None:
-            # an MCP client cannot show this question (it drops the event and waits), so the approval
-            # also lands as a notification the user can answer in the app or on their phone (#443);
-            # the answer reaches this same approval_id through the broker, whichever surface sends it
-            label = wording.get("risk_label") or "Changes something"
-            target = wording.get("target")
-            # the note names the app that is asking (the turn's mark on this channel), framed
-            # as a name rather than a sentence the app could speak as Sentient: the name is
-            # the client's own handshake text, cleaned where the turn was marked, and, the
-            # note being rendered as Markdown, put in a code span so Markdown cannot parse
-            # it into a link or emphasis
-            who = ctx.untrusted
-            framed = framed_app_name(who)
-            message = f"{framed} wants to: {label}: {target}" if target else f"{framed} wants to: {label}"
-            try:
-                note = await self.app.notify(
-                    "approval", message, title="Approval needed",
-                    payload={
-                        "approval_id": approval_id, "name": p.tc.name, "risk": p.risk.name,
-                        "arguments": p.tc.arguments, "session_id": ctx.session_id, "channel": "mcp",
-                        "untrusted": p.untrusted or None,
-                        "reason": p.untrusted or approval_reason(wording, p.risk) or None,
-                    },
-                )
-            except Exception:
-                log.exception("could not post the approval notification")
+        note_id: str | None = None
+        note_payload: dict = {}
+        if ctx.channel in APP_CHANNELS and self.app is not None:
+            # another app cannot show this question (an MCP client drops the event and waits, #443; an API client
+            # only gets text, #211), so the approval also lands as one notification the user can answer in the
+            # app or on their phone; the answer reaches this same approval_id through the broker, whichever
+            # surface sends it. One path for both: the channel service delivers and settles it (kind "approval").
+            if ctx.channel == "api":
+                tool_name = tool_title(p.tool)
+                message = f'Another app asked Sentient to use "{tool_name}". Allow it?'
+            else:
+                label = wording.get("risk_label") or "Changes something"
+                target = wording.get("target")
+                # the note names the app that is asking (the turn's mark on this channel), framed
+                # as a name rather than a sentence the app could speak as Sentient: the name is
+                # the client's own handshake text, cleaned where the turn was marked, and, the
+                # note being rendered as Markdown, put in a code span so Markdown cannot parse
+                # it into a link or emphasis
+                framed = framed_app_name(ctx.untrusted)
+                message = f"{framed} wants to: {label}: {target}" if target else f"{framed} wants to: {label}"
+            note_payload = {
+                "approval_id": approval_id, "name": p.tc.name, "risk": p.risk.name,
+                "arguments": p.tc.arguments, "session_id": ctx.session_id, "channel": ctx.channel,
+                "untrusted": p.untrusted or None,
+                "reason": p.untrusted or approval_reason(wording, p.risk) or None,
+                **({"source": "api"} if ctx.channel == "api" else {}),
+            }
+            # the id is reserved first, so the note can be settled below even if publishing it never returns
+            note_id = new_id()
         asked_at = now_iso()
         decision: str = "expired"  # if the wait never completes (the asker went away), the note settles as expired
+        waited = False
         try:
+            if note_id is not None:
+                try:
+                    note = await self.app.notify(
+                        "approval", message, title="Approval needed", payload=note_payload, notification_id=note_id,
+                    )
+                except Exception:
+                    if ctx.channel == "mcp":
+                        log.exception("could not post the approval notification")
+                    else:  # an API turn has no other surface that could answer it: the turn fails instead (#211)
+                        raise
             # the yield is inside the try: if whoever is consuming this generator closes it while
             # the request is on screen, the finally below still settles the notification
             yield ApprovalRequest(
@@ -1496,16 +1538,23 @@ class Agent:
                 grant_minutes=self.approvals.config.grant_minutes,
                 preview=preview.build(p.tc.name, p.tc.arguments, purchase=purchase, to=p.destinations), **ev,
             )
+            waited = True
             decision = await self.approvals.wait(approval_id, ctx.session_id, p.tc.name, p.risk)
         finally:
-            if note is not None:
+            if not waited:
+                # closed before it waited: forget the request, so no later answer applies or grants anything
+                self.approvals.cancel(approval_id)
+            if note_id is not None:
                 # settle the notification with the answer, whoever gave it, so it never waits forever:
-                # in a finally, so a turn cancelled while it waits still settles its note
+                # in a finally, so a turn cancelled while it waits still settles its note. Nobody answering
+                # in time is "expired", not "deny", though the call is declined either way
+                answered = answer.done() and not answer.cancelled()
+                status = decision if answered or decision != "deny" else "expired"
                 try:
                     await self.app.notifications.update_payload(
-                        note["id"], {**(note.get("payload") or {}), "status": decision}
+                        note_id, {**((note or {}).get("payload") or note_payload), "status": status}
                     )
-                    await self.app.notifications.mark_read(note["id"])
+                    await self.app.notifications.mark_read(note_id)
                 except Exception:
                     log.exception("could not settle the approval notification")
         p.approval = {
@@ -1924,11 +1973,43 @@ class Agent:
         on_stopped: Callable[[dict], Any] | None = None,
         app_name: str | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        """One cancellable chat turn, including initialization and quick commands."""
+        task = asyncio.current_task()
+        owns_task = task is not None and task not in self._turn_tasks
+        if owns_task:
+            self._turn_tasks.add(task)
+        try:
+            async with contextlib.aclosing(self._run_turn(
+                session_id, user_text, channel=channel, attachments=attachments, model=model, on_stopped=on_stopped,
+                app_name=app_name,
+            )) as turn:
+                async for event in turn:
+                    yield event
+        finally:
+            if owns_task:
+                self._turn_tasks.discard(task)
+
+    async def _run_turn(
+        self,
+        session_id: str,
+        user_text: str,
+        *,
+        channel: str = "desktop",
+        attachments: list[str] | None = None,
+        model: str | None = None,
+        on_stopped: Callable[[dict], Any] | None = None,
+        app_name: str | None = None,
+    ) -> AsyncIterator[AgentEvent]:
         """One chat turn. ``on_stopped`` is called with ``{message_id, memory_sources}`` of the reply kept when the
         turn is stopped, so the caller can send them with its own ``done`` event."""
-        # an MCP app's turn never takes the quick-command path (#443): those commands run at once on
-        # "the message named this change", which is only ever true of the user's own words
-        quick = await self._quick_plan(session_id, user_text, attachments or []) if channel != "mcp" else None
+        # An authenticated app can request work, but its text is not the user's personal authorization (#211).
+        # Mark before any planning, and retain the mark even if the user trusts the stored chat during this turn.
+        api_source = await self._mark_chat(session_id, API_SOURCE) if channel == "api" else ""
+        # another app's turn (MCP #443, or the API #211): its text is the app's, never the user's own words,
+        # so it never takes the quick-command path: those commands run at once on "the message named this
+        # change", which is only ever true of the user's own words
+        from_app = channel == "mcp" or bool(api_source)
+        quick = None if from_app else await self._quick_plan(session_id, user_text, attachments or [])
         if quick is not None:  # a plain timer or reminder command: done now, without the model (#150)
             async for event in self._quick_turn(session_id, user_text, quick, channel=channel):
                 yield event
@@ -1945,9 +2026,6 @@ class Agent:
             steer = SteerQueue()
             self._steers[session_id] = steer
 
-        turn_task = asyncio.current_task()  # Stop everything cancels this task (halt)
-        if turn_task is not None:
-            self._turn_tasks.add(turn_task)
         # the model serves this reply (and what it runs) first; background work waits until it has been quiet (#149)
         jobs = getattr(self.app, "model_jobs", None)
         turn_scope = contextlib.ExitStack()
@@ -1955,8 +2033,6 @@ class Agent:
 
         def release() -> list[str]:
             turn_scope.close()
-            if turn_task is not None:
-                self._turn_tasks.discard(turn_task)
             if steer is None:
                 return []
             left = steer.close()
@@ -1970,14 +2046,20 @@ class Agent:
         used = AnswerSources()  # pages, emails, files and apps it used (#174)
         notes: list[dict] = []  # pieces of the user's notes put into the prompt (#354)
         try:
-            user_message_id = await self.store.add_message(session_id, "user", user_text, attachments=attachments)
-            if self.app is not None and hasattr(self.app, "user_seen") and channel != "mcp":
-                # a chat message on any of the user's surfaces means the user is around (#163); an MCP
+            user_message_id = await self.store.add_message(
+                session_id, "user", user_text, attachments=attachments, name=API_SOURCE if api_source else None,
+            )
+            if api_source:
+                # A trust request may have cleared the early mark before this message was stored. Now its saved
+                # source also prevents trusting an older screen snapshot from covering this new API input.
+                await self._mark_chat(session_id, api_source)
+            if self.app is not None and hasattr(self.app, "user_seen") and not from_app:
+                # a chat message on any of the user's surfaces means the user is around (#163); another
                 # app's activity says nothing about the user, so it never resets the away timer (#443)
                 await self.app.user_seen(channel)
-            # an MCP turn's text is the app's, not the user's: it never proposes standing rules
-            # from it (#443), the way quick commands are skipped here
-            rule_check = None if channel == "mcp" else self._start_rule_check(session_id, user_message_id, user_text)
+            # another app's text is not the user's: it never proposes standing rules from it (#443, #211),
+            # the way quick commands are skipped here
+            rule_check = None if from_app else self._start_rule_check(session_id, user_message_id, user_text)
             await self.store.touch_session(session_id, title=(user_text or (attachments[0] if attachments else ""))[:60])
 
             session = await self.store.get_session(session_id)
@@ -1987,14 +2069,14 @@ class Agent:
                 user_text, channel, session, memory_allowed=memory_allowed
             )
             history = await self.store.recent_messages(session_id, self.config.chat.history_window)
-            convo = self.mark_outside_messages(history_to_openai(history))
+            convo = self.mark_outside_messages(history_to_openai(history, api_turn=bool(api_source)))
             result.browser_click_history.extend(browser_click_history(history))
 
             # Replace the just-stored user message with the rich version (attachments inlined).
             # Keep the stored user message unchanged. Add the current time to the
             # model-facing user message so it doesn't invalidate the system prompt cache.
             if convo and convo[-1]["role"] == "user":
-                content = await self._user_content(user_text, attachments)
+                content = await self._user_content(frame_api_request(user_text) if api_source else user_text, attachments)
                 tz = resolve_tz(self.config.assistant.timezone)
                 now = datetime.now(tz)
                 time_note = f"[Current time: {now.strftime('%A %Y-%m-%d %H:%M')} ({now.tzinfo})]"
@@ -2023,14 +2105,14 @@ class Agent:
             ctx.incognito = incognito
             ctx.memory_allowed = memory_allowed  # helpers, the reader and scripts it starts copy it (#525)
             ctx.memory_scope = memory_scopes.of_session(self.config, session)  # recall and saving use it (#155)
-            # a turn an MCP app steers is outside content from the start (issue #443): its text is not
-            # the user's words, so it never fills user_words, and the chat is marked before anything
+            # a turn another app steers is outside content from the start (MCP #443, the API #211): its text
+            # is not the user's words, so it never fills user_words, and the chat is marked before anything
             # runs, like one that begins with someone else's text attached below
-            from_mcp = channel == "mcp"
-            ctx.user_words = [] if from_mcp else [user_text]  # what the user typed or said, never attachments (#140)
-            # outside content read earlier in this chat still counts until a new chat starts (ADR 0018)
-            ctx.untrusted = await self._chat_untrusted(session_id, session)
-            if from_mcp and not ctx.untrusted:
+            ctx.user_words = [] if from_app else [user_text]  # what the user typed or said, never attachments (#140)
+            # outside content read earlier in this chat still counts until a new chat starts (ADR 0018); an API
+            # turn keeps its own mark even if the user trusted the stored chat during this turn
+            ctx.untrusted = api_source or await self._chat_untrusted(session_id, session)
+            if channel == "mcp" and not ctx.untrusted:
                 # the app's name, when it gave one, so the user sees who is asking; it is the
                 # app's own text, so it is cleaned (capped, no control characters) first
                 ctx.untrusted = clean_app_name(app_name) or "an MCP app"
@@ -2150,7 +2232,7 @@ class Agent:
                     self._spawn(
                         self._extract(
                             said, memory_review.for_context(ctx), session_id, ctx.memory_scope,
-                            own=not from_mcp,
+                            own=not from_app,
                         ), "memory"
                     )
                 if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
@@ -2303,8 +2385,8 @@ class Agent:
             return str(stored)
         rows = await self.store.fetchall(
             "SELECT role, name, content, tool_calls, tool_call_id FROM messages WHERE session_id = ?"
-            " AND role IN ('tool', 'assistant') ORDER BY created_at, rowid",
-            (session_id,),
+            " AND (role IN ('tool', 'assistant') OR (role = 'user' AND name = ?)) ORDER BY created_at, rowid",
+            (session_id, API_SOURCE),
         )
         transcript = []
         for r in rows:
@@ -2344,12 +2426,15 @@ class Agent:
     async def mark_group_chat(self, session_id: str, sender: str) -> str:
         """Mark a chat because a group member wrote in it (ADR 0029), unless it is marked already. Done as soon as the
         message arrives, also while it waits for a reply to end. Returns the chat's mark."""
+        return await self._mark_chat(session_id, group_source(sender))
+
+    async def _mark_chat(self, session_id: str, source: str) -> str:
+        """Persist incoming outside content before it can start work, preserving an existing source."""
         async with self._mark_locks.setdefault(session_id, asyncio.Lock()):
             session = await self.store.get_session(session_id)
             current = (session or {}).get("untrusted")
             if current:
                 return str(current)
-            source = group_source(sender)
             await self.store.execute("UPDATE sessions SET untrusted = ? WHERE id = ?", (source, session_id))
         self._publish_mark(session_id, source)
         return source
@@ -2362,16 +2447,16 @@ class Agent:
         return str(row["id"]) if row else None
 
     async def _newer_outside(self, session_id: str, upto: str) -> tuple[str, str] | None:
-        """(source, writer) of the newest outside content stored after message ``upto``: a group member's message or
-        a tool result that brought outside content in. None when there is none. ValueError for a message that isn't
-        in this chat."""
+        """(source, writer) of the newest outside content after ``upto``: a group member, API input or a tool result.
+        None when there is none. ValueError for a message that isn't in this chat."""
         row = await self.store.fetchone("SELECT rowid FROM messages WHERE id = ? AND session_id = ?", (upto, session_id))
         if row is None:
             raise ValueError("that message isn't in this chat")
         rows = await self.store.fetchall(
-            "SELECT role, name, content FROM messages WHERE session_id = ? AND rowid > ? AND role IN (?, 'tool')"
+            "SELECT role, name, content FROM messages WHERE session_id = ? AND rowid > ?"
+            " AND (role IN (?, 'tool') OR (role = 'user' AND name = ?))"
             " ORDER BY rowid DESC",
-            (session_id, row[0], OTHER_ROLE),
+            (session_id, row[0], OTHER_ROLE, API_SOURCE),
         )
         for r in rows:
             if r["role"] == OTHER_ROLE:
@@ -2569,12 +2654,11 @@ class Agent:
         self, user_text: str, review: dict | None = None, session_id: str | None = None, scope: str | None = None,
         *, own: bool = True,
     ) -> None:
-        """Only the user's own words are mined for facts; the assistant's reply is
-        mostly restated context (dates, tool output) and produced junk memories.
+        """Mine incoming text for facts; the assistant's reply is mostly restated context and produced junk memories.
         With ``review`` (the chat read outside content) a fact is held for the user's review unless the user's own
         words back all of it (#234); instruction-shaped ones are always held. New facts go in the chat's ``scope``.
-        ``own=False`` when the words are not the user's at all (an MCP app's chat, #443): facts are still mined,
-        but nothing in them counts as the user's own backing, so the review always holds."""
+        ``own=False`` when the words are not the user's at all (an MCP app's chat, #443, or an API turn, #211):
+        facts are still mined, but nothing in them counts as the user's own backing, so the review always holds."""
         assert self.memory is not None
         if len(user_text.split()) < 4:
             return
@@ -2639,17 +2723,24 @@ class Agent:
             upto = (session or {}).get("context_upto") or ""
             after, params = after_watermark(upto, "created_at", "rowid")  # same-tick messages are not skipped (#236)
             rows = await self.store.fetchall(
-                f"SELECT rowid, role, content, created_at FROM messages WHERE session_id = ? AND {after}"
+                f"SELECT rowid, role, name, content, created_at FROM messages WHERE session_id = ? AND {after}"
                 " AND role IN ('user','assistant') AND content IS NOT NULL ORDER BY created_at, rowid",
                 (session_id, *params),
             )
             older = rows[: max(0, len(rows) - window)]
             if len(older) < 10:
                 return
-            transcript = "\n".join(f"{r['role']}: {(r['content'] or '')[:800]}" for r in older)
+            # Trusting a chat does not turn another app's words into the owner's statements when they are
+            # compressed later. Keep their source in the transcript and hold any extracted facts for review.
+            api_source = API_SOURCE if any(r["role"] == "user" and r["name"] == API_SOURCE for r in older) else ""
+            lines = []
+            for row in older:
+                source = f"(from {API_SOURCE}) " if row["role"] == "user" and row["name"] == API_SOURCE else ""
+                lines.append(f"{row['role']}: {source}{(row['content'] or '')[:800]}")
+            transcript = "\n".join(lines)
             if flush:
                 await self._flush_memory(
-                    transcript, (session or {}).get("untrusted") or "", session_id,
+                    transcript, (session or {}).get("untrusted") or api_source, session_id,
                     memory_scopes.of_session(self.config, session),
                 )
             prev = (session or {}).get("context_summary") or ""
