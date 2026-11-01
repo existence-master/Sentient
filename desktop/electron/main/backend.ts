@@ -21,7 +21,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import type { BackendStatus } from '../../src/types/bridge'
 import { homePaths, resolveEngine } from './paths'
-import { choosePort } from './port-logic'
+import { choosePort, loadRememberedPort, type PortMemory, rememberPort } from './port-logic'
 
 const START_TIMEOUT_MS = Number(process.env.SENTIENT_BACKEND_START_TIMEOUT_MS) || 120_000
 const MAX_CONSECUTIVE_CRASHES = 5
@@ -49,12 +49,6 @@ function portIsFree(port: number): Promise<boolean> {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-/** Where the engine's last port is kept between launches (the desktop's own settings file, prefs.ts). */
-export interface PortMemory {
-  load: () => unknown
-  save: (port: number) => void
-}
 
 export class BackendManager extends EventEmitter {
   readonly token = randomBytes(32).toString('base64url')
@@ -142,7 +136,7 @@ export class BackendManager extends EventEmitter {
   private async spawnOnce(): Promise<void> {
     const gen = ++this.generation
     // This session's port first (a crash restart), else the one remembered from the last launch, else a free one.
-    this.port = await choosePort(this.port || this.loadRememberedPort(), { isFree: portIsFree, pickFree: freePort })
+    this.port = await choosePort(this.port || loadRememberedPort(this.portMemory), { isFree: portIsFree, pickFree: freePort })
     const engine = resolveEngine()
     this.enginePath = engine.command
     this.frozen = engine.frozen
@@ -204,7 +198,8 @@ export class BackendManager extends EventEmitter {
     if (gen !== this.generation || this.stopping) return
     if (result === 'ready') {
       this.readyAt = Date.now()
-      this.rememberPort(this.port)
+      // Only a port the engine really answered on is remembered, so a start that never worked changes nothing.
+      rememberPort(this.portMemory, this.port)
       this.setStatus({ state: 'ready', baseUrl: this.baseUrl })
     } else if (result === 'timeout') {
       this.generation++ // ignore the exit we are about to cause
@@ -212,23 +207,6 @@ export class BackendManager extends EventEmitter {
       this.fail(`The engine didn't answer within ${Math.round(START_TIMEOUT_MS / 1000)} seconds.`)
     }
     // 'exited' is handled by onUnexpectedExit
-  }
-
-  private loadRememberedPort(): unknown {
-    try {
-      return this.portMemory?.load()
-    } catch {
-      return undefined
-    }
-  }
-
-  /** Only a port the engine really answered on is remembered, so a start that never worked changes nothing. */
-  private rememberPort(port: number): void {
-    try {
-      if (this.loadRememberedPort() !== port) this.portMemory?.save(port)
-    } catch {
-      /* non-fatal: the next launch just picks a free port */
-    }
   }
 
   private async waitReady(gen: number): Promise<'ready' | 'timeout' | 'exited' | 'superseded'> {

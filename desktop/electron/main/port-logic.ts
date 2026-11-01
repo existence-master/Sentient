@@ -32,3 +32,27 @@ export async function choosePort(preferred: unknown, probe: PortProbe): Promise<
   }
   return probe.pickFree()
 }
+
+/** Where the engine's last port is kept between launches (the desktop's own settings file, prefs.ts). */
+export interface PortMemory {
+  load: () => unknown
+  save: (port: number) => void
+}
+
+/** The stored value, or undefined when there is no memory or reading it fails. */
+export function loadRememberedPort(memory: PortMemory | undefined): unknown {
+  try {
+    return memory?.load()
+  } catch {
+    return undefined
+  }
+}
+
+/** Save the port the engine answered on, unless already stored. Never throws: next launch just picks a free one. */
+export function rememberPort(memory: PortMemory | undefined, port: number): void {
+  try {
+    if (loadRememberedPort(memory) !== port) memory?.save(port)
+  } catch {
+    /* non-fatal */
+  }
+}
