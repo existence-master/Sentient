@@ -10,10 +10,10 @@ self-modification is risky: a bad skill silently changes future behaviour.
 
 ## Decision
 
-After substantial chats and task runs, a reviewer proposes skills (`SKILL.md` with When to use, Procedure,
-Pitfalls and Verification). When a skill was followed by errors or a user correction, it proposes a repair.
-Proposals wait in Skills → Pending review with a diff and never activate on their own. A curator retires unused
-skills.
+After substantial chats and task runs, a reviewer proposes skills (`SKILL.md` with When to use, Inputs and access,
+Procedure, Verification, Output and Approval). When a skill was followed by errors or a user correction, it
+proposes a repair. Proposals wait in Skills → Pending review with a diff and never activate on their own. A curator
+retires unused skills.
 
 ## Consequences
 

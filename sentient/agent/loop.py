@@ -49,6 +49,7 @@ from sentient.agent import (
     reversible,
     rule_levels,
     second_look,
+    text_calls,
 )
 from sentient.agent import grants as grant_rules
 from sentient.agent import incognito as incognito_outputs
@@ -220,6 +221,11 @@ PolicyFn = Callable[[Tool, Risk, dict], "str | Awaitable[str | None] | None"]
 
 
 # ---------------------------------------------------------------------- transcript helpers
+def _call_key(name: str, arguments: Any) -> tuple[str, str]:
+    """A call's tool and arguments, comparable across rounds."""
+    return name, json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
+
+
 def _normalize_tool_calls(calls: Any) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
@@ -902,6 +908,9 @@ class Agent:
         text_acc = ""
         tools_disabled = False
         empty_nudged = False
+        call_nudge: dict | None = None  # the one nudge about a tool call written out as text (#532)
+        known = {t.name for t in self.registry.tools(include_hidden=True)}
+        made: set[tuple[str, str]] = set()  # (tool, arguments) of every call this run made
         round_no = 0
         def interrupted() -> bool:
             if interrupt is None or not interrupt():
@@ -931,16 +940,21 @@ class Agent:
                         ctx.user_words.append(text)  # the user's own words count for "Only if I asked" (#140)
             text_acc = ""
             think_acc = ""
+            shown = 0  # characters of text_acc streamed so far; a possible written-out tool call is held back (#532)
             tool_calls: list[ToolCall] = []
             try:
                 async for chunk in self._model_stream(role, messages, tools, model, source == "chat" and not unprompted,
-                                                      source):
+                                                      source, private=not ctx.memory_allowed):
                     if chunk.thinking:
                         think_acc += chunk.thinking
                         yield ThinkingDelta(text=chunk.thinking, **ev)
                     if chunk.text:
                         text_acc += chunk.text
-                        yield TextDelta(text=chunk.text, **ev)
+                        upto = (text_calls.held_from(text_acc, known, text_calls.line_start(text_acc, shown))
+                                if tools else len(text_acc))
+                        if upto > shown:
+                            yield TextDelta(text=text_acc[shown:upto], **ev)
+                            shown = upto
                     if chunk.done:
                         tool_calls = chunk.tool_calls
                         if chunk.model and chunk.model != (model or self.llm.model_for(role)):
@@ -991,6 +1005,43 @@ class Agent:
                 return
             result.thinking += think_acc
             ctx.result_limit = result.tool_result_limit  # a tool returning a part sizes it to fit (#336)
+            if call_nudge is not None and messages and messages[-1] is call_nudge:
+                messages.pop()  # the model has answered the nudge: it is scaffolding, not part of the conversation
+            only = {tc.name for tc in tool_calls} if tool_calls else None
+            written = text_calls.find(text_acc, self._tool_schema, only) if tools and shown < len(text_acc) else None
+            streamed = text_acc[:shown]
+            if written is not None and tool_calls:
+                text_acc = written.cleaned  # it made the real calls too: the written copy is never shown
+            elif written is not None and written.runnable and all(_call_key(n, a) in made for n, a in written.calls):
+                # real qwen3:8b wrote the same call out again after its result: it already ran, so this is the answer
+                log.info("%s: the model wrote out %s again after it ran; not running it twice", source,
+                         ", ".join(written.names))
+                text_acc = written.before
+            elif written is not None and written.runnable:
+                # a small model wrote its call out as text: it runs as the real call, through every usual check
+                log.info("%s: the model wrote %s out as text; running it as a call", source, ", ".join(written.names))
+                tool_calls = [ToolCall(id=f"text_call_{new_id()[:12]}", name=name, arguments=args)
+                              for name, args in written.calls]
+                text_acc = written.before
+            elif written is not None and written.is_action:
+                text_acc = written.before
+                if call_nudge is None and round_no < rounds:
+                    log.info("%s: the model wrote %s out as text and it can't run; asking once to call it",
+                             source, written.names[0])
+                    if shown < len(text_acc) and text_acc.startswith(streamed):
+                        yield TextDelta(text=text_acc[shown:], **ev)
+                    if text_acc.strip():
+                        messages.append({"role": "assistant", "content": text_acc})
+                        if persist:
+                            await persist("assistant", text_acc, thinking=think_acc or None)
+                    call_nudge = {"role": "user", "content": text_calls.NUDGE.format(name=written.names[0])}
+                    messages.append(call_nudge)
+                    continue
+                if not text_acc.strip() and not result.findings:
+                    text_acc = text_calls.NOT_RUN_REPLY
+            if shown < len(text_acc) and text_acc.startswith(streamed):  # the rest of what was held back, if any
+                yield TextDelta(text=text_acc[shown:], **ev)
+            shown = len(text_acc)
 
             if not tool_calls:
                 pending = steer.take() if steer is not None else []
@@ -1039,6 +1090,7 @@ class Agent:
                 return
             # a delete for good becomes its app's trash version unless the user asked for it to be permanent (#142);
             # swapped before the call is saved, so the transcript, approvals and second look all see the trash call
+            made.update(_call_key(tc.name, tc.arguments) for tc in tool_calls)
             swapped = self._prefer_trash(tool_calls, messages, ctx)
             if swapped and tool_names is not None:
                 tool_names = [*tool_names, *(tc.name for tc in tool_calls if tc.id in swapped and tc.name not in tool_names)]
@@ -1172,11 +1224,13 @@ class Agent:
 
     async def _model_stream(
         self, role: str, messages: list[dict], tools: list[dict] | None, model: str | None, attended: bool,
-        source: str = "chat",
+        source: str = "chat", *, private: bool = False,
     ) -> AsyncIterator[StreamChunk]:
         """``llm.stream``, marked as a reply someone is waiting for only in a chat: Claude Code answers nothing
-        else (ADR 0022). Its usage is counted under ``source``."""
-        with claude_code.attended(attended), usage_source(source):
+        else (ADR 0022). Its usage is counted under ``source``. ``private``: the turn may not use what Sentient
+        knows about the user (``ToolContext.memory_allowed`` is False), so Claude Code's own account details stay
+        out of the answer too (#533)."""
+        with claude_code.attended(attended), claude_code.private(private), usage_source(source):
             async for chunk in self.llm.stream(role, messages, tools, model=model):
                 yield chunk
 
@@ -1357,6 +1411,11 @@ class Agent:
                 plan.preset = ({"error": second_look.hold_message(label, plan.warning)}, True, 0)
                 plan.wants_ok, plan.ask_rule = True, False
         return plan
+
+    def _tool_schema(self, name: str) -> dict | None:
+        """The JSON schema of a registered tool's arguments, None for a name no tool has (#532)."""
+        tool = self.registry.get(name)
+        return tool.openai_schema()["function"]["parameters"] if tool is not None else None
 
     def _prefer_trash(self, tool_calls: list[ToolCall], messages: list[dict], ctx: ToolContext) -> dict[str, str]:
         """Swap each delete-for-good call for its app's trash version, in place (#142, ``sentient.agent.reversible``).
@@ -2177,8 +2236,10 @@ class Agent:
                         ), "memory"
                     )
                 if self.config.chat.auto_title and session and (session.get("title") or "") == (user_text or "")[:60]:
-                    self._spawn(self._auto_title(session_id, user_text, result.text), "titles")
-                self._spawn(self._maybe_compress(session_id, flush=not incognito), "memory")
+                    self._spawn(self._auto_title(session_id, user_text, result.text, private=not ctx.memory_allowed),
+                                "titles")
+                self._spawn(self._maybe_compress(session_id, flush=not incognito, private=not ctx.memory_allowed),
+                            "memory")
                 if incognito:
                     log.info("incognito chat %s: nothing learned from this turn", session_id)
                 elif self.app is not None:
@@ -2611,15 +2672,17 @@ class Agent:
         except Exception as exc:
             log.warning("background extraction failed: %s", exc)
 
-    async def _auto_title(self, session_id: str, user_text: str, reply: str) -> None:
+    async def _auto_title(self, session_id: str, user_text: str, reply: str, *, private: bool = False) -> None:
+        """``private``: the turn had no memory, so Claude Code's own account details stay out of the title (#533)."""
         try:
-            title = await self.llm.complete_text(
-                "fast",
-                [
-                    {"role": "system", "content": "Write a 2-6 word title for this chat. Title case. No quotes, no punctuation at the end. Reply with the title only."},
-                    {"role": "user", "content": f"User: {user_text[:500]}\nAssistant: {reply[:500]}"},
-                ],
-            )
+            with claude_code.private(private):
+                title = await self.llm.complete_text(
+                    "fast",
+                    [
+                        {"role": "system", "content": "Write a 2-6 word title for this chat. Title case. No quotes, no punctuation at the end. Reply with the title only."},
+                        {"role": "user", "content": f"User: {user_text[:500]}\nAssistant: {reply[:500]}"},
+                    ],
+                )
             title = title.strip().strip('"').strip()[:80]
             if title:
                 await self.store.rename_session(session_id, title)
@@ -2646,10 +2709,11 @@ class Agent:
         except Exception as exc:
             log.warning("memory flush before compression failed: %s", exc)
 
-    async def _maybe_compress(self, session_id: str, *, flush: bool = True) -> None:
+    async def _maybe_compress(self, session_id: str, *, flush: bool = True, private: bool = False) -> None:
         """Hermes-style context compression: fold turns that fell out of the history
         window into a running summary injected into the system prompt. ``flush=False`` (an incognito chat) keeps
-        no facts from the folded turns."""
+        no facts from the folded turns. ``private``: a chat without memory, so Claude Code's own account details stay
+        out of the summary (#533)."""
         try:
             total = await self.store.count_messages(session_id)
             window = self.config.chat.history_window
@@ -2680,13 +2744,14 @@ class Agent:
                     memory_scopes.of_session(self.config, session),
                 )
             prev = (session or {}).get("context_summary") or ""
-            summary = await self.llm.complete_text(
-                "fast",
-                [
-                    {"role": "system", "content": "Update the running summary of a conversation. Keep decisions, facts, names, dates, open questions and anything the assistant promised. Max 250 words. Plain text."},
-                    {"role": "user", "content": f"Current summary:\n{prev or '(none)'}\n\nNew turns:\n{transcript}"},
-                ],
-            )
+            with claude_code.private(private):
+                summary = await self.llm.complete_text(
+                    "fast",
+                    [
+                        {"role": "system", "content": "Update the running summary of a conversation. Keep decisions, facts, names, dates, open questions and anything the assistant promised. Max 250 words. Plain text."},
+                        {"role": "user", "content": f"Current summary:\n{prev or '(none)'}\n\nNew turns:\n{transcript}"},
+                    ],
+                )
             await self.store.execute(
                 "UPDATE sessions SET context_summary = ?, context_upto = ? WHERE id = ?",
                 (summary.strip(), next_watermark(upto, older, "created_at", "rowid"), session_id),

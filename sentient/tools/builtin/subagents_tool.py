@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from sentient.agent import reader
+from sentient.llm import claude_code
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, effective_risk, is_unprompted, tool
 from sentient.tools.rules import (
     OUTSIDE_KEY,
@@ -148,8 +149,9 @@ async def read_with_reader(ctx: ToolContext, tool: str, fields: dict[str, str], 
     attended = bool(ctx.session_id) and not (ctx.extra.get("task_id") or ctx.extra.get("subagent_id")) and not (
         is_unprompted(ctx.origin)
     )
-    out = await mgr.read(document, wanted, source=where, session_id=ctx.session_id, parent_call_id=ctx.call_id,
-                         attended=attended)
+    with claude_code.private(not ctx.memory_allowed):  # a turn without memory: no account email (#533)
+        out = await mgr.read(document, wanted, source=where, session_id=ctx.session_id, parent_call_id=ctx.call_id,
+                             attended=attended)
     if out.get("status") != "completed":
         return {"error": out.get("error") or "The reader failed.", "subagent_id": out.get("subagent_id")}
     values = out["fields"]

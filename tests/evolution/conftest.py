@@ -8,14 +8,19 @@ from tests.conftest import FakeProvider
 SKILL_BODY = """# Weekly inbox digest
 ## When to use
 - The user asks for a digest of important unread email.
+## Inputs and access
+- Gmail access and the date range to review.
 ## Procedure
 1. Call `gmail_search` with `is:unread newer_than:7d`.
 2. Read the top threads with `gmail_read`.
 3. Summarize by sender and urgency.
-## Pitfalls
-- Skip newsletters.
+4. Skip newsletters.
 ## Verification
 - Every thread in the digest links back to Gmail.
+## Output
+- A short digest grouped by urgency.
+## Approval
+- Normal tool approval rules.
 """
 
 
