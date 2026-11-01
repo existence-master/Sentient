@@ -213,7 +213,8 @@ applied in code before every call and take effect at once:
   included, #306): a purchase (above); a call that opens the user's home: unlocking a door, turning off the alarm,
   or opening a garage door, gate or door (above, ADR 0028); a tool or app with an `ask` rule, or an `if_asked` rule the user's words did
   not ask for; in a chat that read outside content, a call
-  that can send data out or a data-carrying address to a new site (section 10, ADR 0018); a call that changes, sends,
+  that can send data out or a data-carrying address to a new site (section 10, ADR 0018); a delete or a move to the
+  trash that another app asked for, through `sentient mcp` (#443) or the OpenAI-compatible API (#479); a call that changes, sends,
   deletes or runs something while an undecided rule proposal from that chat covers it (below); a call a second look
   flagged (section 10, "Second look", #143, ADR 0024). `never` rules and Read only connections (section 5) refuse
   instead of asking, and `hand_off` rules hand the call to the user.
