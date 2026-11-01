@@ -64,7 +64,7 @@ if (smoke) {
   app.setPath('userData', join(process.env.SENTIENT_HOME ? sentientHome() : tmpdir(), 'electron-smoke'))
 }
 
-const backend = new BackendManager()
+const backend = new BackendManager({ load: shellState.enginePort, save: shellState.setEnginePort })
 let win: BrowserWindow | null = null
 let tray: AppTray | null = null
 let quitting = false
