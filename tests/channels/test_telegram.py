@@ -381,6 +381,7 @@ async def test_voice_note_is_transcribed_and_answered(tg, llm, monkeypatch):
     assert "[Current time:" in content
     assert content.endswith("what's the weather in Pune")
     assert tg.api.screen()[-1] == "It's sunny."
+    await until(lambda: any(method == "sendVoice" for method, _ in sent))
     voices = [kwargs for method, kwargs in sent if method == "sendVoice"]
     assert len(voices) == 1
     name, data, mime = voices[0]["files"]["voice"]
