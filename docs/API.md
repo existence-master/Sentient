@@ -560,7 +560,8 @@ when `openai_api.allow_memory` is on too (below).
   `history_time_search`, `user_model_ask` and `memory_forget` are left out of its tools and refused if called anyway.
   This is the turn's one memory decision (section 10, "Turns without memory"), so the same holds for every helper,
   reader call and script the turn starts.
-  `memory_remember` stays, and what it saves waits for review. With it on, an API turn reads memory like a chat in
+  `memory_remember` stays, and what it saves waits for review; its answer gives back the fact as the turn wrote it,
+  without the user's name, memory ids or a saved memory's text. With it on, an API turn reads memory like a chat in
   the window, so whoever holds the key can ask about anything Sentient remembers, including past chats.
 - Concurrent first requests share the same chat for a given name, and creating one name cannot overwrite another
   name's chat mapping. Only one API turn can run in that chat at a time. An overlapping API request returns

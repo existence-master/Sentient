@@ -501,6 +501,65 @@ def test_what_an_api_turn_starts_follows_allow_memory(client, allow):
         assert "Mumbai" not in json.dumps(llm.calls, default=str)  # the stored fact reached no model
 
 
+JOB = "The user works at a tech startup in Bangalore."
+SAVED_JOB = "Maya works at a tech startup in Bangalore."  # the config's user_name, as #475 stores it
+
+
+def _remember_answers(llm) -> list[dict]:
+    """Every answer the model read from memory_remember, once each, in order."""
+    rows = [m["content"] for call in llm.calls for m in call["messages"]
+            if m.get("role") == "tool" and m.get("tool_call_id") == "call_memory_remember"]
+    return [json.loads(row) for row in dict.fromkeys(rows)]
+
+
+@pytest.mark.parametrize("allow", [False, True], ids=["memory-off", "memory-on"])
+@pytest.mark.parametrize("helper", [False, True], ids=["turn", "helper"])
+def test_memory_remember_answer_follows_allow_memory(client, allow, helper):
+    """Off, the answer gives back the fact as the app's turn wrote it, with no id and not the configured name, for the
+    turn and for a helper it starts; the saved fact is the same either way and waits for review (#547)."""
+    core = client.app.state.sentient
+    core.config.openai_api.allow_memory = allow
+    llm = client.llm
+    remember = [tool_call("memory_remember", fact=JOB)]
+    llm.replies[:] = [[tool_call("delegate_task", goal="Save where the user works")], remember, "Done.", "Saved."] if helper \
+        else [remember, "Saved."]
+    assert _ask(client, user="Notes app", messages=[{"role": "user", "content": "Remember this"}]).status_code == 200
+
+    [answer] = _remember_answers(llm)
+    assert answer["action"] == "ADD" and answer["status"] == "pending"
+    if allow:
+        assert answer["content"] == SAVED_JOB and "id" in answer
+    else:
+        assert answer["content"] == JOB and not {"id", "scope"} & set(answer)
+    review = client.get("/api/memories/review", headers=WIN).json()["items"]
+    assert [item["text"] for item in review] == [SAVED_JOB]
+
+
+@pytest.mark.parametrize("allow", [False, True], ids=["memory-off", "memory-on"])
+def test_memory_remember_skip_keeps_a_saved_memory_out_when_memory_is_off(client, allow):
+    """A skipped fact's answer names what is already saved; off, it gives back the app's words and no id, so the app
+    learns that something close is saved and not what it says (#547)."""
+    core = client.app.state.sentient
+    core.config.openai_api.allow_memory = allow
+    assert client.post("/api/memories", json={"content": SISTER}, headers=WIN).status_code == 200
+    near = "The user's sister Priya lives in Mumbai."
+    llm = client.llm
+    del llm.calls[:]
+    llm.replies[:] = [[tool_call("memory_remember", fact=near)], [tool_call("memory_remember", fact=JOB)],
+                      [tool_call("memory_remember", fact=JOB)], "Saved."]
+    assert _ask(client, user="Notes app", messages=[{"role": "user", "content": "Remember this"}]).status_code == 200
+
+    near_answer, _new, repeat_answer = _remember_answers(llm)
+    assert near_answer["action"] == repeat_answer["action"] == "SKIP"
+    if allow:
+        assert near_answer["content"] == SISTER and repeat_answer["content"] == SAVED_JOB
+        assert near_answer["id"] and repeat_answer["id"]
+    else:
+        assert near_answer == {"action": "SKIP", "content": near}
+        assert repeat_answer == {"action": "SKIP", "content": JOB}
+        assert SISTER not in json.dumps(llm.calls, default=str)  # the stored wording reached no model
+
+
 def _code_request(client, pool, *, stream: bool, rule: str = "allow", timeout: float = 20):
     core = client.app.state.sentient
     core.config.tools.approvals.mode = "off"
