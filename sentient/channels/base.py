@@ -1083,17 +1083,19 @@ class Channel:
         listing = await model_presets.listing(self.app)
         usable = [p for p in listing["presets"] if p["available"]]
         arg = arg.strip()
-        # "/model Local only yes" or "... no" answers the question below (#446, #457)
-        answer = next((w for w in ("yes", "no") if arg.lower().endswith(" " + w)), None)
-        if answer:
-            arg = arg[:-len(answer)].rstrip()
+        # "/model Local only yes" or "... no" answers the question below (#446, #457). A setup whose own name ends in
+        # "yes" or "no" is looked up first, so the trailing word only counts as an answer when nothing matches the whole text.
+        answer = None
+        pick = self._find_preset(listing, usable, arg)
+        if pick is None and arg.lower() != "undo":
+            answer = next((w for w in ("yes", "no") if arg.lower().endswith(" " + w)), None)
+            if answer:
+                arg = arg[:-len(answer)].rstrip()
+                pick = self._find_preset(listing, usable, arg)
         if arg.lower() == "undo":
             await self.reply(chat_id, await self._preset_outcome(None))
             return
         if arg:
-            pick = usable[int(arg) - 1] if arg.isdigit() and 1 <= int(arg) <= len(usable) else None
-            if pick is None:
-                pick = next((p for p in listing["presets"] if p["name"].lower() == arg.lower()), None)
             if pick is None:
                 await self.reply(chat_id, f"I don't have a model setup called {arg!r}. Send /model to see them.")
                 return
@@ -1125,6 +1127,14 @@ class Channel:
             await self.send_markdown(chat_id, "\n\n".join(lines), buttons)
         except Exception as exc:
             log.warning("%s: /model failed: %s", self.id, self.redact(str(exc)))
+
+    @staticmethod
+    def _find_preset(listing: dict, usable: list, text: str) -> dict | None:
+        """A setup by its number in the usable list or by its exact name, ignoring case."""
+        text = text.strip()
+        if text.isdigit() and 1 <= int(text) <= len(usable):
+            return usable[int(text) - 1]
+        return next((p for p in listing["presets"] if p["name"].lower() == text.lower()), None)
 
     def _asks_local_only(self, preset: dict) -> bool:
         """The window asks before Local only goes on with its preset (#335); a chat has no dialog, so it asks with a

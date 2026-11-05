@@ -5,7 +5,7 @@ Ollama is never reached: the channel fixtures mock every HTTP call, so local mod
 
 from __future__ import annotations
 
-from sentient.config.schema import PRESET_CLOUD_MODELS, ModelRoles
+from sentient.config.schema import PRESET_CLOUD_MODELS, ModelPreset, ModelRoles
 from tests.channels.conftest import callback
 
 DEFAULTS = ModelRoles()
@@ -195,3 +195,20 @@ async def test_local_only_no_cancels(tg):
     await tg.say(42, "/model Local only no")
     assert tg.api.screen()[-1] == "Okay, I left your models as they are."
     assert app.config.models.active_preset is None and not app.config.models.local_only
+
+
+async def test_a_setup_named_with_a_trailing_yes_or_no_is_picked_by_its_full_name(tg):
+    """The whole text is matched first (#457): "Just say no" and "Work yes" are setups, not answers."""
+    app = tg.app
+    app.config.models.presets = {
+        "Work": ModelPreset(roles={"primary": DEFAULTS.primary}),
+        "Work yes": ModelPreset(roles={"primary": DEFAULTS.primary, "fast": DEFAULTS.fast}),
+        "Just say no": ModelPreset(roles={"primary": DEFAULTS.primary}),
+    }
+    await tg.pair(42)
+    await tg.say(42, "/model Just say no")
+    assert app.config.models.active_preset == "Just say no"
+    assert "Just say no" in tg.api.screen()[-1]
+    await tg.say(42, "/model Work yes")
+    assert app.config.models.active_preset == "Work yes"
+
