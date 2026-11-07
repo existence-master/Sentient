@@ -5,7 +5,7 @@ Ollama is never reached: the channel fixtures mock every HTTP call, so local mod
 
 from __future__ import annotations
 
-from sentient.config.schema import PRESET_CLOUD_MODELS, ModelRoles
+from sentient.config.schema import PRESET_CLOUD_MODELS, ModelPreset, ModelRoles
 from tests.channels.conftest import callback
 
 DEFAULTS = ModelRoles()
@@ -28,6 +28,7 @@ async def test_model_lists_presets_and_a_button_applies_one(tg):
     assert [b["text"] for b in buttons] == ["Local only"]  # Cloud and Mixed need a key first
     assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)
 
+    app.config.models.local_only = True  # already on, so the button has nothing to ask (see the tests below)
     tg.ch.dispatch(callback(42, msg["_id"], buttons[0]["callback_data"]))
     await tg.ch.wait_idle()
     assert app.config.models.active_preset == "Local only"
@@ -164,3 +165,77 @@ async def test_local_only_preset_by_number_asks_and_skips_the_question_when_alre
     await tg.say(42, "/model Local only")  # the switch is already on: nothing to ask
     assert tg.api.screen()[-1].startswith("Already using Local only.")  # no question, and nothing left to turn on
     assert app.config.models.local_only
+
+
+async def test_local_only_button_asks_before_turning_the_switch_on(tg):
+    """Tapping "Local only" in the /model list asks the same question as ``/model Local only`` (#457)."""
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model")
+    msg = tg.api.button_messages()[-1]
+    tg.ch.dispatch(callback(42, msg["_id"], keyboard(msg)[0]["callback_data"]))
+    await tg.ch.wait_idle()
+    assert tg.api.sent("answerCallbackQuery")[-1]["text"] == "Turn on Local only too?"
+    edit = [p for p in tg.api.sent("editMessageText") if p["message_id"] == msg["_id"]][-1]
+    assert "Turn on Local only too?" in edit["text"] and "reply_markup" not in edit
+    assert "/model Local only yes" in tg.api.screen()[-1] and "/model Local only no" in tg.api.screen()[-1]
+    assert app.config.models.active_preset is None and not app.config.models.local_only  # nothing changed yet
+
+    await tg.say(42, "/model Local only yes")
+    assert tg.api.screen()[-1].startswith("Switched to Local only, and Local only is on.")
+    assert app.config.models.active_preset == "Local only" and app.config.models.local_only
+
+
+async def test_local_only_no_cancels(tg):
+    """``/model Local only no`` (#457) answers the question by leaving everything as it is."""
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model Local only")
+    assert "/model Local only no" in tg.api.screen()[-1]
+    await tg.say(42, "/model Local only no")
+    assert tg.api.screen()[-1] == "Okay, I left your models as they are."
+    assert app.config.models.active_preset is None and not app.config.models.local_only
+
+
+async def test_a_setup_named_with_a_trailing_yes_or_no_is_picked_by_its_full_name(tg):
+    """The whole text is matched first (#457): "Just say no" and "Work yes" are setups, not answers."""
+    app = tg.app
+    app.config.models.presets = {
+        "Work": ModelPreset(roles={"primary": DEFAULTS.primary}),
+        "Work yes": ModelPreset(roles={"primary": DEFAULTS.primary, "fast": DEFAULTS.fast}),
+        "Just say no": ModelPreset(roles={"primary": DEFAULTS.primary}),
+    }
+    await tg.pair(42)
+    await tg.say(42, "/model Just say no")
+    assert app.config.models.active_preset == "Just say no"
+    assert "Just say no" in tg.api.screen()[-1]
+    await tg.say(42, "/model Work yes")
+    assert app.config.models.active_preset == "Work yes"
+
+
+async def test_the_local_only_replies_answer_the_question_even_with_a_setup_of_that_name(tg):
+    """The question's two replies mean what it says; a setup with one of those names is still picked by number (#457)."""
+    app = tg.app
+    app.config.models.presets = {
+        "Local only no": ModelPreset(roles={"primary": DEFAULTS.primary}),
+        "Local only yes": ModelPreset(roles={"primary": DEFAULTS.primary}),
+    }
+    await tg.pair(42)
+    await tg.say(42, "/model Local only no")
+    assert tg.api.screen()[-1] == "Okay, I left your models as they are."
+    assert app.config.models.active_preset is None and not app.config.models.local_only
+    await tg.say(42, "/model 3")  # "Local only yes" in the list: a setup, not an answer
+    assert app.config.models.active_preset == "Local only yes" and not app.config.models.local_only
+    await tg.say(42, "/model Local only yes")
+    assert tg.api.screen()[-1].startswith("Switched to Local only, and Local only is on.")
+    assert app.config.models.active_preset == "Local only" and app.config.models.local_only
+
+
+async def test_undo_no_does_not_undo(tg):
+    """A trailing "no" never runs the undo it follows (#457)."""
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model Local only yes")
+    await tg.say(42, "/model undo no")
+    assert tg.api.screen()[-1] == "I don't have a model setup called 'undo no'. Send /model to see them."
+    assert app.config.models.active_preset == "Local only" and app.config.models.local_only
