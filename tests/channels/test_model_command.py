@@ -212,3 +212,30 @@ async def test_a_setup_named_with_a_trailing_yes_or_no_is_picked_by_its_full_nam
     await tg.say(42, "/model Work yes")
     assert app.config.models.active_preset == "Work yes"
 
+
+async def test_the_local_only_replies_answer_the_question_even_with_a_setup_of_that_name(tg):
+    """The question's two replies mean what it says; a setup with one of those names is still picked by number (#457)."""
+    app = tg.app
+    app.config.models.presets = {
+        "Local only no": ModelPreset(roles={"primary": DEFAULTS.primary}),
+        "Local only yes": ModelPreset(roles={"primary": DEFAULTS.primary}),
+    }
+    await tg.pair(42)
+    await tg.say(42, "/model Local only no")
+    assert tg.api.screen()[-1] == "Okay, I left your models as they are."
+    assert app.config.models.active_preset is None and not app.config.models.local_only
+    await tg.say(42, "/model 3")  # "Local only yes" in the list: a setup, not an answer
+    assert app.config.models.active_preset == "Local only yes" and not app.config.models.local_only
+    await tg.say(42, "/model Local only yes")
+    assert tg.api.screen()[-1].startswith("Switched to Local only, and Local only is on.")
+    assert app.config.models.active_preset == "Local only" and app.config.models.local_only
+
+
+async def test_undo_no_does_not_undo(tg):
+    """A trailing "no" never runs the undo it follows (#457)."""
+    app = tg.app
+    await tg.pair(42)
+    await tg.say(42, "/model Local only yes")
+    await tg.say(42, "/model undo no")
+    assert tg.api.screen()[-1] == "I don't have a model setup called 'undo no'. Send /model to see them."
+    assert app.config.models.active_preset == "Local only" and app.config.models.local_only

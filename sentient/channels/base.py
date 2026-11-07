@@ -1085,9 +1085,11 @@ class Channel:
         arg = arg.strip()
         # "/model Local only yes" or "... no" answers the question below (#446, #457). A setup whose own name ends in
         # "yes" or "no" is looked up first, so the trailing word only counts as an answer when nothing matches the whole text.
+        # The question's own two replies always answer it: a setup with one of those names is picked by number or button.
         answer = None
-        pick = self._find_preset(listing, usable, arg)
-        if pick is None and arg.lower() != "undo":
+        replies = {f"{model_presets.LOCAL_PRESET} {word}".lower() for word in ("yes", "no")}
+        pick = None if arg.lower() in replies else self._find_preset(listing, usable, arg)
+        if pick is None and arg.lower() not in {"undo", "undo no"}:  # "no" never runs an undo
             answer = next((w for w in ("yes", "no") if arg.lower().endswith(" " + w)), None)
             if answer:
                 arg = arg[:-len(answer)].rstrip()
