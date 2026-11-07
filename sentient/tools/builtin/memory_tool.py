@@ -89,7 +89,9 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
         scope=await memory_scopes.for_context(ctx),  # the chat's or task's scope (#155); personal when neither
     )
     if out.get("status") == "pending":
-        return {**out, "note": INSTRUCTION_NOTE if out.get("reason") == review.INSTRUCTION else HELD_NOTE}
+        out = {**out, "note": INSTRUCTION_NOTE if out.get("reason") == review.INSTRUCTION else HELD_NOTE}
+    if not ctx.memory_allowed:  # a run without memory learns nothing stored from the answer (#547)
+        return {k: v for k, v in out.items() if k in {"action", "status", "reason", "note"}} | {"content": fact}
     return out
 
 
