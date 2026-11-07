@@ -5,7 +5,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from sentient.memory.dreaming import DreamingService, covers, parse_hhmm
-from sentient.memory.facts import attribute_families, fact_subjects
+from sentient.memory.facts import (
+    _FAMILY_PROTOTYPES,  # white-box: the real prototype text per family
+    attribute_families,
+    embedding_attribute_families,
+    fact_subjects,
+    profile_fact,
+    profile_fact_async,
+    subject_aliases,
+)
 from tests.memory.helpers import add_fact, drain
 
 
@@ -34,6 +42,113 @@ def test_subjects_and_families():
     assert attribute_families("Riya got a job at Google") == {"job"}
     assert attribute_families("Maya started eating fish") == {"diet"}
     assert "residence" in attribute_families("Maya moved to Bengaluru last month")
+
+
+def test_subject_in_non_english_script():
+    # fact_subjects only reads capital letters (Devanagari has none), so it finds nothing here - a Devanagari
+    # fact's subject comes from scripts.devanagari_subjects instead, via subject_aliases (and profile_fact,
+    # which dreaming's contradiction grouping actually uses) (#95).
+    assert fact_subjects("माया पुणे में रहती है") == set()  # "Maya lives in Pune"
+    assert subject_aliases("माया पुणे में रहती है") == {"माया"}
+    assert subject_aliases("माया बेंगलुरु चली गई") == {"माया"}  # "Maya moved to Bengaluru"
+    assert profile_fact("माया पुणे में रहती है").subjects == {"माया"}
+
+
+def test_subject_past_a_long_leading_clause():
+    # "March" and "wedding" used to be mistaken for (or block) the subject: "March" is capitalized but is a
+    # month, not a name, and the old code gave up entirely on the first lowercase, unrecognised word (#95).
+    assert fact_subjects("Last year in March, after the wedding, Riya moved to Mumbai.") == {"riya"}
+    # with no leading clause (no comma), an unrecognised word still gives up as before - no guessing
+    assert fact_subjects("She moved to Mumbai.") == set()
+
+
+def test_subject_never_a_leading_number_or_a_place_after_a_preposition():
+    # Found in review of #95: scanning past a leading clause must not pick up the clause's own words as the
+    # subject. A bare year is never name-like (no capital letter), and a capitalized word straight after a
+    # preposition is a place or a time, not a person - both differ only by the actual subject's name, or the
+    # old code paired the two facts below as a contradiction about the same "person".
+    assert fact_subjects("In 2021 Kabir moved to Delhi.") == {"kabir"}
+    assert fact_subjects("In 2021 Karan moved to Goa.") == {"karan"}
+    assert fact_subjects("After the trip to Goa, Kabir started working at Infosys.") == {"kabir"}
+    assert fact_subjects("After the trip to Goa, Karan started working at Wipro.") == {"karan"}
+
+
+def test_subject_pronoun_stays_unclear_even_with_a_later_comma():
+    # CodeRabbit review on #338: a comma doesn't always open a leading clause - "Delhi, India" is a place, and
+    # a sentence leading with a pronoun has no subject here regardless of what shows up after it.
+    assert fact_subjects("She moved to Delhi, India.") == set()
+    assert fact_subjects("He moved to Paris, France.") == set()
+    assert fact_subjects("They moved to Austin, Texas.") == set()
+
+
+def test_subject_a_trailing_place_country_is_never_the_subject():
+    # itsskofficial's live-engine review on #338: a sentence ending "..., Country." isn't a leading clause
+    # either way, pronoun-led or not - only "India." follows the last comma, not a clause with its own verb.
+    # On the real engine this silently merged unrelated facts: each of these two pairs shares no subject.
+    assert fact_subjects("The office moved to Pune, India.") == set()
+    assert fact_subjects("Last week the dentist moved to Delhi, India.") == set()
+    assert fact_subjects("Yesterday the neighbours moved to Pune, India.") == set()
+    assert fact_subjects("Last year the bakery moved to Goa, India.") == set()
+    assert fact_subjects("Yesterday we went to Goa, India.") == set()
+    assert fact_subjects("Last week the team moved to Austin, Texas.") == set()
+    # still works when there's a real clause after the last comma, in or out of a "Place, Country" sentence
+    assert fact_subjects("Kabir lives in Delhi, India.") == {"kabir"}
+    assert fact_subjects("Kabir's sister Meera lives in Goa, India.") == {"kabir's sister", "meera"}
+
+
+async def test_embedding_attribute_families_matches_the_closest_prototype():
+    # Distinct, non-orthogonal vectors per family (orthogonal ones would make every margin equally wide,
+    # which isn't how a real embedding model's scores for related-but-wrong families behave).
+    names = list(_FAMILY_PROTOTYPES)
+    vectors = {name: [1.0, float(n)] for n, name in enumerate(names)}  # residence=[1,0], job=[1,1], ...
+    fact_text = "माया बेंगलुरु चली गई"  # "Maya moved to Bengaluru"
+
+    async def embed_one(text: str) -> list[float]:
+        for name, proto in _FAMILY_PROTOTYPES.items():
+            if text == proto:
+                return vectors[name]
+        return [1.0, 0.05]  # the fact text itself: closest to "residence" ([1, 0]), next closest a bit further
+
+    assert await embedding_attribute_families(fact_text, embed_one, "test-model", margin=0.01) == {"residence"}
+    # a wider margin than the real gap between the top two scores: neither stands out enough to call it a match
+    assert await embedding_attribute_families(fact_text, embed_one, "test-model", margin=0.5) == set()
+
+
+async def test_profile_fact_async_only_falls_back_when_keywords_find_nothing():
+    calls: list[str] = []
+
+    async def embed_one(text: str) -> list[float]:
+        calls.append(text)
+        for n, (_name, proto) in enumerate(_FAMILY_PROTOTYPES.items()):
+            if text == proto:
+                return [1.0, float(n)]
+        return [1.0, 0.0]  # the fact text itself: lands on "residence" ([1, 0], the first prototype)
+
+    # English text: the keyword family already matches, so the embedder is never called
+    prof = await profile_fact_async("Maya moved to Bengaluru", embed_one, "Maya", "test-model")
+    assert prof.families == {"residence"} and calls == []
+
+    # non-English text with no keyword match: falls back, calling the embedder for the
+    # prototypes (once, then cached) plus the fact text
+    prof = await profile_fact_async("माया बेंगलुरु चली गई", embed_one, "Maya", "test-model-2", margin=0.01)
+    assert calls  # the fallback ran
+    assert prof.families == {"residence"}
+    calls.clear()
+
+    # a stored vector of the right dimension is reused instead of embedding the text again
+    prof = await profile_fact_async(
+        "माया बेंगलुरु चली गई", embed_one, "Maya", "test-model-2", margin=0.01, vector=[1.0, 0.0]
+    )
+    assert calls == []  # only the (already-cached) prototypes would have needed embedding, and nothing did
+    assert prof.families == {"residence"}
+
+
+async def test_profile_fact_async_falls_back_to_the_keyword_profile_when_embedding_fails():
+    async def broken(text: str) -> list[float]:
+        raise RuntimeError("embedding provider unavailable")
+
+    prof = await profile_fact_async("माया बेंगलुरु चली गई", broken, "Maya", "test-model-3", margin=0.01)
+    assert prof.families == set()  # no exception, and no family guessed
 
 
 EXAMPLES = [
