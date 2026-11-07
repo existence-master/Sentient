@@ -181,6 +181,24 @@ async def test_an_incognito_chat_says_it_keeps_nothing(config, isolated_home):
         await s.stop()
 
 
+async def test_a_chat_without_memory_corrects_a_claim_whatever_is_stored(config, isolated_home):
+    """Without memory a stored memory never decides the correction, or it would tell what is stored (#551)."""
+    config.chat.incognito_uses_memory = False
+    kulkarni, mehta = "I've saved that your dentist is Dr. Kulkarni.", "I've saved that your dentist is Dr. Mehta."
+    llm = FakeProvider(replies=[kulkarni, kulkarni, mehta])
+    s = await _app(config, isolated_home, llm, "memory-off")
+    try:
+        await s.memory.remember("Maya's dentist is Dr. Kulkarni", use_llm=False)
+        text, _ = await _turn(s, await s.store.create_session(channel="cli"), "who is my dentist?")
+        assert text == kulkarni  # with memory, the stored memory backs the claim as before
+        for reply in (kulkarni, mehta):
+            sid = await s.store.create_session(channel="cli", incognito=True)
+            text, _ = await _turn(s, sid, "who is my dentist?")
+            assert text == reply + "\n\nCorrection: " + outcomes.MEMORY_NOT_SAVED_INCOGNITO
+    finally:
+        await s.stop()
+
+
 def test_memory_claims_are_recognized_narrowly():
     claims = [
         "I've saved that you wake up at 7 a.m.",

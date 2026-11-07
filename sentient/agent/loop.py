@@ -2201,7 +2201,7 @@ class Agent:
         leftover = release()
 
         try:  # the turn counts as busy until here, also when the caller stops reading at Done
-            if correction := await self._memory_correction(result, incognito):
+            if correction := await self._memory_correction(result, incognito, memory_allowed):
                 result.text += correction
                 yield TextDelta(text=correction, **ev)
             if result.error and not result.text:
@@ -2500,14 +2500,15 @@ class Agent:
         self._publish_mark(session_id, "")
         return TrustResult(was=was, trusted=True)
 
-    async def _memory_correction(self, result: LoopResult, incognito: bool) -> str:
+    async def _memory_correction(self, result: LoopResult, incognito: bool, memory_allowed: bool) -> str:
         """The line added to a chat reply that says it saved a memory when no memory_remember call worked this turn
         (#526), or "". A claim that a saved memory already backs (an earlier turn's save, or one made from the Memory
-        screen) is left alone: "Yes, I saved that you wake up at 7" can be about a save before this turn."""
+        screen) is left alone: "Yes, I saved that you wake up at 7" can be about a save before this turn. A turn
+        without memory never looks: which claims it corrects would tell what is stored (#551)."""
         if result.error or not result.text:
             return ""
         claim = outcomes.unmade_memory_claim(result.text, result.memory_saves)
-        if not claim or await self._memory_backs(claim):
+        if not claim or (memory_allowed and await self._memory_backs(claim)):
             return ""
         note = outcomes.MEMORY_NOT_SAVED_INCOGNITO if incognito else outcomes.MEMORY_NOT_SAVED
         if f"Correction: {note}" in result.text:  # copied from an earlier correction in the chat: one is enough
