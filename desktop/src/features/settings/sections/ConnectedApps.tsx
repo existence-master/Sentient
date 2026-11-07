@@ -53,7 +53,7 @@ export function ConnectedAppsSection({ query }: { query: string }) {
       filter={query}
       footer={
         <FormSection>
-          <FormRow label="Address" description="Use it as the base URL in the app. It changes when Sentient restarts.">
+          <FormRow label="Address" description="Use it as the base URL in the app.">
             <span className="flex items-center gap-2">
               <code className="font-mono text-xs text-fg-muted">{address}</code>
               {copyButton('address', address)}
