@@ -156,6 +156,34 @@ async def test_a_memory_about_something_else_does_not_back_the_claim(config, iso
         await s.stop()
 
 
+@pytest.mark.parametrize(("stored", "claimed"), [("Dr. Kulkarni", "Dr. Mehta"), ("Dr. M. Kulkarni", "Dr. M. Mehta")])
+async def test_a_claim_with_a_title_is_compared_whole(config, isolated_home, stored, claimed):
+    """Cut at "Dr.", the claim lost the name, so a stored "Dr. Kulkarni" backed a save of "Dr. Mehta" (#554)."""
+    reply = f"I've saved that your dentist is {claimed}."
+    llm = FakeProvider(replies=[reply])
+    s = await _app(config, isolated_home, llm, "dentist")
+    try:
+        await s.memory.remember(f"Maya's dentist is {stored}", use_llm=False)
+        sid = await s.store.create_session(channel="cli")
+        text, _ = await _turn(s, sid, f"remember that my dentist is {claimed}")
+        assert text == reply + NOTE
+    finally:
+        await s.stop()
+
+
+async def test_a_claim_with_a_title_that_a_memory_backs_is_left_alone(config, isolated_home):
+    reply = "I've saved that your dentist is Dr. Mehta."
+    llm = FakeProvider(replies=[reply])
+    s = await _app(config, isolated_home, llm, "dentist_saved")
+    try:
+        await s.memory.remember("Maya's dentist is Dr. Mehta", use_llm=False)
+        sid = await s.store.create_session(channel="cli")
+        text, _ = await _turn(s, sid, "remember that my dentist is Dr. Mehta")
+        assert text == reply
+    finally:
+        await s.stop()
+
+
 async def test_a_copied_correction_gets_no_second_one(config, isolated_home):
     reply = "I've saved that you wake up at 7 a.m." + NOTE
     llm = FakeProvider(replies=[reply])
@@ -254,4 +282,30 @@ def test_memory_claims_are_recognized_narrowly():
     assert outcomes.memory_claim("Morning routines matter.\n\nI've saved that you wake up at 7.") == (
         "I've saved that you wake up at 7."
     )
+    # an abbreviation does not cut the claim short (#554), and a question after it is not part of it
+    assert outcomes.memory_claim("Sure. I've saved that your dentist is Dr. Mehta. Anything else?") == (
+        "I've saved that your dentist is Dr. Mehta."
+    )
+    for name in ("May", "Page", "Brian May"):  # a surname that is also a hedge or a place word is still a name
+        assert outcomes.memory_claim(f"I've saved that your dentist is Dr. {name}.") == (
+            f"I've saved that your dentist is Dr. {name}."
+        )
+    assert not outcomes.memory_claim("I've saved that your dentist is Dr. Mehta?")
+    assert not outcomes.memory_claim("Should I save that your dentist is Dr. Mehta?")
+    # "St." and "No." can end a sentence, so they never glue the next one on
+    assert outcomes.memory_claim("I've saved that you live on Main St. Anything else?") == (
+        "I've saved that you live on Main St."
+    )
+    assert outcomes.memory_claim("You live on Main St. I've saved that you wake up at 7.") == (
+        "I've saved that you wake up at 7."
+    )
+    assert outcomes.memory_claim("No. I've saved that you like tea.") == "I've saved that you like tea."
+    # but a lowercase word, a number after "No." or the initials of a name continue the sentence
+    for claim in (
+        "I've saved that your dentist is Dr. M. Mehta.",
+        "I've saved that you live at apartment No. 12.",
+        "I've saved that you wake up at 7 a.m. on weekdays.",
+    ):
+        assert outcomes.memory_claim(claim) == claim
+    assert not outcomes.memory_claim("I've saved your Dr. May Notes.")  # still a save to notes, not to memory
     assert outcomes.unmade_memory_claim("I've saved that you like tea.", [{"ok": False}, {"ok": True}]) == ""

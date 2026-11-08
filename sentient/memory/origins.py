@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from typing import Any
 
 CONVERSATION = "conversation"
@@ -167,14 +168,25 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 _ABBREVIATION = re.compile(r"(?:\b(?:Dr|Mr|Mrs|Ms|Prof|St|Jr|Sr|vs|etc|No|e\.g|i\.e)|\b[A-Z])\.$")
 
 
-def quote(text: str, fact: str) -> str:
-    """The sentence of ``text`` that says most of ``fact`` (its start when none does), short."""
+def _after_abbreviation(previous: str, following: str) -> bool:
+    return bool(_ABBREVIATION.search(previous))
+
+
+def sentences(text: str, continues: Callable[[str, str], bool] = _after_abbreviation) -> list[str]:
+    """``text`` split into sentences, without cutting after an abbreviation: "Dr. Mehta" stays in one. ``continues``
+    says whether the piece ``following`` a piece ``previous`` belongs to it."""
     parts: list[str] = []
     for p in (p.strip() for p in _SENTENCE.split(str(text or ""))):
-        if p and parts and _ABBREVIATION.search(parts[-1]):  # "Dr. Mehta" is one sentence
+        if p and parts and continues(parts[-1], p):
             parts[-1] = f"{parts[-1]} {p}"
         elif p:
             parts.append(p)
+    return parts
+
+
+def quote(text: str, fact: str) -> str:
+    """The sentence of ``text`` that says most of ``fact`` (its start when none does), short."""
+    parts = sentences(text)
     if not parts:
         return ""
     want = _words(fact)
