@@ -27,6 +27,8 @@ import logging
 import re
 from typing import Any
 
+from sentient.memory import origins
+
 log = logging.getLogger(__name__)
 
 VERIFY_TIMEOUT_S = 15.0
@@ -532,14 +534,38 @@ _MEMORY_OTHER_PLACE = re.compile(
 )
 
 
+# A period that does not end the sentence: after a title and its initials ("Dr. M. Mehta"), after "a.m." or "p.m."
+# before a lowercase word ("7 a.m. on weekdays") and between "No." and a number ("apartment No. 12"). "St." and "No."
+# before a capital can end one ("Main St. I've saved that...", "No. I've saved that..."), so they never glue the next
+# sentence on.
+_CLOCK = re.compile(r"\b[ap]\.m\.$", re.I)
+_NUMBER_SIGN = re.compile(r"\w\s+No\.$")
+_TITLE = re.compile(r"\b(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.(?:\s+[A-Z]\.)*$|\b(?:e\.g|i\.e)\.$")
+# A name after a title is no keyword: "Dr. May" is not a hedge and "Dr. Page" is not a page. Only the first word keeps
+# the place check, so "Dr. May Notes" is still about notes.
+_TITLE_NAME = re.compile(r"\b(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.(?:\s+[A-Z]\w*\.?)+")
+_TITLE_FIRST = re.compile(r"\b(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.(?:\s+[A-Z]\.)*\s+[A-Z]\w*")
+
+
+def _continues(previous: str, following: str) -> bool:
+    return bool(
+        _TITLE.search(previous)
+        or (_CLOCK.search(previous) and following[:1].islower())
+        or (_NUMBER_SIGN.search(previous) and following[:1].isdigit())
+    )
+
+
 def memory_claim(text: str) -> str:
     """The first sentence of ``text`` in which Sentient says it kept something in its memory, or "". Folds curly
     apostrophes, and skips questions, offers, negations, earlier saves and saves to anything other than memory."""
-    for sentence in re.split(r"(?<=[.!?])\s+|\n+", _straight_apostrophes(text)):
-        s = sentence.strip()
-        if not s or s.endswith("?") or _MEMORY_HEDGE.search(s) or _MEMORY_EARLIER.search(s):
-            continue
-        if _MEMORY_OTHER_PLACE.search(s):
+    for s in origins.sentences(_straight_apostrophes(text), _continues):
+        bare = _TITLE_NAME.sub("", s)
+        if (
+            s.endswith("?")
+            or _MEMORY_HEDGE.search(bare)
+            or _MEMORY_EARLIER.search(bare)
+            or _MEMORY_OTHER_PLACE.search(_TITLE_FIRST.sub("", s))
+        ):
             continue
         cleaned = re.sub(r"\bno (?:problem|worries)\b", "", s, flags=re.I)  # "No problem, I've saved that..."
         for pattern in _MEMORY_CLAIMS:
