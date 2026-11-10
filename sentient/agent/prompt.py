@@ -28,13 +28,18 @@ TOOL_RULES = """## Working rules
 """
 
 
-def without_name(text: str, name: str) -> str:
-    """``text`` with the user's ``name`` replaced by "the user" (#552), for a turn that must not reveal who they are:
-    SOUL.md is written with the name in it ("You are Sentient, Maya's assistant..."). Whole-word, any case."""
+def replace_name(text: str, name: str, replacement: str) -> str:
+    """``text`` with the user's ``name`` replaced by ``replacement``. Whole-word, any case."""
     name = (name or "").strip()
     if not name:
         return text
-    return re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", "the user", text, flags=re.IGNORECASE)
+    return re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", lambda _: replacement, text, flags=re.IGNORECASE)
+
+
+def without_name(text: str, name: str) -> str:
+    """``text`` with the user's ``name`` replaced by "the user" (#552), for a turn that must not reveal who they are:
+    SOUL.md is written with the name in it ("You are Sentient, Maya's assistant...")."""
+    return replace_name(text, name, "the user")
 
 
 # ---------------------------------------------------------------------- outside content (spotlighting, ADR 0023)

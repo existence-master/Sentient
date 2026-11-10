@@ -238,6 +238,20 @@ async def test_the_v1_api_without_memory_does_not_reveal_the_name_from_soul(app)
     assert "Maya" not in prompt
 
 
+async def test_renaming_the_user_in_settings_moves_the_persona_to_the_new_name(app):
+    """The settings routes change the name without rewriting SOUL.md, so the old name must not stay behind (#552)."""
+    from sentient.memory.personas import render_persona
+
+    app.workspace.write("soul", render_persona("professional", name="Sentient", user="Maya"))
+    cfg = app.config.model_copy(deep=True)
+    cfg.assistant.user_name = "Sam"
+    app.save_config(cfg)
+    assert "Maya" not in app.workspace.snapshot()["soul"]
+    assert "Sam's chief of staff" in app.workspace.snapshot()["soul"]
+    app.config.openai_api.allow_memory = False
+    assert "Maya" not in await app.agent.system_prompt("what's my name?", "api")
+
+
 def test_without_name_replaces_whole_words_in_any_case():
     from sentient.agent.prompt import without_name
 
