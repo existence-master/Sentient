@@ -27,6 +27,21 @@ TOOL_RULES = """## Working rules
 - Keep replies short. Plain language. Match the user's tone.
 """
 
+
+def replace_name(text: str, name: str, replacement: str) -> str:
+    """``text`` with the user's ``name`` replaced by ``replacement``. Whole-word, any case."""
+    name = (name or "").strip()
+    if not name:
+        return text
+    return re.sub(rf"(?<!\w){re.escape(name)}(?!\w)", lambda _: replacement, text, flags=re.IGNORECASE)
+
+
+def without_name(text: str, name: str) -> str:
+    """``text`` with the user's ``name`` replaced by "the user" (#552), for a turn that must not reveal who they are:
+    SOUL.md is written with the name in it ("You are Sentient, Maya's assistant...")."""
+    return replace_name(text, name, "the user")
+
+
 # ---------------------------------------------------------------------- outside content (spotlighting, ADR 0023)
 # Tool results that can carry text someone else wrote (rules.brings_untrusted) are wrapped in markers before the model
 # reads them, and the system prompt says once that marked text is data. The code in the markers comes from a secret

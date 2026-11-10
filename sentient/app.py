@@ -32,6 +32,7 @@ from sentient.agent.chat_rules import ChatRules
 from sentient.agent.grants import GrantStore
 from sentient.agent.incognito import IncognitoSweeper
 from sentient.agent.loop import Agent
+from sentient.agent.prompt import replace_name
 from sentient.agent.subagents import SubagentManager
 from sentient.agent.undo import UndoBroker
 from sentient.backup import BackupService
@@ -184,10 +185,12 @@ class SentientApp:
 
     def save_config(self, config: SentientConfig | None = None) -> None:
         """Persist and hot-apply configuration."""
+        previous_name = self.config.assistant.user_name
         if config is not None:
             self.config = config
         moved = self._claude_code_switched()
         save_config(self.config)
+        self._carry_name_into_persona(previous_name, self.config.assistant.user_name)
         if self.config.integrations.mcp_server_enabled:
             # turning the MCP server on issues its own narrow token in the keychain (#443, ADR 0034);
             # a keychain problem must never break saving settings, the status endpoint reports it
@@ -209,6 +212,16 @@ class SentientApp:
         self.bus.publish("config.updated", {"sections": list(self.config.model_dump().keys())})
         if moved:
             self._note_claude_code(moved)
+
+    def _carry_name_into_persona(self, previous: str, current: str) -> None:
+        """SOUL.md is written with the user's name (#552): when the name changes in settings, the persona follows it,
+        so a turn without memory never shows the old name. Only that name is replaced; the rest of the file stays."""
+        if not previous.strip() or previous.strip() == current.strip() or not self.workspace.soul.exists():
+            return
+        text = self.workspace.soul.read_text(encoding="utf-8")
+        updated = replace_name(text, previous, current.strip() or "the user")
+        if updated != text:
+            self.workspace.write("soul", updated)
 
     def _claude_code_switched(self) -> list[dict]:
         """Claude Code doing everything (#444, ADR 0032) was just turned off: move the roles still on it that refuse it
