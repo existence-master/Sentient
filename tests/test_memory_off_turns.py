@@ -211,3 +211,36 @@ async def test_a_script_gets_no_memory_tools_from_a_turn_without_memory(app):
     assert res["ok"], res
     assert str(res["result"]["got"]).startswith("refused") and not MEMORY_TOOLS & set(res["result"]["available"])
     assert "Anika" not in json.dumps(res)
+
+
+async def test_a_turn_without_memory_keeps_the_persona_but_not_the_users_name(app):
+    """SOUL.md is written with the name in it at onboarding (#552): without memory the prompt says "the user"."""
+    from sentient.memory.personas import render_persona
+
+    app.workspace.write("soul", render_persona("professional", name="Sentient", user="Maya"))
+    sid = await _private_chat(app)
+    app.fake.replies.append("Hello.")
+    await _turn(app, sid, "what's my name?")
+    private = app.fake.calls[0]["messages"][0]["content"]
+    assert "Maya" not in private
+    assert "the user's chief of staff" in private  # the persona stays
+
+    sid = await app.store.create_session(channel="desktop")
+    app.fake.replies.append("Hello.")
+    await _turn(app, sid, "hi")
+    assert "Maya's chief of staff" in app.fake.calls[-1]["messages"][0]["content"]  # a normal chat still has it
+
+
+async def test_the_v1_api_without_memory_does_not_reveal_the_name_from_soul(app):
+    app.config.openai_api.allow_memory = False
+    assert "Maya" in app.workspace.snapshot()["soul"]  # the default persona names the user
+    prompt = await app.agent.system_prompt("what's my name?", "api")
+    assert "Maya" not in prompt
+
+
+def test_without_name_replaces_whole_words_in_any_case():
+    from sentient.agent.prompt import without_name
+
+    assert without_name("Maya's bot. MAYA and Mayan.", "Maya") == "the user's bot. the user and Mayan."
+    assert without_name("Dr. Maya Rao's bot", "Maya Rao") == "Dr. the user's bot"
+    assert without_name("unchanged", "") == "unchanged"

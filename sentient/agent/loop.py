@@ -56,7 +56,7 @@ from sentient.agent import incognito as incognito_outputs
 from sentient.agent import undo as undo_rules
 from sentient.agent.approvals import ApprovalBroker
 from sentient.agent.chat_rules import WAIT_S, pending_asks, standing_text
-from sentient.agent.prompt import build_system_prompt, frame_api_request, mark_outside
+from sentient.agent.prompt import build_system_prompt, frame_api_request, mark_outside, without_name
 from sentient.agent.sources import AnswerSources
 from sentient.agent.toolselect import ToolSelector, is_local_model
 from sentient.app_names import clean_app_name, framed_app_name
@@ -794,8 +794,11 @@ class Agent:
         sources.add_facts(facts)
         sources.add_insights(insights)
         snapshot = self.workspace.snapshot()
-        if not reads_memory:  # only the persona: no profile, memory file or daily notes
-            snapshot = {k: (v if k == "soul" else "") for k, v in snapshot.items()}
+        if not reads_memory:  # only the persona, without the user's name: no profile, memory file or daily notes (#552)
+            snapshot = {
+                k: (without_name(v, self.config.assistant.user_name) if k == "soul" else "")
+                for k, v in snapshot.items()
+            }
         elif not personal:  # MEMORY.md, daily notes and USER.md's learned facts come from personal memories (#155)
             snapshot = {
                 **snapshot, "memory": "", "today": "", "yesterday": "",
