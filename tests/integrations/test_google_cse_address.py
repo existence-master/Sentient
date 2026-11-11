@@ -55,6 +55,47 @@ async def test_connect_with_base_url_checks_it_and_stores_it():
     assert creds == {"api_key": "k", "cx": "cx1", "base_url": OTHER}
 
 
+@respx.mock
+async def test_search_keeps_the_query_already_in_base_url():
+    route = respx.get(OTHER).mock(return_value=httpx.Response(200, json=ITEMS))
+    await google_cse_search("k", "cx1", "sentient", 3, OTHER + "?tenant=abc")
+    params = route.calls.last.request.url.params
+    assert (params["tenant"], params["cx"], params["q"]) == ("abc", "cx1", "sentient")
+
+
+@respx.mock
+async def test_connect_keeps_the_query_already_in_base_url():
+    route = respx.get(OTHER).mock(return_value=httpx.Response(200, json=ITEMS))
+    creds, _ = await GoogleCSEPlugin().validate({"api_key": "k", "cx": "cx1", "base_url": OTHER + "?tenant=abc"}, None)
+    params = route.calls.last.request.url.params
+    assert (params["tenant"], params["cx"]) == ("abc", "cx1")
+    assert creds["base_url"] == OTHER + "?tenant=abc"
+
+
+@respx.mock
+async def test_connect_rejects_a_malformed_address():
+    with pytest.raises(IntegrationError):
+        await GoogleCSEPlugin().validate({"api_key": "k", "cx": "cx1", "base_url": "https://example.test:notaport"}, None)
+
+
+@respx.mock
+async def test_connect_reports_an_unreachable_address_as_an_integration_error():
+    respx.get(OTHER).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(IntegrationError):
+        await GoogleCSEPlugin().validate({"api_key": "k", "cx": "cx1", "base_url": OTHER}, None)
+
+
+@pytest.mark.parametrize("answer", [
+    httpx.Response(200, text="<html>Sign in</html>", headers={"Content-Type": "text/html"}),
+    httpx.Response(200, json=[1, 2]),
+])
+@respx.mock
+async def test_connect_rejects_an_address_that_does_not_answer_with_a_json_object(answer):
+    respx.get(OTHER).mock(return_value=answer)
+    with pytest.raises(IntegrationError):
+        await GoogleCSEPlugin().validate({"api_key": "k", "cx": "cx1", "base_url": OTHER}, None)
+
+
 async def test_connect_rejects_a_non_http_address():
     with pytest.raises(IntegrationError):
         await GoogleCSEPlugin().validate({"api_key": "k", "cx": "cx1", "base_url": "file:///etc/passwd"}, None)

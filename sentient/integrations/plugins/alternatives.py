@@ -8,7 +8,7 @@ import httpx
 
 from sentient.integrations.base import IntegrationError, IntegrationPlugin, SetupField
 from sentient.integrations.common import http_client
-from sentient.integrations.plugins.search import GOOGLE_CSE_URL
+from sentient.integrations.plugins.search import google_cse_url
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.integrations.service import IntegrationManager
@@ -147,11 +147,24 @@ class GoogleCSEPlugin(IntegrationPlugin):
         base_url = str(fields.get("base_url", "")).strip()
         if base_url and not base_url.lower().startswith(("http://", "https://")):
             raise IntegrationError("The API address has to start with http:// or https://.")
-        async with http_client() as http:
-            r = await http.get(base_url or GOOGLE_CSE_URL, params={"key": key, "cx": cx, "q": "test", "num": 1})
+        try:
+            async with http_client() as http:
+                r = await http.get(google_cse_url(base_url, {"key": key, "cx": cx, "q": "test", "num": 1}))
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            if not base_url:
+                raise
+            raise IntegrationError("Couldn't reach the API address. Check it and try again.") from exc
         if r.status_code == 400:
             raise IntegrationError("Google didn't accept the search engine ID. Check the 'cx' value.")
         _rejected(r, "Google Custom Search")
+        if base_url:
+            try:
+                body = r.json()
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                raise IntegrationError("The API address didn't answer in the Custom Search JSON format. "
+                                       "Check the address.")
         creds = {"api_key": key, "cx": cx}
         if base_url:
             creds["base_url"] = base_url
