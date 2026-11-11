@@ -11,6 +11,8 @@ from sentient.tools.base import ToolContext
 
 log = logging.getLogger(__name__)
 
+GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
+
 
 def _ddg_sync(query: str, n: int, region: str) -> list[dict]:
     from ddgs import DDGS
@@ -36,9 +38,9 @@ async def brave_search(key: str, query: str, n: int) -> list[dict]:
     return [{"title": x.get("title"), "url": x.get("url"), "snippet": x.get("description")} for x in rows]
 
 
-async def google_cse_search(key: str, cx: str, query: str, n: int) -> list[dict]:
+async def google_cse_search(key: str, cx: str, query: str, n: int, base_url: str = "") -> list[dict]:
     async with http_client() as http:
-        r = await http.get("https://www.googleapis.com/customsearch/v1",
+        r = await http.get(base_url or GOOGLE_CSE_URL,
                            params={"key": key, "cx": cx, "q": query, "num": min(n, 10)})
     r.raise_for_status()
     rows = r.json().get("items") or []
@@ -72,7 +74,7 @@ async def web_search(ctx: ToolContext, query: str, max_results: int = 8) -> dict
     elif provider == "google_cse":
         c = await mgr.get_credentials("google_cse") if await mgr.is_connected("google_cse") else None
         if c and c.get("api_key") and c.get("cx"):
-            results = await google_cse_search(c["api_key"], c["cx"], query, n)
+            results = await google_cse_search(c["api_key"], c["cx"], query, n, c.get("base_url", ""))
         else:
             note = "Google Custom Search isn't connected; used DuckDuckGo instead."
     elif provider == "searxng":
