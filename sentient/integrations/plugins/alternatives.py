@@ -8,6 +8,7 @@ import httpx
 
 from sentient.integrations.base import IntegrationError, IntegrationPlugin, SetupField
 from sentient.integrations.common import http_client
+from sentient.integrations.plugins.search import google_cse_url
 
 if TYPE_CHECKING:  # pragma: no cover
     from sentient.integrations.service import IntegrationManager
@@ -126,6 +127,9 @@ class GoogleCSEPlugin(IntegrationPlugin):
     setup_fields = [
         SetupField("api_key", "API key", secret=True, help="Google Cloud Console → APIs & Services → Credentials."),
         SetupField("cx", "Search engine ID", secret=False, help="From programmablesearchengine.google.com (the 'cx' value)."),
+        SetupField("base_url", "API address", required=False, placeholder="https://www.googleapis.com/customsearch/v1",
+                   help="Optional. Leave empty to use Google. Set it only for a service that answers in the "
+                        "Custom Search JSON format."),
     ]
     docs_url = "https://developers.google.com/custom-search/v1/overview"
     instructions_md = (
@@ -140,12 +144,31 @@ class GoogleCSEPlugin(IntegrationPlugin):
 
     async def validate(self, fields: dict[str, str], mgr: IntegrationManager) -> tuple[dict, str | None]:
         key, cx = _require(fields, "api_key", "cx")
-        async with http_client() as http:
-            r = await http.get("https://www.googleapis.com/customsearch/v1", params={"key": key, "cx": cx, "q": "test", "num": 1})
+        base_url = str(fields.get("base_url", "")).strip()
+        if base_url and not base_url.lower().startswith(("http://", "https://")):
+            raise IntegrationError("The API address has to start with http:// or https://.")
+        try:
+            async with http_client() as http:
+                r = await http.get(google_cse_url(base_url, {"key": key, "cx": cx, "q": "test", "num": 1}))
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            if not base_url:
+                raise
+            raise IntegrationError("Couldn't reach the API address. Check it and try again.") from exc
         if r.status_code == 400:
             raise IntegrationError("Google didn't accept the search engine ID. Check the 'cx' value.")
         _rejected(r, "Google Custom Search")
-        return {"api_key": key, "cx": cx}, None
+        if base_url:
+            try:
+                body = r.json()
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                raise IntegrationError("The API address didn't answer in the Custom Search JSON format. "
+                                       "Check the address.")
+        creds = {"api_key": key, "cx": cx}
+        if base_url:
+            creds["base_url"] = base_url
+        return creds, None
 
 
 class GoogleMapsPlugin(IntegrationPlugin):

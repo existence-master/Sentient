@@ -5,11 +5,21 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import httpx
+
 from sentient.integrations.base import IntegrationError, IntegrationPlugin, itool, manager_from
 from sentient.integrations.common import http_client
 from sentient.tools.base import ToolContext
 
 log = logging.getLogger(__name__)
+
+GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
+
+
+def google_cse_url(base_url: str, params: dict) -> httpx.URL:
+    """The address to call with the search parameters added to any it already has (httpx's ``params=`` would
+    replace a query such as ``?tenant=abc`` in a custom address)."""
+    return httpx.URL(base_url or GOOGLE_CSE_URL).copy_merge_params(params)
 
 
 def _ddg_sync(query: str, n: int, region: str) -> list[dict]:
@@ -36,10 +46,9 @@ async def brave_search(key: str, query: str, n: int) -> list[dict]:
     return [{"title": x.get("title"), "url": x.get("url"), "snippet": x.get("description")} for x in rows]
 
 
-async def google_cse_search(key: str, cx: str, query: str, n: int) -> list[dict]:
+async def google_cse_search(key: str, cx: str, query: str, n: int, base_url: str = "") -> list[dict]:
     async with http_client() as http:
-        r = await http.get("https://www.googleapis.com/customsearch/v1",
-                           params={"key": key, "cx": cx, "q": query, "num": min(n, 10)})
+        r = await http.get(google_cse_url(base_url, {"key": key, "cx": cx, "q": query, "num": min(n, 10)}))
     r.raise_for_status()
     rows = r.json().get("items") or []
     return [{"title": x.get("title"), "url": x.get("link"), "snippet": x.get("snippet")} for x in rows]
@@ -72,7 +81,7 @@ async def web_search(ctx: ToolContext, query: str, max_results: int = 8) -> dict
     elif provider == "google_cse":
         c = await mgr.get_credentials("google_cse") if await mgr.is_connected("google_cse") else None
         if c and c.get("api_key") and c.get("cx"):
-            results = await google_cse_search(c["api_key"], c["cx"], query, n)
+            results = await google_cse_search(c["api_key"], c["cx"], query, n, c.get("base_url", ""))
         else:
             note = "Google Custom Search isn't connected; used DuckDuckGo instead."
     elif provider == "searxng":
