@@ -2993,7 +2993,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   certificate, SHA-256 fingerprint pinned by devices) devices authenticate with `token` or `pair_code` in `hello`; the gateway
   token is refused there. The LAN listener serves only `/ws/node`, `/ws/voice`, `/node/` and `POST /api/nodes/upload`, and is
   announced over mDNS as `_sentient._tcp.local.` (TXT `version`, `protocol`, `fingerprint`, `port`, `path`, `tls`) when `nodes.mdns_enabled`.
-- node → server `hello` `{protocol: 1, name, kind: "phone"|"glasses"|"desktop"|"watch"|"custom", platform, app_version, capabilities: [string], token?, pair_code?, state?}`;
+- node → server `hello` `{protocol: 1, name, kind: "phone"|"glasses"|"desktop"|"watch"|"custom", platform, app_version, capabilities: [string], token?, pair_code?, state?, subscribe?}`;
   server → node `welcome` `{protocol: 1, node_id, name, assistant, server_version, keepalive_s, idle_timeout_s, token?}` (`token` only on first
   pairing; the node stores it; `stopped` is true while Stop everything is on, section 17) or `error` `{code, message}` then close. Codes (close code): `pairing_required`, `bad_token`, `bad_code`,
   `revoked` (4401), `rate_limited` (4429, 5 wrong codes per minute per address), `disabled` (4403), `protocol` (4400), `replaced` (4409, the
@@ -3015,7 +3015,8 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   (and to the sender when it did not change). Devices that do not show it can ignore it.
 - `hello` may carry `subscribe: ["tasks"]`; such a device gets server → node `tasks` `{running: [{id, name, status,
   activity}]}` after `welcome` and after task changes (coalesced over 0.5 s): the tasks that are `processing` or
-  `waiting_for_user`, with their latest step in words (#182, docs/NODES.md §4.7). The phone page and the tray use it.
+  `waiting_for_user`, with their latest step in plain words (#182, docs/NODES.md §4.7). The web device app and the
+  desktop tray use it.
 - Voice from a device: `WS /ws/voice?node_token=<token>` with `start` `{channel: "glasses"|"phone", sample_rate, audio_format?: "wav"|"pcm16"}`.
   On the LAN listener the node token is verified before the voice socket runs.
 - Pairing: `POST /api/nodes/pairing` `{replaces?: string}` → `{code, expires_at, lan_enabled, urls: [string], web_url, fingerprint, qr: "sentient://pair?url=...&code=...&fp=...", qr_svg}`
@@ -3186,15 +3187,15 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `reply_to_message.message_id`, Discord `message_reference.message_id`) is the answer to that question: it goes to
   `app.tasks.answer_question`, the chat gets "Thanks! I passed your answer to '<task>'. It's carrying on now." and no chat
   turn starts. A reply to a question that was already answered or cancelled gets "That question has already been
-  handled, so I didn't pass this on." A reply to any other message of the same task's thread (below) answers the question
-  that task is waiting on the same way; approvals are still answered only from the message that carried them. Every
-  other message, including replies to other messages, is normal chat, however many questions are waiting. Question
-  buttons settle to "Answered: <answer>" or "Cancelled" when the question is handled anywhere. `Incoming.reply_to`
-  carries the replied-to message id for every channel.
+  handled, so I didn't pass this on." A reply to any other message in a task's thread (below) is handled the same way:
+  it answers the question that task is waiting on. Approvals are still answered only from the message that carried
+  them. Every other message, including replies to other messages, is normal chat, however many questions are
+  waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is handled anywhere.
+  `Incoming.reply_to` carries the replied-to message id for every channel.
 - Task threads (#182): a task's notifications in a chat reply to the first one it sent there (Telegram
-  `reply_parameters`, Discord `message_reference`, both still sent if that message was deleted), so each task reads as
-  its own thread. The ids are stored per chat in SQLite (`channel_task_messages`, kept 90 days). WhatsApp messages
-  don't thread.
+  `reply_parameters`, Discord `message_reference`; the reply still goes out if that first message was deleted), so each
+  task reads as its own thread. The ids of a task's messages are stored per chat in SQLite (`channel_task_messages`,
+  kept 90 days). WhatsApp messages are not threaded.
 - **WhatsApp** (ADR 0020): Sentient is a linked device on the user's own account, through a WhatsApp Web bridge in
   the engine (neonize, the optional `whatsapp` extra, included in installers). There is no token and no setup field.
   - `POST /api/channels/whatsapp/connect` `{fields: {}}` → `Channel` with `status: "linking"` (or `connecting` when a

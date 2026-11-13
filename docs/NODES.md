@@ -178,8 +178,8 @@ being taken ends with `code: "stopped"` and is never saved. The desktop app alon
 (the full list, for its tray); other devices never do.
 
 ### 4.7 Running tasks
-A device that sent `"subscribe": ["tasks"]` in `hello` gets, right after `welcome` and again after task changes
-(several changes within half a second go out as one message),
+A device that sent `"subscribe": ["tasks"]` in `hello` gets this message right after `welcome`, and again whenever a
+task changes (several changes within half a second go out as one message):
 
 ```json
 {"type": "tasks", "running": [
@@ -188,8 +188,9 @@ A device that sent `"subscribe": ["tasks"]` in `hello` gets, right after `welcom
 ```
 
 `running` holds every task that is running (`processing`) or waiting for the user's answer (`waiting_for_user`), and
-is empty when none is. `activity` is the task's latest step in a few words (a tool it is using, or a short note), or
-null before its first one. The phone page and the desktop app's tray subscribe; devices that do not never receive it.
+is empty when there are none. `activity` is the task's latest step in a few words (a tool it is using, or a short
+note), or null before its first step. The web app and the desktop app's tray subscribe; other devices never receive
+it.
 
 ## 5. Capabilities
 
