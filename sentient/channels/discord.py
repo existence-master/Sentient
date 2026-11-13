@@ -411,10 +411,14 @@ class DiscordChannel(Channel):
             for row in (buttons or [])[:5]
         ]
 
-    async def send_chunk(self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> str:
+    async def send_chunk(
+        self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None, reply_to: str | None = None
+    ) -> str:
         body: dict[str, Any] = {"content": chunk, "allowed_mentions": {"parse": []}}
         if buttons:
             body["components"] = self._components(buttons)
+        if reply_to:  # still sent if that message was deleted
+            body["message_reference"] = {"message_id": reply_to, "fail_if_not_exists": False}
         m = await self.api("POST", f"/channels/{chat_id}/messages", json=body)
         return str(m.get("id"))
 

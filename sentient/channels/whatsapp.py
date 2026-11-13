@@ -408,10 +408,12 @@ class WhatsAppChannel(Channel):
             raise ChannelError("WhatsApp isn't connected right now.", 409)
         return self.bridge
 
-    async def send_markdown(self, chat_id: str, md: str, buttons: list[list[Button]] | None = None) -> list[str]:
+    async def send_markdown(
+        self, chat_id: str, md: str, buttons: list[list[Button]] | None = None, reply_to: str | None = None
+    ) -> list[str]:
         if buttons:
             md = md.replace("Tap an option, or reply", "Reply with an option's number, or reply")
-        return await super().send_markdown(chat_id, md, buttons)
+        return await super().send_markdown(chat_id, md, buttons, reply_to)
 
     def _signed(self, chat_id: str, text: str) -> str:
         """In the self chat every message shows as the user's own, so Sentient's start with its name."""
@@ -419,7 +421,10 @@ class WhatsAppChannel(Channel):
             return text
         return f"*{self.app.config.assistant.name}:* {text}"
 
-    async def send_chunk(self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> str:
+    async def send_chunk(
+        self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None, reply_to: str | None = None
+    ) -> str:
+        # the bridge sends plain messages, so a task's WhatsApp messages don't thread (``reply_to`` is unused)
         text = self._signed(chat_id, chunk + (self._options_text(buttons) if buttons else ""))
         message_id = self._track(await self._bridge().send_text(chat_id, text))
         if buttons:

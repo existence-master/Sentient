@@ -619,14 +619,21 @@ class ChannelService(Service):
             reason = "reminder" if chosen else "reminder_copy"  # its own chat, or a copy for the delivery chats
         else:
             reason = "chosen" if chosen else "default"
+        payload = note.get("payload") or {}
+        # a task's messages reply to its first one in each chat, so every task reads as its own thread (#182)
+        thread_task = str(payload.get("task_id") or note.get("task_id") or "") if note.get("kind") == "task" else ""
         for ch, chat in targets:
             if subagent_id:
                 key = (str(subagent_id), ch.id, chat["chat_id"])
                 if key in self._subagents_sent:
                     continue
                 self._subagents_sent.add(key)
+            root = None
+            if thread_task:
+                with contextlib.suppress(Exception):  # without its thread the message still goes out
+                    root = await self.store.task_thread(ch.id, chat["chat_id"], thread_task)
             try:
-                ids = await ch.send_markdown(chat["chat_id"], md, buttons)
+                ids = await ch.send_markdown(chat["chat_id"], md, buttons, reply_to=root)
             except Exception as exc:
                 log.warning("delivering to %s failed: %s", ch.id, ch.redact(str(exc)))
                 await self.record_delivery(ch, chat, md, what=what, reason=reason, ref=ref,
@@ -634,7 +641,11 @@ class ChannelService(Service):
                 continue
             sent += 1
             ch.publish_message(chat["chat_id"], None, "out", md)
-            payload = note.get("payload") or {}
+            if thread_task and ids:
+                try:
+                    await self.store.add_task_messages(ch.id, chat["chat_id"], [str(i) for i in ids], task_id=thread_task)
+                except Exception:
+                    log.exception("could not remember the task's message")
             if note.get("kind") == "task" and payload.get("event") == "question" and ids:
                 try:  # persisted, so a reply still answers the question after a restart
                     await self.store.add_question(
@@ -851,26 +862,33 @@ class ChannelService(Service):
         await ch.settle_buttons(chat_id, message_id, outcome)
         return outcome
 
-    async def _waiting_question(self, run_id: str) -> dict | None:
+    async def _waiting_question(self, run_id: str | None = None, *, task_id: str | None = None) -> dict | None:
+        """The question a run is waiting on, or with ``task_id`` the one its task is waiting on (#182). By task,
+        approvals stay out: they're answered only from the message that carried them (#139)."""
         fn = getattr(self.app.tasks, "waiting_questions", None)
         if fn is None:
             return None
         with contextlib.suppress(Exception):
             for q in await fn():
-                if q.get("run_id") == run_id:
+                if (q.get("run_id") == run_id) if task_id is None else (q.get("task_id") == task_id and q.get("kind") != "approval"):
                     return q
         return None
 
     async def answer_reply(self, ch: Channel, chat: dict, reply_to: str, text: str) -> bool:
-        """A message that replies to a delivered task question is the answer to that question.
+        """A message that replies to a delivered task question is the answer to that question, and so is a reply
+        to any other message of that task's thread while the task waits on a question (#182).
 
-        Returns True when ``reply_to`` is one of this chat's question messages (answered now, or already
-        handled); False for a reply to anything else, which is then normal chat.
+        Returns True when the reply answered (or was matched to an already handled) question; False for a reply
+        to anything else, which is then normal chat.
         """
         chat_id = str(chat["chat_id"])
         found = await self.store.question_for(ch.id, chat_id, str(reply_to))
         if found is None:
-            return False
+            task_id = await self.store.task_for_message(ch.id, chat_id, str(reply_to))
+            waiting = await self._waiting_question(task_id=task_id) if task_id else None
+            if waiting is None:
+                return False
+            found = {"task_id": task_id, "run_id": waiting["run_id"], "request": request_stamp(waiting)}
         ch.publish_message(chat_id, chat.get("session_id"), "in", text)
         waiting = await self._waiting_question(found["run_id"])
         if waiting is None:
