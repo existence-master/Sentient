@@ -29,7 +29,7 @@ function clip(text: string): string {
 
 /** One menu line: the task's name, then what it is doing or that it waits for an answer. */
 export function runningTaskLabel(t: RunningTask): string {
-  const doing = t.status === 'waiting_for_user' ? 'waiting for your answer' : (t.activity ?? 'running')
+  const doing = t.status === 'waiting_for_user' ? 'Waiting for your answer' : (t.activity ?? 'Running')
   return clip(`${t.name}: ${doing}`)
 }
 

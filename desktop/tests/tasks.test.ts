@@ -23,10 +23,10 @@ test('the engine list is read defensively', () => {
 
 test('a menu line says what the task is doing, or that it waits for an answer', () => {
   assert.equal(runningTaskLabel({ id: 'a', name: 'Book a flight', status: 'processing', activity: 'Using Gmail' }), 'Book a flight: Using Gmail')
-  assert.equal(runningTaskLabel({ id: 'a', name: 'Book a flight', status: 'processing', activity: null }), 'Book a flight: running')
+  assert.equal(runningTaskLabel({ id: 'a', name: 'Book a flight', status: 'processing', activity: null }), 'Book a flight: Running')
   assert.equal(
     runningTaskLabel({ id: 'a', name: 'Book a flight', status: 'waiting_for_user', activity: 'Using Gmail' }),
-    'Book a flight: waiting for your answer'
+    'Book a flight: Waiting for your answer'
   )
   const long = runningTaskLabel({ id: 'a', name: 'x'.repeat(80), status: 'processing', activity: null })
   assert.equal(long.length, 60)
