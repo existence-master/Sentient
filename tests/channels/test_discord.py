@@ -222,6 +222,17 @@ async def test_reply_reference_is_parsed(dc):
     assert [m.reply_to for m in seen] == ["q77", None]
 
 
+async def test_a_task_message_replies_to_its_thread(dc):
+    """#182: every chunk of a task's message references the thread's first message, even if it was deleted."""
+    _app, ch, api = dc
+    ids = await ch.send_markdown("dm1", "word " * 1000, reply_to="m1")  # over Discord's 2000 characters
+    posts = [b for m, p, b in api.calls if m == "POST" and p == "/channels/dm1/messages"]
+    assert len(ids) > 1 and len(posts) == len(ids)
+    assert all(b["message_reference"] == {"message_id": "m1", "fail_if_not_exists": False} for b in posts)
+    await ch.send_markdown("dm1", "Just chatting")
+    assert "message_reference" not in api.calls[-1][2]
+
+
 async def test_server_channel_pairs_with_a_mention_and_only_its_owner_talks(dc, llm):
     """A server channel (ADR 0029): paired by mentioning the bot; other people's messages are outside content."""
     app, ch, api = dc
