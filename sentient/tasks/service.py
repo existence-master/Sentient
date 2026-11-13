@@ -641,6 +641,11 @@ class TaskService(Service):
     async def list(self) -> list[dict]:
         return await self.repo.serialize_many(await self.repo.list_tasks())
 
+    async def busy(self) -> list[dict]:
+        """Task rows that are running or waiting for the user, without their runs: cheap enough for every
+        running-tasks push to devices (#182)."""
+        return await self.repo.list_tasks("status IN (?, ?)", BUSY)
+
     async def search(self, query: str = "", status: str | None = None, limit: int = 20) -> list[dict]:
         q = (query or "").strip().lower()
         rows = [

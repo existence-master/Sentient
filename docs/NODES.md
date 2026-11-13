@@ -83,6 +83,8 @@ The first message after connecting, within 15 seconds.
 - `kind`: `phone` | `glasses` | `watch` | `custom` (`desktop` is reserved for the desktop app).
 - Exactly one of `token` / `pair_code` (a `pair_code` is used if the token is rejected).
 - `state` is optional (same fields as §4.3).
+- `subscribe` is optional: a list of extra message types the device wants. `"tasks"` is the only one (§4.7); anything
+  else, or a value that is not a list, is ignored.
 
 ```json
 {"type": "welcome", "protocol": 1, "node_id": "9c1e0f3a2b4d6e71", "name": "Maya's glasses",
@@ -174,6 +176,21 @@ should drop the photo instead of sending it (the reference node and the glasses 
 stopped by the engine itself: the voice socket gets `{"type": "error", "code": "mic_stopped", ...}` and closes. A photo
 being taken ends with `code: "stopped"` and is never saved. The desktop app alone also receives `sensors` messages
 (the full list, for its tray); other devices never do.
+
+### 4.7 Running tasks
+A device that sent `"subscribe": ["tasks"]` in `hello` gets this message right after `welcome`, and again whenever a
+task changes (several changes within half a second go out as one message):
+
+```json
+{"type": "tasks", "running": [
+  {"id": "t1", "name": "Book a flight to Goa", "status": "processing", "activity": "Using web search"},
+  {"id": "t2", "name": "Find a hotel", "status": "waiting_for_user", "activity": null}]}
+```
+
+`running` holds every task that is running (`processing`) or waiting for the user's answer (`waiting_for_user`), and
+is empty when there are none. `activity` is the task's latest step in a few words (a tool it is using, or a short
+note), or null before its first step. The web app and the desktop app (for its tray) subscribe; a device that does not
+subscribe never receives `tasks`.
 
 ## 5. Capabilities
 

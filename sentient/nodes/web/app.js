@@ -283,6 +283,7 @@
         const hello = {
           type: "hello", protocol: 1, kind: "phone", platform: platform(), app_version: APP_VERSION,
           name: (this.pairing && this.pairing.name) || saved.name || "Phone", capabilities: capabilities(),
+          subscribe: ["tasks"], // #182 running tasks for the card on the home screen
         };
         if (this.pairing) hello.pair_code = this.pairing.code;
         else hello.token = saved.token;
@@ -293,6 +294,7 @@
         if (this.ws !== ws) return;
         this.ws = null;
         clearInterval(this.pingTimer);
+        renderTasks([]); // the list is unknown until the engine connects again
         $("pair-btn").disabled = false;
         if (this.halted) return;
         const secs = Math.round(this.retryMs / 1000);
@@ -333,6 +335,8 @@
         this.onInvoke(msg);
       } else if (msg.type === "stop_state") {
         setStopped(!!msg.stopped);
+      } else if (msg.type === "tasks") {
+        renderTasks(msg.running);
       }
     },
 
@@ -700,6 +704,23 @@
       $("device-name").focus();
     }
     return true;
+  }
+
+  // #182 tasks that are running or waiting for an answer, each with its latest step
+  function renderTasks(running) {
+    const tasks = Array.isArray(running) ? running : [];
+    $("tasks-list").replaceChildren(...tasks.map((t) => {
+      const item = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "task-name";
+      name.textContent = t.name || "Task";
+      const status = document.createElement("span");
+      status.className = "muted small";
+      status.textContent = t.status === "waiting_for_user" ? "Waiting for your answer" : t.activity || "Running";
+      item.append(name, status);
+      return item;
+    }));
+    $("tasks").hidden = tasks.length === 0;
   }
 
   // Stop everything (docs/NODES.md §4.5): one button that stops all of Sentient's work, then offers Resume.

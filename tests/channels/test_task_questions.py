@@ -8,7 +8,7 @@ import json
 import pytest
 
 from sentient.channels.service import OLDER_REQUEST, OLDER_REQUEST_REPLY, request_tag
-from tests.channels.conftest import callback, until
+from tests.channels.conftest import callback, eventually, until
 from tests.conftest import FakeProvider, tool_call
 
 FLIGHTS = ["IndiGo 6E 123", "Air India AI 456"]
@@ -113,7 +113,7 @@ async def test_reply_to_the_question_answers_it(tg, llm):
     msg = await _question_message(tg, "Which flight should I book?")
     assert msg["text"].endswith("<i>Tap an option, or reply to this message with your answer.</i>")
     # remembered in SQLite, so a reply still matches after a restart
-    sent = await tg.app.channels.store.question_for("telegram", "42", str(msg["_id"]))
+    sent = await eventually(lambda: tg.app.channels.store.question_for("telegram", "42", str(msg["_id"])))
     request_id = (await tg.app.tasks.repo.get_run(run_id))["pending_question"]["request_id"]
     assert sent == {"task_id": task_id, "run_id": run_id, "request": request_id}
     calls = len(llm.calls)

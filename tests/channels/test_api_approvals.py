@@ -74,8 +74,8 @@ async def test_settlement_during_send_is_processed_after_delivery_is_registered(
     sent, release = asyncio.Event(), asyncio.Event()
     send_markdown = tg.ch.send_markdown
 
-    async def delayed_send(chat_id, md, buttons=None):
-        message_ids = await send_markdown(chat_id, md, buttons)
+    async def delayed_send(chat_id, md, buttons=None, reply_to=None):
+        message_ids = await send_markdown(chat_id, md, buttons, reply_to)
         if "Approval needed" in md:
             sent.set()
             # The platform has the message, but deliver_notification has not registered its ID yet.

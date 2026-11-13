@@ -403,13 +403,17 @@ class TelegramChannel(Channel):
                 return await self.send_call(method, **params)
             raise
 
-    async def send_chunk(self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> str:
+    async def send_chunk(
+        self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None, reply_to: str | None = None
+    ) -> str:
         params: dict[str, Any] = {
             "chat_id": _chat(chat_id), "text": chunk, "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": True},
         }
         if buttons:
             params["reply_markup"] = self._keyboard(buttons)
+        if reply_to:  # still sent if that message was deleted
+            params["reply_parameters"] = {"message_id": int(reply_to), "allow_sending_without_reply": True}
         result = await self._with_plain_fallback("sendMessage", params)
         return str(result["message_id"])
 

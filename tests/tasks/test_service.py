@@ -353,3 +353,19 @@ async def test_task_tools(make_app):
     assert status["task"]["status"] == "approval_pending" and status["task"]["latest_run"] is None
     missing = await app.registry.get("get_task_status").call(ctx, {"task_id": "nope"})
     assert missing["status"] == "failure"
+
+
+async def test_busy_lists_only_running_and_waiting_tasks(make_app):
+    app = await make_app()
+    now = app.tasks.now_iso()
+    ids = {
+        status: await app.tasks.repo.insert_task({
+            "name": status, "description": "", "status": status, "schedule": {"type": "once", "run_at": None},
+            "created_at": now, "updated_at": now,
+        })
+        for status in ("processing", "waiting_for_user", "completed", "pending")
+    }
+    busy = await app.tasks.busy()
+    assert {t["id"]: t["status"] for t in busy} == {
+        ids["processing"]: "processing", ids["waiting_for_user"]: "waiting_for_user",
+    }

@@ -43,6 +43,18 @@ CREATE TABLE IF NOT EXISTS channel_questions (
     PRIMARY KEY (channel, chat_id, message_id)
 );
 
+-- Messages that delivered a task's notifications (#182): later ones for the task reply to the first, so each task
+-- reads as its own thread, and a reply to any of them answers the question the task is waiting on.
+CREATE TABLE IF NOT EXISTS channel_task_messages (
+    channel    TEXT NOT NULL,
+    chat_id    TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    task_id    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (channel, chat_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS channel_task_messages_task ON channel_task_messages (channel, chat_id, task_id);
+
 -- Notifications sent out to paired chats (#345): what went where, and whether it arrived. The Activity timeline
 -- shows them under "Messaging apps". ``ref`` is JSON naming the source item (a task, a chat or a notification).
 CREATE TABLE IF NOT EXISTS channel_deliveries (

@@ -317,7 +317,9 @@ class Channel:
     def render(self, md: str) -> list[str]:
         raise NotImplementedError
 
-    async def send_chunk(self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> str:
+    async def send_chunk(
+        self, chat_id: str, chunk: str, buttons: list[list[Button]] | None = None, reply_to: str | None = None
+    ) -> str:
         raise NotImplementedError
 
     async def edit_chunk(self, chat_id: str, message_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> None:
@@ -409,12 +411,15 @@ class Channel:
         return re.sub(r"bot\d+:[A-Za-z0-9_-]{20,}", "bot<token>", text)
 
     # ------------------------------------------------------------------ sending helpers
-    async def send_markdown(self, chat_id: str, md: str, buttons: list[list[Button]] | None = None) -> list[str]:
+    async def send_markdown(
+        self, chat_id: str, md: str, buttons: list[list[Button]] | None = None, reply_to: str | None = None
+    ) -> list[str]:
+        """``reply_to``: a message id every chunk replies to (a task's thread, #182)."""
         chunks = self.render(md) or self.render("(empty)")
         ids: list[str] = []
         for i, chunk in enumerate(chunks):
             last = i == len(chunks) - 1
-            ids.append(await self.send_chunk(chat_id, chunk, buttons if last else None))
+            ids.append(await self.send_chunk(chat_id, chunk, buttons if last else None, reply_to))
         if buttons and ids:
             self._button_text[(str(chat_id), ids[-1])] = md
         return ids

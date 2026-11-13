@@ -16,6 +16,7 @@ import { hostname } from 'node:os'
 import { join } from 'node:path'
 import type { DesktopNodeState, ShellPrefs } from '../../src/types/bridge'
 import { parseSensors, type LiveSensors } from './sensors-logic'
+import { parseRunningTasks, type RunningTask } from './tasks-logic'
 
 const CAPABILITIES = ['screen.capture', 'camera.photo', 'clipboard.read', 'clipboard.write', 'notify.show'] as const
 const PING_MS = 25_000
@@ -55,6 +56,8 @@ export interface DesktopNodeHost {
   onStopState?(stopped: boolean): void
   /** #170: every live microphone and camera (`sensors`); null while the engine is not connected. */
   onSensors?(state: LiveSensors | null): void
+  /** #182: the tasks running or waiting for an answer (`tasks`); empty while the engine is not connected. */
+  onTasks?(tasks: RunningTask[]): void
   /** #170: the indicator's Turn off for push to talk or dictation on this computer (`stop_sensor`). */
   onStopSensor?(sensor: 'mic' | 'camera'): void
   icon: string
@@ -116,6 +119,7 @@ export class DesktopNode {
     this.teardown()
     this.setState('off')
     this.host.onSensors?.(null)
+    this.host.onTasks?.([])
   }
 
   /** #170 Tell the engine this computer's microphone is on (push to talk, dictation) or off again. */
@@ -156,7 +160,8 @@ export class DesktopNode {
         kind: 'desktop',
         platform: process.platform,
         app_version: app.getVersion(),
-        capabilities: [...CAPABILITIES]
+        capabilities: [...CAPABILITIES],
+        subscribe: ['tasks'] // #182 running tasks for the tray
       })
       this.startPing()
     }
@@ -184,6 +189,9 @@ export class DesktopNode {
         case 'sensors':
           this.host.onSensors?.(parseSensors(msg))
           break
+        case 'tasks':
+          this.host.onTasks?.(parseRunningTasks(msg))
+          break
         case 'stop_sensor':
           if (msg.sensor === 'mic' || msg.sensor === 'camera') this.host.onStopSensor?.(msg.sensor)
           break
@@ -207,6 +215,7 @@ export class DesktopNode {
       this.stopPing()
       this.ws = null
       this.host.onSensors?.(null) // the engine's list is unknown until it connects again
+      this.host.onTasks?.([])
       if (!welcomed) this.failuresWithoutWelcome++
       if (this.stopped) return
       // An engine without /ws/node closes before welcoming: say so, keep retrying slowly.
