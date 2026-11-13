@@ -1,5 +1,6 @@
 """Running tasks reach the devices that subscribe to them: the phone page and the tray (#182, docs/NODES.md §4.7)."""
 
+import asyncio
 import time
 
 from sentient.nodes.service import TASKS_COALESCE_S
@@ -102,3 +103,36 @@ async def _read(tasks):
     if tasks is None:
         raise RuntimeError("database is locked")
     return tasks
+
+
+def test_a_timed_out_list_is_sent_once_more_only_while_it_is_the_newest(nodes_client, monkeypatch):
+    monkeypatch.setattr("sentient.nodes.service.TASKS_SEND_S", 0.05)
+    monkeypatch.setattr("sentient.nodes.service.TASKS_RETRY_S", 0.05)
+    client = nodes_client()
+
+    class SlowOnce:
+        """A device that misses the deadline on its first send."""
+        closed = False
+
+        def __init__(self):
+            self.latest_tasks = None
+            self.delivered = []
+
+        async def send(self, message):
+            if not self.delivered and not getattr(self, "slowed", False):
+                self.slowed = True
+                await asyncio.sleep(1)
+            self.delivered.append(message)
+
+    async def run(newer: bool):
+        conn, message = SlowOnce(), {"type": "tasks", "running": []}
+        conn.latest_tasks = message
+        sending = asyncio.create_task(client.core.nodes._send_tasks(conn, message))
+        if newer:
+            await asyncio.sleep(0.07)
+            conn.latest_tasks = {"type": "tasks", "running": [{"id": "t1"}]}
+        await sending
+        return conn.delivered
+
+    assert client.portal.call(run, False) == [{"type": "tasks", "running": []}]
+    assert client.portal.call(run, True) == []  # the newer list carries the update instead

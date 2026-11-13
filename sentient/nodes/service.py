@@ -115,6 +115,7 @@ class NodeConnection:
     mic_for: str = ""
     camera_for: str = ""
     subscribe: frozenset[str] = frozenset()  # extra messages the device asked for in hello (#182)
+    latest_tasks: dict | None = None  # the newest running-tasks list sent to this device
     photos: set[str] = field(default_factory=set)  # camera.photo invokes in flight (each shown as its own use)
     last_seen_write: float = 0.0
     closed: bool = False
@@ -319,6 +320,7 @@ class NodeService(Service):
                         continue
                     # not awaited, so a slow device holds up no other; its send lock keeps the order, so the latest list lands last
                     for conn in targets:
+                        conn.latest_tasks = message
                         task = asyncio.get_running_loop().create_task(self._send_tasks(conn, message), name="nodes:tasks")
                         self._sends.add(task)
                         task.add_done_callback(self._sends.discard)
@@ -736,8 +738,18 @@ class NodeService(Service):
         await asyncio.gather(*(one(c) for c in list(self._conns.values())))
 
     async def _send_tasks(self, conn: NodeConnection, message: dict) -> None:
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(conn.send(message), TASKS_SEND_S)
+        """Send a running-tasks list within a deadline. One that timed out goes once more a little later while it
+        is still the newest, so a device that was slow for a moment doesn't keep showing a finished task."""
+        for attempt in range(2):
+            try:
+                await asyncio.wait_for(conn.send(message), TASKS_SEND_S)
+                return
+            except Exception:
+                if attempt or conn.closed:
+                    return
+            await asyncio.sleep(TASKS_RETRY_S)
+            if conn.latest_tasks is not message:
+                return  # a newer list is already on its way
 
     async def _safe_send(self, conn: NodeConnection, obj: dict) -> None:
         with contextlib.suppress(Exception):
