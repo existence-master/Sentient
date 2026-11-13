@@ -189,7 +189,7 @@ task changes (several changes within half a second go out as one message):
 
 `running` holds every task that is running (`processing`) or waiting for the user's answer (`waiting_for_user`), and
 is empty when there are none. `activity` is the task's latest step in a few words (a tool it is using, or a short
-note), or null before its first step. The web app and the desktop app (for its tray) subscribe; a device that doesn't
+note), or null before its first step. The web app and the desktop app (for its tray) subscribe; a device that does not
 subscribe never receives `tasks`.
 
 ## 5. Capabilities

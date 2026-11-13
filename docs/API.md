@@ -3188,8 +3188,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `app.tasks.answer_question`, the chat gets "Thanks! I passed your answer to '<task>'. It's carrying on now." and no chat
   turn starts. A reply to any other message in a task's thread (below) also answers the question that task is waiting
   on. Approvals are still answered only from the message that carried them. A reply to a question that was already
-  answered or cancelled gets "That question has already been handled, so I didn't pass this on." Every other message, including replies to other messages, is normal chat, however many questions are
-  waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is handled anywhere.
+  answered or cancelled gets "That question has already been handled, so I didn't pass this on." Every other message,
+  including a reply to a message outside a task's thread, is normal chat, however many questions are waiting.
+  Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is handled anywhere.
   `Incoming.reply_to` carries the replied-to message id for every channel.
 - Task threads (#182): a task's notifications in a chat reply to the first one it sent there (Telegram
   `reply_parameters`, Discord `message_reference`; the reply still goes out if that first message was deleted), so each
