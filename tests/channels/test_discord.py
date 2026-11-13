@@ -23,6 +23,7 @@ class FakeDiscordAPI:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, Any]] = []
         self.ids = itertools.count(1)
+        self.refuse_replies = False  # as if the bot lacked Read Message History
 
     def mount(self, router: respx.MockRouter) -> None:
         router.route(host="discord.com").mock(side_effect=self.handle)
@@ -37,6 +38,9 @@ class FakeDiscordAPI:
                 return httpx.Response(401, json={"message": "401: Unauthorized", "code": 0})
             return httpx.Response(200, json={"id": "900", "username": "sentient", "bot": True})
         if request.method == "POST" and path.endswith("/messages"):
+            if self.refuse_replies and body and "message_reference" in body:
+                return httpx.Response(403, json={"message": "Cannot reply without permission to read message history",
+                                                 "code": 160002})
             return httpx.Response(200, json={"id": f"m{next(self.ids)}"})
         if request.method == "PATCH":
             return httpx.Response(200, json={"id": path.rsplit("/", 1)[-1]})
@@ -230,6 +234,12 @@ async def test_a_task_message_replies_to_its_thread(dc):
     assert len(ids) > 1 and len(posts) == len(ids)
     assert all(b["message_reference"] == {"message_id": "m1", "fail_if_not_exists": False} for b in posts)
     await ch.send_markdown("dm1", "Just chatting")
+    assert "message_reference" not in api.calls[-1][2]
+
+    # a bot without Read Message History still delivers the update, just not as a reply
+    api.refuse_replies = True
+    ids = await ch.send_markdown("dm1", "Task completed", reply_to="m1")
+    assert len(ids) == 1 and api.calls[-1][2]["content"] == "Task completed"
     assert "message_reference" not in api.calls[-1][2]
 
 

@@ -59,7 +59,8 @@ Your computer must be on with Sentient running for the bot to answer.
 2. Open the **Bot** tab on the left. Click **Reset Token**, confirm, and **Copy** the token.
 3. On the same tab you'll see **Message Content Intent**. Sentient only reads direct messages sent to the bot,
    which Discord allows without it, so you can leave it off. Turning it on does no harm.
-4. Open **OAuth2**, then **URL Generator**. Tick **bot**, and under Bot Permissions tick **Send Messages**.
+4. Open **OAuth2**, then **URL Generator**. Tick **bot**, and under Bot Permissions tick **Send Messages** and
+   **Read Message History** (a task's updates reply to its first message, and replies need it).
    Copy the URL at the bottom of the page.
 5. Open that URL, choose your server and click **Authorize**. The bot now appears in your server's member list.
 6. Paste the token above and click **Connect**.
@@ -419,7 +420,14 @@ class DiscordChannel(Channel):
             body["components"] = self._components(buttons)
         if reply_to:  # still sent if that message was deleted
             body["message_reference"] = {"message_id": reply_to, "fail_if_not_exists": False}
-        m = await self.api("POST", f"/channels/{chat_id}/messages", json=body)
+        try:
+            m = await self.api("POST", f"/channels/{chat_id}/messages", json=body)
+        except DiscordError as exc:
+            # a reply needs Read Message History (error 160002); without it the message goes out unthreaded
+            if not reply_to or exc.status not in (400, 403):
+                raise
+            body.pop("message_reference")
+            m = await self.api("POST", f"/channels/{chat_id}/messages", json=body)
         return str(m.get("id"))
 
     async def edit_chunk(self, chat_id: str, message_id: str, chunk: str, buttons: list[list[Button]] | None = None) -> None:
