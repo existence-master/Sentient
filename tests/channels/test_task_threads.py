@@ -67,3 +67,12 @@ async def test_a_reply_anywhere_in_the_thread_answers_the_waiting_question(tg, l
     llm.replies[:] = ["Glad to help."]
     await tg.say(42, "Thanks", reply_to_message={"message_id": 7001})
     assert "Glad to help." in tg.api.screen()[-1]
+
+
+async def test_every_chunk_of_a_long_task_message_stays_in_its_thread(tg):
+    await tg.pair(42)
+    before = len(tg.api.sent("sendMessage"))
+    ids = await tg.ch.send_markdown("42", "word " * 2000, reply_to="1001")  # over Telegram's 4096 characters
+    sent = tg.api.sent("sendMessage")[before:]
+    assert len(ids) > 1 and len(sent) == len(ids)
+    assert all(p["reply_parameters"]["message_id"] == 1001 for p in sent)

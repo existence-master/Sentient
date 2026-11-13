@@ -310,7 +310,11 @@ class NodeService(Service):
                     continue
                 try:
                     message = await self._tasks_message()
-                    await asyncio.gather(*(self._safe_send(c, message) for c in targets))
+                    # not awaited, so a slow device holds up no other; its send lock keeps the order, so the latest list lands last
+                    for conn in targets:
+                        task = asyncio.get_running_loop().create_task(self._safe_send(conn, message), name="nodes:tasks")
+                        self._sends.add(task)
+                        task.add_done_callback(self._sends.discard)
                 except Exception:  # one bad update must not end the watcher
                     log.exception("nodes: sending running tasks failed")
 

@@ -414,12 +414,12 @@ class Channel:
     async def send_markdown(
         self, chat_id: str, md: str, buttons: list[list[Button]] | None = None, reply_to: str | None = None
     ) -> list[str]:
-        """``reply_to``: a message id the first chunk replies to (a task's thread, #182)."""
+        """``reply_to``: a message id every chunk replies to (a task's thread, #182)."""
         chunks = self.render(md) or self.render("(empty)")
         ids: list[str] = []
         for i, chunk in enumerate(chunks):
             last = i == len(chunks) - 1
-            ids.append(await self.send_chunk(chat_id, chunk, buttons if last else None, reply_to if i == 0 else None))
+            ids.append(await self.send_chunk(chat_id, chunk, buttons if last else None, reply_to))
         if buttons and ids:
             self._button_text[(str(chat_id), ids[-1])] = md
         return ids
