@@ -83,7 +83,7 @@ The first message after connecting, within 15 seconds.
 - `kind`: `phone` | `glasses` | `watch` | `custom` (`desktop` is reserved for the desktop app).
 - Exactly one of `token` / `pair_code` (a `pair_code` is used if the token is rejected).
 - `state` is optional (same fields as §4.3).
-- `subscribe` is optional: a list of extra messages the device wants. `"tasks"` is the only one (§4.7); anything
+- `subscribe` is optional: a list of extra message types the device wants. `"tasks"` is the only one (§4.7); anything
   else, or a value that is not a list, is ignored.
 
 ```json
@@ -189,8 +189,8 @@ task changes (several changes within half a second go out as one message):
 
 `running` holds every task that is running (`processing`) or waiting for the user's answer (`waiting_for_user`), and
 is empty when there are none. `activity` is the task's latest step in a few words (a tool it is using, or a short
-note), or null before its first step. The web app and the desktop app's tray subscribe; other devices never receive
-it.
+note), or null before its first step. The web app and the desktop app (for its tray) subscribe; a device that doesn't
+subscribe never receives `tasks`.
 
 ## 5. Capabilities
 

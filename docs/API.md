@@ -3013,7 +3013,7 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - node → server `stop_all` and `resume` (no fields): Stop everything and Resume from a paired device (section 17).
   server → node `stop_state` `{stopped, stopped_at, source}` goes to every connected device whenever the state changes
   (and to the sender when it did not change). Devices that do not show it can ignore it.
-- `hello` may carry `subscribe: ["tasks"]`; such a device gets server → node `tasks` `{running: [{id, name, status,
+- A device whose `hello` carries `subscribe: ["tasks"]` gets server → node `tasks` `{running: [{id, name, status,
   activity}]}` after `welcome` and after task changes (coalesced over 0.5 s): the tasks that are `processing` or
   `waiting_for_user`, with their latest step in plain words (#182, docs/NODES.md §4.7). The web device app and the
   desktop tray use it.
@@ -3186,10 +3186,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   message or voice note (its transcript) without attachments that replies to one of them (Telegram
   `reply_to_message.message_id`, Discord `message_reference.message_id`) is the answer to that question: it goes to
   `app.tasks.answer_question`, the chat gets "Thanks! I passed your answer to '<task>'. It's carrying on now." and no chat
-  turn starts. A reply to a question that was already answered or cancelled gets "That question has already been
-  handled, so I didn't pass this on." A reply to any other message in a task's thread (below) is handled the same way:
-  it answers the question that task is waiting on. Approvals are still answered only from the message that carried
-  them. Every other message, including replies to other messages, is normal chat, however many questions are
+  turn starts. A reply to any other message in a task's thread (below) also answers the question that task is waiting
+  on. Approvals are still answered only from the message that carried them. A reply to a question that was already
+  answered or cancelled gets "That question has already been handled, so I didn't pass this on." Every other message, including replies to other messages, is normal chat, however many questions are
   waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is handled anywhere.
   `Incoming.reply_to` carries the replied-to message id for every channel.
 - Task threads (#182): a task's notifications in a chat reply to the first one it sent there (Telegram
