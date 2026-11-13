@@ -3013,6 +3013,9 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
 - node → server `stop_all` and `resume` (no fields): Stop everything and Resume from a paired device (section 17).
   server → node `stop_state` `{stopped, stopped_at, source}` goes to every connected device whenever the state changes
   (and to the sender when it did not change). Devices that do not show it can ignore it.
+- `hello` may carry `subscribe: ["tasks"]`; such a device gets server → node `tasks` `{running: [{id, name, status,
+  activity}]}` after `welcome` and after task changes (coalesced over 0.5 s): the tasks that are `processing` or
+  `waiting_for_user`, with their latest step in words (#182, docs/NODES.md §4.7). The phone page and the tray use it.
 - Voice from a device: `WS /ws/voice?node_token=<token>` with `start` `{channel: "glasses"|"phone", sample_rate, audio_format?: "wav"|"pcm16"}`.
   On the LAN listener the node token is verified before the voice socket runs.
 - Pairing: `POST /api/nodes/pairing` `{replaces?: string}` → `{code, expires_at, lan_enabled, urls: [string], web_url, fingerprint, qr: "sentient://pair?url=...&code=...&fp=...", qr_svg}`

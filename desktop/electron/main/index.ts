@@ -48,6 +48,7 @@ import { closeAction } from './close-logic'
 import { DictationController, dictationSettingsFromConfig } from './dictation'
 import { DesktopNode } from './node'
 import { liveSensors, LOCAL_MIC_ID, type LiveSensors } from './sensors-logic'
+import type { RunningTask } from './tasks-logic'
 import { homePaths, sentientHome } from './paths'
 import { shellState, THEME_BG } from './prefs'
 import { ScreenSharer } from './share'
@@ -73,6 +74,7 @@ let engineStopped: boolean | undefined // §17 Stop everything, as the engine la
 let dictation: DictationController | null = null // #169 push to talk and dictation into any app
 let ask: AskController | null = null // #173 ask about selected text
 let sensorState: LiveSensors | null = null // #170 live microphones and cameras, as the engine last reported them
+let runningTasks: RunningTask[] = [] // #182 tasks running or waiting for an answer, as the engine last reported them
 const liveNotifications = new Set<Notification>()
 
 function showWindow(): void {
@@ -244,6 +246,10 @@ const desktopNode = new DesktopNode({
   },
   onSensors: (state) => {
     sensorState = state
+    tray?.refresh()
+  },
+  onTasks: (tasks) => {
+    runningTasks = tasks
     tray?.refresh()
   },
   onStopSensor: (sensor) => {
@@ -675,6 +681,7 @@ function boot(): void {
       micOn: () => dictation?.micOn === true,
       sensors: currentSensors,
       stopSensor: (id) => void stopSensor(id),
+      runningTasks: () => runningTasks,
       showSensors: () => sendCommand({ type: 'show-sensors' })
     })
 

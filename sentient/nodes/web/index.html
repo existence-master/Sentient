@@ -92,6 +92,11 @@
         <button type="submit" aria-label="Send">&rarr;</button>
       </form>
 
+      <section id="tasks" class="card" aria-live="polite" hidden>
+        <div class="tasks-title">Running tasks</div>
+        <ul id="tasks-list" class="tasks-list"></ul>
+      </section>
+
       <p id="stopped-note" class="banner" role="status" hidden>Sentient is stopped. Nothing new will start until you resume.</p>
       <button id="stop-all" class="stop-all" type="button">Stop everything</button>
 

@@ -88,6 +88,10 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+
+def _as_list(value: Any) -> list:
+    return value if isinstance(value, list) else []
+
 @dataclass
 class NodeConnection:
     node_id: str
@@ -110,6 +114,7 @@ class NodeConnection:
     camera_off: bool = False  # switched off on the device itself; the engine never asks for a photo then
     mic_for: str = ""
     camera_for: str = ""
+    subscribe: frozenset[str] = frozenset()  # extra messages the device asked for in hello (#182)
     photos: set[str] = field(default_factory=set)  # camera.photo invokes in flight (each shown as its own use)
     last_seen_write: float = 0.0
     closed: bool = False
@@ -179,6 +184,10 @@ def _normalize_result(msg: dict) -> dict:
 
 
 STOP_STATE_SEND_S = 2.0  # deadline per device for a stop_state message
+SUBSCRIPTIONS = ("tasks",)  # what a device may ask for in hello's "subscribe" (#182); nothing is sent unasked
+TASKS_COALESCE_S = 0.5  # task events closer together than this go out as one `tasks` message
+TASK_EVENTS = ("task.updated", "task.run_progress", "task.run_finished", "task.deleted")
+BUSY_STATUSES = ("processing", "waiting_for_user")
 DEVICE_SENSOR_PURPOSE = "Turned on by the device"
 PHOTO_PURPOSE = "Taking a photo"
 
@@ -201,6 +210,7 @@ class NodeService(Service):
         self.lan_secret = secrets.token_urlsafe(32)
         self._schema_ready = False
         self._sends: set[asyncio.Task] = set()  # sensor updates on their way to the desktop app
+        self._task_activity: dict[str, str] = {}  # task id -> its latest progress, in words (#182)
 
     @property
     def cfg(self) -> NodesConfig:
@@ -215,6 +225,7 @@ class NodeService(Service):
             self.app.registry.register(DevicesPlugin())
         self._refresh_tools()
         self._loops.append(asyncio.create_task(self._watch_config(), name="nodes:config"))
+        self._loops.append(asyncio.create_task(self._watch_tasks(), name="nodes:tasks"))
         self.app.sensors.on_change(self._push_sensors)
         await self.apply_config()
 
@@ -246,6 +257,74 @@ class NodeService(Service):
                         await self.apply_config()
                     except Exception:
                         log.exception("nodes: applying config failed")
+
+    # ------------------------------------------------------------------ running tasks (#182)
+    @staticmethod
+    def _activity(message: dict) -> str | None:
+        """A task's progress event in a few words, or None when it says nothing a person would follow."""
+        kind = message.get("type")
+        if kind == "tool_call" and message.get("tool_name"):
+            from sentient.channels.base import humanize_tool
+
+            return f"Using {humanize_tool(str(message['tool_name']))}"
+        if kind == "info" and message.get("content"):
+            text = " ".join(str(message["content"]).split())
+            return text if len(text) <= 120 else text[:119] + "…"
+        return None
+
+    async def _tasks_message(self) -> dict:
+        """``{"type": "tasks", "running": [...]}``: every task that is running or waiting for the user."""
+        try:
+            tasks = await self.app.tasks.list()
+        except Exception:
+            log.exception("nodes: listing tasks failed")
+            tasks = []
+        running = [
+            {
+                "id": t["task_id"],
+                "name": t.get("name") or "Task",
+                "status": t["status"],
+                "activity": self._task_activity.get(t["task_id"]),
+            }
+            for t in tasks
+            if t.get("status") in BUSY_STATUSES and t.get("task_id")
+        ]
+        return {"type": "tasks", "running": running}
+
+    async def _watch_tasks(self) -> None:
+        """Send the running tasks to devices that subscribed to them after task events, coalesced to one message."""
+        async with self.app.bus.subscribe() as q:
+            while True:
+                event = await q.get()
+                if event.get("type") not in TASK_EVENTS:
+                    continue
+                self._note_task_event(event)
+                with contextlib.suppress(TimeoutError):  # gather the rest of a burst
+                    async with asyncio.timeout(TASKS_COALESCE_S):
+                        while True:
+                            more = await q.get()
+                            if more.get("type") in TASK_EVENTS:
+                                self._note_task_event(more)
+                targets = [c for c in list(self._conns.values()) if "tasks" in c.subscribe]
+                if not targets:
+                    continue
+                try:
+                    message = await self._tasks_message()
+                    await asyncio.gather(*(self._safe_send(c, message) for c in targets))
+                except Exception:  # one bad update must not end the watcher
+                    log.exception("nodes: sending running tasks failed")
+
+    def _note_task_event(self, event: dict) -> None:
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        task_id = str(data.get("task_id") or data.get("id") or "")
+        if not task_id:
+            return
+        if event.get("type") == "task.run_progress":
+            activity = self._activity((data.get("update") or {}).get("message") or {})
+            if activity:
+                self._task_activity[task_id] = activity
+        elif event.get("type") in ("task.run_finished", "task.deleted"):
+            self._task_activity.pop(task_id, None)
 
     async def apply_config(self) -> None:
         cfg = self.cfg
@@ -551,6 +630,7 @@ class NodeService(Service):
             node_id=row["id"], name=row["name"], kind=row["kind"], platform=row["platform"],
             capabilities=_clean_caps(hello.get("capabilities")), lan=lan, ws=ws, connected_at=self.clock(),
             last_seen_write=self.clock(),
+            subscribe=frozenset(x for x in _as_list(hello.get("subscribe")) if x in SUBSCRIPTIONS),
         )  # fmt: skip
         self._apply_state(conn, hello.get("state") if isinstance(hello.get("state"), dict) else {})
         old = self._conns.get(conn.node_id)
@@ -579,6 +659,8 @@ class NodeService(Service):
         self._sync_sensors(conn)
         if conn.node_id == DESKTOP_ID:  # the tray shows live microphones and cameras (#170)
             await self._safe_send(conn, {"type": "sensors", **self.app.sensors.state()})
+        if "tasks" in conn.subscribe:  # the phone page and the tray show running tasks (#182)
+            await self._safe_send(conn, await self._tasks_message())
         self.app.bus.publish("node.updated", self._node_dict(row))
         log.info("device connected: %s (%s, %s)", conn.name, conn.kind, "lan" if lan else "local")
 

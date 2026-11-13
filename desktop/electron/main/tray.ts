@@ -2,6 +2,7 @@ import { Menu, nativeImage, Tray, type MenuItemConstructorOptions, type NativeIm
 import trayIconPng from '../../resources/icon.png?asset'
 import trayIconIco from '../../resources/icon.ico?asset'
 import { drawLiveDot, sensorMenuLabel, sensorTooltip, type LiveSensor } from './sensors-logic'
+import { runningTaskLabel, runningTasksTooltip, type RunningTask } from './tasks-logic'
 import { NEW_CHAT_ACCELERATOR, STOP_ACCELERATOR } from './shortcuts'
 
 export interface TrayHandlers {
@@ -21,6 +22,8 @@ export interface TrayHandlers {
   micOn(): boolean
   /** #170 Every live microphone and camera, here and on paired devices. */
   sensors(): LiveSensor[]
+  /** #182 Tasks running or waiting for an answer, as the engine last reported them. */
+  runningTasks(): RunningTask[]
   /** Turn one off (`id`), or all of them. */
   stopSensor(id?: string): void
   /** Show the window with the title bar's microphone and camera details open. */
@@ -65,7 +68,19 @@ export class AppTray {
     const live = sensorTooltip(this.h.sensors())
     if (live) return live
     if (this.h.micOn()) return 'Sentient (microphone on)'
-    return this.h.alwaysListening() ? "Sentient (listening for 'Hey Sentient')" : 'Sentient'
+    if (this.h.alwaysListening()) return "Sentient (listening for 'Hey Sentient')"
+    const tasks = runningTasksTooltip(this.h.runningTasks())
+    return tasks ? `Sentient (${tasks})` : 'Sentient'
+  }
+
+  /** #182 A section of running tasks; choosing one opens the window. */
+  private taskItems(tasks: RunningTask[]): MenuItemConstructorOptions[] {
+    if (tasks.length === 0) return []
+    return [
+      { label: 'Running tasks', enabled: false },
+      ...tasks.map((t): MenuItemConstructorOptions => ({ label: runningTaskLabel(t), click: () => this.h.open() })),
+      { type: 'separator' }
+    ]
   }
 
   /** The red dot on the tray icon whenever a microphone or camera is live (#170). */
@@ -106,6 +121,7 @@ export class AppTray {
     this.tray.setContextMenu(
       Menu.buildFromTemplate([
         ...this.sensorItems(sensors),
+        ...this.taskItems(this.h.runningTasks()),
         { label: 'Open Sentient', click: () => this.h.open() },
         { label: 'New chat', accelerator: NEW_CHAT_ACCELERATOR, click: () => this.h.newChat() },
         { label: 'Voice mode', click: () => this.h.voiceMode() },
