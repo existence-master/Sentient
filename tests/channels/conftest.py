@@ -139,6 +139,17 @@ async def until(predicate, timeout: float = 30.0) -> None:
         await asyncio.sleep(0.01)
 
 
+async def eventually(read, timeout: float = 30.0):
+    """The first truthy result of ``await read()``: for state stored just after a message goes out."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not (value := await read()):
+        if loop.time() > deadline:
+            raise AssertionError("condition not met in time")
+        await asyncio.sleep(0.01)
+    return value
+
+
 class GatedProvider(FakeProvider):
     """FakeProvider whose Nth ``stream`` call waits for ``gate``."""
 

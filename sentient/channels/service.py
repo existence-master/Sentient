@@ -643,11 +643,6 @@ class ChannelService(Service):
                 continue
             sent += 1
             ch.publish_message(chat["chat_id"], None, "out", md)
-            if thread_task and ids:
-                try:
-                    await self.store.add_task_messages(ch.id, chat["chat_id"], [str(i) for i in ids], task_id=thread_task)
-                except Exception:
-                    log.exception("could not remember the task's message")
             if note.get("kind") == "task" and payload.get("event") == "question" and ids:
                 try:  # persisted, so a reply still answers the question after a restart
                     await self.store.add_question(
@@ -657,6 +652,11 @@ class ChannelService(Service):
                     )
                 except Exception:
                     log.exception("could not remember the delivered question")
+            if thread_task and ids:
+                try:
+                    await self.store.add_task_messages(ch.id, chat["chat_id"], [str(i) for i in ids], task_id=thread_task)
+                except Exception:
+                    log.exception("could not remember the task's message")
             if buttons and ids and note.get("id"):
                 self._delivered.setdefault(str(note["id"]), []).append((ch.id, chat["chat_id"], ids[-1]))
                 if note.get("kind") == "approval" and payload.get("approval_id"):

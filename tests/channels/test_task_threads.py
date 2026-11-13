@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.channels.conftest import until
+from tests.channels.conftest import eventually, until
 from tests.channels.test_task_questions import (
     ASK_FLIGHT,
     RESULT,
@@ -31,12 +31,14 @@ async def test_a_tasks_later_messages_reply_to_its_first(tg, llm):
     await tg.pair(42)
     task_id, _ = await _waiting_task(tg.app, "Book a flight to Goa")
     question = await _question_message(tg, "Which flight should I book?")
-    first, *_ = await _task_messages(tg, task_id)
+    first, *_ = await eventually(lambda: _task_messages(tg, task_id))
     assert first["_id"] == question["_id"] and "reply_parameters" not in first
 
     await tg.say(42, "The early one please", reply_to_message={"message_id": question["_id"]})
     await tg.app.tasks.drain()
     await until(lambda: any("Task completed" in t for t in tg.api.screen()))
+    done = next(p for p in tg.api.sent("sendMessage") if "Task completed" in p["text"])
+    await eventually(lambda: tg.app.channels.store.task_for_message("telegram", "42", str(done["_id"])))
     later = (await _task_messages(tg, task_id))[1:]
     assert later and all(
         p["reply_parameters"] == {"message_id": first["_id"], "allow_sending_without_reply": True} for p in later
@@ -46,7 +48,7 @@ async def test_a_tasks_later_messages_reply_to_its_first(tg, llm):
     llm.replies[:] = [ASK_FLIGHT]
     other_id, _ = await _waiting_task(tg.app, "Find a hotel in Goa")
     await until(lambda: any("Find a hotel in Goa" in t for t in tg.api.screen()))
-    other_first, *_ = await _task_messages(tg, other_id)
+    other_first, *_ = await eventually(lambda: _task_messages(tg, other_id))
     assert "reply_parameters" not in other_first
 
 
