@@ -78,3 +78,27 @@ def test_a_device_that_did_not_subscribe_gets_no_tasks(nodes_client):
         time.sleep(TASKS_COALESCE_S + 0.3)  # past the window in which a `tasks` message would have gone out
         ws.send_json({"type": "ping", "ts": 1})
         assert ws.receive_json() == {"type": "pong", "ts": 1}  # nothing about tasks came first
+
+
+def test_a_failed_read_is_tried_again_without_another_task_event(nodes_client, monkeypatch):
+    monkeypatch.setattr("sentient.nodes.service.TASKS_RETRY_S", 0.1)
+    client = nodes_client()
+    _, token = pair_device(client)
+    _fake_tasks(client, [])
+    with client.websocket_connect("/ws/node") as ws:
+        ws.send_json(hello(token=token, kind="phone", subscribe=["tasks"]))
+        assert ws.receive_json()["type"] == "welcome"
+        assert ws.receive_json() == {"type": "tasks", "running": []}
+
+        reads = iter([None, TASKS[1:]])  # the first read fails, the retry works
+        client.core.tasks.busy = lambda: _read(next(reads))
+        _publish(client, "task.updated", {"task_id": "t2", "status": "waiting_for_user"})
+        assert ws.receive_json()["running"] == [
+            {"id": "t2", "name": "Find a hotel", "status": "waiting_for_user", "activity": None},
+        ]
+
+
+async def _read(tasks):
+    if tasks is None:
+        raise RuntimeError("database is locked")
+    return tasks

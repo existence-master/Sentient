@@ -186,6 +186,8 @@ def _normalize_result(msg: dict) -> dict:
 STOP_STATE_SEND_S = 2.0  # deadline per device for a stop_state message
 SUBSCRIPTIONS = ("tasks",)  # what a device may ask for in hello's "subscribe" (#182); nothing is sent unasked
 TASKS_COALESCE_S = 0.5  # task events closer together than this go out as one `tasks` message
+TASKS_SEND_S = 5.0  # deadline per device for a `tasks` message, so a device that stops reading drops stale lists
+TASKS_RETRY_S = 2.0  # one more read this long after the running tasks couldn't be read
 TASK_EVENTS = ("task.updated", "task.run_progress", "task.run_finished", "task.deleted")
 BUSY_STATUSES = ("processing", "waiting_for_user")
 DEVICE_SENSOR_PURPOSE = "Turned on by the device"
@@ -310,11 +312,14 @@ class NodeService(Service):
                     continue
                 try:
                     message = await self._tasks_message()
+                    if message is None:  # don't wait for the next task event to try again
+                        await asyncio.sleep(TASKS_RETRY_S)
+                        message = await self._tasks_message()
                     if message is None:
                         continue
                     # not awaited, so a slow device holds up no other; its send lock keeps the order, so the latest list lands last
                     for conn in targets:
-                        task = asyncio.get_running_loop().create_task(self._safe_send(conn, message), name="nodes:tasks")
+                        task = asyncio.get_running_loop().create_task(self._send_tasks(conn, message), name="nodes:tasks")
                         self._sends.add(task)
                         task.add_done_callback(self._sends.discard)
                 except Exception:  # one bad update must not end the watcher
@@ -729,6 +734,10 @@ class NodeService(Service):
                 await asyncio.wait_for(conn.send(message), timeout or STOP_STATE_SEND_S)
 
         await asyncio.gather(*(one(c) for c in list(self._conns.values())))
+
+    async def _send_tasks(self, conn: NodeConnection, message: dict) -> None:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(conn.send(message), TASKS_SEND_S)
 
     async def _safe_send(self, conn: NodeConnection, obj: dict) -> None:
         with contextlib.suppress(Exception):
