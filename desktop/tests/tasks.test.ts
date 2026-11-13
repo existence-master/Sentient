@@ -28,9 +28,10 @@ test('a menu line says what the task is doing, or that it waits for an answer', 
     runningTaskLabel({ id: 'a', name: 'Book a flight', status: 'waiting_for_user', activity: 'Using Gmail' }),
     'Book a flight: Waiting for your answer'
   )
-  const long = runningTaskLabel({ id: 'a', name: 'x'.repeat(80), status: 'processing', activity: null })
-  assert.equal(long.length, 60)
-  assert.ok(long.endsWith('…'))
+  const long = runningTaskLabel({ id: 'a', name: 'x'.repeat(80), status: 'waiting_for_user', activity: null })
+  assert.equal(long, `${'x'.repeat(29)}…: Waiting for your answer`) // a long name keeps the status
+  const busy = runningTaskLabel({ id: 'a', name: 'Book a flight', status: 'processing', activity: 'y'.repeat(80) })
+  assert.equal(busy, `Book a flight: ${'y'.repeat(27)}…`)
 })
 
 test('the tooltip counts running tasks', () => {

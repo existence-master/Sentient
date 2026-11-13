@@ -7,7 +7,9 @@ export interface RunningTask {
   activity: string | null
 }
 
-const MAX_LABEL = 60
+// name and step are clipped apart, so a long name never hides that a task waits for an answer
+const MAX_NAME = 30
+const MAX_DOING = 28
 
 /** Read the engine's `tasks` message; malformed entries are dropped, and anything else reads as none running. */
 export function parseRunningTasks(msg: unknown): RunningTask[] {
@@ -23,14 +25,14 @@ export function parseRunningTasks(msg: unknown): RunningTask[] {
     }))
 }
 
-function clip(text: string): string {
-  return text.length <= MAX_LABEL ? text : `${text.slice(0, MAX_LABEL - 1)}…`
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
 
 /** One menu line: the task's name, then what it is doing or that it waits for an answer. */
 export function runningTaskLabel(t: RunningTask): string {
   const doing = t.status === 'waiting_for_user' ? 'Waiting for your answer' : (t.activity ?? 'Running')
-  return clip(`${t.name}: ${doing}`)
+  return `${clip(t.name, MAX_NAME)}: ${clip(doing, MAX_DOING)}`
 }
 
 /** The tooltip's note on running tasks, or '' when none run. */
