@@ -6,7 +6,9 @@ WhatsApp linked to the user's own account (their "Message yourself" chat).
 - A paired chat is a normal Sentient chat whose session has ``channel`` = the channel id.
 - Delivery: ``notification.new`` events (task results, plans awaiting approval, questions from running
   tasks, proactive suggestions, subagent completions) are forwarded to paired chats with ``deliver`` on,
-  with action buttons. A reply to a delivered task question message is the answer to that question. A task's
+  with action buttons. A task's messages reply to its first one in each chat, so each task reads as its own thread
+  (#182). A reply to a delivered task question message, or to any message of that task's thread while it waits on a
+  question, is the answer to that question. A task's
   own ``deliver_to`` (``tasks/delivery.py``) can keep its notifications on the desktop or send them only to
   chosen chats instead.
 - Rules from chat (#130): a "Make this a rule?" proposal made in a paired chat is sent back to that chat with

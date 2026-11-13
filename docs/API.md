@@ -3183,9 +3183,14 @@ A device ("node") is a phone, a pair of smart glasses, a watch, or the desktop a
   `reply_to_message.message_id`, Discord `message_reference.message_id`) is the answer to that question: it goes to
   `app.tasks.answer_question`, the chat gets "Thanks! I passed your answer to '<task>'. It's carrying on now." and no chat
   turn starts. A reply to a question that was already answered or cancelled gets "That question has already been
-  handled, so I didn't pass this on." Every other message, including replies to other messages, is normal chat, however
-  many questions are waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is
+  handled, so I didn't pass this on." A reply to any other message of the same task's thread (below) answers the question
+  that task is waiting on the same way; approvals are still answered only from the message that carried them. Every
+  other message, including replies to other messages, is normal chat, however many questions are waiting. Question buttons settle to "Answered: <answer>" or "Cancelled" when the question is
   handled anywhere. `Incoming.reply_to` carries the replied-to message id for every channel.
+- Task threads (#182): a task's notifications in a chat reply to the first one it sent there (Telegram
+  `reply_parameters`, Discord `message_reference`, both still sent if that message was deleted), so each task reads as
+  its own thread. The ids are stored per chat in SQLite (`channel_task_messages`, kept 90 days). WhatsApp messages
+  don't thread.
 - **WhatsApp** (ADR 0020): Sentient is a linked device on the user's own account, through a WhatsApp Web bridge in
   the engine (neonize, the optional `whatsapp` extra, included in installers). There is no token and no setup field.
   - `POST /api/channels/whatsapp/connect` `{fields: {}}` → `Channel` with `status: "linking"` (or `connecting` when a
