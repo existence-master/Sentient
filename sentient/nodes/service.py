@@ -88,9 +88,9 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-
 def _as_list(value: Any) -> list:
     return value if isinstance(value, list) else []
+
 
 @dataclass
 class NodeConnection:
@@ -209,7 +209,7 @@ class NodeService(Service):
         # authenticates the LAN app's internal hop into the voice socket; never leaves the process
         self.lan_secret = secrets.token_urlsafe(32)
         self._schema_ready = False
-        self._sends: set[asyncio.Task] = set()  # sensor updates on their way to the desktop app
+        self._sends: set[asyncio.Task] = set()  # sensor and running-task updates on their way to devices
         self._task_activity: dict[str, str] = {}  # task id -> its latest progress, in words (#182)
 
     @property
@@ -272,22 +272,22 @@ class NodeService(Service):
             return text if len(text) <= 120 else text[:119] + "…"
         return None
 
-    async def _tasks_message(self) -> dict:
-        """``{"type": "tasks", "running": [...]}``: every task that is running or waiting for the user."""
+    async def _tasks_message(self) -> dict | None:
+        """``{"type": "tasks", "running": [...]}``: every task that is running or waiting for the user, or None
+        when they can't be read (an empty list would tell devices nothing runs)."""
         try:
-            tasks = await self.app.tasks.list()
+            tasks = await self.app.tasks.busy()
         except Exception:
-            log.exception("nodes: listing tasks failed")
-            tasks = []
+            log.exception("nodes: listing running tasks failed")
+            return None
         running = [
             {
-                "id": t["task_id"],
+                "id": t["id"],
                 "name": t.get("name") or "Task",
                 "status": t["status"],
-                "activity": self._task_activity.get(t["task_id"]),
+                "activity": self._task_activity.get(t["id"]),
             }
             for t in tasks
-            if t.get("status") in BUSY_STATUSES and t.get("task_id")
         ]
         return {"type": "tasks", "running": running}
 
@@ -310,6 +310,8 @@ class NodeService(Service):
                     continue
                 try:
                     message = await self._tasks_message()
+                    if message is None:
+                        continue
                     # not awaited, so a slow device holds up no other; its send lock keeps the order, so the latest list lands last
                     for conn in targets:
                         task = asyncio.get_running_loop().create_task(self._safe_send(conn, message), name="nodes:tasks")
@@ -327,7 +329,9 @@ class NodeService(Service):
             activity = self._activity((data.get("update") or {}).get("message") or {})
             if activity:
                 self._task_activity[task_id] = activity
-        elif event.get("type") in ("task.run_finished", "task.deleted"):
+        elif event.get("type") in ("task.run_finished", "task.deleted") or (
+            event.get("type") == "task.updated" and data.get("status") not in BUSY_STATUSES
+        ):
             self._task_activity.pop(task_id, None)
 
     async def apply_config(self) -> None:
@@ -663,8 +667,8 @@ class NodeService(Service):
         self._sync_sensors(conn)
         if conn.node_id == DESKTOP_ID:  # the tray shows live microphones and cameras (#170)
             await self._safe_send(conn, {"type": "sensors", **self.app.sensors.state()})
-        if "tasks" in conn.subscribe:  # the phone page and the tray show running tasks (#182)
-            await self._safe_send(conn, await self._tasks_message())
+        if "tasks" in conn.subscribe and (tasks := await self._tasks_message()):  # phone page and tray (#182)
+            await self._safe_send(conn, tasks)
         self.app.bus.publish("node.updated", self._node_dict(row))
         log.info("device connected: %s (%s, %s)", conn.name, conn.kind, "lan" if lan else "local")
 

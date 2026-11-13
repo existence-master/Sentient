@@ -152,7 +152,7 @@ class ChannelStore:
                 " VALUES(?,?,?,?,?)",
                 (channel, str(chat_id), str(mid), task_id, now),
             )
-        # bounded like the questions: after 90 days a task starts a new thread
+        # bounded like the questions: rows older than 90 days are dropped
         cutoff = (datetime.now(UTC) - timedelta(days=90)).isoformat()
         await self.store.execute("DELETE FROM channel_task_messages WHERE created_at < ?", (cutoff,))
 

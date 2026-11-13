@@ -294,6 +294,7 @@
         if (this.ws !== ws) return;
         this.ws = null;
         clearInterval(this.pingTimer);
+        renderTasks([]); // the list is unknown until the engine connects again
         $("pair-btn").disabled = false;
         if (this.halted) return;
         const secs = Math.round(this.retryMs / 1000);

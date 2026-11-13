@@ -5,18 +5,19 @@ import time
 from sentient.nodes.service import TASKS_COALESCE_S
 from tests.nodes.conftest import hello, pair_device
 
-TASKS = [
-    {"task_id": "t1", "name": "Book a flight to Goa", "status": "processing"},
-    {"task_id": "t2", "name": "Find a hotel", "status": "waiting_for_user"},
-    {"task_id": "t3", "name": "Weekly report", "status": "completed"},
+TASKS = [  # TaskService.busy() rows
+    {"id": "t1", "name": "Book a flight to Goa", "status": "processing"},
+    {"id": "t2", "name": "Find a hotel", "status": "waiting_for_user"},
 ]
 
 
 def _fake_tasks(client, tasks):
-    async def listed():
+    async def busy():
+        if tasks is None:
+            raise RuntimeError("database is locked")
         return tasks
 
-    client.core.tasks.list = listed
+    client.core.tasks.busy = busy
 
 
 def _publish(client, kind, data):
@@ -50,6 +51,20 @@ def test_a_subscribed_device_gets_running_tasks_on_connect_and_after_task_events
         assert ws.receive_json()["running"] == [
             {"id": "t2", "name": "Find a hotel", "status": "waiting_for_user", "activity": None},
         ]
+
+        # a try run ends with task.updated, not task.run_finished: its last step goes too
+        _publish(client, "task.run_progress", {
+            "task_id": "t2", "run_id": "r2", "update": {"message": {"type": "tool_call", "tool_name": "web_search"}},
+        })
+        _publish(client, "task.updated", {"task_id": "t2", "status": "completed"})
+        assert ws.receive_json()["running"][0]["activity"] is None
+
+        # when the tasks can't be read, devices keep the list they have rather than an empty one
+        _fake_tasks(client, None)
+        _publish(client, "task.updated", {"task_id": "t2", "status": "processing"})
+        time.sleep(TASKS_COALESCE_S + 0.3)
+        ws.send_json({"type": "ping", "ts": 2})
+        assert ws.receive_json() == {"type": "pong", "ts": 2}
 
 
 def test_a_device_that_did_not_subscribe_gets_no_tasks(nodes_client):
