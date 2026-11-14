@@ -6,14 +6,18 @@ Ports the v2 memory MCP (search, cud, search by source) and the v2 history MCP
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import re
 
 from sentient.memory import review
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.episodic import EpisodicMemory
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
-from sentient.tools.rules import OTHER_ROLE, brings_untrusted, group_source
+from sentient.tools.rules import API_SOURCE, OTHER_ROLE, brings_untrusted, group_source
+
+log = logging.getLogger(__name__)
 
 INCOGNITO_REFUSAL = (
     "Not saved: this is an incognito chat, so nothing from it is remembered. Don't tell the user you will remember it."
@@ -26,6 +30,8 @@ HELD_NOTE = (
     "Saved for the user to review first, because this run read outside content or nobody asked for it. "
     "It is not used until they approve it."
 )
+CLEANUP_NOTE = "Forgotten. Tidying up what was made from it finishes on its own a little later."
+DELETE_FAILED = "couldn't delete this memory right now, try again"
 
 
 async def _memory_closed(ctx: ToolContext) -> bool:
@@ -83,7 +89,9 @@ async def memory_remember(ctx: ToolContext, fact: str) -> dict:
         scope=await memory_scopes.for_context(ctx),  # the chat's or task's scope (#155); personal when neither
     )
     if out.get("status") == "pending":
-        return {**out, "note": INSTRUCTION_NOTE if out.get("reason") == review.INSTRUCTION else HELD_NOTE}
+        out = {**out, "note": INSTRUCTION_NOTE if out.get("reason") == review.INSTRUCTION else HELD_NOTE}
+    if not ctx.memory_allowed:  # a run without memory learns nothing stored from the answer (#547)
+        return {k: v for k, v in out.items() if k in {"action", "status", "reason", "note"}} | {"content": fact}
     return out
 
 
@@ -103,26 +111,38 @@ async def _own_words(ctx: ToolContext) -> str | None:
         if row.get("role") == "assistant" and not row.get("tool_calls"):
             break  # the previous turn's reply
         if row.get("role") == "user":
-            if str(row.get("content") or "").strip():
+            if row.get("name") != API_SOURCE and str(row.get("content") or "").strip():
                 words.append(str(row["content"]))
             if not row.get("interjection"):
                 break  # the message that started this turn: nothing before it is this turn's
     return "\n".join(reversed(words)) or None
 
 
-async def _mark_if_outside(ctx: ToolContext, session_ids: list) -> None:
-    """Messages from a chat that read outside content bring that content into this run too (ADR 0018, 0021): mark it,
-    so sends ask and what it learns waits for review. Summaries of such chats are not searchable here at all."""
-    ids = sorted({str(s) for s in session_ids if s and s != ctx.session_id})
-    if ctx.untrusted or not ids:
+def _history_source(row: dict) -> str:
+    """A message's own outside source survives trusting its chat again."""
+    if row.get("role") == OTHER_ROLE:
+        return group_source(str(row.get("name") or ""))
+    if row.get("role") == "user" and row.get("name") == API_SOURCE:
+        return API_SOURCE
+    return ""
+
+
+async def _mark_if_outside(ctx: ToolContext, rows: list[dict]) -> None:
+    """History retains outside provenance from its source chats and individual messages (ADR 0018, 0021).
+    The per-message mark still counts after a source chat has been trusted again."""
+    if ctx.untrusted:
         return
-    row = await ctx.store.fetchone(
-        f"SELECT untrusted FROM sessions WHERE id IN ({','.join('?' * len(ids))}) AND COALESCE(untrusted, '') != ''"
-        " LIMIT 1",
-        ids,
-    )
-    if row is not None:
-        ctx.untrusted = str(row["untrusted"])
+    ids = sorted({str(r["session_id"]) for r in rows if r.get("session_id") and r["session_id"] != ctx.session_id})
+    if ids:
+        row = await ctx.store.fetchone(
+            f"SELECT untrusted FROM sessions WHERE id IN ({','.join('?' * len(ids))}) AND COALESCE(untrusted, '') != ''"
+            " LIMIT 1",
+            ids,
+        )
+        if row is not None:
+            ctx.untrusted = str(row["untrusted"])
+    if not ctx.untrusted:
+        ctx.untrusted = next((source for row in rows if (source := _history_source(row))), "")
 
 
 async def _last_outside_result(ctx: ToolContext) -> str | None:
@@ -168,13 +188,37 @@ def _failed(content: str | None) -> bool:
     return isinstance(data, dict) and bool(data.get("error") or data.get("declined"))
 
 
+async def _fact_exists(mem, fact_id: int) -> bool:
+    """Whether the memory's row is there, without reading it: a row that can't be read must still be deletable."""
+    return await mem.store.fetchone("SELECT 1 FROM facts WHERE id = ?", (fact_id,)) is not None
+
+
 @tool("memory_forget", risk=Risk.send)
 async def memory_forget(ctx: ToolContext, fact_id: int) -> dict:
     """Permanently delete a remembered fact by id (from memory_recall). Use when the user asks you to forget something."""
     if ctx.memory is None:
         return {"error": "memory unavailable"}
-    ok = await ctx.memory.erase(fact_id, notify=True)
-    return {"deleted": ok, "id": fact_id}
+    mem = ctx.memory
+    if not await _fact_exists(mem, fact_id):  # so a failure below can't pass a missing id off as deleted (#536)
+        return {"deleted": False, "id": fact_id}
+    try:
+        ok = await mem.erase(fact_id, notify=True)
+    except Exception:
+        if await _fact_exists(mem, fact_id):
+            log.exception("forgetting memory %s failed before it was deleted", fact_id)
+            return {"error": DELETE_FAILED}
+        # The memory is gone and memory upkeep finishes its queued cleanup, as the delete route says (#534, #536).
+        log.exception("memory %s was forgotten, but finishing the delete failed; memory upkeep will finish its cleanup",
+                      fact_id)
+        with contextlib.suppress(Exception):  # forget() may have raised before it told the window
+            mem.publish("DELETE", fact_id)
+        return {"deleted": True, "id": fact_id, "cleanup_pending": True, "note": CLEANUP_NOTE}
+    if not ok:
+        # an erase that aborted before touching anything leaves the memory in place
+        return {"error": DELETE_FAILED} if await _fact_exists(mem, fact_id) else {"deleted": False, "id": fact_id}
+    if await mem.cleanup_pending(fact_id):  # a cleanup step failed and waits for memory upkeep (#462)
+        return {"deleted": True, "id": fact_id, "cleanup_pending": True, "note": CLEANUP_NOTE}
+    return {"deleted": True, "id": fact_id}
 
 
 @tool("memory_search_by_source", risk=Risk.read)
@@ -202,13 +246,10 @@ async def memory_search_history(ctx: ToolContext, query: str, limit: int = 8) ->
         rows = await ctx.store.search_messages(q, limit=limit)
         if rows:
             break
-    await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
-    other = next((r for r in rows if r.get("role") == OTHER_ROLE), None)
-    if other is not None and not ctx.untrusted:  # a group member's message, even in a chat trusted again (ADR 0029)
-        ctx.untrusted = group_source(str(other.get("name") or ""))
+    await _mark_if_outside(ctx, rows)
     return [
         {"when": r["created_at"], "role": r["role"], "session_id": r["session_id"], "text": (r["content"] or "")[:500],
-         **({"from": r.get("name") or "another group member"} if r.get("role") == OTHER_ROLE else {})}
+         **({"from": r.get("name") or "another group member"} if _history_source(r) else {})}
         for r in rows
     ]
 
@@ -243,9 +284,13 @@ async def history_time_search(ctx: ToolContext, start_date: str, end_date: str, 
         return {"error": "Invalid date format. Use ISO 8601, e.g. 2026-09-14T00:00:00Z."}
     if not rows:
         return {"result": "No messages found in that time period."}
-    await _mark_if_outside(ctx, [r.get("session_id") for r in rows])
-    log = "\n".join(f"[{r['created_at'][:16].replace('T', ' ')}] {r['role']}: {(r['content'] or '')[:600]}" for r in rows)
-    return {"conversation": log, "count": len(rows)}
+    await _mark_if_outside(ctx, rows)
+    lines = []
+    for row in rows:
+        source = _history_source(row)
+        speaker = f"{row['role']} (from {source})" if source else row["role"]
+        lines.append(f"[{row['created_at'][:16].replace('T', ' ')}] {speaker}: {(row['content'] or '')[:600]}")
+    return {"conversation": "\n".join(lines), "count": len(rows)}
 
 
 @tool("user_model_ask", risk=Risk.read)

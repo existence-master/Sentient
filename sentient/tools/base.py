@@ -36,7 +36,7 @@ import contextvars
 import inspect
 import logging
 import typing
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, get_args, get_origin
@@ -95,6 +95,20 @@ def bind_call(sink: ProgressSink | None, call_id: str, name: str) -> contextvars
     return _CURRENT_CALL.set((sink, call_id, name))
 
 
+# Tools that read (or remove) what Sentient knows about the user: remembered facts, the user model and past chats.
+# A run without memory (``ToolContext.memory_allowed`` False) is never offered them and they refuse to run (#154, #525).
+MEMORY_TOOLS = frozenset({
+    "memory_recall", "memory_search_by_source", "memory_search_history", "history_semantic_search",
+    "history_time_search", "user_model_ask", "memory_forget",
+})
+MEMORY_OFF_ERROR = "This chat doesn't use what Sentient knows about the user. Answer from this chat alone."
+
+
+def without_memory_tools(names: Iterable[str]) -> list[str]:
+    """``names`` without ``MEMORY_TOOLS``, in order."""
+    return [n for n in names if n not in MEMORY_TOOLS]
+
+
 @dataclass
 class ToolContext:
     """Passed to every tool call. Gives tools access to shared services without globals."""
@@ -126,6 +140,15 @@ class ToolContext:
     # the memory scope of this run (#155): a chat's or a task's ("personal", "work", a project). Empty: the chat's own,
     # or every scope for work not tied to a chat (``memory.scopes.for_context``)
     memory_scope: str = ""
+    # False when this run may not use what Sentient knows about the user (#525). Decided once per chat turn
+    # (``Agent.memory_allowed``: an incognito chat without ``chat.incognito_uses_memory``; an app's turn without the
+    # user's leave) and copied into everything the run starts (helpers, the reader, scripts), so their tools are never
+    # wider than the turn's: ``MEMORY_TOOLS`` are not offered and refuse to run (``Tool.call``). Set in code only.
+    memory_allowed: bool = True
+
+    def withholds(self, tool_name: str) -> bool:
+        """True when this run may not use ``tool_name`` because it reads what Sentient knows (#525)."""
+        return not self.memory_allowed and tool_name in MEMORY_TOOLS
 
     async def is_incognito(self) -> bool:
         """True when this run belongs to an incognito chat (#154)."""
@@ -229,6 +252,8 @@ class Tool:
         }
 
     async def call(self, ctx: ToolContext, arguments: dict[str, Any]) -> Any:
+        if self.name in MEMORY_TOOLS and getattr(ctx, "memory_allowed", True) is False:
+            return {"error": MEMORY_OFF_ERROR}  # whoever calls it: the loop, the reader, a script (#525)
         parsed = self.params_model.model_validate(arguments or {})
         kwargs = parsed.model_dump()
         return await self.fn(ctx, **kwargs)

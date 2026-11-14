@@ -12,14 +12,20 @@ BODY = "\n".join(
         "## When to use",
         "Fridays",
         "",
+        "## Inputs and access",
+        "Calendar and notes",
+        "",
         "## Procedure",
         "1. Gather",
         "",
-        "## Pitfalls",
-        "None",
-        "",
         "## Verification",
         "Sent",
+        "",
+        "## Output",
+        "Weekly review",
+        "",
+        "## Approval",
+        "Normal tool approval rules",
     ]
 )
 

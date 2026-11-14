@@ -4,7 +4,7 @@ Read the root [AGENTS.md](../AGENTS.md) first.
 
 ## Shape
 
-- `electron/main/`: the main process. It picks a free port and a token, starts the engine (`backend.ts`, using the
+- `electron/main/`: the main process. It picks the engine's port (the one it used last time when that is still free, else a free one; `port-logic.ts`) and a token, starts the engine (`backend.ts`, using the
   frozen engine in installed builds and `.venv` in development), owns the window, tray, notifications and the
   desktop's own device connection (`node.ts`).
 - `electron/preload/`: the small, typed bridge exposed as `window.sentient`. Keep it minimal; context isolation and

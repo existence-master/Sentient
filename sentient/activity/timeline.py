@@ -268,6 +268,8 @@ class Timeline:
         if channel == "voice":
             return "You asked by voice"
         name = (title or "").strip()
+        if channel == "api":  # the OpenAI-compatible API (#211): another app asked, not the user
+            return f'From another app (API), in the chat "{words.short(name, 60)}"' if name else "From another app (API)"
         return f'You asked in the chat "{words.short(name, 60)}"' if name else "You asked in a chat"
 
     def _chat_item(self, row: Any) -> Item:

@@ -19,6 +19,9 @@ BUILTINS = ["Bash", "Read", "Edit", "Write", "WebFetch"]
 # what decides which credentials Claude Code uses (code.claude.com/docs/en/authentication), recorded by name only
 AUTH_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_OAUTH_")
 AUTH_NAMES = {"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH", "CLAUDE_CONFIG_DIR"}
+# switches that keep Claude Code's own context out (#533), recorded with their values
+CONTEXT_SWITCHES = ("CLAUDE_CODE_DISABLE_CLAUDE_MDS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY", "CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS")
+EMAIL = "maya.rao@example.com"  # the fictional signed-in account (FAKE_CLAUDE_EMAIL overrides it)
 
 
 def emit(event: dict) -> None:
@@ -58,10 +61,21 @@ def main() -> int:
     if argv == ["--version"]:
         print("9.9.9 (Claude Code)")
         return 0
+    email = os.environ.get("FAKE_CLAUDE_EMAIL", EMAIL)
+    if argv[:2] == ["auth", "status"]:  # like Claude Code: the signed-in account, no model call
+        if os.environ.get("FAKE_CLAUDE_AUTH_LOG"):
+            with open(os.environ["FAKE_CLAUDE_AUTH_LOG"], "a", encoding="utf-8") as f:
+                f.write(json.dumps({"argv": argv, "context": {k: os.environ.get(k) for k in CONTEXT_SWITCHES}}) + "\n")
+        if os.environ.get("FAKE_CLAUDE_AUTH") == "fail":  # an older Claude Code, or one that can't say
+            print("error: unknown command 'auth'", file=sys.stderr)
+            return 1
+        print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "email": email, "orgName": f"{email}'s Organization"}))
+        return 0
     scenario = os.environ.get("FAKE_CLAUDE_SCENARIO", "chat")
     record: dict = {"argv": argv, "cwd": os.getcwd(), "scenario": scenario,
                     "has_gateway_token": "SENTIENT_GATEWAY_TOKEN" in os.environ,
                     "tool_search": os.environ.get("ENABLE_TOOL_SEARCH"),
+                    "context": {k: os.environ.get(k) for k in CONTEXT_SWITCHES},
                     "auth_env": sorted(k for k in os.environ if k.upper().startswith(AUTH_PREFIXES) or k.upper() in AUTH_NAMES)}
     stdin = sys.stdin.read()
     record["stdin"] = [json.loads(line) for line in stdin.splitlines() if line.strip()]
@@ -117,6 +131,23 @@ def main() -> int:
     if scenario == "slow":  # a reply that takes a moment, to see how many run at once
         time.sleep(float(os.environ.get("FAKE_CLAUDE_SLEEP", "1")))
     usage = {"input_tokens": 10, "cache_read_input_tokens": 5, "output_tokens": 7}
+    if scenario == "leak":  # like Claude Code with its account note: the email in text, thinking and a tool call
+        upper = email[:7] + email[7:].upper()
+        pieces = [f"Your email is {email[:7]}", f"{email[7:]} and also {upper}", ". Done."]
+        emit({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_l"}}})
+        emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
+                                                "delta": {"type": "thinking_delta", "thinking": f"The note says {email}."}}})
+        for piece in pieces:
+            emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1,
+                                                    "delta": {"type": "text_delta", "text": piece}}})
+        content: list[dict] = [{"type": "text", "text": "".join(pieces)}]
+        if any(t.startswith("mcp__sentient__send_postcard") for t in tools):
+            content.append({"type": "tool_use", "id": "toolu_l", "name": "mcp__sentient__send_postcard",
+                            "input": {"text": f"Write to {email} soon", "to": [email]}})
+        emit({"type": "assistant", "message": {"id": "msg_l", "content": content, "usage": usage},
+              "parent_tool_use_id": None})
+        emit({"type": "result", "subtype": "success", "is_error": False, "result": "".join(pieces), "usage": usage})
+        return 0
     if scenario == "tools" and "<tool_result" not in prompt:
         emit({"type": "stream_event", "event": {"type": "message_start", "message": {"id": "msg_t"}}})
         emit({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,

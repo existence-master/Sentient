@@ -1114,6 +1114,20 @@ class FactMemory:
             await self.store.execute("DELETE FROM pending_erase WHERE id = ?", (pending,))
         return True
 
+    async def cleanup_pending(self, fid: int) -> bool:
+        """Whether part of erasing the deleted memory ``fid`` waits for memory upkeep to replay it (#462, #534). Only
+        a wait marked ready counts: an unmarked one is left by an erase that failed before the delete (or is still
+        running), not by this delete. When the queue can't be read, the answer is True: the store is failing, so a
+        cleanup step may well have failed too."""
+        try:
+            row = await self.store.fetchone(
+                "SELECT 1 FROM pending_erase WHERE fact_id = ? AND complete = 1 LIMIT 1", (fid,)
+            )
+            return row is not None
+        except Exception:
+            log.warning("could not tell whether memory %s's cleanup is still pending", fid, exc_info=True)
+            return True
+
     async def drain_pending_erases(self) -> int:
         """Cleanup steps an erase could not finish (#462), replayed by memory upkeep until they succeed, so
         derived data never outlives its memory because one step failed once (a locked file, a transient

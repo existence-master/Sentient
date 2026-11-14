@@ -8,41 +8,41 @@ license = { text = "AGPL-3.0-only" }
 authors = [{ name = "Existence" }]
 dependencies = [
     # core daemon
-    "fastapi>=0.142.2",
+    "fastapi>=0.162.0",
     "uvicorn[standard]>=0.54.0",
-    "pydantic>=2.13.5",
-    "pydantic-settings>=2.15.0",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.2",
     "pyyaml>=6.0.3",
     "httpx>=0.28.1",
     # llm providers (one SDK, every provider, native tool calling)
-    "litellm>=1.104.0",
+    "litellm>=1.106.6",
     # storage: one sqlite file, vectors + full-text search inside it
     "aiosqlite>=0.22.1",
     "sqlite-vec>=0.1.9",
     # secrets live in the OS keychain, never in config files
     "keyring>=25.7.0",
     # cli
-    "typer>=0.27.2",
+    "typer>=0.27.3",
     "rich>=15.0.0",
     # scheduling helpers (rrule)
     "python-dateutil>=2.9.0.post0",
     # IANA timezone database (Windows has none built in)
-    "tzdata>=2026.5",
-    "tzlocal>=5.4.4",
+    "tzdata>=2026.6",
+    "tzlocal>=5.4.5",
     # last-resort repair of malformed JSON from small local models
-    "json-repair>=0.63.5",
+    "json-repair>=0.64.2",
     # file uploads in the gateway
     "python-multipart>=0.0.32",
     # integrations: external MCP servers, keyless web search, news feeds
     "mcp>=2.3.0",
-    "ddgs>=9.16.0",
+    "ddgs>=9.16.1",
     "feedparser>=6.0.14",
     # text extraction for attachments and memory import
-    "pypdf>=6.19.0",
+    "pypdf>=6.21.4",
     "python-docx>=1.2.0",
     # browser control, IMAP push, device TLS + discovery, pairing QR codes
-    "playwright>=1.63.0",
-    "aioimaplib>=2.0.1",
+    "playwright>=1.64.1",
+    "aioimaplib>=2.0.3",
     "cryptography>=50.0.2",
     "zeroconf>=0.151.5",
     "segno>=1.6.6",
@@ -52,7 +52,7 @@ dependencies = [
 
 [project.optional-dependencies]
 voice = [
-    "numpy>=2.5.3",
+    "numpy>=2.5.4",
     "soundfile>=0.14.0",
     "faster-whisper>=1.2.1",
     "pyttsx3>=2.99",
@@ -76,9 +76,9 @@ voice-gpu = [
     "nvidia-cudnn-cu12>=9.27.0.42",
 ]
 dev = [
-    "pytest>=9.1.1",
-    "pytest-asyncio>=1.4.0",
-    "ruff>=0.16.10",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
+    "ruff>=0.17.3",
     "respx>=0.23.1",
     "pytest-timeout>=2.4.0",
     # runs the tests in parallel (pytest -n auto); CI uses it to keep the Windows job short

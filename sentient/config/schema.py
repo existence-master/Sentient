@@ -284,6 +284,19 @@ class GatewayConfig(BaseModel):
     port: int = Field(7777, ge=0, le=65535, description="0 lets the desktop app pick a free port.")
 
 
+class OpenAIApiConfig(BaseModel):
+    enabled: bool = Field(
+        False,
+        description="Let apps on this computer (editors, scripts, shortcuts) chat with Sentient and use its tools "
+        "through an OpenAI-compatible API at /v1/chat/completions. Each app needs Sentient's API key.",
+    )
+    allow_memory: bool = Field(
+        False,
+        description="Let connected apps use my memories. Apps with the key can then ask about anything Sentient "
+        "remembers, including past chats.",
+    )
+
+
 class ChatConfig(BaseModel):
     history_window: int = Field(30, ge=2, description="Recent messages sent to the model per turn.")
     compress_after_messages: int = Field(
@@ -329,7 +342,8 @@ class ChatConfig(BaseModel):
     incognito_uses_memory: bool = Field(
         True,
         description="Incognito chats can use what Sentient already knows about you. Nothing from an incognito chat "
-        "is ever remembered either way.",
+        "is ever remembered either way. With Claude through your Claude Code, Claude Code itself still tells Claude "
+        "your Claude account's email; when this is off, Sentient keeps that email out of replies and actions.",
     )
     incognito_delete_after_minutes: int = Field(
         30,
@@ -1352,6 +1366,7 @@ class SentientConfig(BaseModel):
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    openai_api: OpenAIApiConfig = Field(default_factory=OpenAIApiConfig)
     chat: ChatConfig = Field(default_factory=ChatConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)

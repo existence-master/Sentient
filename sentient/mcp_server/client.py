@@ -2,8 +2,8 @@
 
 The MCP server is a separate process started by the MCP client (for example Claude Code running
 ``sentient mcp``). It holds no state of its own. It finds the engine through the discovery file
-the engine writes at startup (its loopback port; the desktop picks a fresh port every launch, so
-the configured port is not where it listens), and it signs in with the MCP-only token from the
+the engine writes at startup (its loopback port; the desktop chooses the port itself, the one it
+used last time or a free one when that is taken, so the configured port is not where it listens), and it signs in with the MCP-only token from the
 keychain: a token that opens only the endpoints these tools use, never the gateway token. It
 never reads or writes the gateway token.
 """

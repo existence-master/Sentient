@@ -38,6 +38,15 @@ export const LABELS: Record<string, FieldLabel> = {
     unit: 'min',
     description: 'How long "snooze" puts off a ringing alarm, unless you say how long ("snooze for 5 minutes").'
   },
+  // connected apps (the OpenAI-compatible API, #211)
+  'openai_api.enabled': {
+    label: 'Let apps on this computer chat with Sentient',
+    description: 'They use the address and key below. Anything that needs your OK still asks you here.'
+  },
+  'openai_api.allow_memory': {
+    label: 'Let connected apps use my memories',
+    description: 'Apps with the key can then ask about anything Sentient remembers, including past chats.'
+  },
   // channels (#359)
   'channels.deliver_reminders': {
     label: 'Reminders and alarms on your phone too',

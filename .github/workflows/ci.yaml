@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
-      - run: uvx ruff@0.16.7 check sentient tests packaging
+      - run: uvx ruff@0.17.3 check sentient tests packaging
 
   engine:
     name: Engine tests (${{ matrix.os }})
@@ -86,7 +86,7 @@ jobs:
         working-directory: desktop
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm

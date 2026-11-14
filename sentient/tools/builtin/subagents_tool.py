@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from sentient.agent import reader
+from sentient.llm import claude_code
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, effective_risk, is_unprompted, tool
 from sentient.tools.rules import (
     OUTSIDE_KEY,
@@ -62,6 +63,7 @@ async def delegate_task(
         on_update=None if background else _progress(ctx),
         origin=ctx.origin,
         untrusted=ctx.untrusted,
+        memory_allowed=ctx.memory_allowed,  # never wider than this turn (#525)
     )
 
 
@@ -82,16 +84,19 @@ async def delegate_tasks(ctx: ToolContext, tasks: list[dict]) -> dict:
         return {"error": f"At most {MAX_PARALLEL_TASKS} tasks at once. Split the work or combine related goals."}
     results = await mgr.delegate_many(
         valid, session_id=ctx.session_id, parent_call_id=ctx.call_id, on_update=_progress(ctx), origin=ctx.origin,
-        untrusted=ctx.untrusted,
+        untrusted=ctx.untrusted, memory_allowed=ctx.memory_allowed,
     )
     return {"results": results}
 
 
-def _refuse_source(app: Any, name: str) -> str:
-    """Why the reader can't use ``name`` to fetch its document, or ""."""
+def _refuse_source(app: Any, name: str, ctx: ToolContext) -> str:
+    """Why the reader can't use ``name`` to fetch its document, or "". Never a tool the turn itself can't use: in a
+    turn without memory (#525) the memory and history look-ups are refused here before anything runs."""
     source = app.registry.get(name) if app is not None else None
     if source is None:
         return f"There is no tool called {name}. Give the look-up tool that fetches the email, page or file."
+    if ctx.withholds(name):
+        return f"{name} isn't available in this chat: it doesn't use what Sentient knows about the user."
     if source.plugin == PLUGIN_ID or app.registry.is_hidden(source.plugin) or app.approvals.is_hidden(source):
         return f"{name} can't be used here."
     if Risk(source.risk) != Risk.read:
@@ -118,7 +123,7 @@ async def read_with_reader(ctx: ToolContext, tool: str, fields: dict[str, str], 
         wanted = reader.parse_fields(fields)
     except ValueError as exc:
         return {"error": str(exc)}
-    refusal = _refuse_source(app, tool)
+    refusal = _refuse_source(app, tool, ctx)
     if refusal:
         return {"error": refusal}
     source = app.registry.get(tool)
@@ -144,8 +149,9 @@ async def read_with_reader(ctx: ToolContext, tool: str, fields: dict[str, str], 
     attended = bool(ctx.session_id) and not (ctx.extra.get("task_id") or ctx.extra.get("subagent_id")) and not (
         is_unprompted(ctx.origin)
     )
-    out = await mgr.read(document, wanted, source=where, session_id=ctx.session_id, parent_call_id=ctx.call_id,
-                         attended=attended)
+    with claude_code.private(not ctx.memory_allowed):  # a turn without memory: no account email (#533)
+        out = await mgr.read(document, wanted, source=where, session_id=ctx.session_id, parent_call_id=ctx.call_id,
+                             attended=attended)
     if out.get("status") != "completed":
         return {"error": out.get("error") or "The reader failed.", "subagent_id": out.get("subagent_id")}
     values = out["fields"]

@@ -76,10 +76,13 @@ def test_missing_or_failing_tools_read_as_nothing(monkeypatch):
     assert hardware._run(["nvidia-smi"]) is None
 
 
-def test_detect_never_fails_when_every_probe_does(monkeypatch):
+@pytest.mark.parametrize("host_platform", ["win32", "linux", "darwin"])
+def test_detect_never_fails_when_every_probe_does(monkeypatch, host_platform):
     def broken():
         raise RuntimeError("no access")
 
+    monkeypatch.setattr(sys, "platform", host_platform)
+    monkeypatch.setattr(hardware.platform, "machine", lambda: "x86_64")
     for probe in ("total_ram_gb", "nvidia_gpus", "windows_gpus", "linux_amd_gpus"):
         monkeypatch.setattr(hardware, probe, broken)
     hw = hardware.detect()

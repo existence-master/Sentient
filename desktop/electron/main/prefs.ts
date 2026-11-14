@@ -14,6 +14,8 @@ export interface WindowState {
 interface Stored {
   prefs: ShellPrefs
   window?: WindowState
+  /** The engine's loopback port last launch, tried first next time (#544). Not a pref the window can change. */
+  enginePort?: number
 }
 
 const file = () => join(app.getPath('userData'), 'shell-state.json')
@@ -39,7 +41,7 @@ function save(): void {
   }
 }
 
-/** Tiny persisted state for the shell (window bounds, theme, tray prefs). */
+/** Tiny persisted state for the shell (window bounds, theme, tray prefs, the engine's last port). */
 export const shellState = {
   prefs: (): ShellPrefs => load().prefs,
   setPrefs(patch: ShellPrefs) {
@@ -50,6 +52,11 @@ export const shellState = {
   window: (): WindowState | undefined => load().window,
   setWindow(w: WindowState) {
     load().window = w
+    save()
+  },
+  enginePort: (): unknown => load().enginePort,
+  setEnginePort(port: number) {
+    load().enginePort = port
     save()
   }
 }

@@ -476,3 +476,84 @@ def summary(checks: list[dict]) -> str:
         return " ".join(str(c.get("message") or "") for c in bad).strip()
     done = list(dict.fromkeys(labels(c)[2] for c in checks or [] if c.get("ok")))
     return f"Checked: {', '.join(done)}." if done else ""
+
+
+# A reply that says it kept something in memory although no memory_remember call worked this turn (#526). Real
+# qwen3:8b created a task instead and still said "I've saved that you wake up at 7 a.m.". Deliberately narrow, like
+# the click check: only a claim that is Sentient's own, about this turn and about its memory, never a file save
+# (#492), a task or reminder, a negation ("I didn't save that", "Nothing was saved"), a question or an offer.
+MEMORY_NOT_SAVED = "I haven't saved that as a memory yet. Want me to?"
+MEMORY_NOT_SAVED_INCOGNITO = "This is an incognito chat, so I didn't save that as a memory."
+_MEMORY_VERBS = r"saved|stored|noted|recorded|remembered|memori[sz]ed|logged|kept|added|put|written|jotted"
+_MEMORY_CLAIMS = [
+    # "I've saved that you wake up at 7", "I noted your wake-up time", "I've jotted that down"
+    re.compile(
+        r"\bi(?:'ve| have)?\s+(?:(?:also|now|just|gone ahead and|went ahead and|successfully)\s+){0,2}"
+        r"(?:saved|stored|noted|recorded|remembered|memori[sz]ed|logged|jotted)\s+"
+        r"(?:that\s+(?:you|your)\b|your\b|the fact\b|(?:it|that|this)\s+down\b|down\b)",
+        re.I,
+    ),
+    # "I've made a note that you ...", "I made a note of it"
+    re.compile(r"\bi(?:'ve| have)?\s+(?:just\s+)?made a (?:mental )?note\b", re.I),
+    # "I'll remember that", "I will remember your wake-up time", "I'll note your wake-up time" (real qwen3:8b, no call)
+    re.compile(
+        r"\bi(?:'ll| will|'m going to| am going to)\s+(?:(?:always|definitely|now|make sure to|be sure to)\s+)?"
+        r"(?:(?:remember|memori[sz]e)\b|(?:note|jot)\s+(?:that|this|it|your|down)\b"
+        # "save" and "store" only with a memory or the user named: "I'll save it once you confirm" is an offer
+        r"|(?:save|store)\s+(?:that\s+you\b|your\b|(?:that|this|it)\s+(?:as|in|into|to)\s+(?:(?:my|your|the|a)\s+)?"
+        r"memor(?:y|ies)\b))",
+        re.I,
+    ),
+    # "I've saved that to my memory", "Saved to memory", "That's now in your memories"
+    re.compile(
+        rf"\b(?:(?:{_MEMORY_VERBS})\b[^.!?\n]{{0,60}}?\b(?:to|in|into|as|under)|(?:it|that|this)(?:'s| is)\s+(?:now\s+)?in)"
+        r"\s+(?:(?:my|your|the|a|our)\s+)?(?:long-term\s+)?memor(?:y|ies)\b",
+        re.I,
+    ),
+]
+# before the claim: "I didn't...", "Nothing was saved...", "I haven't..."
+_MEMORY_NEGATION = re.compile(r"n't\b|\b(?:not|never|nothing|none|no)\b", re.I)
+_MEMORY_HEDGE = re.compile(
+    r"\b(?:if|would|could|should|can|might|may|shall|want me to|do you want|let me know|whether)\b", re.I
+)
+# someone else's save: "you saved it in your memory"
+_MEMORY_OTHER_SUBJECT = re.compile(
+    rf"\b(?:you|he|she|they|someone)\s+(?:have\s+|had\s+|just\s+)?(?:{_MEMORY_VERBS})\b", re.I
+)
+# an earlier save, not this turn's: "I already have that", "as I noted earlier"
+_MEMORY_EARLIER = re.compile(r"\b(?:already|earlier|previously|last time)\b", re.I)
+# a claim about something else that keeps things: a file (#492), a task, a reminder, a calendar or an app
+_MEMORY_OTHER_PLACE = re.compile(
+    r"\b(?:files?|folders?|documents?|docs?|pdfs?|notes|notebooks?|drafts?|spreadsheets?|sheets?|pages?|bookmarks?"
+    r"|desktop|downloads|drive|disk|tasks?|remind\w*|alarms?|calendar|events?|schedule|lists?|contacts?|emails?"
+    r"|messages?|projects?|boards?|cards?)\b"
+    r"|\b[a-z0-9][\w~.-]*\.(?:md|txt|json|csv|pdf|docx?|xlsx?|html?|py)\b",
+    re.I,
+)
+
+
+def memory_claim(text: str) -> str:
+    """The first sentence of ``text`` in which Sentient says it kept something in its memory, or "". Folds curly
+    apostrophes, and skips questions, offers, negations, earlier saves and saves to anything other than memory."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", _straight_apostrophes(text)):
+        s = sentence.strip()
+        if not s or s.endswith("?") or _MEMORY_HEDGE.search(s) or _MEMORY_EARLIER.search(s):
+            continue
+        if _MEMORY_OTHER_PLACE.search(s):
+            continue
+        cleaned = re.sub(r"\bno (?:problem|worries)\b", "", s, flags=re.I)  # "No problem, I've saved that..."
+        for pattern in _MEMORY_CLAIMS:
+            match = pattern.search(cleaned)
+            before = cleaned[: match.end()] if match else ""
+            if match and not _MEMORY_NEGATION.search(before) and not _MEMORY_OTHER_SUBJECT.search(before):
+                return s
+    return ""
+
+
+def unmade_memory_claim(text: str, saves: list[dict]) -> str:
+    """The sentence of a reply that claims a memory save when no ``memory_remember`` call worked this turn, or "".
+    Any call that worked keeps the reply as it is: a new fact, an update, a near-duplicate it skipped ("I already
+    had that") and a fact sent to Review all count."""
+    if any(save.get("ok") for save in saves or []):
+        return ""
+    return memory_claim(text)

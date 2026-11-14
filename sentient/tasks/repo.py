@@ -122,7 +122,9 @@ class TaskRepo:
         sets = ", ".join(f"{k} = ?" for k in data)
         await self.store.execute(f"UPDATE tasks SET {sets} WHERE id = ?", (*data.values(), task_id))
 
-    async def update_task_if_status(self, task_id: str, statuses: set[str] | list[str], fields: dict) -> bool:
+    async def update_task_if_status(
+        self, task_id: str, statuses: set[str] | list[str], fields: dict, *, enabled: bool | None = None
+    ) -> bool:
         """Update only while the task is still in one of ``statuses`` (guards background jobs
         against user actions that happened meanwhile). Returns True when a row changed."""
         data = {k: v for k, v in fields.items() if k in TASK_COLUMNS}
@@ -135,9 +137,12 @@ class TaskRepo:
         wanted = list(statuses)
         sets = ", ".join(f"{k} = ?" for k in data)
         marks = ", ".join("?" for _ in wanted)
-        cur = await self.store.execute(
-            f"UPDATE tasks SET {sets} WHERE id = ? AND status IN ({marks})", (*data.values(), task_id, *wanted)
-        )
+        where = f"WHERE id = ? AND status IN ({marks})"
+        params = [*data.values(), task_id, *wanted]
+        if enabled is not None:
+            where += " AND enabled = ?"
+            params.append(1 if enabled else 0)
+        cur = await self.store.execute(f"UPDATE tasks SET {sets} {where}", tuple(params))
         return bool(getattr(cur, "rowcount", 1))
 
     async def delete_task(self, task_id: str) -> None:

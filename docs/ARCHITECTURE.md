@@ -36,7 +36,8 @@ process with one database file.
 ```
 ┌────────────────────────── Sentient.app (Electron) ──────────────────────────┐
 │ main process                                                                │
-│  • picks a free port + random token, spawns the engine, restarts on crash   │
+│  • reuses last launch's port (else a free one) + random token, spawns the   │
+│    engine, restarts on crash                                                │
 │  • window, tray, global shortcuts, screen sharing, notifications, autostart │
 │  • preload bridge window.sentient {getConnection, openExternal, ...}        │
 │                                                                             │
@@ -179,7 +180,7 @@ transcript for resume after restart, and stream progress to the window.
 
 ### Self-evolution with a human in the loop
 After substantial chats and task runs a background reviewer proposes a skill
-(SKILL.md with When to use / Procedure / Pitfalls / Verification). With
+(SKILL.md with When to use / Inputs and access / Procedure / Verification / Output / Approval). With
 `skills.write_approval` on, proposals wait in Skills → Pending. A curator
 retires unused skills; profile upkeep refreshes MEMORY.md and appends learned
 facts to USER.md without overwriting your own text.

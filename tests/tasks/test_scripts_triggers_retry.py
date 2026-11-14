@@ -508,6 +508,44 @@ async def test_planner_watch_default_gives_later_chat_priority_over_answers(make
     assert (await app.tasks.get(task_id))["script"]["condition"] == "changed"
 
 
+async def test_changing_a_watch_in_chat_to_any_change_keeps_changed(make_app):
+    request = "Watch this page and tell me about new events: https://example.org/events"
+    initial = {**PLAN_SCRIPT, "name": "Watch", "description": request,
+               "script": {"code": PAGE_CODE, "condition": "noteworthy", "then": "notify"}}
+    changed = {**initial, "script": {**initial["script"], "condition": "changed"}}
+    llm = FakeProvider(json_replies=[REFINE_ONCE, initial, changed])
+    app = await make_app(llm)
+    task = await app.tasks.create_task(request)
+    await app.tasks.drain()
+
+    await app.tasks.chat(task["task_id"], "Actually tell me about any change at all on that page")
+    await app.tasks.drain()
+    task = await app.tasks.get(task["task_id"])
+
+    assert task["script"]["condition"] == "changed"
+
+
+@pytest.mark.parametrize("chat_message", [
+    "I don't want every change; only important page changes",
+    "Actually don't report every change",
+])
+async def test_changing_a_watch_in_chat_to_exclude_every_change_keeps_noteworthy(make_app, chat_message):
+    request = "Watch this page and tell me about new events: https://example.org/events"
+    initial = {**PLAN_SCRIPT, "name": "Watch", "description": request,
+               "script": {"code": PAGE_CODE, "condition": "noteworthy", "then": "notify"}}
+    changed = {**initial, "script": {**initial["script"], "condition": "changed"}}
+    llm = FakeProvider(json_replies=[REFINE_ONCE, initial, changed])
+    app = await make_app(llm)
+    task = await app.tasks.create_task(request)
+    await app.tasks.drain()
+
+    await app.tasks.chat(task["task_id"], chat_message)
+    await app.tasks.drain()
+    task = await app.tasks.get(task["task_id"])
+
+    assert task["script"]["condition"] == "noteworthy"
+
+
 FETCH = "from sentient_tools import tools, result\npage = tools.web_fetch(url='https://example.org')\n"
 
 

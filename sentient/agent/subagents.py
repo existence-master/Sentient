@@ -36,7 +36,7 @@ from sentient.llm.events import Error, TextDelta, ToolCallEvent, ToolResultEvent
 from sentient.llm.jobs import detached
 from sentient.services import Service, cancel_tasks
 from sentient.store.db import new_id, now_iso
-from sentient.tools.base import Risk, Tool
+from sentient.tools.base import MEMORY_TOOLS, Risk, Tool
 
 log = logging.getLogger(__name__)
 
@@ -190,11 +190,14 @@ class SubagentManager(Service):
         on_update: UpdateFn | None = None,
         origin: str = "user",
         untrusted: str = "",
+        memory_allowed: bool = True,
     ) -> dict:
         """Start a subagent. Foreground: waits and returns ``{subagent_id, status, summary, files_created}``
         (plus ``error``). Background: returns ``{subagent_id, status: "running"}`` right away. ``origin`` is the
         parent run's ``ToolContext.origin``: a subagent of work nobody asked for may only read too (ADR 0017).
-        ``untrusted`` is the parent's ``ToolContext.untrusted``: outside content it read still counts (ADR 0018)."""
+        ``untrusted`` is the parent's ``ToolContext.untrusted``: outside content it read still counts (ADR 0018).
+        ``memory_allowed`` is the parent's ``ToolContext.memory_allowed`` (#525): False, the helper gets no memory
+        tools, no user name and nothing Sentient knows, like the turn that started it."""
         cfg = self.app.config.subagents
         if not cfg.enabled:
             return {"status": "error", "error": "Subagents are turned off in Settings."}
@@ -214,7 +217,8 @@ class SubagentManager(Service):
         )
         self._publish(await self.get(sub_id, events=False))
         task = asyncio.create_task(
-            self._run(sub_id, goal, context or "", tools, session_id, bool(background), on_update, origin, untrusted),
+            self._run(sub_id, goal, context or "", tools, session_id, bool(background), on_update, origin, untrusted,
+                      memory_allowed),
             name=f"subagent:{sub_id}",
             # a foreground helper is part of whatever waits on it (a chat reply); a background one is task work (#149)
             context=detached("task") if background else None,
@@ -301,8 +305,10 @@ class SubagentManager(Service):
         on_update: UpdateFn | None = None,
         origin: str = "user",
         untrusted: str = "",
+        memory_allowed: bool = True,
     ) -> list[dict]:
-        """Run several foreground subagents; at most ``subagents.max_concurrent`` at a time."""
+        """Run several foreground subagents; at most ``subagents.max_concurrent`` at a time. ``origin``,
+        ``untrusted`` and ``memory_allowed`` are the parent's, as for ``delegate``."""
         jobs = [
             self.delegate(
                 str(t.get("goal") or ""),
@@ -313,6 +319,7 @@ class SubagentManager(Service):
                 on_update=on_update,
                 origin=origin,
                 untrusted=untrusted,
+                memory_allowed=memory_allowed,
             )
             for t in tasks
         ]
@@ -365,12 +372,16 @@ class SubagentManager(Service):
         return check
 
     async def _tool_names(
-        self, goal: str, context: str, tools: list[str] | None, role: str, model: str | None = None
+        self, goal: str, context: str, tools: list[str] | None, role: str, model: str | None = None,
+        *, memory_allowed: bool = True,
     ) -> list[str]:
+        """The helper's tools: never wider than its parent turn's, so without memory (#525) no memory tools, even
+        when the goal names them."""
         reg = self.app.registry
         usable = [
             t for t in reg.tools()
             if t.plugin != PLUGIN_ID and not (t.risk >= Risk.send and t.risk_fn is None)
+            and (memory_allowed or t.name not in MEMORY_TOOLS)
         ]
         usable_names = {t.name for t in usable}
         if tools:
@@ -394,7 +405,8 @@ class SubagentManager(Service):
         return [n for n in selected if n in usable_names]
 
     def _system_prompt(self, *, private: bool = False) -> str:
-        """``private``: started from an incognito chat that doesn't use memory (#154), so the user's name stays out."""
+        """``private``: started from a turn without memory (an incognito chat that doesn't use it, #154, #525), so the
+        user's name stays out."""
         from sentient.tools.builtin.time_tool import resolve_tz
 
         cfg = self.app.config.assistant
@@ -416,6 +428,7 @@ class SubagentManager(Service):
         on_update: UpdateFn | None,
         origin: str = "user",
         untrusted: str = "",
+        memory_allowed: bool = True,
     ) -> None:
         cfg = self.app.config.subagents
         agent = self.app.agent
@@ -437,18 +450,22 @@ class SubagentManager(Service):
             async with self._slot():
                 note({"type": "info", "content": f"Started: {goal[:200]}"}, "Started")
                 incognito = await self.app.store.is_incognito(session_id)  # kept if the chat is deleted (#154)
-                private = incognito and not self.app.config.chat.incognito_uses_memory
+                # never wider than the parent turn (#525); the chat's own setting still holds for a caller that
+                # didn't pass the parent's decision
+                allowed = memory_allowed and not (incognito and not self.app.config.chat.incognito_uses_memory)
+                private = not allowed
                 messages = [
                     {"role": "system", "content": self._system_prompt(private=private)},
                     {"role": "user", "content": f"Goal: {goal}" + (f"\n\nContext:\n{context}" if context else "")},
                 ]
                 ctx = agent.tool_context(session_id, "subagent", origin=origin)
                 ctx.incognito = incognito
+                ctx.memory_allowed = allowed
                 ctx.untrusted = untrusted
                 ctx.extra["subagent_id"] = sub_id
                 # where it would use the primary model, a helper uses the chat's own model (#312)
                 model = await agent.helper_model(session_id, cfg.role)
-                names = await self._tool_names(goal, context, tools, cfg.role, model)
+                names = await self._tool_names(goal, context, tools, cfg.role, model, memory_allowed=allowed)
                 narration = ""
                 async with asyncio.timeout(cfg.timeout_minutes * 60):
                     async for event in agent.run_loop(
