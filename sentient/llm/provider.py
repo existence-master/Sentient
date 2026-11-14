@@ -397,6 +397,7 @@ class LiteLLMProvider:
                     chunks: list[Any] = []
                     in_think = False
                     finished = False
+                    name_tool_calls = ToolCallNamer()
                     try:
                         async for chunk in response:
                             chunks.append(chunk)
@@ -628,15 +629,34 @@ def tool_arguments(raw: str | None) -> dict:
     return args if isinstance(args, dict) else {"_raw": raw}
 
 
-def name_tool_calls(delta: Any) -> None:
-    """Give a streamed tool call that arrives without an id one of our own (#509). Ollama 0.9.0 sends a call with no
-    arguments (``{}``, such as ``browser_screenshot``) without an id, and LiteLLM's ``stream_chunk_builder`` drops
-    it: the model's call was lost and the round looked like an empty answer. Only a call's first piece has a name;
-    later pieces of its arguments are left as they are."""
-    for tc in getattr(delta, "tool_calls", None) or []:
-        function = getattr(tc, "function", None)
-        if not getattr(tc, "id", None) and getattr(function, "name", None):
-            tc.id = f"call_{uuid.uuid4().hex[:12]}"
+class ToolCallNamer:
+    """Give every streamed tool call its own id and index before ``stream_chunk_builder`` assembles them (#509).
+
+    Ollama 0.9.0 sends a call with no arguments (``{}``, such as ``browser_screenshot``) without an id, and LiteLLM's
+    builder drops it: the model's call was lost and the round looked like an empty answer. It also sends parallel
+    calls in separate chunks, each numbered index 0, and the builder groups by index: two calls became one (the last
+    name, every call's arguments). A piece with a name starts a call; if its index is already taken it gets the next
+    free one. Pieces without a name (more of the arguments) follow their call. OpenAI-style streams, which number
+    their calls, keep their ids and indexes."""
+
+    def __init__(self) -> None:
+        self.ours: dict[int, int] = {}  # the provider's index -> ours, for the call it is streaming now
+        self.ids: dict[int, str] = {}  # our index -> that call's id
+        self.next_free = 0
+
+    def __call__(self, delta: Any) -> None:
+        for tc in getattr(delta, "tool_calls", None) or []:
+            theirs = getattr(tc, "index", None) or 0
+            function = getattr(tc, "function", None)
+            if getattr(function, "name", None):
+                current = self.ours.get(theirs)
+                same_call = current is not None and tc.id and self.ids.get(current) == tc.id
+                if not same_call:
+                    current = theirs if theirs >= self.next_free else self.next_free
+                    self.ours[theirs] = current
+                    self.next_free = current + 1
+                    self.ids[current] = tc.id = tc.id or f"call_{uuid.uuid4().hex[:12]}"
+            tc.index = self.ours.get(theirs, theirs)
 
 
 def split_think(text: str, in_think: bool) -> tuple[list[tuple[str, bool]], bool]:

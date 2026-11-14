@@ -69,3 +69,41 @@ async def test_ids_the_model_gave_and_arguments_in_pieces_stay_as_they_were(stre
     [call] = await _tool_calls(LiteLLMProvider(SentientConfig()))
     assert call.id == "call_from_ollama"
     assert call.name == "browser_open" and call.arguments == {"url": "http://127.0.0.1/test.html"}
+
+
+async def test_parallel_calls_without_ids_in_separate_chunks_stay_separate(stream_of):
+    # Ollama 0.9.0 sends each parallel call in its own chunk, and every one arrives as index 0
+    stream_of.append([
+        Delta(content=None, tool_calls=[_call("browser_screenshot", "{}", None)]),
+        Delta(content=None, tool_calls=[_call("get_battery", "{}", None)]),
+    ])
+    calls = await _tool_calls(LiteLLMProvider(SentientConfig()))
+    assert [(c.name, c.arguments) for c in calls] == [("browser_screenshot", {}), ("get_battery", {})]
+    assert len({c.id for c in calls}) == 2
+
+
+async def test_parallel_calls_keep_their_own_arguments(stream_of):
+    stream_of.append([
+        Delta(content=None, tool_calls=[_call("get_weather", '{"city": "Pune"}', "call_a")]),
+        Delta(content=None, tool_calls=[_call("browser_screenshot", "{}", None)]),
+        Delta(content=None, tool_calls=[_call("get_weather", '{"city": ', "call_c")]),
+        Delta(content=None, tool_calls=[_call(None, '"Mysuru"}', None)]),
+    ])
+    calls = await _tool_calls(LiteLLMProvider(SentientConfig()))
+    assert [(c.name, c.arguments) for c in calls] == [
+        ("get_weather", {"city": "Pune"}), ("browser_screenshot", {}), ("get_weather", {"city": "Mysuru"}),
+    ]
+    assert [c.id for c in calls][::2] == ["call_a", "call_c"]
+
+
+async def test_numbered_calls_from_openai_style_streams_are_unchanged(stream_of):
+    stream_of.append([
+        Delta(content=None, tool_calls=[_call("get_weather", '{"city": ', "call_a", index=0)]),
+        Delta(content=None, tool_calls=[_call("get_battery", "", "call_b", index=1)]),
+        Delta(content=None, tool_calls=[_call(None, '"Pune"}', None, index=0)]),
+        Delta(content=None, tool_calls=[_call(None, "{}", None, index=1)]),
+    ])
+    calls = await _tool_calls(LiteLLMProvider(SentientConfig()))
+    assert [(c.id, c.name, c.arguments) for c in calls] == [
+        ("call_a", "get_weather", {"city": "Pune"}), ("call_b", "get_battery", {}),
+    ]
