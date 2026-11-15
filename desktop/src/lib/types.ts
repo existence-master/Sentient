@@ -398,7 +398,7 @@ export interface McpServerConfig {
 
 export interface IntegrationsConfig {
   oauth_redirect_port: number
-  search_provider: 'duckduckgo' | 'brave' | 'google_cse' | 'searxng'
+  search_provider: 'duckduckgo' | 'youcom' | 'brave' | 'google_cse' | 'searxng'
   searxng_url: string
   weather_provider: 'open_meteo' | 'accuweather'
   mcp_servers: Record<string, McpServerConfig>

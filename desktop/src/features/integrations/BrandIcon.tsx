@@ -60,6 +60,7 @@ const BY_ID: Record<string, Brand> = {
   accuweather: { kind: 'si', icon: siAccuweather },
   newsapi: { kind: 'tabler', icon: IconNews, color: '#2563EB' },
   brave_search: { kind: 'si', icon: siBrave },
+  youcom: { kind: 'tabler', icon: IconWorldSearch, color: '#8B5CF6' },
   google_cse: { kind: 'si', icon: siGoogle },
   google_maps: { kind: 'si', icon: siGooglemaps },
   internet_search: { kind: 'tabler', icon: IconWorldSearch, color: '#8B5CF6' },

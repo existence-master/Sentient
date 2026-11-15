@@ -55,6 +55,7 @@ const PLUGINS: Record<string, ToolIdentity> = {
   whatsapp: { icon: IconBrandWhatsapp, label: 'WhatsApp', tint: 'text-[#25d366]' },
   internet_search: { icon: IconWorldSearch, label: 'Internet search', tint: 'text-info' },
   brave_search: { icon: IconWorldSearch, label: 'Brave Search', tint: 'text-info' },
+  youcom: { icon: IconWorldSearch, label: 'You.com', tint: 'text-info' },
   google_cse: { icon: IconWorldSearch, label: 'Google search', tint: 'text-info' },
   web: { icon: IconWorld, label: 'Web pages', tint: 'text-info' },
   weather: { icon: IconCloud, label: 'Weather', tint: 'text-info' },
