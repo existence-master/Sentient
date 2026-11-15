@@ -283,7 +283,7 @@ export const LABELS: Record<string, FieldLabel> = {
   'integrations.oauth_redirect_port': { label: 'OAuth callback port', description: '0 picks a free port each time.' },
   'integrations.search_provider': {
     label: 'Web search',
-    options: { duckduckgo: 'DuckDuckGo', brave: 'Brave', google_cse: 'Google', searxng: 'SearXNG' }
+    options: { duckduckgo: 'DuckDuckGo', youcom: 'You.com', brave: 'Brave', google_cse: 'Google', searxng: 'SearXNG' }
   },
   'integrations.searxng_url': { label: 'SearXNG address', placeholder: 'https://search.example.com' },
   'integrations.weather_provider': { label: 'Weather', options: { open_meteo: 'Open-Meteo', accuweather: 'AccuWeather' } },

@@ -114,6 +114,37 @@ class BravePlugin(IntegrationPlugin):
         return {"api_key": key}, None
 
 
+class YouComPlugin(IntegrationPlugin):
+    id = "youcom"
+    display_name = "You.com"
+    description = ("Optional: an API key for You.com search. You.com search already works without one (about 100 "
+                   "searches a day); a key raises the limit.")
+    category = "knowledge"
+    icon = "search"
+    auth_type = "api_key"
+    optional_alternative_for = "internet_search"
+    tools = []
+    setup_fields = [SetupField("api_key", "You.com API key", secret=True, help="From you.com/platform.")]
+    docs_url = "https://docs.you.com/"
+    instructions_md = (
+        "You.com search works without a key. Set the search provider to **youcom** in **Settings → Integrations** "
+        "and you're done. A key is only needed for more than about 100 searches a day.\n\n"
+        "1. Open https://you.com/platform and sign in.\n"
+        "2. Create an API key and copy it.\n"
+        "3. Paste it here and click **Connect**.\n"
+        "4. In **Settings → Integrations**, set the search provider to **youcom**.\n"
+    )
+
+    async def validate(self, fields: dict[str, str], mgr: IntegrationManager) -> tuple[dict, str | None]:
+        from sentient.integrations.plugins.search import YOUCOM_USER_AGENT
+
+        (key,) = _require(fields, "api_key")
+        async with http_client(headers={"X-API-Key": key, "User-Agent": YOUCOM_USER_AGENT}) as http:
+            r = await http.post("https://ydc-index.io/v1/search", json={"query": "sentient", "count": 1})
+        _rejected(r, "You.com")
+        return {"api_key": key}, None
+
+
 class GoogleCSEPlugin(IntegrationPlugin):
     id = "google_cse"
     display_name = "Google Custom Search"
@@ -180,4 +211,4 @@ class GoogleMapsPlugin(IntegrationPlugin):
         return {"api_key": key}, None
 
 
-PLUGINS = [AccuWeatherPlugin(), NewsAPIPlugin(), BravePlugin(), GoogleCSEPlugin(), GoogleMapsPlugin()]
+PLUGINS = [AccuWeatherPlugin(), NewsAPIPlugin(), BravePlugin(), YouComPlugin(), GoogleCSEPlugin(), GoogleMapsPlugin()]

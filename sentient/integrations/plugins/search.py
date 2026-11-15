@@ -1,4 +1,5 @@
-"""Internet search. Keyless default: DuckDuckGo (ddgs). Alternatives: Brave, Google CSE, SearXNG."""
+"""Internet search. Keyless default: DuckDuckGo (ddgs). Alternatives: You.com (keyless or keyed), Brave, Google CSE,
+SearXNG."""
 
 from __future__ import annotations
 
@@ -45,6 +46,28 @@ async def google_cse_search(key: str, cx: str, query: str, n: int) -> list[dict]
     return [{"title": x.get("title"), "url": x.get("link"), "snippet": x.get("snippet")} for x in rows]
 
 
+YOUCOM_USER_AGENT = "youdotcom-integration/existence-master-Sentient"
+
+
+async def youcom_search(key: str | None, query: str, n: int) -> list[dict]:
+    """You.com web search. No key: the free keyless endpoint (about 100 searches a day). With a key: the API."""
+    headers = {"User-Agent": YOUCOM_USER_AGENT, "Accept": "application/json"}
+    async with http_client(headers={**headers, "X-API-Key": key} if key else headers) as http:
+        if key:
+            r = await http.post("https://ydc-index.io/v1/search", json={"query": query, "count": min(n, 100)})
+        else:
+            r = await http.get("https://api.you.com/v1/agents/search", params={"query": query, "count": min(n, 50)})
+    if r.status_code in (401, 403) and key:
+        raise IntegrationError("You.com didn't accept the API key. Reconnect You.com in Integrations.")
+    if r.status_code in (402, 429) and not key:
+        raise IntegrationError("You.com's free search limit is used up for today. Connect a You.com API key for more.")
+    r.raise_for_status()
+    data = r.json().get("results") or {}
+    rows = list(data.get("web") or []) + list(data.get("news") or [])
+    return [{"title": x.get("title"), "url": x.get("url"),
+             "snippet": " ".join((x.get("snippets") or [])[:2]) or x.get("description")} for x in rows[:n]]
+
+
 async def searxng_search(base: str, query: str, n: int) -> list[dict]:
     async with http_client() as http:
         r = await http.get(base.rstrip("/") + "/search", params={"q": query, "format": "json"})
@@ -75,6 +98,9 @@ async def web_search(ctx: ToolContext, query: str, max_results: int = 8) -> dict
             results = await google_cse_search(c["api_key"], c["cx"], query, n)
         else:
             note = "Google Custom Search isn't connected; used DuckDuckGo instead."
+    elif provider == "youcom":
+        c = await mgr.get_credentials("youcom") if await mgr.is_connected("youcom") else None
+        results = await youcom_search((c or {}).get("api_key") or None, query, n)
     elif provider == "searxng":
         if cfg.searxng_url:
             results = await searxng_search(cfg.searxng_url, query, n)
@@ -96,8 +122,8 @@ class SearchPlugin(IntegrationPlugin):
     display_name = "Internet Search"
     description = (
         "Searches the web for real-time, factual information on any topic. Works out of the box with "
-        "DuckDuckGo and needs no account or key. You can switch to Brave Search, Google Custom Search or "
-        "your own SearXNG server in Settings."
+        "DuckDuckGo and needs no account or key. You can switch to You.com (also works without a key), Brave "
+        "Search, Google Custom Search or your own SearXNG server in Settings."
     )
     category = "knowledge"
     icon = "search"

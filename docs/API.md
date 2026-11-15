@@ -1455,7 +1455,7 @@ in Settings > Tasks (`tasks.email`):
 - `entity_picker`: the integration has devices to choose from (Home Assistant, see below), so the window shows which
   ones Sentient may use.
 - `alternative_for`: for optional keyed providers that replace a keyless builtin (`accuweather` → `weather`,
-  `newsapi` → `news`, `brave_search`/`google_cse` → `internet_search`, `google_maps` → `maps`); these have no tools
+  `newsapi` → `news`, `brave_search`/`youcom`/`google_cse` → `internet_search`, `google_maps` → `maps`); these have no tools
   of their own. `null` otherwise.
 - Builtins (`internet_search`, `web`, `weather`, `maps`, `news`, `charts`) are always `connected: true`.
 - Google integrations share one OAuth Desktop client stored once; after it is saved, their `setup.fields` come back

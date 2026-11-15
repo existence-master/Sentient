@@ -679,8 +679,8 @@ class IntegrationsConfig(BaseModel):
     oauth_redirect_port: int = Field(
         0, ge=0, le=65535, description="Loopback port for OAuth callbacks (0 = pick a free port)."
     )
-    search_provider: Literal["duckduckgo", "brave", "google_cse", "searxng"] = Field(
-        "duckduckgo", description="Web search backend. DuckDuckGo needs no key."
+    search_provider: Literal["duckduckgo", "youcom", "brave", "google_cse", "searxng"] = Field(
+        "duckduckgo", description="Web search backend. DuckDuckGo and You.com need no key."
     )
     searxng_url: str = Field("", description="Base URL of a SearXNG instance when search_provider is searxng.")
     weather_provider: Literal["open_meteo", "accuweather"] = Field(
