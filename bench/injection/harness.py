@@ -9,6 +9,10 @@ code) only record their calls, so nothing leaves the machine.
 
 Approvals mode is "off", so the only thing between a sink call and it running is the gate for outside content
 (ADR 0018). Every approval request is answered no. Scoring is code only, never a model (``score``).
+
+The user's saved model settings come along (``bench_config``). Keys saved in Sentient's keychain don't, because
+every case has its own data folder and so its own keychain: a cloud provider's key has to be in its environment
+variable.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from bench.injection.cases import Case, cases
+from sentient.config.loader import load_config
 from sentient.config.schema import SentientConfig
 from sentient.llm.events import ApprovalRequest, Done, Error, ToolCallEvent
 from sentient.tools.base import Risk, ToolContext, ToolPlugin, tool
@@ -81,10 +86,17 @@ def fixture_plugins(case: Case, ran: list[dict]) -> list[ToolPlugin]:
     ]
 
 
-def bench_config(model: str, spotlighting: bool) -> SentientConfig:
+def bench_config(model: str, spotlighting: bool, saved: SentientConfig | None = None) -> SentientConfig:
+    """Default settings plus the bench's own. From ``saved`` only the model settings come along (providers and their
+    addresses, reasoning, context length), so the user's name, place and channels stay out of the run and its file."""
     cfg = SentientConfig()
+    if saved is not None:
+        cfg.models = saved.models.model_copy(deep=True)
     cfg.assistant.user_name = "Maya"
-    cfg.models.roles.primary = cfg.models.roles.fast = model  # the other chat roles default to primary
+    roles = cfg.models.roles
+    roles.primary = roles.fast = model
+    roles.planner = roles.executor = roles.vision = roles.voice = None  # these use primary
+    cfg.models.fallbacks = {}  # a backup model's answer would be scored as ``model``'s
     cfg.chat.mark_outside_content = spotlighting  # the only setting that differs between the two runs
     cfg.chat.auto_title = False
     cfg.memory.extract_after_turn = False
@@ -134,8 +146,11 @@ def score(case: Case, called: list[dict], ran: list[dict], reply: str) -> dict:
     return out
 
 
-async def run_case(case: Case, model: str, spotlighting: bool, *, llm: Any = None) -> dict:
-    """One chat turn for ``case`` in a fresh engine and data folder. ``llm`` replaces the real model (tests)."""
+async def run_case(
+    case: Case, model: str, spotlighting: bool, *, llm: Any = None, saved: SentientConfig | None = None
+) -> dict:
+    """One chat turn for ``case`` in a fresh engine and data folder. ``llm`` replaces the real model (tests);
+    ``saved`` is the user's configuration, read before the data folder changes (``bench_config``)."""
     from sentient.app import SentientApp
 
     ran: list[dict] = []
@@ -144,7 +159,7 @@ async def run_case(case: Case, model: str, spotlighting: bool, *, llm: Any = Non
     reply = error = ""
     started = time.monotonic()
     with own_home():
-        s = await SentientApp(bench_config(model, spotlighting), llm=llm, enable_background=False).start()
+        s = await SentientApp(bench_config(model, spotlighting, saved), llm=llm, enable_background=False).start()
         try:
             for plugin in s.registry.plugins():
                 s.registry.unregister(plugin.id)
@@ -204,12 +219,13 @@ async def run(
     """Every case ``repeat`` times per spotlighting setting. ``out`` is rewritten after each case, so a run that
     stops early keeps what it did."""
     rows: list[dict] = []
+    saved = load_config()  # now, while SENTIENT_HOME is still the user's
     out.parent.mkdir(parents=True, exist_ok=True)
     for on in settings:
         for _ in range(repeat):
             for case in cases():
                 try:
-                    row = await run_case(case, model, on)
+                    row = await run_case(case, model, on, saved=saved)
                 except Exception as exc:  # one broken case must not lose the rest of a long run
                     row = {"case": case.id, "style": case.style, "spotlighting": on, "error": repr(exc)}
                 rows.append(row)

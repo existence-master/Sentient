@@ -351,7 +351,11 @@ def bench_injection(
         None, help="Where every case's reply and tool calls are saved (default: .test-homes/ in the checkout)."
     ),
 ):
-    """Prompt injection: chat turns that read a web page, an email or a file with an attack in it (issue #179)."""
+    """Prompt injection: chat turns that read a web page, an email or a file with an attack in it (issue #179).
+
+    Uses your saved model settings. Keys saved in Sentient are not used, because every case has its own data
+    folder: put a cloud provider's key in its environment variable, for example ANTHROPIC_API_KEY.
+    """
     settings = {"on": [True], "off": [False], "both": [True, False]}.get(spotlighting)
     if settings is None:
         console.print("--spotlighting is on, off or both.")
