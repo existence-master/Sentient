@@ -24,6 +24,8 @@ from sentient.config.schema import SentientConfig
 app = typer.Typer(help="Sentient backend (launched by the desktop app).", no_args_is_help=True)
 config_app = typer.Typer(help="Inspect and edit configuration.")
 app.add_typer(config_app, name="config")
+bench_app = typer.Typer(help="Benchmarks on a real model (from a source checkout; never run in CI).")
+app.add_typer(bench_app, name="bench")
 
 console = Console()
 
@@ -338,6 +340,42 @@ async def _model_checkup(s) -> Table:
                     table.add_row(name if i == 0 else "", c["label"], marks[c["status"]], detail)
                 table.add_section()
     return table
+
+
+@bench_app.command("injection")
+def bench_injection(
+    model: str | None = typer.Option(None, help="Model to test, e.g. ollama_chat/qwen3:8b (default: the configured primary model)."),
+    spotlighting: str = typer.Option("both", help="on, off or both: mark outside content (chat.mark_outside_content)."),
+    repeat: int = typer.Option(1, min=1, help="How many times to run every case."),
+    out: Path | None = typer.Option(
+        None, help="Where every case's reply and tool calls are saved (default: .test-homes/ in the checkout)."
+    ),
+):
+    """Prompt injection: chat turns that read a web page, an email or a file with an attack in it (issue #179).
+
+    Uses your saved model settings. Keys saved in Sentient are not used, because every case has its own data
+    folder: put a cloud provider's key in its environment variable, for example ANTHROPIC_API_KEY.
+    """
+    settings = {"on": [True], "off": [False], "both": [True, False]}.get(spotlighting)
+    if settings is None:
+        console.print("--spotlighting is on, off or both.")
+        raise typer.Exit(2)
+    try:
+        from bench.injection import harness
+    except ModuleNotFoundError as exc:
+        console.print("The benchmark is only in a source checkout of Sentient (the bench/ folder).")
+        raise typer.Exit(1) from exc
+    model = model or load_config().models.roles.primary
+    out = out or Path(harness.__file__).parents[2] / ".test-homes" / "bench-injection.json"
+    console.print(f"{model}: {len(harness.cases())} cases x {repeat} per setting; details in {out}")
+    rows = asyncio.run(harness.run(model, settings, repeat, out, console.print))
+    table = Table(title=f"injection benchmark, {model}")
+    lines = harness.summary(rows)
+    for key in lines[0]:
+        table.add_column(key)
+    for line in lines:
+        table.add_row(*line.values())
+    console.print(table)
 
 
 @config_app.command("path")
