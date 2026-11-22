@@ -636,7 +636,7 @@ class ToolCallNamer:
     builder drops it: the model's call was lost and the round looked like an empty answer. It also sends parallel
     calls in separate chunks, each numbered index 0, and the builder groups by index: two calls became one (the last
     name, every call's arguments). A piece with a name starts a call; if its index is already taken it gets the next
-    free one. Pieces without a name (more of the arguments) follow their call. OpenAI-style streams, which number
+    free one, and an index not yet used is kept even when it comes after a higher one. Pieces without a name (more of the arguments) follow their call. OpenAI-style streams, which number
     their calls, keep their ids and indexes."""
 
     def __init__(self) -> None:
@@ -652,9 +652,9 @@ class ToolCallNamer:
                 current = self.ours.get(theirs)
                 same_call = current is not None and tc.id and self.ids.get(current) == tc.id
                 if not same_call:
-                    current = theirs if theirs >= self.next_free else self.next_free
+                    current = self.next_free if theirs in self.ids else theirs
                     self.ours[theirs] = current
-                    self.next_free = current + 1
+                    self.next_free = max(self.next_free, current + 1)
                     self.ids[current] = tc.id = tc.id or f"call_{uuid.uuid4().hex[:12]}"
             tc.index = self.ours.get(theirs, theirs)
 

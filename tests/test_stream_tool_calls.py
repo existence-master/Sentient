@@ -43,7 +43,11 @@ def stream_of(monkeypatch):
 
         return chunks()
 
+    async def no_limit(self, model, api_base):
+        return None  # no /api/show lookup: the tests stay offline
+
     monkeypatch.setattr(litellm, "acompletion", acompletion)
+    monkeypatch.setattr(LiteLLMProvider, "_model_max_context", no_limit)
     monkeypatch.setattr("sentient.llm.provider.secrets.get_secret", lambda *a, **k: None)
     return replies
 
@@ -102,6 +106,18 @@ async def test_numbered_calls_from_openai_style_streams_are_unchanged(stream_of)
         Delta(content=None, tool_calls=[_call("get_battery", "", "call_b", index=1)]),
         Delta(content=None, tool_calls=[_call(None, '"Pune"}', None, index=0)]),
         Delta(content=None, tool_calls=[_call(None, "{}", None, index=1)]),
+    ])
+    calls = await _tool_calls(LiteLLMProvider(SentientConfig()))
+    assert [(c.id, c.name, c.arguments) for c in calls] == [
+        ("call_a", "get_weather", {"city": "Pune"}), ("call_b", "get_battery", {}),
+    ]
+
+
+async def test_numbered_calls_that_arrive_out_of_order_keep_their_indexes(stream_of):
+    # index 1 before index 0: index 0 is still free, so it must not be moved after index 1
+    stream_of.append([
+        Delta(content=None, tool_calls=[_call("get_battery", "{}", "call_b", index=1)]),
+        Delta(content=None, tool_calls=[_call("get_weather", '{"city": "Pune"}', "call_a", index=0)]),
     ])
     calls = await _tool_calls(LiteLLMProvider(SentientConfig()))
     assert [(c.id, c.name, c.arguments) for c in calls] == [
