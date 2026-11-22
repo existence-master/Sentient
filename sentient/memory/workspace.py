@@ -52,12 +52,15 @@ Short, bulleted, and pruned. Atomic facts live in the database; this file holds 
 
 def without_user(text: str, user_name: str) -> str:
     """SOUL.md for a turn without memory (#552): the persona stays and the user's name goes. Setup and the personality
-    presets write the name into it ("You are Sentient, Maya Rao's chief of staff"), so the full name in any case, then
-    each part of it written as configured ("Maya", not "maya"), becomes "the user", as in a home with no name."""
+    presets write the name into it ("You are Sentient, Maya Rao's chief of staff"), so the full name, then each part of
+    it written as configured ("Maya", not "maya"), becomes "the user", as in a home with no name. Only a name of two or
+    more words is matched in any case: a one-word name such as "Will" is also an ordinary word ("what you will try
+    next"), so it is matched as configured, like the parts."""
     words = user_name.split()
     if not words:
         return text
-    full = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.IGNORECASE)
+    flags = re.IGNORECASE if len(words) > 1 else 0
+    full = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", flags)
     text = full.sub("the user", text)
     for part in sorted({w for w in words if len(w) >= 2}, key=len, reverse=True):
         text = re.sub(r"(?<!\w)" + re.escape(part) + r"(?!\w)", "the user", text)
