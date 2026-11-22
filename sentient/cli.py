@@ -17,7 +17,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from sentient import __version__, paths
+from sentient import __version__, paths, secrets
 from sentient.config import config_json_schema, load_config, save_config
 from sentient.config.schema import SentientConfig
 
@@ -32,6 +32,7 @@ def _setup_logging(verbose: bool) -> None:
     paths.logs_dir().mkdir(parents=True, exist_ok=True)
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    secrets.install_log_redaction()  # a secret value never reaches the log (#178)
     for noisy in ("LiteLLM", "httpx", "httpcore", "aiosqlite", "multipart", "urllib3", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 

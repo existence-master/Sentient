@@ -39,7 +39,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from sentient import paths
+from sentient import paths, secrets
 from sentient.agent import (
     dry_run,
     fastpath,
@@ -2619,7 +2619,8 @@ class Agent:
             )
         except Exception as exc:
             log.exception("tool %s failed", tc.name)
-            return {"error": f"{type(exc).__name__}: {exc}"}, True, int((time.perf_counter() - started) * 1000)
+            error = secrets.redact(f"{type(exc).__name__}: {exc}")  # a key in an exception stays out of the result (#178)
+            return {"error": error}, True, int((time.perf_counter() - started) * 1000)
 
     async def run_tool(
         self, call: ToolCall, ctx: ToolContext, *, role: str = "primary", model: str | None = None
