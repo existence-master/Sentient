@@ -96,6 +96,18 @@ def remember(value: str | None) -> None:
         _known.add(value)
 
 
+def remember_fields(data: object) -> None:
+    """Note every string inside a JSON credential, so a single token field is hidden too (not just the whole blob)."""
+    if isinstance(data, str):
+        remember(data)
+    elif isinstance(data, dict):
+        for item in data.values():
+            remember_fields(item)
+    elif isinstance(data, list):
+        for item in data:
+            remember_fields(item)
+
+
 def redact(text: str) -> str:
     """``text`` with every known secret value replaced by ``<secret>`` (longest first)."""
     for value in sorted(_known, key=len, reverse=True):
@@ -172,6 +184,7 @@ def delete_secret(name: str) -> bool:
 
 # JSON values too long for one keychain entry (OAuth tokens) are split over ``<name>:1``, ``<name>:2``...
 def save_json(name: str, data: dict) -> bool:
+    remember_fields(data)
     raw = json.dumps(data, separators=(",", ":"))
     parts = [raw[i : i + CHUNK] for i in range(0, len(raw), CHUNK)] or [""]
     if len(parts) > MAX_CHUNKS:
@@ -203,7 +216,10 @@ def load_json(name: str) -> dict | None:
         data = json.loads("".join(parts))
     except json.JSONDecodeError:
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    remember_fields(data)
+    return data
 
 
 def delete_json(name: str) -> None:

@@ -2604,6 +2604,8 @@ class Agent:
             return self._raw_arguments_error(tool, tc)
         try:
             result = await tool.call(ctx, tc.arguments)
+            if isinstance(result, dict) and isinstance(result.get("error"), str):  # a returned error is cleaned too (#178)
+                result = dict(result, error=secrets.redact(result["error"]))
             return result, False, int((time.perf_counter() - started) * 1000)
         except ValidationError as exc:
             problems = "; ".join(

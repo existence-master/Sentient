@@ -73,3 +73,8 @@ async def test_tool_error_hides_secret(config, isolated_home):
         assert "<secret>" in res.result["error"]
     finally:
         await s.stop()
+
+
+def test_json_credential_fields_are_remembered():
+    secrets.remember_fields({"a": {"t": "rt-0123456789"}, "n": 5, "l": ["lst-abcdefghij"]})
+    assert secrets.redact("x rt-0123456789 lst-abcdefghij") == "x <secret> <secret>"
