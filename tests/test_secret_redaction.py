@@ -78,3 +78,23 @@ async def test_tool_error_hides_secret(config, isolated_home):
 def test_json_credential_fields_are_remembered():
     secrets.remember_fields({"a": {"t": "rt-0123456789"}, "n": 5, "l": ["lst-abcdefghij"]})
     assert secrets.redact("x rt-0123456789 lst-abcdefghij") == "x <secret> <secret>"
+
+
+def test_json_credential_fields_in_tuples_are_remembered():
+    secrets.remember_fields({"t": ("tup-0123456789", ["in-abcdefghij"])})
+    assert secrets.redact("x tup-0123456789 in-abcdefghij") == "x <secret> <secret>"
+
+
+def test_create_app_installs_redaction_on_a_bare_root_logger():
+    # a `serve --reload` worker starts with no root handler and never ran the CLI's logging setup
+    from sentient.gateway.app import create_app
+
+    root = logging.getLogger()
+    saved = root.handlers[:]
+    root.handlers.clear()
+    try:
+        create_app()
+        assert root.handlers
+        assert all(any(isinstance(f, secrets.RedactSecrets) for f in h.filters) for h in root.handlers)
+    finally:
+        root.handlers[:] = saved

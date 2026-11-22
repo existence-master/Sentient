@@ -103,7 +103,7 @@ def remember_fields(data: object) -> None:
     elif isinstance(data, dict):
         for item in data.values():
             remember_fields(item)
-    elif isinstance(data, list):
+    elif isinstance(data, (list, tuple)):
         for item in data:
             remember_fields(item)
 
