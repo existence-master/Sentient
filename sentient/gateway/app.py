@@ -26,7 +26,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from sentient import __version__
+from sentient import __version__, secrets
 from sentient.app import SentientApp
 from sentient.backup import apply_pending_restore
 from sentient.gateway.auth import load_or_create_token, ws_token_ok
@@ -42,6 +42,12 @@ UI_DIST = Path(__file__).resolve().parents[2] / "desktop" / "out" / "renderer"
 
 
 def create_app(sentient: SentientApp | None = None) -> FastAPI:
+    # `serve --reload` runs this factory in a spawned worker that never ran the CLI's logging setup: give it a
+    # handler if it has none and put the secret filter on it (a no-op when the CLI already did, #178)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    secrets.install_log_redaction()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.token = load_or_create_token()

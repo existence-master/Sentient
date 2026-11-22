@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -83,17 +84,78 @@ def _keyring():
         return None
 
 
+# Values this process has read from or written to the keychain (#178). Logs and tool errors have them replaced.
+_MIN_REDACT = 8  # shorter values would blank out ordinary words
+_known: set[str] = set()
+REDACTED = "<secret>"
+
+
+def remember(value: str | None) -> None:
+    """Note a secret value so ``redact`` can hide it from logs and tool errors."""
+    if value and len(value) >= _MIN_REDACT:
+        _known.add(value)
+
+
+def remember_fields(data: object) -> None:
+    """Note every string inside a JSON credential, so a single token field is hidden too (not just the whole blob)."""
+    if isinstance(data, str):
+        remember(data)
+    elif isinstance(data, dict):
+        for item in data.values():
+            remember_fields(item)
+    elif isinstance(data, (list, tuple)):
+        for item in data:
+            remember_fields(item)
+
+
+def redact(text: str) -> str:
+    """``text`` with every known secret value replaced by ``<secret>`` (longest first)."""
+    for value in sorted(_known, key=len, reverse=True):
+        if value in text:
+            text = text.replace(value, REDACTED)
+    return text
+
+
+class RedactSecrets(logging.Filter):
+    """A log filter that hides known secret values in the message and its arguments."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not _known:
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        hidden = redact(message)
+        if hidden != message:
+            record.msg, record.args = hidden, ()
+        if record.exc_info:  # the traceback is formatted later: format it now so it can be cleaned too
+            record.exc_text = redact(logging.Formatter().formatException(record.exc_info))
+            record.exc_info = None
+        return True
+
+
+def install_log_redaction() -> None:
+    """Put the filter on every handler of the root logger (a filter on a logger skips child loggers' records)."""
+    for handler in logging.getLogger().handlers:
+        if not any(isinstance(f, RedactSecrets) for f in handler.filters):
+            handler.addFilter(RedactSecrets())
+
+
 def get_secret(name: str, env_var: str | None = None) -> str | None:
     kr = _keyring()
     if kr is not None:
         try:
             value = kr.get_password(service(), name)
             if value:
+                remember(value)
                 return value
         except Exception:
             pass
     if env_var:
-        return os.environ.get(env_var) or None
+        value = os.environ.get(env_var) or None
+        remember(value)
+        return value
     return None
 
 
@@ -101,6 +163,7 @@ def set_secret(name: str, value: str) -> bool:
     kr = _keyring()
     if kr is None:
         return False
+    remember(value)
     try:
         kr.set_password(service(), name, value)
         return True
@@ -121,6 +184,7 @@ def delete_secret(name: str) -> bool:
 
 # JSON values too long for one keychain entry (OAuth tokens) are split over ``<name>:1``, ``<name>:2``...
 def save_json(name: str, data: dict) -> bool:
+    remember_fields(data)
     raw = json.dumps(data, separators=(",", ":"))
     parts = [raw[i : i + CHUNK] for i in range(0, len(raw), CHUNK)] or [""]
     if len(parts) > MAX_CHUNKS:
@@ -152,7 +216,10 @@ def load_json(name: str) -> dict | None:
         data = json.loads("".join(parts))
     except json.JSONDecodeError:
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    remember_fields(data)
+    return data
 
 
 def delete_json(name: str) -> None:
