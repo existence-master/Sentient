@@ -136,7 +136,9 @@
       if (s) { try { s.stop(); } catch { /* already stopped */ } }
     },
   };
-  document.addEventListener("pointerdown", () => player.unlock(), { once: true });
+  // Re-resume on every tap: iOS suspends the context again after calls, Siri and screen lock,
+  // and resume() only takes effect inside a gesture.
+  document.addEventListener("pointerdown", () => player.unlock());
 
   function b64ToBuffer(b64) {
     const bin = atob(b64);
@@ -431,11 +433,13 @@
     let label = TALK_LABELS[state] || TALK_LABELS.idle;
     if (state === "listening") label = voice.micOn ? (voice.handsFree ? "Listening… tap to stop" : "Listening… release to send") : TALK_LABELS.idle;
     $("talk-label").textContent = label;
+    wake.refresh();
   }
 
   const voice = {
     ws: null, ready: null, sessionId: null, state: "idle", micOn: false, handsFree: false,
     stream: null, ctx: null, nodes: [], chunks: [], chunkLen: 0, pendingAudio: false, idleTimer: null, approvalId: null,
+    starting: null, pressHeld: false,
 
     open() {
       if (this.ws && this.ws.readyState <= 1 && this.ready) return this.ready;
@@ -500,11 +504,26 @@
       }
     },
 
-    async startMic() {
+    startMic() {
+      // A second press can land while the first is still waiting on getUserMedia: share the
+      // pending start instead of opening a second stream that would never be stopped.
+      if (!this.starting) {
+        this.starting = this._startMic().finally(() => { this.starting = null; });
+      }
+      return this.starting;
+    },
+
+    async _startMic() {
       await this.open();
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      // The prompt can take seconds on a phone; the socket may be gone by the time it resolves.
+      if (!this.ws || this.ws.readyState !== 1) {
+        this.stream.getTracks().forEach((t) => t.stop());
+        this.stream = null;
+        return;
+      }
       const AC = window.AudioContext || window.webkitAudioContext;
       try { this.ctx = new AC({ sampleRate: TARGET_RATE }); } catch { this.ctx = new AC(); }
       const ctx = this.ctx;
@@ -534,6 +553,9 @@
       tap.connect(mute);
       this.nodes = [src, tap, mute];
       this.micOn = true;
+      // The press ended before the mic came up (the permission prompt takes real seconds on a
+      // phone): treat it as a tap, otherwise the mic would sit live with no one holding.
+      this.handsFree = !this.pressHeld;
       $("conversation").hidden = false;
       setTalk("listening");
     },
@@ -577,6 +599,30 @@
     },
   };
 
+  // Phones dim and lock while a voice turn runs, which suspends the page and drops the mic and
+  // the sockets. Hold a screen wake lock for the length of a turn; it releases on lock anyway
+  // and is re-requested when the page is visible again.
+  const wake = {
+    lock: null,
+    wanted() {
+      return voice.micOn || ["listening", "transcribing", "thinking", "speaking"].includes(voice.state);
+    },
+    refresh() {
+      if (!("wakeLock" in navigator)) return;
+      if (this.wanted()) {
+        if (!this.lock && document.visibilityState === "visible") {
+          navigator.wakeLock.request("screen").then((s) => {
+            s.addEventListener("release", () => { if (this.lock === s) this.lock = null; });
+            this.lock = s;
+          }).catch(() => { /* needs a visible page and a real browser */ });
+        }
+      } else if (this.lock) {
+        this.lock.release().catch(() => {});
+        this.lock = null;
+      }
+    },
+  };
+
   function showBubble(which, text) {
     const el = $(which);
     el.textContent = text || "";
@@ -612,6 +658,7 @@
       try { btn.setPointerCapture(e.pointerId); } catch { /* ignore */ }
       pressedAt = performance.now();
       startedThisPress = false;
+      voice.pressHeld = true;
       player.unlock();
       node.send({ type: "event", event: "button", data: { action: "press" } });
       if (voice.state === "speaking" || player.busy) voice.interrupt();
@@ -627,6 +674,7 @@
     });
 
     const release = () => {
+      voice.pressHeld = false;
       node.send({ type: "event", event: "button", data: { action: "release" } });
       if (!voice.micOn || !startedThisPress) return;
       if (performance.now() - pressedAt < 350) {
@@ -756,6 +804,7 @@
     document.querySelectorAll("[data-perm]").forEach((b) => b.addEventListener("click", () => requestPermission(b.dataset.perm)));
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && !node.ws && !node.halted && store.load().token) { node.retryMs = 1000; node.connect(); }
+      wake.refresh(); // the lock drops while hidden; re-request once the page is back
     });
     window.addEventListener("online", () => { if (!node.ws && !node.halted && store.load().token) node.connect(); });
     window.addEventListener("hashchange", applyPairingCode);
