@@ -555,7 +555,8 @@ when `openai_api.allow_memory` is on too (below).
   to an older message does not cover newer API input.
 - **What the key reaches.** Chatting and Sentient's tools, with approvals as above. Memories stay out unless
   `openai_api.allow_memory` is on (default off, #479): an API turn then gets no recalled memories, user-model
-  insights, notes or profile files in its prompt (only Sentient's persona, plus a note saying they aren't available),
+  insights, notes or profile files in its prompt (only Sentient's persona, with the user's configured name in it
+  written as "the user", #552, plus a note saying they aren't available),
   and `memory_recall`, `memory_search_by_source`, `memory_search_history`, `history_semantic_search`,
   `history_time_search`, `user_model_ask` and `memory_forget` are left out of its tools and refused if called anyway.
   This is the turn's one memory decision (section 10, "Turns without memory"), so the same holds for every helper,
@@ -2805,7 +2806,8 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
   the memory tools (`memory_recall`, `memory_search_by_source`, `memory_search_history`, `history_semantic_search`,
   `history_time_search`, `user_model_ask`, `memory_forget`) are not offered by `run_loop` whoever built the list,
   are not listed to scripts, and refuse to run (`{error}`) however they are called. A helper's prompt then leaves out
-  the user's name too.
+  the user's name too, and so does the turn's own: SOUL.md stays, with the configured name written as "the user"
+  (#552).
 - Limits: `subagents.max_rounds` steps (default 24), `subagents.timeout_minutes` (20), and on cloud models
   `subagents.max_tokens` (1000000) and `subagents.max_cost_usd` (2.0, when the price is known; `0` = no limit). The
   repeated-call breaker applies too. Reaching one ends the subagent with `status: "error"` and a plain `error`

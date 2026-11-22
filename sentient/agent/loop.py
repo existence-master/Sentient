@@ -96,7 +96,7 @@ from sentient.memory import review as memory_review
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.facts import FactMemory, keyword_tokens, new_details
 from sentient.memory.sources import MemorySources
-from sentient.memory.workspace import Workspace
+from sentient.memory.workspace import Workspace, without_user
 from sentient.services import cancel_tasks
 from sentient.skills.loader import SkillLibrary
 from sentient.store.db import Store, after_watermark, new_id, next_watermark, now_iso
@@ -794,8 +794,9 @@ class Agent:
         sources.add_facts(facts)
         sources.add_insights(insights)
         snapshot = self.workspace.snapshot()
-        if not reads_memory:  # only the persona: no profile, memory file or daily notes
-            snapshot = {k: (v if k == "soul" else "") for k, v in snapshot.items()}
+        if not reads_memory:  # only the persona, without the user's name (#552): no profile, memory file or daily notes
+            soul = without_user(snapshot.get("soul") or "", self.config.assistant.user_name)
+            snapshot = {k: (soul if k == "soul" else "") for k in snapshot}
         elif not personal:  # MEMORY.md, daily notes and USER.md's learned facts come from personal memories (#155)
             snapshot = {
                 **snapshot, "memory": "", "today": "", "yesterday": "",

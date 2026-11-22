@@ -12,6 +12,7 @@ model call).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -47,6 +48,20 @@ DEFAULT_MEMORY = """# Long-term memory
 (Curated notes the assistant keeps about ongoing projects, preferences, and commitments.
 Short, bulleted, and pruned. Atomic facts live in the database; this file holds the big picture.)
 """
+
+
+def without_user(text: str, user_name: str) -> str:
+    """SOUL.md for a turn without memory (#552): the persona stays and the user's name goes. Setup and the personality
+    presets write the name into it ("You are Sentient, Maya Rao's chief of staff"), so the full name in any case, then
+    each part of it written as configured ("Maya", not "maya"), becomes "the user", as in a home with no name."""
+    words = user_name.split()
+    if not words:
+        return text
+    full = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.IGNORECASE)
+    text = full.sub("the user", text)
+    for part in sorted({w for w in words if len(w) >= 2}, key=len, reverse=True):
+        text = re.sub(r"(?<!\w)" + re.escape(part) + r"(?!\w)", "the user", text)
+    return text
 
 
 class Workspace:

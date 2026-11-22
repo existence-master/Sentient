@@ -205,12 +205,15 @@ def test_gateway_creates_lists_and_deletes_incognito_chats(client):
 async def test_without_memory_the_prompt_has_no_personal_details(app):
     app.config.chat.incognito_uses_memory = False
     app.config.assistant.location = "Koramangala, Bengaluru"
+    app.config.assistant.user_name = "Maya Rao"
+    app.workspace.write("soul", "You are Sentient, Maya Rao's assistant.\nCall MAYA RAO by name, or just Maya.\n")
     sid = await app.store.create_session(channel="desktop", incognito=True)
     app.fake.replies.append("Hello.")
     await _turn(app, sid, "hi there")
     system = app.fake.calls[-1]["messages"][0]["content"]
-    # the configured name and place stay out (the persona the user wrote is kept as it is)
-    assert "Koramangala" not in system and "- User: Maya" not in system
+    # the configured name and place stay out, the user's name from SOUL.md too, and the rest of the persona stays (#552)
+    assert "Koramangala" not in system and "Maya" not in system and "MAYA" not in system
+    assert "You are Sentient, the user's assistant.\nCall the user by name, or just the user." in system
 
 
 async def test_a_reply_still_writing_is_not_swept_and_deleting_cancels_helpers(app, monkeypatch):
@@ -341,3 +344,16 @@ async def test_leftover_incognito_output_folders_are_removed_at_start(app, isola
     assert await app.incognito.remove_stray_outputs() == ["incognito-gone"]
     assert (outputs / f"incognito-{live}").is_dir() and (outputs / "keep-me").is_dir()
     assert not (outputs / "incognito-gone").exists()
+
+
+@pytest.mark.parametrize(("soul", "name", "expected"), [
+    ("You are Sentient, Maya Rao's assistant.", "Maya Rao", "You are Sentient, the user's assistant."),
+    ("Greet maya rao warmly.", "Maya  Rao", "Greet the user warmly."),  # the full name in any case and spacing
+    ("Will is busy, so you will be brief.", "Will Smith", "the user is busy, so you will be brief."),  # a part as written
+    ("Mayank is Maya's friend.", "Maya", "Mayank is the user's friend."),  # whole words only
+    ("You are Sentient, the user's assistant.", "", "You are Sentient, the user's assistant."),  # no name set
+])
+def test_without_user_takes_only_the_name_out_of_the_persona(soul, name, expected):
+    from sentient.memory.workspace import without_user
+
+    assert without_user(soul, name) == expected
