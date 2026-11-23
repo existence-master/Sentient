@@ -18,6 +18,22 @@ def test_web_app_served_on_gateway(nodes_client):
     assert client.get("/node/missing.js").status_code == 404
 
 
+def test_web_app_is_phone_friendly(nodes_client):
+    """Regressions for the real-phone audit (issue #96)."""
+    client = nodes_client()
+    html = client.get("/node/").text
+    css = client.get("/node/style.css").text
+    js = client.get("/node/app.js").text
+    # Standalone mode and mobile keyboards
+    assert "mobile-web-app-capable" in html and "viewport-fit=cover" in html
+    assert 'enterkeyhint="send"' in html
+    # iOS must not zoom on input focus, and a pull must not reload mid-session
+    assert "font-size: 16px" in css and "overscroll-behavior" in css
+    # Hold-to-talk tracks the press, holds the screen awake, and re-unlocks audio per tap
+    assert "pressHeld" in js and "wakeLock" in js
+    assert "{ once: true }" not in js
+
+
 def test_lan_status_when_disabled(nodes_client):
     client = nodes_client()
     status = client.get("/api/nodes/lan", headers=client.api_headers).json()
