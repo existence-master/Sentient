@@ -351,7 +351,9 @@ async def test_leftover_incognito_output_folders_are_removed_at_start(app, isola
     ("Greet maya rao warmly.", "Maya  Rao", "Greet the user warmly."),  # the full name in any case and spacing
     ("Will is busy, so you will be brief.", "Will Smith", "the user is busy, so you will be brief."),  # a part as written
     ("Mayank is Maya's friend.", "Maya", "Mayank is the user's friend."),  # whole words only
-    ("Will asked; say what you will try next.", "Will", "the user asked; say what you will try next."),  # one word: as written
+    ("Will asked; say what you will try next.", "Will", "the user asked; say what you will try next."),  # a persona's word
+    ("Greet maya warmly.", "Maya", "Greet the user warmly."),  # any other name in any case
+    ("Address maya by name.", "Maya Rao", "Address the user by name."),  # and any part of it
     ("You are Sentient, the user's assistant.", "", "You are Sentient, the user's assistant."),  # no name set
 ])
 def test_without_user_takes_only_the_name_out_of_the_persona(soul, name, expected):

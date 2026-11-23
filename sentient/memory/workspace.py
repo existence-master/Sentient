@@ -50,20 +50,28 @@ Short, bulleted, and pruned. Atomic facts live in the database; this file holds 
 """
 
 
+def _persona_words() -> set[str]:
+    """The lowercase words of Sentient's own persona texts, which are not a name when someone is called that."""
+    from sentient.memory.personas import PERSONAS
+
+    texts = [DEFAULT_SOUL, *(p["soul_md"] for p in PERSONAS)]
+    return set(re.findall(r"\b[a-z]+\b", " ".join(texts)))
+
+
 def without_user(text: str, user_name: str) -> str:
     """SOUL.md for a turn without memory (#552): the persona stays and the user's name goes. Setup and the personality
     presets write the name into it ("You are Sentient, Maya Rao's chief of staff"), so the full name, then each part of
-    it written as configured ("Maya", not "maya"), becomes "the user", as in a home with no name. Only a name of two or
-    more words is matched in any case: a one-word name such as "Will" is also an ordinary word ("what you will try
-    next"), so it is matched as configured, like the parts."""
+    it, becomes "the user", as in a home with no name. Any case counts ("maya"), except for a single word that the
+    personas use themselves: for someone called Will, "what you will try next" stays and only "Will" goes."""
     words = user_name.split()
     if not words:
         return text
-    flags = re.IGNORECASE if len(words) > 1 else 0
-    full = re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", flags)
-    text = full.sub("the user", text)
-    for part in sorted({w for w in words if len(w) >= 2}, key=len, reverse=True):
-        text = re.sub(r"(?<!\w)" + re.escape(part) + r"(?!\w)", "the user", text)
+    ordinary = _persona_words()
+    names = [words, *([w] for w in sorted({w for w in words if len(w) >= 2}, key=len, reverse=True))]
+    for name in names:
+        as_written = len(name) == 1 and name[0].lower() in ordinary
+        pattern = r"(?<!\w)" + r"\s+".join(map(re.escape, name)) + r"(?!\w)"
+        text = re.sub(pattern, "the user", text, flags=0 if as_written else re.IGNORECASE)
     return text
 
 
