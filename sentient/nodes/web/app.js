@@ -99,7 +99,7 @@
 
   // ------------------------------------------------------------------ audio output
   const player = {
-    ctx: null, queue: [], source: null, busy: false,
+    ctx: null, queue: [], source: null, busy: false, gen: 0,
     unlock() {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
@@ -117,8 +117,10 @@
       if (!buf) { this.busy = false; wake.refresh(); return; }
       this.busy = true;
       this.unlock();
+      const gen = this.gen;
       try {
         const audio = await this.ctx.decodeAudioData(buf.slice(0));
+        if (gen !== this.gen) return; // stop() ran while decoding: drop the stale buffer
         const src = this.ctx.createBufferSource();
         src.buffer = audio;
         src.connect(this.ctx.destination);
@@ -126,11 +128,12 @@
         this.source = src;
         src.start();
       } catch {
-        this.next();
+        if (gen === this.gen) this.next();
       }
     },
     stop() {
       this.queue = [];
+      this.gen++;
       const s = this.source;
       this.source = null;
       this.busy = false;
