@@ -604,17 +604,27 @@
   // and is re-requested when the page is visible again.
   const wake = {
     lock: null,
+    pending: null,
     wanted() {
-      return voice.micOn || ["listening", "transcribing", "thinking", "speaking"].includes(voice.state);
+      // "listening" alone is not enough: the server sits in it after a turn ends and after
+      // push-to-talk is released, so only the mic or a turn in progress keeps the screen up.
+      return voice.micOn || ["transcribing", "thinking", "speaking"].includes(voice.state);
     },
     refresh() {
       if (!("wakeLock" in navigator)) return;
       if (this.wanted()) {
-        if (!this.lock && document.visibilityState === "visible") {
-          navigator.wakeLock.request("screen").then((s) => {
+        if (!this.lock && !this.pending && document.visibilityState === "visible") {
+          // Rapid state updates would otherwise each open a request and leak the extra sentinels.
+          this.pending = navigator.wakeLock.request("screen").then((s) => {
+            this.pending = null;
+            // The turn ended or the page hid while the request was in flight: drop it.
+            if (!this.wanted() || document.visibilityState !== "visible") {
+              s.release().catch(() => {});
+              return;
+            }
             s.addEventListener("release", () => { if (this.lock === s) this.lock = null; });
             this.lock = s;
-          }).catch(() => { /* needs a visible page and a real browser */ });
+          }).catch(() => { this.pending = null; /* needs a visible page and a real browser */ });
         }
       } else if (this.lock) {
         this.lock.release().catch(() => {});
