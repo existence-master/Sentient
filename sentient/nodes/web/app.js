@@ -110,6 +110,7 @@
     enqueue(buffer) {
       this.queue.push(buffer);
       if (!this.busy) this.next();
+      wake.refresh();
     },
     async next() {
       const buf = this.queue.shift();
@@ -134,6 +135,7 @@
       this.source = null;
       this.busy = false;
       if (s) { try { s.stop(); } catch { /* already stopped */ } }
+      wake.refresh();
     },
   };
   // Re-resume on every tap: iOS suspends the context again after calls, Siri and screen lock,
@@ -608,7 +610,9 @@
     wanted() {
       // "listening" alone is not enough: the server sits in it after a turn ends and after
       // push-to-talk is released, so only the mic or a turn in progress keeps the screen up.
-      return voice.micOn || ["transcribing", "thinking", "speaking"].includes(voice.state);
+      // player.busy covers the tail the server never sees: it drops to "listening" once the
+      // last chunk is sent, which can be seconds before the phone finishes playing it.
+      return voice.micOn || ["transcribing", "thinking", "speaking"].includes(voice.state) || player.busy;
     },
     refresh() {
       if (!("wakeLock" in navigator)) return;
