@@ -114,7 +114,7 @@
     },
     async next() {
       const buf = this.queue.shift();
-      if (!buf) { this.busy = false; return; }
+      if (!buf) { this.busy = false; wake.refresh(); return; }
       this.busy = true;
       this.unlock();
       try {
