@@ -144,3 +144,34 @@ test('a saved interruption marks its named tool as interrupted in history', () =
   assert.match(row, /Step interrupted/)
   assert.doesNotMatch(row, /Waiting for result|Wrote file/)
 })
+
+test('a group message does not hide which earlier tool was interrupted', () => {
+  const createdAt = savedFileCall.created_at
+  const history: TranscriptMessage[] = [{
+    ...savedFileCall,
+    tool_calls: [
+      { id: 'lookup', type: 'function', function: { name: 'current_datetime', arguments: '{}' } },
+      ...(savedFileCall.tool_calls ?? [])
+    ]
+  }, {
+    id: 'time', role: 'tool', tool_call_id: 'lookup', content: '"9:00 AM"', created_at: createdAt
+  }, {
+    id: 'group-message', role: 'other', name: 'Priya', content: 'I watered the plants.', created_at: createdAt
+  }]
+  const newerCall: TranscriptMessage = {
+    ...savedFileCall, id: 'new-activity',
+    tool_calls: [{ id: 'next', type: 'function', function: { name: 'file_read', arguments: '{"name":"weather.txt"}' } }]
+  }
+  const interruption: TranscriptMessage = {
+    id: 'interrupted', role: 'event', name: 'turn_interrupted',
+    content: JSON.stringify([call.call_id]), created_at: createdAt
+  }
+
+  for (const newerRows of [[], [newerCall]]) {
+    const [earlier, groupMessage, newer] = foldTranscript([...history, ...newerRows, interruption])
+    assert.match(fileRow(earlier), /Step interrupted/)
+    assert.equal(earlier.tools.lookup.status, 'done')
+    assert.equal(groupMessage.kind, 'other')
+    if (newer) assert.equal(newer.tools.next.status, 'awaiting_result')
+  }
+})

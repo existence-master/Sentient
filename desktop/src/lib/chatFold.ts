@@ -226,11 +226,16 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
     }
     if (row.role === 'event') {
       if (row.name === 'trusted') items.push({ kind: 'note', id: row.id, text: trustedNote(row.content), createdAt: row.created_at })
-      if (row.name === 'turn_interrupted' && turn) {
+      if (row.name === 'turn_interrupted') {
         const callIds = safeJsonParse<unknown>(row.content, [])
         if (Array.isArray(callIds)) {
           for (const id of callIds) {
-            if (typeof id === 'string') interruptWaitingTool(turn.tools[id])
+            if (typeof id !== 'string') continue
+            // A group message can split the timeline while an earlier tool is still open.
+            const owner = items.findLast(
+              (item): item is AssistantTurnView => item.kind === 'assistant' && Object.hasOwn(item.tools, id)
+            )
+            interruptWaitingTool(owner?.tools[id])
           }
         }
       }
