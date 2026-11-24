@@ -2068,6 +2068,10 @@ class FactMemory:
         return {**counts, "source": source}
 
     # ------------------------------------------------------------------ reads
+    async def fact_exists(self, fid: int) -> bool:
+        """Check for a fact by ID, even if some of its stored fields are unreadable."""
+        return await self.store.fetchone("SELECT 1 FROM facts WHERE id = ?", (fid,)) is not None
+
     async def get_fact(self, fid: int) -> dict | None:
         r = await self.store.fetchone(f"SELECT {MEMORY_COLUMNS} FROM facts WHERE id = ?", (fid,))
         if r is None:
