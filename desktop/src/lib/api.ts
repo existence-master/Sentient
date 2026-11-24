@@ -504,6 +504,8 @@ export const api = {
     setScope: (id: string, memory_scope: string | null) =>
       http.patch<OkResponse & { memory_scope: string }>(`/api/sessions/${enc(id)}`, { memory_scope }),
     delete: (id: string) => http.delete<OkResponse>(`/api/sessions/${enc(id)}`),
+    sideQuestion: (id: string, text: string, signal?: AbortSignal) =>
+      http.post<{ answer: string }>(`/api/sessions/${enc(id)}/side-question`, { text }, { signal }),
     /**
      * "I've checked it, trust this chat again" (ADR 0029), up to `upto`, the newest message the window has shown.
      * `trusted: false` with `untrusted`/`writer` when outside content newer than that keeps the chat marked.

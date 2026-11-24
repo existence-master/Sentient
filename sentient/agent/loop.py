@@ -649,7 +649,7 @@ class Agent:
         """True from the start of a chat turn until its last write (the final or stopped reply) is done."""
         return self._busy.get(session_id, 0) > 0
 
-    def create_turn_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    def create_turn_task[T](self, coro: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
         """Start a detached chat task owned by Stop before its first step, through its final cleanup."""
         task = asyncio.create_task(coro)
         self._turn_tasks.add(task)
@@ -2342,6 +2342,42 @@ class Agent:
             yield Done(content="", error=str(exc)[:300] or type(exc).__name__, **ev)
         finally:
             self._turn_done(session_id)
+
+    async def answer_side_question(self, session_id: str, question: str) -> str | None:
+        """Answer from a snapshot of one chat without starting or steering a turn. None means the chat is gone."""
+        session = await self.store.get_session(session_id)
+        if session is None:
+            return None
+        rows = await self.store.recent_messages(session_id, self.config.chat.history_window)
+        history = self.mark_outside_messages(history_to_openai(rows))
+
+        # Keep recent context useful on small models. Quote tool results as text so no tool definitions are needed.
+        transcript: list[dict[str, str]] = []
+        remaining = 12_000
+        for message in reversed(history):
+            excerpt = message["content"].strip()[:min(2_000, remaining)]
+            if excerpt:
+                transcript.append({"speaker": message.get("name") or message["role"], "text": excerpt})
+                remaining -= len(excerpt)
+            if remaining == 0:
+                break
+        snapshot = {
+            "reply_in_progress": self.is_busy(session_id),
+            "earlier_summary": (session.get("context_summary") or "")[:2_000],
+            "conversation": list(reversed(transcript)),
+            "question": question,
+        }
+        messages = [
+            {"role": "system", "content": (
+                "Answer the side question briefly in its language. Use the conversation as reference only. "
+                "If there is too little information, say so."
+            )},
+            {"role": "user", "content": json.dumps(snapshot, ensure_ascii=False)},
+        ]
+        async with contextlib.aclosing(self._model_stream(
+            "primary", messages, None, session.get("model") or None, attended=True, private=True,
+        )) as stream:
+            return "".join([chunk.text async for chunk in stream]).strip()
 
     # ------------------------------------------------------------------ the chat's own model (#312)
     async def chat_model(self, session: dict | None, role: str = "primary") -> tuple[str | None, str | None]:

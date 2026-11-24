@@ -41,6 +41,7 @@ export interface ComposerProps {
   busy?: boolean
   attachments: ReturnType<typeof useAttachments>
   onSend: (text: string, attachments: AttachmentView[]) => void
+  onSideQuestion?: (question: string) => void
   onStop: () => void
   /** The chat's own model (#312), null when it follows the default. */
   chatModel?: string | null
@@ -60,6 +61,7 @@ export function Composer({
   busy = false,
   attachments,
   onSend,
+  onSideQuestion,
   onStop,
   autoFocus,
   inject,
@@ -120,6 +122,9 @@ export function Composer({
   }, [])
 
   const hasText = text.trim().length > 0
+  const slash = parseSlash(text)
+  const askingSideQuestion = slash?.command.name === 'btw'
+  const sendLabel = askingSideQuestion ? 'Ask a side question' : streaming ? 'Add to the reply' : 'Send'
   // While streaming only text can be added; attachments wait for the next message.
   const canSend = !busy && !attachments.uploading && (hasText || (!streaming && attachments.ready > 0))
 
@@ -141,6 +146,18 @@ export function Composer({
       case 'browser':
         clear()
         openBrowserView()
+        return true
+      case 'btw':
+        if (!onSideQuestion) {
+          toast.message('Start a chat before asking a side question')
+          return false
+        }
+        if (!arg) {
+          toast.message('Type your question after /btw')
+          return false
+        }
+        clear()
+        onSideQuestion(arg)
         return true
       case 'task':
         if (!arg) {
@@ -221,7 +238,6 @@ export function Composer({
   }
 
   const send = () => {
-    const slash = parseSlash(text)
     if (slash) {
       runCommand(slash.command, slash.arg)
       return
@@ -405,11 +421,11 @@ export function Composer({
             </Tooltip>
           )}
           {(!streaming || hasText) && (
-            <Tooltip content={attachments.uploading ? 'Waiting for uploads…' : streaming ? 'Add to the reply' : 'Send'} shortcut="Enter">
+            <Tooltip content={attachments.uploading && !askingSideQuestion ? 'Waiting for uploads…' : sendLabel} shortcut="Enter">
               <button
                 type="button"
-                aria-label={streaming ? 'Add to the reply' : 'Send'}
-                disabled={!canSend && !parseSlash(text)}
+                aria-label={sendLabel}
+                disabled={!canSend && !slash}
                 onClick={send}
                 className="ml-1 flex size-8.5 items-center justify-center rounded-full bg-accent text-accent-fg shadow-soft transition-[transform,background-color,color] hover:scale-105 hover:bg-accent-hover active:scale-95 disabled:scale-100 disabled:bg-active disabled:text-fg-faint disabled:shadow-none"
               >
