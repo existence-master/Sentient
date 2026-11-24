@@ -149,6 +149,7 @@ export function askingLabel(name: string): string | null {
 /** Wording for steps waiting for an answer or ending without success. */
 export function toolStatusLabel(name: string, status: ToolStatus): string | undefined {
   if (status === 'awaiting_approval') return askingLabel(name) ?? 'Waiting for your answer'
+  if (status === 'awaiting_result') return 'Waiting for result'
   if (status === 'error') return 'Step failed'
   if (status === 'cancelled') return 'Step interrupted'
 }

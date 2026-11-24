@@ -8,7 +8,7 @@
 import type { ActionPreview, AgentEvent, AnswerSource, ApprovalDecision, ContextMeter, MemorySource, OutcomeCheck, Risk, TranscriptMessage, UsageEvent } from './types'
 import { safeJsonParse } from './utils'
 
-export type ToolStatus = 'running' | 'awaiting_approval' | 'done' | 'error' | 'denied' | 'cancelled'
+export type ToolStatus = 'running' | 'awaiting_approval' | 'awaiting_result' | 'done' | 'error' | 'denied' | 'cancelled'
 
 /** Live `tool_progress` accumulated per call (§10). Not persisted: history shows the final result only. */
 export interface ToolProgressView {
@@ -246,11 +246,20 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
           callId: tc.id,
           name: tc.function?.name ?? 'tool',
           arguments: safeJsonParse<Record<string, unknown>>(tc.function?.arguments, {}),
-          // A turn can stop after recording the call and before recording its result.
-          status: 'cancelled'
+          // The call is saved before it runs, including while its approval is still open.
+          status: 'awaiting_result'
         }
       }
-      if (!row.tool_calls?.length) turn.messageId = row.id
+      if (!row.tool_calls?.length) {
+        turn.messageId = row.id
+        // The engine saves this final paragraph when a turn stops. Other assistant rows can arrive
+        // while a call is open, including notes from background helpers.
+        if (/(^|\n\n)_\(stopped\)_$/.test(row.content?.trimEnd() ?? '')) {
+          for (const tool of Object.values(turn.tools)) {
+            if (tool.status === 'awaiting_result') tool.status = 'cancelled'
+          }
+        }
+      }
       if (row.memory_sources?.length) turn.memorySources = row.memory_sources
       if (row.sources?.length) turn.sources = row.sources
       if (row.checks?.length) turn.checks = row.checks

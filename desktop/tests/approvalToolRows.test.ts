@@ -5,6 +5,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createServer } from 'vite'
 import type { AssistantTurnView } from '../src/lib/chatFold.ts'
+import type { TranscriptMessage } from '../src/lib/types.ts'
 
 // Load the real chat cards with the renderer's JSX and path alias, without starting Electron.
 const vite = await createServer({
@@ -25,6 +26,13 @@ const { BrowserCard } = await vite.ssrLoadModule('/src/features/chat/cards/Brows
 const call = { call_id: 'step', session_id: 'chat', turn_id: 'turn' }
 const fileArgs = { name: 'balcony-plants.txt', content: 'Water on Thursday' }
 const clickArgs = { ref: 'e4' }
+const savedFileCall: TranscriptMessage = {
+  id: 'assistant',
+  role: 'assistant',
+  content: null,
+  created_at: '2026-11-24T00:00:00Z',
+  tool_calls: [{ id: call.call_id, type: 'function', function: { name: 'file_write', arguments: JSON.stringify(fileArgs) } }]
+}
 
 function waitingTurn(name: string, args: Record<string, unknown>, target?: string): AssistantTurnView {
   const started = applyAgentEvent(emptyTurn(call.turn_id), { ...call, type: 'tool_call', name, arguments: args })
@@ -104,12 +112,24 @@ test('a chat ending without a tool result leaves the step interrupted in the liv
     assert.doesNotMatch(browser, /Clicked|Used the browser/)
   }
 
-  const [reloaded] = foldTranscript([{
-    id: 'assistant',
-    role: 'assistant',
-    content: null,
-    created_at: '2026-11-24T00:00:00Z',
-    tool_calls: [{ id: call.call_id, function: { name: 'file_write', arguments: JSON.stringify(fileArgs) } }]
+  const [reloaded] = foldTranscript([savedFileCall, {
+    id: 'stopped', role: 'assistant', content: 'Saving your note.\n\n_(stopped)_', created_at: savedFileCall.created_at
   }])
   assert.match(fileRow(reloaded), /Step interrupted/)
+})
+
+test('a saved file write stays pending in history until its result arrives', () => {
+  const helperNote: TranscriptMessage = {
+    id: 'helper', role: 'assistant', content: 'Your helper finished checking the forecast.', created_at: savedFileCall.created_at
+  }
+  const [pending] = foldTranscript([savedFileCall, helperNote])
+  const waiting = fileRow(pending)
+  assert.match(waiting, /Waiting for result/)
+  assert.doesNotMatch(waiting, /Wrote file|Step interrupted/)
+
+  const [done] = foldTranscript([savedFileCall, helperNote, {
+    id: 'result', role: 'tool', tool_call_id: call.call_id,
+    content: JSON.stringify({ saved: fileArgs.name }), created_at: savedFileCall.created_at
+  }])
+  assert.match(fileRow(done), /Wrote file/)
 })

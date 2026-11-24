@@ -7,6 +7,7 @@ import { wasDenied, type ToolCallView } from '@/lib/chatFold'
 import type { TerminalResult } from '@/lib/types'
 import { cn, formatDuration } from '@/lib/utils'
 import { openOutputFile } from '../files'
+import { toolStatusLabel } from '../toolMeta'
 import { asRecord, DeclinedText, Shimmer, StatusGlyph } from './bits'
 
 /** `terminal_run` (§18): the command, its folder, live output, exit code and a Stop button while it runs. */
@@ -50,7 +51,7 @@ export function TerminalCard({ tool }: { tool: ToolCallView }) {
               ? 'Stopped because it took too long'
               : res && res.exit_code !== null
                 ? `${res.exit_code === 0 ? 'Finished' : `Finished with exit code ${res.exit_code}`}${duration ? ` in ${formatDuration(duration)}` : ''}`
-                : tool.status === 'cancelled' ? 'Step interrupted' : null
+                : toolStatusLabel(tool.name, tool.status)
 
   return (
     <div className={cn('overflow-hidden rounded-xl border bg-surface', failed ? 'border-danger/30' : 'border-border')}>

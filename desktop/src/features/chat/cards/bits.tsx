@@ -1,4 +1,4 @@
-import { IconCheck, IconHandStop, IconShieldQuestion, IconX } from '@tabler/icons-react'
+import { IconCheck, IconClockHour4, IconHandStop, IconShieldQuestion, IconX } from '@tabler/icons-react'
 import type { ReactNode } from 'react'
 import { Spinner } from '@/components/ui'
 import { wasUndone, type ToolCallView, type ToolStatus } from '@/lib/chatFold'
@@ -83,6 +83,7 @@ export function Shimmer({ children, className }: { children: ReactNode; classNam
 export function StatusGlyph({ status, size = 14 }: { status: ToolStatus; size?: number }) {
   if (status === 'running') return <Spinner size={size - 1} className="text-fg-subtle" />
   if (status === 'awaiting_approval') return <IconShieldQuestion size={size} className="text-warning" />
+  if (status === 'awaiting_result') return <IconClockHour4 size={size} className="text-fg-subtle" />
   if (status === 'error') return <IconX size={size} className="text-danger" />
   if (status === 'denied') return <IconHandStop size={size} className="text-warning" />
   if (status === 'cancelled') return <IconX size={size} className="text-fg-subtle" />

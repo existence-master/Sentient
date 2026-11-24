@@ -114,7 +114,7 @@ function GenericToolCard({
                   <div className={cn('mb-1 text-2xs font-medium uppercase tracking-wide', failed ? 'text-danger' : 'text-fg-subtle')}>
                     {failed ? 'Error' : 'Result'}
                   </div>
-                  {running ? (
+                  {running || tool.status === 'awaiting_result' ? (
                     <div className="text-xs text-fg-subtle">Waiting for result…</div>
                   ) : !hasResult ? (
                     <div className="text-xs text-fg-subtle">No result</div>
