@@ -1,10 +1,10 @@
-import { IconArrowDown, IconFileUpload, IconMessageOff, IconSpy, IconWorldWww } from '@tabler/icons-react'
+import { IconArrowDown, IconFileUpload, IconMessageOff, IconSpy, IconWorldWww, IconX } from '@tabler/icons-react'
 import { ChatNote, OtherMessage, OutsideContentBar } from './OutsideContent'
 import { AnimatePresence, motion } from 'motion/react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
-import { Button, EmptyState, IconButton, Skeleton } from '@/components/ui'
+import { Button, EmptyState, IconButton, Skeleton, Spinner } from '@/components/ui'
 import { useBrowserView } from '@/features/browser/state'
 import { ChannelBadge } from '@/features/channels/meta'
 import { HelpersTray } from './HelpersTray'
@@ -80,6 +80,8 @@ function ChatView({
   const proposals = useRuleProposals(sessionId)
   const attachments = useAttachments()
   const [inject, setInject] = useState<{ text: string; nonce: number } | null>(null)
+  const [sideQuestion, setSideQuestion] = useState<{ text: string; answer?: string; error?: string } | null>(null)
+  const sideQuestionRequest = useRef<AbortController | null>(null)
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
 
@@ -210,6 +212,28 @@ function ChatView({
   const onPick = (s: Pick<Suggestion, 'prompt' | 'autoSend'>) => {
     if (s.autoSend) void onSend(s.prompt, [])
     else setInject({ text: s.prompt, nonce: Date.now() })
+  }
+
+  useEffect(() => () => sideQuestionRequest.current?.abort(), [])
+
+  const onSideQuestion = async (text: string) => {
+    if (!sessionId) return
+    sideQuestionRequest.current?.abort()
+    const request = new AbortController()
+    sideQuestionRequest.current = request
+    setSideQuestion({ text })
+    try {
+      const { answer } = await api.sessions.sideQuestion(sessionId, text, request.signal)
+      if (!request.signal.aborted) setSideQuestion({ text, answer })
+    } catch (err) {
+      if (!request.signal.aborted) setSideQuestion({ text, error: errorMessage(err) })
+    }
+  }
+
+  const closeSideQuestion = () => {
+    sideQuestionRequest.current?.abort()
+    setSideQuestion(null)
+    window.dispatchEvent(new Event('sentient:focus-composer'))
   }
 
   // A picture from Share this window / Share a region (#172): attach it to this new chat and wait for the question.
@@ -366,6 +390,26 @@ function ChatView({
                   Incognito: nothing here is remembered, and the chat is deleted when you leave it.
                 </p>
               )}
+              {sideQuestion && (
+                <section aria-label="Side question" className="mb-2 rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 shadow-soft">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <h3 className="text-xs font-semibold text-fg-muted">Side question</h3>
+                    <IconButton size="xs" label="Close side question" icon={<IconX size={15} />} onClick={closeSideQuestion} />
+                  </div>
+                  <div className="max-h-48 space-y-2 overflow-y-auto break-words whitespace-pre-wrap text-sm">
+                    <p className="font-medium text-fg">{sideQuestion.text}</p>
+                    <div aria-live="polite">
+                      {sideQuestion.error != null ? (
+                        <p className="text-danger">{sideQuestion.error}</p>
+                      ) : sideQuestion.answer != null ? (
+                        <p className="text-fg-muted">{sideQuestion.answer}</p>
+                      ) : (
+                        <p className="flex items-center gap-2 text-fg-subtle"><Spinner size={13} /> Getting an answer…</p>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
               <Composer
                 draftKey={sessionId ?? 'pending'}
                 assistantName={assistantName}
@@ -373,6 +417,7 @@ function ChatView({
                 context={context}
                 attachments={attachments}
                 onSend={onSend}
+                onSideQuestion={sessionId ? onSideQuestion : undefined}
                 onStop={() => liveSession && cancel(liveSession.key)}
                 autoFocus
                 inject={inject}

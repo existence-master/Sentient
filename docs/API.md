@@ -400,6 +400,12 @@ accept or loosen a rule.
   Errors and declined calls never count; memories stay in `memory_sources`. Recorded deterministically from tool
   results (never asked of the model), first mention wins, at most 12. A reply that used none has `[]`.
 - `GET /api/sessions/search?q=` → `[{session_id, message_id, role, snippet, created_at}]` (never incognito chats)
+- `POST /api/sessions/{id}/side-question` `{text}` → `{answer}` (#189). The desktop uses this for `/btw <question>`.
+  One tool-free model call reads a snapshot of the chat's recent stored messages and its existing summary. It uses
+  the chat's own model if set, otherwise the primary role. The window shows the answer in a temporary panel. The
+  question and answer stay out of chat history and memory, and a running reply continues on its own. Gateway
+  token required. 404 for a missing chat, 409 if stopped, 422 for blank text, 502 for an empty model answer and
+  503 if the model is unavailable.
 - `POST /api/chat` NDJSON fallback of the WebSocket turn: body `{text, session_id?, attachments?, model?, incognito?}` (`model`: this message only, as on `chat.send`); lines are the chat events above, first line `{type: "session", session_id}`. A chat's own model applies here too. A "Make this a rule?" card made for this chat while the reply runs comes as a line in the `/ws` envelope, `{type: "rule_proposal.updated", data: RuleProposal, ts}`, before the `approval_request` it causes; answer it with `POST /api/rule-proposals/{id}`. A check that ends after the reply is only on `/ws` and `GET /api/sessions/{id}/rule-proposals`.
 - **Incognito chats** (#154). A chat created with `incognito: true` (`chat.send`, `POST /api/chat`,
   `POST /api/sessions?incognito=true`) can't be switched later, and the engine enforces:

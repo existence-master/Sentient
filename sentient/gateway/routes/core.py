@@ -6,6 +6,7 @@ approvals, files, tools catalog, usage.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -27,6 +28,7 @@ from sentient.gateway.auth import require_token
 from sentient.gateway.deps import MCP_OK, get_core
 from sentient.llm import availability
 from sentient.llm.events import Done, Error
+from sentient.llm.provider import PlainProviderError, ProviderError, Stopped
 from sentient.llm.spending import BudgetError
 from sentient.memory import scopes as memory_scopes
 from sentient.memory.personas import render_persona
@@ -425,7 +427,37 @@ async def decide_rule_proposal(request: Request, proposal_id: str, body: RuleDec
         raise HTTPException(409, str(exc)) from exc
 
 
-# ----------------------------------------------------------------------------- chat fallback + approvals
+# ----------------------------------------------------------------------------- side questions, chat fallback + approvals
+class SideQuestionBody(BaseModel):
+    text: str
+
+
+@router.post("/api/sessions/{session_id}/side-question", dependencies=_auth)
+async def side_question(request: Request, session_id: str, body: SideQuestionBody):
+    question = body.text.strip()
+    if not question:
+        raise HTTPException(422, "Enter a side question first.")
+    s = get_core(request)
+    assert s.agent is not None
+    generation = s.stop_generation
+    try:
+        answer = await s.agent.create_turn_task(s.agent.answer_side_question(session_id, question))
+    except asyncio.CancelledError as exc:
+        if s.stop_generation == generation:
+            raise
+        raise HTTPException(409, "The side question was stopped.") from exc
+    except Stopped as exc:
+        raise HTTPException(409, "The side question was stopped.") from exc
+    except ProviderError as exc:
+        detail = str(exc) if isinstance(exc, PlainProviderError) else "The model couldn't answer the side question."
+        raise HTTPException(503, detail) from exc
+    if answer is None:
+        raise HTTPException(404, "no such chat")
+    if not answer:
+        raise HTTPException(502, "The model returned an empty answer.")
+    return {"answer": answer}
+
+
 class ChatBody(BaseModel):
     text: str = ""
     session_id: str | None = None
