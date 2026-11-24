@@ -319,12 +319,12 @@ async def move_memory(request: Request, memory_id: int, body: dict):
 @router.delete("/{memory_id}")
 async def delete_memory(request: Request, memory_id: int):
     mem = _memory(request)
-    if await mem.get_fact(memory_id) is None:  # so a failure below can't pass a missing id off as deleted (#534)
+    if not await mem.fact_exists(memory_id):  # identify a missing memory before trying to erase it (#534)
         raise HTTPException(404, f"memory {memory_id} not found")
     try:
         deleted = await mem.erase(memory_id, notify=True)  # with everything derived from it (#152)
     except Exception:
-        if await mem.get_fact(memory_id) is not None:
+        if await mem.fact_exists(memory_id):
             log.exception("deleting memory %s failed before it was deleted", memory_id)
             raise HTTPException(503, "couldn't delete this memory right now, try again") from None
         # The memory is gone and its cleanup is queued: the hourly memory upkeep replays it (#462), so this delete
@@ -338,7 +338,7 @@ async def delete_memory(request: Request, memory_id: int):
         # A False that left the memory in place means the erase aborted before
         # touching anything (its pending-cleanup row could not be recorded),
         # which is a temporary failure, not a missing id (#462).
-        if await mem.get_fact(memory_id) is not None:
+        if await mem.fact_exists(memory_id):
             raise HTTPException(503, "couldn't delete this memory right now, try again")
         raise HTTPException(404, f"memory {memory_id} not found")
     if await mem.cleanup_pending(memory_id):  # a cleanup step failed and waits for memory upkeep (#462)

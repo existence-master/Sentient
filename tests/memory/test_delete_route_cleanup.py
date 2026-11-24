@@ -127,6 +127,19 @@ def test_a_missing_id_is_404_even_when_the_erase_would_fail(client, monkeypatch)
     assert r.status_code == 404
 
 
+def test_delete_route_erases_a_memory_with_unreadable_topics(client):
+    honda, summary = _seed(client)
+    client.portal.call(client.core.store.execute, "UPDATE facts SET topics = ? WHERE id = ?", ("not json", honda))
+
+    path = f"/api/memories/{honda}"
+    response = client.delete(path)
+    assert response.status_code == 200
+    assert response.json() == {"deleted": True}
+    assert not _rows(client, "SELECT id FROM facts WHERE id = ?", (honda,))
+    assert not _rows(client, "SELECT id FROM summaries WHERE id = ?", (summary,))
+    assert client.delete(path).status_code == 404
+
+
 def test_an_unreadable_queue_counts_as_cleanup_pending(client, monkeypatch):
     mem, store = client.core.memory, client.core.store
     real_fetchone = store.fetchone
