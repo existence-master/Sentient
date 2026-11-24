@@ -8,7 +8,7 @@ import { Button, EmptyState, IconButton, Skeleton, Spinner } from '@/components/
 import { useBrowserView } from '@/features/browser/state'
 import { ChannelBadge } from '@/features/channels/meta'
 import { HelpersTray } from './HelpersTray'
-import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions, useSetChatModel, useSetChatScope } from '@/hooks/core'
+import { useBootstrap, useConfig, useMessages, useRuleProposals, useSessions, useSetChatModel, useSetChatScope, useSideQuestion } from '@/hooks/core'
 import { qk } from '@/hooks/queryKeys'
 import { api, errorMessage, isApiError } from '@/lib/api'
 import { foldTranscript, type AttachmentView, type TimelineItem } from '@/lib/chatFold'
@@ -78,9 +78,9 @@ function ChatView({
   const sessions = useSessions()
   const messages = useMessages(sessionId)
   const proposals = useRuleProposals(sessionId)
+  const sideQuestion = useSideQuestion()
   const attachments = useAttachments()
   const [inject, setInject] = useState<{ text: string; nonce: number } | null>(null)
-  const [sideQuestion, setSideQuestion] = useState<{ text: string; answer?: string; error?: string } | null>(null)
   const sideQuestionRequest = useRef<AbortController | null>(null)
   const [dragging, setDragging] = useState(false)
   const dragDepth = useRef(0)
@@ -216,23 +216,18 @@ function ChatView({
 
   useEffect(() => () => sideQuestionRequest.current?.abort(), [])
 
-  const onSideQuestion = async (text: string) => {
+  const onSideQuestion = (text: string) => {
     if (!sessionId) return
     sideQuestionRequest.current?.abort()
     const request = new AbortController()
     sideQuestionRequest.current = request
-    setSideQuestion({ text })
-    try {
-      const { answer } = await api.sessions.sideQuestion(sessionId, text, request.signal)
-      if (!request.signal.aborted) setSideQuestion({ text, answer })
-    } catch (err) {
-      if (!request.signal.aborted) setSideQuestion({ text, error: errorMessage(err) })
-    }
+    sideQuestion.mutate({ id: sessionId, text, signal: request.signal })
   }
 
   const closeSideQuestion = () => {
     sideQuestionRequest.current?.abort()
-    setSideQuestion(null)
+    sideQuestionRequest.current = null
+    sideQuestion.reset()
     window.dispatchEvent(new Event('sentient:focus-composer'))
   }
 
@@ -390,22 +385,20 @@ function ChatView({
                   Incognito: nothing here is remembered, and the chat is deleted when you leave it.
                 </p>
               )}
-              {sideQuestion && (
+              {sideQuestion.variables && (
                 <section aria-label="Side question" className="mb-2 rounded-xl border border-border-strong bg-elevated px-3.5 py-2.5 shadow-soft">
                   <div className="mb-1 flex items-center justify-between gap-2">
                     <h3 className="text-xs font-semibold text-fg-muted">Side question</h3>
                     <IconButton size="xs" label="Close side question" icon={<IconX size={15} />} onClick={closeSideQuestion} />
                   </div>
                   <div className="max-h-48 space-y-2 overflow-y-auto break-words whitespace-pre-wrap text-sm">
-                    <p className="font-medium text-fg">{sideQuestion.text}</p>
+                    <p className="font-medium text-fg">{sideQuestion.variables.text}</p>
                     <div aria-live="polite">
-                      {sideQuestion.error != null ? (
-                        <p className="text-danger">{sideQuestion.error}</p>
-                      ) : sideQuestion.answer != null ? (
-                        <p className="text-fg-muted">{sideQuestion.answer}</p>
-                      ) : (
+                      {sideQuestion.isPending && (
                         <p className="flex items-center gap-2 text-fg-subtle"><Spinner size={13} /> Getting an answer…</p>
                       )}
+                      {sideQuestion.isError && <p className="text-danger">{errorMessage(sideQuestion.error)}</p>}
+                      {sideQuestion.isSuccess && <p className="text-fg-muted">{sideQuestion.data.answer}</p>}
                     </div>
                   </div>
                 </section>

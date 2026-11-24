@@ -182,6 +182,16 @@ export function useSetChatScope() {
   })
 }
 
+export function useSideQuestion() {
+  return useMutation({
+    mutationFn: ({ id, text, signal }: { id: string; text: string; signal: AbortSignal }) =>
+      api.sessions.sideQuestion(id, text, signal),
+    // Side questions work over the local gateway and are kept only while their panel is open.
+    networkMode: 'always',
+    gcTime: 0
+  })
+}
+
 export function useDeleteSession() {
   const qc = useQueryClient()
   return useMutation({
