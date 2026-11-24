@@ -358,9 +358,11 @@ accept or loosen a rule.
   ```
   The UI folds each `assistant` message with `tool_calls` plus its following `tool` messages into one assistant turn.
   `other` (ADR 0029): a message someone other than the owner wrote in a paired group chat, `name` = their display
-  name; the model reads it as outside content, the window shows it as theirs. `event`: something the user did to the
-  chat, never sent to the model; `name: "trusted"` with `content` JSON `{event: "trusted", was, via: "desktop"|<channel
-  id>}` is "trusted this chat again".
+  name; the model reads it as outside content, the window shows it as theirs.
+  `event` describes the chat for the window and stays outside the model history. `name: "trusted"` with `content`
+  JSON `{event: "trusted", was, via: "desktop"|<channel id>}` is "trusted this chat again".
+  `name: "turn_interrupted"` carries a JSON array of unfinished call IDs when a turn ends early. The window shows
+  these steps as interrupted after a reload.
   `approval` (tool messages, #147) is how the user answered that call's approval request, `null` when it did not ask:
   `{decision: "allow"|"allow_session"|"allow_timed"|"allow_always"|"deny", asked_at, answered_at, target, risk_label,
   untrusted, rule, warning}` (a request nobody answered in time is `deny`; `rule` is the lasting rule then, e.g.

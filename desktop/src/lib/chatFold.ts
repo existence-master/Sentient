@@ -200,6 +200,10 @@ export function wasDenied(result: unknown): boolean {
   return DECLINED_RE.test(s) || (/^(error|not done|tool error)\b/i.test(s) && /\bdeclined\b/i.test(s))
 }
 
+function interruptWaitingTool(tool: ToolCallView | undefined): void {
+  if (tool?.status === 'awaiting_result') tool.status = 'cancelled'
+}
+
 export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
   const items: TimelineItem[] = []
   let turn: AssistantTurnView | null = null
@@ -222,6 +226,14 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
     }
     if (row.role === 'event') {
       if (row.name === 'trusted') items.push({ kind: 'note', id: row.id, text: trustedNote(row.content), createdAt: row.created_at })
+      if (row.name === 'turn_interrupted' && turn) {
+        const callIds = safeJsonParse<unknown>(row.content, [])
+        if (Array.isArray(callIds)) {
+          for (const id of callIds) {
+            if (typeof id === 'string') interruptWaitingTool(turn.tools[id])
+          }
+        }
+      }
       continue
     }
     if (row.role === 'user') {
@@ -255,9 +267,7 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
         // The engine saves this final paragraph when a turn stops. Other assistant rows can arrive
         // while a call is open, including notes from background helpers.
         if (/(^|\n\n)_\(stopped\)_$/.test(row.content?.trimEnd() ?? '')) {
-          for (const tool of Object.values(turn.tools)) {
-            if (tool.status === 'awaiting_result') tool.status = 'cancelled'
-          }
+          Object.values(turn.tools).forEach(interruptWaitingTool)
         }
       }
       if (row.memory_sources?.length) turn.memorySources = row.memory_sources

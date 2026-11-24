@@ -2042,6 +2042,15 @@ class Agent:
 
         result = LoopResult()
         partial = ""
+        unfinished_calls: set[str] = set()
+
+        async def save_interrupted_calls() -> None:
+            if unfinished_calls:
+                with contextlib.suppress(Exception):
+                    await self.store.add_message(
+                        session_id, "event", json.dumps(sorted(unfinished_calls)), name="turn_interrupted"
+                    )
+
         sources = MemorySources()  # what this reply had in mind (shown under it, never asked of the model)
         used = AnswerSources()  # pages, emails, files and apps it used (#174)
         notes: list[dict] = []  # pieces of the user's notes put into the prompt (#354)
@@ -2145,7 +2154,11 @@ class Agent:
                 tool_names = None
 
             async def persist(role_: str, content: str | None, **fields: Any) -> None:
+                if role_ == "assistant":
+                    unfinished_calls.update(call["id"] for call in fields.get("tool_calls") or ())
                 mid = await self.store.add_message(session_id, role_, content, **fields)
+                if role_ == "tool":
+                    unfinished_calls.discard(fields["tool_call_id"])
                 if role_ == "user" and content:  # a steer message can be a standing instruction too (#130)
                     check = None if channel == "mcp" else self._start_rule_check(session_id, mid, content)
                     if check is not None:
@@ -2180,6 +2193,7 @@ class Agent:
                             (json.dumps(sorted(ctx.visited)), session_id),
                         )
                 yield event
+            await save_interrupted_calls()
         except (asyncio.CancelledError, GeneratorExit):
             release()
             # the user pressed Stop (or the window went away): keep what was shown
@@ -2194,9 +2208,13 @@ class Agent:
                     on_stopped(save.result())
             self._turn_done(session_id)
             raise
-        except BaseException:
-            release()
-            self._turn_done(session_id)
+        except BaseException as exc:
+            try:
+                if isinstance(exc, Exception):
+                    await save_interrupted_calls()
+            finally:
+                release()
+                self._turn_done(session_id)
             raise
         leftover = release()
 

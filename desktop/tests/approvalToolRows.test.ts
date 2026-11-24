@@ -133,3 +133,14 @@ test('a saved file write stays pending in history until its result arrives', () 
   }])
   assert.match(fileRow(done), /Wrote file/)
 })
+
+test('a saved interruption marks its named tool as interrupted in history', () => {
+  const failure: TranscriptMessage = {
+    id: 'failed', role: 'event', name: 'turn_interrupted',
+    content: JSON.stringify([call.call_id]), created_at: savedFileCall.created_at
+  }
+  const [failed] = foldTranscript([savedFileCall, failure])
+  const row = fileRow(failed)
+  assert.match(row, /Step interrupted/)
+  assert.doesNotMatch(row, /Waiting for result|Wrote file/)
+})
