@@ -11,7 +11,7 @@ from sentient.app import SentientApp
 from sentient.gateway.app import create_app
 from sentient.llm.events import Done, Error
 from sentient.llm.provider import ProviderError, StreamChunk
-from tests.conftest import FakeProvider
+from tests.conftest import FakeProvider, tool_call
 
 FAILURE = "Can't reach the model at localhost:9. Check that it is running, or pick another model."
 
@@ -127,6 +127,30 @@ def test_a_turn_that_breaks_still_ends_with_done(make_client, monkeypatch):
     r = client.post("/api/chat", json={"text": "hello again"})
     lines = [json.loads(line) for line in r.text.splitlines()]
     assert terminal(lines) == ["error", "done"] and lines[-1]["error"] == "the store went away"
+
+
+def test_a_failed_approval_records_which_tool_was_interrupted(config, make_client, monkeypatch):
+    config.tools.approvals.rules["file_write"] = "ask"
+    client = make_client(FakeProvider([[
+        tool_call("current_datetime"),
+        tool_call("file_write", name="garden-note.txt", content="Water on Thursday"),
+    ]]))
+
+    async def failed_notification(*args, **kwargs):
+        raise RuntimeError("could not post the approval")
+
+    monkeypatch.setattr(client.core, "notify", failed_notification)
+    response = client.post("/api/chat", json={"text": "Check the time and write garden-note.txt", "channel": "api"})
+    events = [json.loads(line) for line in response.text.splitlines()]
+    assert terminal(events) == ["error", "done"]
+    assert events[-1]["error"] == "could not post the approval"
+    assert [e["name"] for e in events if e["type"] == "tool_result"] == ["current_datetime"]
+
+    session_id = events[0]["session_id"]
+    history = client.get(f"/api/sessions/{session_id}/messages").json()
+    assert history[-1]["role"] == "event"
+    assert history[-1]["name"] == "turn_interrupted"
+    assert json.loads(history[-1]["content"]) == ["call_file_write"]
 
 
 def test_a_break_after_done_sends_no_second_done(make_client, monkeypatch):

@@ -1,7 +1,7 @@
-import { IconAlertTriangle, IconCheck, IconChevronRight, IconClockHour4, IconHandFinger, IconShieldQuestion, IconX } from '@tabler/icons-react'
+import { IconAlertTriangle, IconChevronRight, IconClockHour4, IconHandFinger } from '@tabler/icons-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useState } from 'react'
-import { JsonView, Spinner } from '@/components/ui'
+import { JsonView } from '@/components/ui'
 import type { ApprovalView, ToolCallView } from '@/lib/chatFold'
 import type { ApprovalDecision } from '@/lib/types'
 import { cn, formatDuration } from '@/lib/utils'
@@ -14,7 +14,7 @@ import { TerminalCard } from './cards/TerminalCard'
 import { asHandOff, HandOffCard } from './HandOffCard'
 import { UndoCard } from './UndoCard'
 import { IMAGE_FILE_RE, openOutputFile, outputPath } from './files'
-import { argsPreview, toolMeta } from './toolMeta'
+import { argsPreview, toolMeta, toolStatusLabel } from './toolMeta'
 
 function GenericToolCard({
   tool,
@@ -33,9 +33,15 @@ function GenericToolCard({
   const running = tool.status === 'running'
   const failed = tool.status === 'error'
   const denied = tool.status === 'denied'
-  const preview = argsPreview(tool.arguments)
+  const fileName = tool.status === 'awaiting_approval' && tool.name === 'file_write' && typeof tool.arguments?.name === 'string'
+    ? tool.arguments.name.trim()
+    : ''
+  const preview = fileName || argsPreview(tool.arguments)
   const hasResult = tool.result !== undefined && tool.result !== null && tool.result !== ''
   const handOff = asHandOff(tool.result)
+  const label = fileName
+    ? 'Would write'
+    : toolStatusLabel(tool.name, tool.status) ?? (running ? meta.running : handOff ? 'Prepared for you' : meta.done)
 
   return (
     <div className="space-y-2">
@@ -60,7 +66,7 @@ function GenericToolCard({
           ) : (
             <>
               <span className={cn('shrink-0 font-medium', running ? 'text-fg-muted' : 'text-fg')}>
-                {running ? meta.running : handOff ? 'Prepared for you' : meta.done}
+                {label}
               </span>
               {preview && <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-subtle">{preview}</span>}
               {!preview && <span className="flex-1" />}
@@ -72,22 +78,14 @@ function GenericToolCard({
           <span className="flex size-4 shrink-0 items-center justify-center">
             {running && tool.undo?.status === 'waiting' ? (
               <IconClockHour4 size={14} className="text-accent" />
-            ) : running ? (
-              <Spinner size={13} className="text-fg-subtle" />
-            ) : tool.status === 'awaiting_approval' ? (
-              <IconShieldQuestion size={14} className="text-warning" />
-            ) : failed ? (
-              <IconX size={14} className="text-danger" />
-            ) : denied ? (
-              <StatusGlyph status="denied" />
-            ) : handOff ? (
+            ) : tool.status === 'done' && handOff ? (
               <IconHandFinger size={14} className="text-accent" />
-            ) : problem ? (
+            ) : tool.status === 'done' && problem ? (
               <span title={problem} className="flex">
                 <IconAlertTriangle size={14} className="text-warning" />
               </span>
             ) : (
-              <IconCheck size={14} className="text-success" />
+              <StatusGlyph status={tool.status} />
             )}
           </span>
           <IconChevronRight size={14} className={cn('shrink-0 text-fg-faint transition-transform duration-150', open && 'rotate-90')} />
@@ -116,7 +114,7 @@ function GenericToolCard({
                   <div className={cn('mb-1 text-2xs font-medium uppercase tracking-wide', failed ? 'text-danger' : 'text-fg-subtle')}>
                     {failed ? 'Error' : 'Result'}
                   </div>
-                  {running ? (
+                  {running || tool.status === 'awaiting_result' ? (
                     <div className="text-xs text-fg-subtle">Waiting for result…</div>
                   ) : !hasResult ? (
                     <div className="text-xs text-fg-subtle">No result</div>

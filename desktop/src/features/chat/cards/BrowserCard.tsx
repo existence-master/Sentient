@@ -5,8 +5,8 @@ import { api } from '@/lib/api'
 import type { ApprovalView, ToolCallView } from '@/lib/chatFold'
 import { cn, truncate } from '@/lib/utils'
 import { outputPath } from '../files'
-import { toolMeta } from '../toolMeta'
-import { asRecord, DeclinedText, hostOf, prettyUrl, refLabel, Shimmer, StatusGlyph } from './bits'
+import { toolMeta, toolStatusLabel } from '../toolMeta'
+import { actionTarget, asRecord, DeclinedText, hostOf, prettyUrl, refLabel, Shimmer, StatusGlyph } from './bits'
 
 export const isBrowserTool = (name: string) => name.startsWith('browser_')
 
@@ -18,7 +18,12 @@ interface BrowserResult {
   element?: string
 }
 
-function stepLabel(t: ToolCallView): string {
+function stepLabel(t: ToolCallView, approval?: ApprovalView): string {
+  const label = toolStatusLabel(t.name, t.status)
+  if (label) {
+    const target = t.status === 'awaiting_approval' && t.name === 'browser_click' ? actionTarget(t, approval) : null
+    return target ? `${label} “${truncate(target, 48)}”` : label
+  }
   const a = t.arguments as Record<string, unknown>
   const r = asRecord<BrowserResult>(t.result)
   const running = t.status === 'running'
@@ -50,7 +55,7 @@ function stepLabel(t: ToolCallView): string {
 export function BrowserCard({ tools, approvals = [] }: { tools: ToolCallView[]; approvals?: ApprovalView[] }) {
   const liveFrame = useBrowserView((s) => s.frame)
   const running = tools.some((t) => t.status === 'running' || t.status === 'awaiting_approval')
-  const allDeclined = tools.length > 0 && tools.every((t) => t.status === 'denied')
+  const used = tools.some((t) => t.status === 'done')
   const results = tools.map((t) => asRecord<BrowserResult>(t.result))
   const progressFrame = [...tools].reverse().find((t) => t.progress?.frame)?.progress?.frame
   const shot = [...results].reverse().find((r) => r?.file)?.file
@@ -96,7 +101,7 @@ export function BrowserCard({ tools, approvals = [] }: { tools: ToolCallView[]; 
       <div className="flex min-w-0 flex-1 flex-col py-0.5">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-fg">
-            {running ? <Shimmer>Using the browser</Shimmer> : allDeclined ? 'Browser step not done' : 'Used the browser'}
+            {running ? <Shimmer>Using the browser</Shimmer> : used ? 'Used the browser' : 'Browser'}
           </span>
           <span className="text-2xs text-fg-faint">
             {tools.length} {tools.length === 1 ? 'step' : 'steps'}
@@ -112,13 +117,14 @@ export function BrowserCard({ tools, approvals = [] }: { tools: ToolCallView[]; 
           {hidden > 0 && <li className="pl-5 text-2xs text-fg-faint">{hidden} earlier steps</li>}
           {steps.map((t) => {
             const meta = toolMeta(t.name)
+            const approval = approvals.find((a) => a.callId === t.callId)
             return (
               <li key={t.callId} className="flex items-center gap-2 text-xs">
                 <meta.icon size={13} className={cn('shrink-0', t.status === 'error' ? 'text-danger' : t.status === 'denied' ? 'text-warning' : 'text-fg-subtle')} />
                 {t.status === 'denied' ? (
-                  <DeclinedText tool={t} approval={approvals.find((a) => a.callId === t.callId)} className="min-w-0 flex-1" />
+                  <DeclinedText tool={t} approval={approval} className="min-w-0 flex-1" />
                 ) : (
-                  <span className={cn('min-w-0 flex-1 truncate', t.status === 'running' ? 'text-fg' : 'text-fg-muted')}>{stepLabel(t)}</span>
+                  <span className={cn('min-w-0 flex-1 truncate', t.status === 'running' ? 'text-fg' : 'text-fg-muted')}>{stepLabel(t, approval)}</span>
                 )}
                 <StatusGlyph status={t.status} size={12} />
               </li>

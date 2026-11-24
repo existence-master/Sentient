@@ -8,7 +8,7 @@
 import type { ActionPreview, AgentEvent, AnswerSource, ApprovalDecision, ContextMeter, MemorySource, OutcomeCheck, Risk, TranscriptMessage, UsageEvent } from './types'
 import { safeJsonParse } from './utils'
 
-export type ToolStatus = 'running' | 'awaiting_approval' | 'done' | 'error' | 'denied'
+export type ToolStatus = 'running' | 'awaiting_approval' | 'awaiting_result' | 'done' | 'error' | 'denied' | 'cancelled'
 
 /** Live `tool_progress` accumulated per call (§10). Not persisted: history shows the final result only. */
 export interface ToolProgressView {
@@ -200,6 +200,10 @@ export function wasDenied(result: unknown): boolean {
   return DECLINED_RE.test(s) || (/^(error|not done|tool error)\b/i.test(s) && /\bdeclined\b/i.test(s))
 }
 
+function interruptWaitingTool(tool: ToolCallView | undefined): void {
+  if (tool?.status === 'awaiting_result') tool.status = 'cancelled'
+}
+
 export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
   const items: TimelineItem[] = []
   let turn: AssistantTurnView | null = null
@@ -222,6 +226,19 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
     }
     if (row.role === 'event') {
       if (row.name === 'trusted') items.push({ kind: 'note', id: row.id, text: trustedNote(row.content), createdAt: row.created_at })
+      if (row.name === 'turn_interrupted') {
+        const callIds = safeJsonParse<unknown>(row.content, [])
+        if (Array.isArray(callIds)) {
+          for (const id of callIds) {
+            if (typeof id !== 'string') continue
+            // A group message can split the timeline while an earlier tool is still open.
+            const owner = items.findLast(
+              (item): item is AssistantTurnView => item.kind === 'assistant' && Object.hasOwn(item.tools, id)
+            )
+            interruptWaitingTool(owner?.tools[id])
+          }
+        }
+      }
       continue
     }
     if (row.role === 'user') {
@@ -246,10 +263,18 @@ export function foldTranscript(rows: TranscriptMessage[]): TimelineItem[] {
           callId: tc.id,
           name: tc.function?.name ?? 'tool',
           arguments: safeJsonParse<Record<string, unknown>>(tc.function?.arguments, {}),
-          status: 'done'
+          // The call is saved before it runs, including while its approval is still open.
+          status: 'awaiting_result'
         }
       }
-      if (!row.tool_calls?.length) turn.messageId = row.id
+      if (!row.tool_calls?.length) {
+        turn.messageId = row.id
+        // The engine saves this final paragraph when a turn stops. Other assistant rows can arrive
+        // while a call is open, including notes from background helpers.
+        if (/(^|\n\n)_\(stopped\)_$/.test(row.content?.trimEnd() ?? '')) {
+          Object.values(turn.tools).forEach(interruptWaitingTool)
+        }
+      }
       if (row.memory_sources?.length) turn.memorySources = row.memory_sources
       if (row.sources?.length) turn.sources = row.sources
       if (row.checks?.length) turn.checks = row.checks
@@ -403,16 +428,18 @@ export function applyAgentEvent(turn: AssistantTurnView, ev: AgentEvent): Assist
       const memorySources = ev.memory_sources?.length ? ev.memory_sources : turn.memorySources
       const sources = ev.sources?.length ? ev.sources : turn.sources
       const checks = ev.checks?.length ? ev.checks : turn.checks
+      const tools = Object.fromEntries(
+        Object.entries(turn.tools).map(([k, t]) => [k, t.status === 'running' || t.status === 'awaiting_approval' ? { ...t, status: 'cancelled' as const } : t])
+      )
+      const approvals = turn.approvals.map((a) => a.status === 'pending' ? { ...a, status: 'expired' as const } : a)
+      const settled = { ...turn, tools, approvals, messageId: ev.message_id, memorySources, sources, checks }
       if (ev.cancelled) {
         const error = turn.error?.message === 'Stopped.' ? undefined : turn.error
-        return { ...turn, status: 'cancelled', error, messageId: ev.message_id, memorySources, sources, checks }
+        return { ...settled, status: 'cancelled', error }
       }
       const hasText = turn.segments.some((s) => s.kind === 'text' && s.text.trim())
       const segments = !hasText && ev.content?.trim() ? [...turn.segments, { kind: 'text' as const, text: ev.content }] : turn.segments
-      const tools = Object.fromEntries(
-        Object.entries(turn.tools).map(([k, t]) => [k, t.status === 'running' || t.status === 'awaiting_approval' ? { ...t, status: 'done' as const } : t])
-      )
-      return { ...turn, segments, tools, status: turn.error && !hasText && !ev.content ? 'error' : 'done', messageId: ev.message_id, memorySources, sources, checks }
+      return { ...settled, segments, status: turn.error && !hasText && !ev.content ? 'error' : 'done' }
     }
     default:
       return turn

@@ -554,8 +554,8 @@ export interface ToolCallRef {
   function: { name: string; arguments: string }
 }
 
-/** `other`: a message someone else wrote in a paired group chat (`name` = who); `event`: something the user did to
- * the chat, e.g. trusting it again (`name: "trusted"`, content JSON `{event, was, via}`), ADR 0029. */
+/** `other` is a paired group member's message. `event` carries transcript metadata such as trust changes or
+ * interrupted tool calls. */
 export type MessageRole = 'user' | 'assistant' | 'tool' | 'system' | 'other' | 'event'
 
 /** Raw transcript row (`GET /api/sessions/{id}/messages`). */

@@ -37,6 +37,7 @@ import {
   IconWorld,
   type Icon
 } from '@tabler/icons-react'
+import type { ToolStatus } from '@/lib/chatFold'
 import { humanize, truncate } from '@/lib/utils'
 
 interface ToolMeta {
@@ -143,6 +144,14 @@ export function wouldLabel(name: string): string {
  * (its past-tense label would read "Would use Checked the date and time"). */
 export function askingLabel(name: string): string | null {
   return KNOWN[name] && !KNOWN[name].would ? null : wouldLabel(name)
+}
+
+/** Wording for steps waiting for an answer or ending without success. */
+export function toolStatusLabel(name: string, status: ToolStatus): string | undefined {
+  if (status === 'awaiting_approval') return askingLabel(name) ?? 'Waiting for your answer'
+  if (status === 'awaiting_result') return 'Waiting for result'
+  if (status === 'error') return 'Step failed'
+  if (status === 'cancelled') return 'Step interrupted'
 }
 
 export function toolMeta(name: string): ToolMeta {

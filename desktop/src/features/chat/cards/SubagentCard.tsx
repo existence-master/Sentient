@@ -12,10 +12,13 @@ import { asRecord, DeclinedText, Shimmer, StatusGlyph } from './bits'
 
 export const isSubagentTool = (name: string) => name === 'delegate_task' || name === 'delegate_tasks'
 
-function statusFromTool(tool: ToolCallView): SubagentStatus {
+type HelperStatus = SubagentStatus | 'awaiting_result'
+
+function statusFromTool(tool: ToolCallView): HelperStatus {
   if (tool.status === 'running' || tool.status === 'awaiting_approval') return 'running'
+  if (tool.status === 'awaiting_result') return 'awaiting_result'
   if (tool.status === 'error') return 'error'
-  if (tool.status === 'denied') return 'cancelled'
+  if (tool.status === 'denied' || tool.status === 'cancelled') return 'cancelled'
   return 'completed'
 }
 
@@ -66,7 +69,7 @@ function HelperRow({
   goal: string
   background: boolean
   subagentId?: string
-  status: SubagentStatus
+  status: HelperStatus
   summary: string | null
   error: string | null
   messages: string[]
@@ -90,7 +93,9 @@ function HelperRow({
         ? `Done${steps ? ` after ${steps} ${steps === 1 ? 'step' : 'steps'}` : ''}`
         : status === 'cancelled'
           ? 'Stopped'
-          : (sub.data?.error ?? error ?? 'Ran into a problem')
+          : status === 'awaiting_result'
+            ? 'Waiting for result'
+            : (sub.data?.error ?? error ?? 'Ran into a problem')
 
   return (
     <div className={cn(!nested && 'overflow-hidden rounded-xl border border-border bg-surface')}>
@@ -168,6 +173,7 @@ function SubagentGroup({ tool }: { tool: ToolCallView }) {
       ? ((raw as { results: DelegateResult[] }).results)
       : []
   const fallback = statusFromTool(tool)
+  const finished = fallback === 'completed'
   const done = list.filter((r) => r?.status === 'completed').length
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-surface">
@@ -177,9 +183,9 @@ function SubagentGroup({ tool }: { tool: ToolCallView }) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-fg">
-            {fallback === 'running' ? <Shimmer>{`${tasks.length} helpers working in parallel`}</Shimmer> : `${tasks.length} helpers worked in parallel`}
+            {fallback === 'running' ? <Shimmer>{`${tasks.length} helpers working in parallel`}</Shimmer> : `${tasks.length} helpers${finished ? ' worked in parallel' : ''}`}
           </div>
-          {fallback !== 'running' && <div className="text-xs text-fg-subtle">{done || tasks.length} finished</div>}
+          {finished && <div className="text-xs text-fg-subtle">{done || tasks.length} finished</div>}
         </div>
       </div>
       <div className="divide-y divide-border border-t border-border">

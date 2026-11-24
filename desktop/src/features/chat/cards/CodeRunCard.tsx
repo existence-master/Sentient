@@ -7,6 +7,7 @@ import { wasDenied, type ToolCallView } from '@/lib/chatFold'
 import type { SandboxResult } from '@/lib/types'
 import { cn, formatDuration } from '@/lib/utils'
 import { fileBase, IMAGE_FILE_RE, openOutputFile, outputPath } from '../files'
+import { toolStatusLabel } from '../toolMeta'
 import { asRecord, DeclinedText, Shimmer, StatTiles, StatusGlyph } from './bits'
 
 /** `execute_code` (§11): purpose, live output, result, created files, and the code folded away. */
@@ -31,7 +32,7 @@ export function CodeRunCard({ tool }: { tool: ToolCallView }) {
     if (running && output.current) output.current.scrollTop = output.current.scrollHeight
   }, [running, stdout, stderr])
 
-  const title = args.purpose?.trim() || 'Ran some code'
+  const title = args.purpose?.trim() || (tool.status === 'done' ? 'Ran some code' : 'Code')
   const subline = waiting
     ? 'Waiting for your OK before running'
     : running
@@ -40,7 +41,7 @@ export function CodeRunCard({ tool }: { tool: ToolCallView }) {
         ? 'Not run, so nothing changed'
         : failed
           ? `Stopped with a problem${duration ? ` after ${formatDuration(duration)}` : ''}`
-          : `Finished${duration ? ` in ${formatDuration(duration)}` : ''}`
+          : toolStatusLabel(tool.name, tool.status) ?? `Finished${duration ? ` in ${formatDuration(duration)}` : ''}`
   const backend = res?.backend
   const hasResult = res && res.result !== null && res.result !== undefined && res.result !== ''
   const showOutput = !!(stdout || stderr)
