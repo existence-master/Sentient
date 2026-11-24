@@ -31,7 +31,7 @@ export function CodeRunCard({ tool }: { tool: ToolCallView }) {
     if (running && output.current) output.current.scrollTop = output.current.scrollHeight
   }, [running, stdout, stderr])
 
-  const title = args.purpose?.trim() || 'Ran some code'
+  const title = args.purpose?.trim() || (tool.status === 'done' ? 'Ran some code' : 'Code')
   const subline = waiting
     ? 'Waiting for your OK before running'
     : running
@@ -40,7 +40,9 @@ export function CodeRunCard({ tool }: { tool: ToolCallView }) {
         ? 'Not run, so nothing changed'
         : failed
           ? `Stopped with a problem${duration ? ` after ${formatDuration(duration)}` : ''}`
-          : `Finished${duration ? ` in ${formatDuration(duration)}` : ''}`
+          : tool.status === 'cancelled'
+            ? 'Step interrupted'
+            : `Finished${duration ? ` in ${formatDuration(duration)}` : ''}`
   const backend = res?.backend
   const hasResult = res && res.result !== null && res.result !== undefined && res.result !== ''
   const showOutput = !!(stdout || stderr)

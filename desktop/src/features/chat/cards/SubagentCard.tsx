@@ -15,7 +15,7 @@ export const isSubagentTool = (name: string) => name === 'delegate_task' || name
 function statusFromTool(tool: ToolCallView): SubagentStatus {
   if (tool.status === 'running' || tool.status === 'awaiting_approval') return 'running'
   if (tool.status === 'error') return 'error'
-  if (tool.status === 'denied') return 'cancelled'
+  if (tool.status === 'denied' || tool.status === 'cancelled') return 'cancelled'
   return 'completed'
 }
 

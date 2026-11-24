@@ -50,7 +50,7 @@ export function TerminalCard({ tool }: { tool: ToolCallView }) {
               ? 'Stopped because it took too long'
               : res && res.exit_code !== null
                 ? `${res.exit_code === 0 ? 'Finished' : `Finished with exit code ${res.exit_code}`}${duration ? ` in ${formatDuration(duration)}` : ''}`
-                : null
+                : tool.status === 'cancelled' ? 'Step interrupted' : null
 
   return (
     <div className={cn('overflow-hidden rounded-xl border bg-surface', failed ? 'border-danger/30' : 'border-border')}>

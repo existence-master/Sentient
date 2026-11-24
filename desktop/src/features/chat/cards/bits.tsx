@@ -80,7 +80,7 @@ export function Shimmer({ children, className }: { children: ReactNode; classNam
   )
 }
 
-export function StatusGlyph({ status, size = 14 }: { status: ToolStatus | 'cancelled'; size?: number }) {
+export function StatusGlyph({ status, size = 14 }: { status: ToolStatus; size?: number }) {
   if (status === 'running') return <Spinner size={size - 1} className="text-fg-subtle" />
   if (status === 'awaiting_approval') return <IconShieldQuestion size={size} className="text-warning" />
   if (status === 'error') return <IconX size={size} className="text-danger" />
