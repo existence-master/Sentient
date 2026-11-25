@@ -450,6 +450,22 @@ def test_connected_apps_get_memories_only_when_allowed(client, allow):
     assert "memory_remember" in offered  # facts from an API chat still go to Review either way
 
 
+@pytest.mark.parametrize("allow", [False, True], ids=["memory-off", "memory-on"])
+def test_the_name_from_onboarding_reaches_an_app_only_with_memory(client, allow):
+    """Onboarding writes the user's name into SOUL.md through the persona. Off, an API turn keeps the persona and the
+    assistant's name but not the user's; on, it has the name like a desktop chat (#552)."""
+    core = client.app.state.sentient
+    core.config.openai_api.allow_memory = allow
+    named = {"user_name": "Maya Rao", "assistant_name": "Juno", "persona": "professional"}
+    assert client.post("/api/onboarding", json=named, headers=WIN).json() == {"ok": True}
+    assert "Maya Rao's chief of staff" in core.workspace.soul.read_text(encoding="utf-8")
+    assert _ask(client, user="Notes app", messages=[{"role": "user", "content": "What's my name?"}]).status_code == 200
+    system = client.llm.calls[-1]["messages"][0]["content"]
+    assert ("Maya" in system) is allow
+    persona = "You are Juno, " + ("Maya Rao's" if allow else "the user's") + " chief of staff"
+    assert persona in system  # the persona and the assistant's name stay either way
+
+
 def test_a_memory_tool_the_app_was_not_offered_is_refused(client):
     """Leaving the tools out is enforced: a call made anyway is refused and returns nothing (#479)."""
     assert client.post("/api/memories", json={"content": SISTER}, headers=WIN).status_code == 200
