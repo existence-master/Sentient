@@ -349,9 +349,9 @@ async def test_leftover_incognito_output_folders_are_removed_at_start(app, isola
 @pytest.mark.parametrize(("soul", "name", "expected"), [
     ("You are Sentient, Maya Rao's assistant.", "Maya Rao", "You are Sentient, the user's assistant."),
     ("Greet maya rao warmly.", "Maya  Rao", "Greet the user warmly."),  # the full name in any case and spacing
-    ("Will is busy, so you will be brief.", "Will Smith", "the user is busy, so you will be brief."),  # a part as written
+    ("Will is busy.", "Will Smith", "the user is busy."),  # a part of it
     ("Mayank is Maya's friend.", "Maya", "Mayank is the user's friend."),  # whole words only
-    ("Will asked; say what you will try next.", "Will", "the user asked; say what you will try next."),  # a persona's word
+    ("Greet will warmly.", "Will", "Greet the user warmly."),  # edited by hand: a name never gets out
     ("Greet maya warmly.", "Maya", "Greet the user warmly."),  # any other name in any case
     ("Address maya by name.", "Maya Rao", "Address the user by name."),  # and any part of it
     ("You are Sentient, the user's assistant.", "", "You are Sentient, the user's assistant."),  # no name set
@@ -360,3 +360,17 @@ def test_without_user_takes_only_the_name_out_of_the_persona(soul, name, expecte
     from sentient.memory.workspace import without_user
 
     assert without_user(soul, name) == expected
+
+
+@pytest.mark.parametrize(("assistant", "user"), [
+    ("Sentient", "Maya Rao"),
+    ("Sentient", "Will"), ("Sentient", "will"), ("Sentient", "Act"),  # also a word in the personas
+    ("Maya", "Maya Rao"), ("Maya", "Maya"),  # the assistant shares the user's name
+])
+def test_without_user_changes_nothing_but_the_name_in_sentients_own_personas(assistant, user):
+    from sentient.memory.personas import PERSONAS
+    from sentient.memory.workspace import DEFAULT_SOUL, without_user
+
+    for template in (DEFAULT_SOUL, *(p["soul_md"] for p in PERSONAS)):
+        soul = template.format(name=assistant, user=user)
+        assert without_user(soul, user, assistant) == template.format(name=assistant, user="the user")

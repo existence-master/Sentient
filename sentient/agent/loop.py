@@ -795,7 +795,9 @@ class Agent:
         sources.add_insights(insights)
         snapshot = self.workspace.snapshot()
         if not reads_memory:  # only the persona, without the user's name (#552): no profile, memory file or daily notes
-            soul = without_user(snapshot.get("soul") or "", self.config.assistant.user_name)
+            soul = without_user(
+                snapshot.get("soul") or "", self.config.assistant.user_name, self.config.assistant.name
+            )
             snapshot = {k: (soul if k == "soul" else "") for k in snapshot}
         elif not personal:  # MEMORY.md, daily notes and USER.md's learned facts come from personal memories (#155)
             snapshot = {
