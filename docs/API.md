@@ -2653,6 +2653,13 @@ Every new tool declares a `Risk`; approvals behave as in section 1.
 ### Second look at outgoing actions (#143, ADR 0024)
 - Before any call where `rules.sends_out` is true runs (after `never` rules, Read only connections, the
   unprompted-work limit and a `policy`), `run_loop` compares it with what the user asked (`sentient.agent.second_look`):
+  - **Code, no model** (#518, effective risk `exec`, a `code` argument): a script that deletes or changes a file that
+    is already there and that the user's words don't name is flagged: `"This code changes old_results.csv, a file
+    that's already there and that you didn't mention."` (`second_look.code_warning`). It reads the paths the code
+    spells out in `open(..., "w"/"a"/"x"/"+")`, `os.remove`/`unlink`/`rename`/`replace`/`truncate`,
+    `shutil.rmtree`/`move`, `Path(...).unlink()`/`write_text()`... and `tools.file_write(name=...)`; a relative path
+    counts as one in the files folder. A new file passes. In a task run the user's words are its brief
+    (`TASK_REQUEST_KEY`), so a file the task or its plan names passes. Code gets none of the checks below but the model's.
   - **Always, no model** (`second_look.deterministic`, skipped for effective risk `exec`): every email address or phone
     number in an argument whose key names a recipient (`to`, `cc`, `bcc`, `recipient_email`, `attendees`, `guests`,
     `phone`...; nested arguments such as Composio's multi-execute are walked) must appear in the user's own words

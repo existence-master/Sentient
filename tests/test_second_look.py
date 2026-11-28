@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
+from sentient import paths
 from sentient.agent import second_look as sl
 from sentient.agent.loop import CAN_PAUSE_KEY, LoopResult
 from sentient.app import SentientApp
@@ -153,6 +155,47 @@ def test_a_link_from_outside_content_is_flagged_only_after_outside_content():
     body = {"to": "arjun@example.com", "body": "Notes. Link: https://evil.example/c?d=1"}
     assert sl.deterministic(body, ev, untrusted="Web") == "This includes a link to evil.example that came from Web, not from you."
     assert sl.deterministic(body, ev) == ""
+
+
+# ----------------------------------------------------------------------------- what a code step changes (#518)
+ASKED = "My task: Prime squares - Add up the squares of the first 500 primes and tell me the total."
+CHANGES = "This code changes old_results.csv, a file that's already there and that you didn't mention."
+DELETES = "This code deletes old_results.csv, a file that's already there and that you didn't mention."
+
+
+def _old_results() -> Path:
+    paths.files_dir().mkdir(parents=True, exist_ok=True)
+    old = paths.files_dir() / "old_results.csv"
+    old.write_text("run,total\n1,123\n", encoding="utf-8")
+    return old
+
+
+def test_code_that_changes_or_deletes_a_file_already_there_is_flagged(isolated_home):
+    old = _old_results()
+    for code, warning in (
+        ('tools.file_write(name="old_results.csv", content="")', CHANGES),
+        ('open("old_results.csv", "w").close()', CHANGES),
+        ('with open(file="files/old_results.csv", mode="w") as f:\n    pass', CHANGES),
+        (f'open(r"{old}", "a").write("3,789")', CHANGES),  # a full path
+        ('import os\nname = "old_results.csv"\nos.remove(name)', DELETES),
+        ('from pathlib import Path\np = Path("data") / "old_results.csv"\np.unlink()', DELETES),
+    ):
+        assert sl.code_warning({"code": code}, ASKED) == warning, code
+
+
+def test_code_may_read_files_make_new_ones_and_change_the_ones_asked_for(isolated_home):
+    _old_results()
+    for code in (
+        'print(open("old_results.csv").read())',
+        'open("primes_total.txt", "w").write("1")',  # a new file
+        'tools.file_write(name="primes_total.txt", content="1")',
+        'name = "old_results.csv"\nprint(name.replace(".csv", ".bak"))',  # text, not a path
+        'items = ["old_results.csv"]\nitems.remove("old_results.csv")',
+        "this is not Python (",
+    ):
+        assert sl.code_warning({"code": code}, ASKED) == "", code
+    assert sl.code_warning({"code": 'open("old_results.csv", "w").close()'}, ASKED + " Empty old_results.csv.") == ""
+    assert sl.code_warning({"command": "del old_results.csv"}, ASKED) == ""  # a command, not a script
 
 
 def test_the_verdict_is_parsed_tolerantly():
