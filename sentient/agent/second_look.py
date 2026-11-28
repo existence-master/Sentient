@@ -15,6 +15,9 @@ x@evil.example"), and a small model can make up a recipient or an amount. Before
    "email Arjun". The card says where it was ("That address came from the text of an email from Arjun Mehta
    <arjun@example.com> (Gmail), not from you."). A reply's destinations come from the thread's headers
    (``Tool.destinations_fn``); one that a Reply-To header redirects to another address is flagged too.
+   For code (effective risk ``exec``) it reads only what the script deletes or changes (#518): a file that is already
+   there (in Sentient's files folder, or at a full path) and that the user's words don't name asks first. A new file
+   never does, so a script still saves what it was asked to make.
 2. ``model_check`` (only for effective risk ``send`` or ``exec``, and only when the call would otherwise run without
    asking or the run read outside content): one short, tool-free prompt on the ``fast`` role that sees only the
    user's request (in a task run, the task's brief in plain words, ``TASK_REQUEST_KEY``), the rules and the action's
@@ -31,6 +34,7 @@ rules, Read only connections and the unprompted-work limit are checked before th
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import inspect
 import json
@@ -40,8 +44,10 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from email.utils import getaddresses
+from pathlib import Path
 from typing import Any
 
+from sentient import paths
 from sentient.agent.prompt import is_marked
 from sentient.llm import claude_code
 from sentient.llm.provider import ModelRefused, parse_json_loose
@@ -589,6 +595,105 @@ def deterministic(arguments: dict, ev: Evidence, *, untrusted: str = "", known: 
     return ""
 
 
+# ----------------------------------------------------------------------------- what a code step changes (#518)
+# calls that delete or change the file they're given: functions (``os.remove(p)``, ``shutil.rmtree(p)``, Sentient's
+# own ``tools.file_write(name=...)`` from a script) and ``Path`` methods (``Path(p).unlink()``); ``open`` only in a
+# write mode
+_DELETES = frozenset({"remove", "unlink", "rmdir", "removedirs", "rmtree"})
+_CHANGES = frozenset({"truncate", "rename", "replace", "move", "write_text", "write_bytes", "file_write"})
+_MODULES = frozenset({"os", "shutil", "io", "codecs", "tools"})
+_PATHS = frozenset({"Path", "PurePath", "PosixPath", "WindowsPath"})
+_WRITE_MODE = re.compile(r"[wax+]")
+
+
+def _walk_names(node: ast.AST | None, assigned: dict[str, list[ast.AST]], depth: int = 0) -> Iterable[ast.AST]:
+    """Every node of an expression, and of what the plain names in it were set to (``p = Path("x")``)."""
+    if node is None or depth > 4:
+        return
+    for n in ast.walk(node):
+        yield n
+        if isinstance(n, ast.Name):
+            for value in assigned.get(n.id, []):
+                yield from _walk_names(value, assigned, depth + 1)
+
+
+def _strings(node: ast.AST | None, assigned: dict[str, list[ast.AST]]) -> list[str]:
+    """The text an expression is built from: "old_results.csv" in ``os.path.join(folder, "old_results.csv")``."""
+    return [n.value for n in _walk_names(node, assigned) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+
+
+def _call_name(node: ast.AST) -> str:
+    func = getattr(node, "func", None)
+    return func.attr if isinstance(func, ast.Attribute) else func.id if isinstance(func, ast.Name) else ""
+
+
+def code_changes(code: str) -> list[tuple[str, str]]:
+    """("deletes" or "changes", the path as the code spells it) for each file a script deletes or writes to.
+
+    Only paths the code spells out (directly or through a plain variable): a path worked out at run time, or a call
+    hidden behind ``getattr`` or ``exec``, isn't found here, and the model check still reads the code for those."""
+    try:
+        tree = ast.parse(code or "")
+    except (SyntaxError, ValueError):
+        return []
+    assigned: dict[str, list[ast.AST]] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign):
+            for target in n.targets:
+                if isinstance(target, ast.Name):
+                    assigned.setdefault(target.id, []).append(n.value)
+    found: list[tuple[str, str]] = []
+    for n in ast.walk(tree):
+        name = _call_name(n) if isinstance(n, ast.Call) else ""
+        if name != "open" and name not in _DELETES and name not in _CHANGES:
+            continue
+        func = n.func
+        method = isinstance(func, ast.Attribute) and not (
+            isinstance(func.value, ast.Name) and func.value.id in _MODULES
+        )
+        if method and not any(_call_name(m) in _PATHS for m in _walk_names(func.value, assigned)):
+            continue  # a method of something that isn't a path: ``text.replace(...)``, ``table.rename(...)``
+        if name == "open":
+            at = 0 if method else 1  # ``Path(p).open("w")``, ``open(p, "w")``
+            mode = n.args[at] if len(n.args) > at else next((k.value for k in n.keywords if k.arg == "mode"), None)
+            if not _WRITE_MODE.search("".join(_strings(mode, assigned))):
+                continue  # reading, or a mode worked out at run time
+            file = n.args[0] if n.args else next((k.value for k in n.keywords if k.arg == "file"), None)
+            targets = [func.value] if method else [file]
+        else:
+            targets = [func.value] if method else [*n.args, *(k.value for k in n.keywords if k.arg != "content")]
+        verb = "deletes" if name in _DELETES else "changes"
+        for target in targets:
+            found += [(verb, s) for s in _strings(target, assigned) if s.strip() and "\n" not in s]
+    return found
+
+
+def _there(path: Path, verb: str) -> bool:
+    """True when ``path`` is already there: a file, or for a delete a folder too."""
+    try:
+        return path.is_file() or (verb == "deletes" and path.is_dir())
+    except (OSError, ValueError):  # text that can't be a path on this system
+        return False
+
+
+def code_warning(arguments: dict, request: str) -> str:
+    """The warning for a script that deletes or changes a file that is already there (in Sentient's files folder, or
+    at a full path) and that the user's words don't name (#518), else "". A new file passes: a script may save what
+    it was asked to make. A relative path counts as one in the files folder, where the user's files are, even though
+    the script runs in a folder of its own."""
+    code = (arguments or {}).get("code")
+    if not isinstance(code, str):
+        return ""
+    root = paths.files_dir()
+    for verb, written in code_changes(code):
+        path = Path(written).expanduser()
+        if not path.name or mentions(request, path.name) or mentions(request, written):
+            continue
+        if any(_there(p, verb) for p in ([path] if path.is_absolute() else [root / path, root / path.name])):
+            return f"This code {verb} {path.name}, a file that's already there and that you didn't mention."
+    return ""
+
+
 async def known_addresses(store: Any, items: Iterable[str]) -> set[str]:
     """The addresses among ``items`` that a saved memory mentions (active memories only; held ones don't count)."""
     out: set[str] = set()
@@ -792,8 +897,11 @@ class Look:
         return found
 
     async def deterministic(self) -> str:
-        if Risk(self.plan.risk) >= Risk.exec:  # code and commands: only the model check reads them
-            return ""
+        if Risk(self.plan.risk) >= Risk.exec:  # code and commands: the files a script changes (#518), then the model
+            warning = code_warning(self.arguments, self.request())
+            if warning:
+                log.info("second look: %s flagged (code): %s", self.tool.name, warning)
+            return warning
         ev = self.evidence()
         dests = await self.destinations()
         items = recipients(self.arguments) + [str(d["address"]) for d in dests]
